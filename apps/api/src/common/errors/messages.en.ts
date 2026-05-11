@@ -200,8 +200,9 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     detail: 'Reduce the number of items and try again.',
   },
   'workflow.update_ticket_field_not_allowed': {
-    title: "Couldn't update — field not allowed",
-    detail: 'That field can\'t be changed by this workflow step.',
+    title: 'Workflow node misconfigured',
+    detail:
+      "The `update_ticket` node config references a field that's no longer supported. See docs/follow-ups/b2-followups.md for the supported set.",
   },
   'outbox.idempotency_collision': {
     title: 'Duplicate event suppressed',

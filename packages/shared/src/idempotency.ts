@@ -149,3 +149,54 @@ export const DISPATCH_CHILD_ID_NAMESPACE = 'a3f4b21e-7c5d-4e6f-9a8b-1c2d3e4f5061
 export function buildDispatchChildId(idempotencyKey: string): string {
   return uuidv5(idempotencyKey, DISPATCH_CHILD_ID_NAMESPACE);
 }
+
+/**
+ * Prefix for the workflow-engine `assign` node's outer idempotency key,
+ * shared with the §3.2 `set_entity_assignment` RPC. Namespaced separately
+ * from `patch` / `dispatch` / `dispatch_batch` so a workflow-engine retry
+ * can never collide with a controller PATCH or a dispatch call.
+ *
+ * Citations:
+ *   - 00327_set_entity_assignment_v2.sql (RPC accepts arbitrary text key)
+ *   - spec §3.2 lines 1986-2037 — workflow engine assign cutover (Step 9)
+ *   - apps/api/src/modules/workflow/workflow-engine.service.ts — the only caller
+ */
+export const WORKFLOW_ASSIGNMENT_IDEMPOTENCY_KEY_PREFIX = 'workflow:assignment';
+export const WORKFLOW_UPDATE_TICKET_IDEMPOTENCY_KEY_PREFIX = 'workflow:update_ticket';
+
+/**
+ * Build the outer idempotency key for `set_entity_assignment` calls from
+ * the workflow engine's `assign` node. Shape:
+ *   `workflow:assignment:<workflow_instance_id>:<node_id>:<entity_id>`
+ *
+ * The key is stable across retries — same workflow instance, same node,
+ * same entity ⇒ same key ⇒ `command_operations` short-circuits the
+ * second call. Replay-safe by construction. Step 9 cuts the workflow
+ * engine over to the RPC layer; pre-Step 9 the engine wrote directly to
+ * `tickets` with no idempotency, so retries silently double-applied.
+ */
+export function buildWorkflowAssignmentIdempotencyKey(
+  workflowInstanceId: string,
+  nodeId: string,
+  entityId: string,
+): string {
+  return `${WORKFLOW_ASSIGNMENT_IDEMPOTENCY_KEY_PREFIX}:${workflowInstanceId}:${nodeId}:${entityId}`;
+}
+
+/**
+ * Build the outer idempotency key for `update_entity_combined` calls from
+ * the workflow engine's `update_ticket` node. Shape:
+ *   `workflow:update_ticket:<workflow_instance_id>:<node_id>:<entity_id>`
+ *
+ * Same retry-safety rationale as `buildWorkflowAssignmentIdempotencyKey`.
+ * The §3.0 orchestrator wraps every branch (status/priority/assignment/
+ * sla/plan/metadata) in one transaction; the idempotency cache is keyed
+ * on the OUTER key, sub-RPC keys are sentinel-prefixed (00335:135-137).
+ */
+export function buildWorkflowUpdateTicketIdempotencyKey(
+  workflowInstanceId: string,
+  nodeId: string,
+  entityId: string,
+): string {
+  return `${WORKFLOW_UPDATE_TICKET_IDEMPOTENCY_KEY_PREFIX}:${workflowInstanceId}:${nodeId}:${entityId}`;
+}

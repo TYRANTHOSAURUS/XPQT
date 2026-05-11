@@ -561,8 +561,9 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
   'workflow.invalid': { title: "Couldn't save — workflow is invalid" },
   'workflow_instance.not_found': { title: "We can't find that workflow run" },
   'workflow.update_ticket_field_not_allowed': {
-    title: "Couldn't update — field not allowed",
-    detail: "That field can't be changed by this workflow step.",
+    title: 'Workflow node misconfigured',
+    detail:
+      "The `update_ticket` node config references a field that's no longer supported. See docs/follow-ups/b2-followups.md for the supported set.",
   },
 
   // ─── routing / sla ───────────────────────────────────────────────────────

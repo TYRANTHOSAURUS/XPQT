@@ -200,8 +200,9 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     detail: 'Verklein het aantal items en probeer het opnieuw.',
   },
   'workflow.update_ticket_field_not_allowed': {
-    title: 'Kon niet bijwerken — veld niet toegestaan',
-    detail: 'Dit veld kan niet door deze workflowstap worden gewijzigd.',
+    title: 'Workflow-stap onjuist geconfigureerd',
+    detail:
+      'De `update_ticket`-stap verwijst naar een veld dat niet meer ondersteund wordt. Zie docs/follow-ups/b2-followups.md voor de toegestane velden.',
   },
   'outbox.idempotency_collision': {
     title: 'Dubbel event onderdrukt',

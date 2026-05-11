@@ -116,6 +116,15 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'validate_assignees_in_tenant.assigned_team_id_not_in_tenant': 422,
   'validate_assignees_in_tenant.assigned_user_id_not_in_tenant': 422,
   'validate_assignees_in_tenant.assigned_vendor_id_not_in_tenant': 422,
+  // B.2.A.Step9 — workflow `update_ticket` node config that references a
+  // field outside the tightened allowlist throws this code (TS-side).
+  // The raise is unprocessable-entity rather than 400 validation:
+  // the request payload is syntactically valid jsonb of the right
+  // shape, but the workflow definition itself is misconfigured — only
+  // an admin can fix it. Defense-in-depth listing for any future
+  // RPC-side raise of the same code (none today; the workflow engine
+  // is the sole producer).
+  'workflow.update_ticket_field_not_allowed': 422,
 
   // ── 500 server ───────────────────────────────────────────────────
   // timers_required is a programmer error: TS plan-build always

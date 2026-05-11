@@ -50,14 +50,15 @@ Items surfaced in the post-Commit-B self full-review (2026-05-11) that
 were intentionally not folded into the Commit-B remediation pass
 (00334 v4 + TS fixes):
 
-- **Workflow engine bypass (plan-review C3, 2026-05-11).** The
-  workflow engine's `assign` node at `workflow-engine.service.ts:273-278`
-  and `update_ticket` node at `:362-367` write to `tickets` via direct
-  `.from('tickets').update(...)` calls, bypassing §3.0 and the sub-RPCs.
-  Spec lines 1870-1873 explicitly say workflow-engine `assign` MUST go
-  through §3.2 `set_entity_assignment`. This is Step 9 in the B.2.A
-  roadmap. Cutover happens there; until then §3.0 is the ONLY HTTP
-  write path, not the only write path absolutely.
+- **Workflow engine bypass (plan-review C3, 2026-05-11) — RESOLVED by
+  B.2.A.Step9 (2026-05-11).** The workflow engine's `assign` and
+  `update_ticket` nodes now route through `set_entity_assignment`
+  (§3.2 / 00327 v2) and `update_entity_combined` (§3.0 / 00335 v5)
+  respectively. The direct `.from('tickets').update(...)` writes are
+  gone. Idempotency keys are stable per (workflow_instance, node,
+  entity). The `update_ticket` allowlist was tightened from 29 fields
+  to 14 (the orchestrator's branch surface); 17 orphan fields are
+  documented below.
 
 - **Case-side satisfaction_rating + satisfaction_comment atomicity
   gap (plan-review I4, 2026-05-11).** These fields are not in the
@@ -144,25 +145,29 @@ tenant validation + sla policy existence + format/enum/range) runs in
 TS; the actual writes — every branch in one transaction — happen
 inside the RPC. The legacy per-field TS dispatch chain is gone.
 
-**Engines NOT cut over.** The workflow engine continues to write to
-`tickets` directly at:
-- `apps/api/src/modules/workflow/workflow-engine.service.ts:273-278`
-  (`assign` node)
-- `apps/api/src/modules/workflow/workflow-engine.service.ts:355-365`
-  (`update_ticket` node)
+**Engines cut over (B.2.A.Step9, 2026-05-11).** The workflow engine
+now routes through the orchestrator + sub-RPCs:
 
-These bypass the orchestrator, the sub-RPCs, audit emission, and the
-`command_operations` idempotency table. Spec lines 1870-1873 explicitly
-say the workflow engine's `assign` node must go through §3.2
-`set_entity_assignment`. The cutover happens in B.2.A Step 9
-(§1.21 workflow-engine cutover). Until then: **§3.0 is the only HTTP
-write path, not the only write path absolutely.**
+- `apps/api/src/modules/workflow/workflow-engine.service.ts` `assign`
+  node calls `set_entity_assignment` (§3.2 / 00327 v2) with idempotency
+  key `workflow:assignment:<instance>:<node>:<entity>`.
+- `apps/api/src/modules/workflow/workflow-engine.service.ts`
+  `update_ticket` node calls `update_entity_combined` (§3.0 / 00335 v5)
+  with idempotency key `workflow:update_ticket:<instance>:<node>:<entity>`
+  and a tightened 14-field allowlist (orphan fields rejected with
+  `workflow.update_ticket_field_not_allowed` @ 422 — see new entry
+  below).
 
-`WorkOrderService.reassign` and `TicketService.reassign` also remain
-outside §3.0 — both write via `.from('<table>').update(...)` plus a
-`routing_decisions` audit insert. Step 9 (workflow-engine cutover)
-also folds reassign into `set_entity_assignment` (§3.2). Until then
-reassign is a known second write path.
+Idempotency keys are stable across replays (same instance + node +
+entity ⇒ same key ⇒ `command_operations` short-circuits). All
+audit-row + domain-event emission moves to the RPC layer.
+
+**`WorkOrderService.reassign` and `TicketService.reassign` still remain
+outside §3.0** — both write via `.from('<table>').update(...)` plus a
+`routing_decisions` audit insert. Folding reassign into
+`set_entity_assignment` (§3.2) is a separate follow-up, not part of
+Step 9. Until then reassign is a known second write path for the
+reason field.
 
 **Dead code removed (Commit C remediation, 2026-05-11).** The
 per-field `WorkOrderService` methods (`updateSla` / `setPlan` /
@@ -350,3 +355,63 @@ migration v3 supersessions (00340 helper + 00341 single + 00342 batch):
   raise shape, asserting AppError(422) with the registered code.
   The harness scenario 8 still asserts the raise text from the
   database; this new test proves the wire shape ships correctly.
+
+## Workflow `update_ticket` orphan fields (Step 9, 2026-05-11)
+
+Step 9 tightened the `update_ticket` node's field allowlist to the 14
+fields the §3.0 `update_entity_combined` orchestrator accepts. The
+following 17 fields were ACCEPTED by the pre-cutover workflow engine
+and are now rejected with `workflow.update_ticket_field_not_allowed`
+(@ 422):
+
+- Ticket-flavor scalars: `impact`, `urgency`, `interaction_mode`, `source_channel`
+- User-driven post-resolve: `satisfaction_rating`, `satisfaction_comment`, `form_data`
+- Status-transition reasons: `close_reason`, `cancelled_reason`, `reclassified_reason`
+- FKs: `ticket_type_id`, `parent_ticket_id`, `requester_person_id`,
+  `requested_for_person_id`, `location_id`, `asset_id`, `workflow_id`
+
+**Why not silently dropped:** failing loudly forces workflow authors to
+either (a) remove the field if it was accidental, or (b) request an
+orchestrator branch extension if the field is genuinely needed. Silent
+drop would hide the misconfiguration until production noticed the
+ticket didn't change as expected.
+
+**Per `project_no_wave1_yet` memory** — no production tenant currently
+depends on these workflows. The cutover is risk-free in customer terms.
+Demo workflows seeded with orphan fields will fail at the workflow run;
+they should be updated or the field demand pushed up to Product.
+
+**Path forward (if any field becomes needed):**
+
+- `impact` / `urgency` — extend the priority branch in a v6+ orchestrator
+  migration. Likely shape: separate sub-fields under the priority
+  branch (`{priority, impact, urgency}`) so the activity event captures
+  the full triad.
+- `interaction_mode` / `source_channel` — extend the metadata branch.
+- `close_reason` / `cancelled_reason` / `reclassified_reason` — extend
+  the status branch with a `reason` sub-field per terminal transition.
+  Today the case-side update path doesn't surface these on PATCH either;
+  reclassification has its own dedicated `reclassify_ticket` RPC.
+- FKs (`location_id`, `asset_id`, `requester_person_id`,
+  `requested_for_person_id`) — extend the metadata branch with tenant-FK
+  validation hooks. Each needs `validate_entity_in_tenant` integration
+  plus an inline branch in the orchestrator.
+- `ticket_type_id` — belongs to reclassify (Step 11 / §3.10), not
+  update. Reclassification recomputes routing + workflow start; a raw
+  update would leave the ticket in an inconsistent state.
+- `workflow_id` — structurally shouldn't be self-mutable; reject
+  permanently. A workflow changing its own workflow_definition_id mid-
+  execution would invalidate the in-flight instance's graph.
+- `parent_ticket_id` — structurally shouldn't be mutable post-create;
+  reject permanently. Re-parenting is a different operation (move the
+  case into a different domain).
+- `satisfaction_rating` / `satisfaction_comment` / `form_data` — defer
+  until user-driven satisfaction workflow exists. Today these are
+  applied via a direct side-write in `TicketService.update` after the
+  RPC commits (plan-review I4 — see "Case-side satisfaction_rating +
+  satisfaction_comment atomicity gap" entry above).
+
+The 14-field allowlist itself is in
+`apps/api/src/modules/workflow/workflow-engine.service.ts` under
+`UPDATE_TICKET_ALLOWED_FIELDS`. Mirror this list when extending the
+orchestrator's branch surface.

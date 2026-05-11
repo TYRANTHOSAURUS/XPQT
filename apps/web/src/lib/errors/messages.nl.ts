@@ -540,8 +540,9 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
   'workflow.invalid': { title: 'Kon niet opslaan — workflow is ongeldig' },
   'workflow_instance.not_found': { title: 'We kunnen die workflow-uitvoering niet vinden' },
   'workflow.update_ticket_field_not_allowed': {
-    title: 'Kon niet bijwerken — veld niet toegestaan',
-    detail: 'Dit veld kan niet door deze workflowstap worden gewijzigd.',
+    title: 'Workflow-stap onjuist geconfigureerd',
+    detail:
+      'De `update_ticket`-stap verwijst naar een veld dat niet meer ondersteund wordt. Zie docs/follow-ups/b2-followups.md voor de toegestane velden.',
   },
 
   // ─── routing / sla ───────────────────────────────────────────────────────

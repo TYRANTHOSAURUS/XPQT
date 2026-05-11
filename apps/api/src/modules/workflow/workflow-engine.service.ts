@@ -1,89 +1,90 @@
 import { Inject, Injectable, forwardRef } from '@nestjs/common';
-import { AppErrors } from '../../common/errors';
+import {
+  buildWorkflowAssignmentIdempotencyKey,
+  buildWorkflowUpdateTicketIdempotencyKey,
+} from '@prequest/shared';
+import { AppError, mapRpcErrorToAppError } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { assertTenantOwned, validateAssigneesInTenant } from '../../common/tenant-validation';
+import { assertTenantOwned } from '../../common/tenant-validation';
 import { DispatchService } from '../ticket/dispatch.service';
+import { SlaService } from '../sla/sla.service';
 
-// Plan A.4 / Commit 4 (C3) — workflow `update_ticket` node allowlist.
-// node.config.fields was previously written directly to tickets with no
-// allowlist, no FK validation, no tenant filter. A forged or imported
-// workflow definition could carry:
-//   - tenant_id mutation (cross-tenant takeover)
-//   - cross-tenant FK refs (assigned_team_id from another tenant)
-//   - a payload that overwrites system-managed columns (created_at,
-//     updated_at, sla_*_at)
-// The allowlist below splits the surface into:
-//   1. Safe scalar fields — written verbatim. Schema CHECK constraints
-//      and column types catch invalid values; tenant isolation is not
-//      a concern (these aren't FKs).
-//   2. FK fields — written through assertTenantOwned to prove tenant
-//      ownership of the referenced row.
-// Anything outside both lists throws workflow.update_ticket_field_not_allowed
-// rather than being silently dropped — silent drop hides workflow
-// definition bugs and the failure surfaces only in production when the
-// admin notices the ticket didn't change as expected.
+// B.2.A.Step9 — workflow `update_ticket` node allowlist (option 2).
+//
+// Pre-Step 9, the engine accepted a 29-field surface (20 "safe scalar"
+// + 9 FK) and wrote directly to `tickets`. That surface drifted away
+// from the §3.0 `update_entity_combined` orchestrator (00335 v5) which
+// only branches on a narrow set of patches. Step 9 cuts the engine
+// over to the orchestrator and tightens the allowlist to the 14
+// fields the orchestrator actually handles — anything else is rejected
+// with `workflow.update_ticket_field_not_allowed`.
+//
+// Why fail loud (not silent drop): a silently-dropped field hides a
+// workflow-author bug. Throwing at execution time surfaces it on the
+// audit feed for ops triage and forces the author to either remove
+// the orphan field or push an orchestrator branch extension up to
+// Product. Per `project_no_wave1_yet` memory (no production tenant
+// depends on these workflows), risk-free in customer terms.
+//
+// The 17 orphan fields and their phased remediation are documented in
+// `docs/follow-ups/b2-followups.md` (new "workflow update_ticket
+// orphan fields" entry under §3.0 Step 9 closeout).
 //
 // Doc-drift trigger: this allowlist is the contract for what a workflow
-// can write. When tickets gains a new column, decide whether it's safe
-// scalar / FK / forbidden, and update both this list AND
-// docs/assignments-routing-fulfillment.md (§Routing decision write path).
+// can write. When the §3.0 orchestrator extends its branches, decide
+// whether a new field belongs here, and update
+// `docs/assignments-routing-fulfillment.md` (§Workflow engine writes).
 
-/** Fields a workflow `update_ticket` node may write directly. */
-const UPDATE_TICKET_SAFE_SCALAR_FIELDS = new Set<string>([
-  // Status + workflow state
+/**
+ * The 14 fields the §3.0 `update_entity_combined` orchestrator accepts,
+ * partitioned into the orchestrator's six branches. Used by
+ * `buildPatchesFromUpdateTicketNode` to bucket node-config keys into
+ * the patches payload, and by the up-front allowlist check to reject
+ * anything that doesn't belong.
+ *
+ * Branch citations:
+ *   - status:     00335:159-160 (status / status_category / waiting_reason)
+ *   - priority:   00335:163     (priority)
+ *   - assignment: 00335:161     (assigned_team_id / _user_id / _vendor_id)
+ *   - sla:        00335:162     (sla_id; timers built TS-side)
+ *   - plan:       00335:164     (planned_start_at / planned_duration_minutes;
+ *                                WO-only — see §Plan branch below)
+ *   - metadata:   00335:165     (title / description / cost / tags / watchers)
+ */
+const UPDATE_TICKET_STATUS_FIELDS = new Set<string>([
   'status',
   'status_category',
   'waiting_reason',
-  // Priority signals
-  'priority',
-  'impact',
-  'urgency',
-  // Mode + content
-  'interaction_mode',
-  'title',
-  'description',
-  'tags',
-  'source_channel',
-  // Operational scalars
-  'cost',
-  'satisfaction_rating',
-  'satisfaction_comment',
-  'form_data',
-  // Closure / cancellation reasons (string only — actor ids are FKs and
-  // forbidden; system actor sets those via dedicated paths).
-  'close_reason',
-  'cancelled_reason',
-  'reclassified_reason',
-  // Plan window (operator-side only; never surfaced to requesters).
+]);
+const UPDATE_TICKET_PRIORITY_FIELDS = new Set<string>(['priority']);
+const UPDATE_TICKET_ASSIGNMENT_FIELDS = new Set<string>([
+  'assigned_team_id',
+  'assigned_user_id',
+  'assigned_vendor_id',
+]);
+const UPDATE_TICKET_SLA_FIELDS = new Set<string>(['sla_id']);
+const UPDATE_TICKET_PLAN_FIELDS = new Set<string>([
   'planned_start_at',
   'planned_duration_minutes',
 ]);
+const UPDATE_TICKET_METADATA_FIELDS = new Set<string>([
+  'title',
+  'description',
+  'cost',
+  'tags',
+  'watchers',
+]);
 
-/**
- * FK fields a workflow `update_ticket` node may write — but each value
- * MUST be validated against the calling tenant before the UPDATE fires.
- * Map: ticket-column -> { table, entityName, kind: 'assignee' | 'asset' | 'space' | 'rt' | 'sla' | 'person' | 'ticket' | 'wf' }.
- * The validator itself uses assertTenantOwned (or
- * validateAssigneesInTenant for the assigned_* trio).
- */
-const UPDATE_TICKET_FK_FIELDS: Record<
-  string,
-  { table: string; entityName: string }
-> = {
-  ticket_type_id: { table: 'request_types', entityName: 'request type' },
-  parent_ticket_id: { table: 'tickets', entityName: 'parent ticket' },
-  requester_person_id: { table: 'persons', entityName: 'requester' },
-  requested_for_person_id: { table: 'persons', entityName: 'requested-for' },
-  location_id: { table: 'spaces', entityName: 'location' },
-  asset_id: { table: 'assets', entityName: 'asset' },
-  workflow_id: { table: 'workflow_definitions', entityName: 'workflow' },
-  sla_id: { table: 'sla_policies', entityName: 'SLA policy' },
-  // assigned_* go through validateAssigneesInTenant (3 tables in one call).
-  assigned_team_id: { table: 'teams', entityName: 'team' },
-  assigned_user_id: { table: 'users', entityName: 'user' },
-  assigned_vendor_id: { table: 'vendors', entityName: 'vendor' },
-};
+/** The full 14-field allowlist (union of the six branch sets). */
+const UPDATE_TICKET_ALLOWED_FIELDS: ReadonlySet<string> = new Set<string>([
+  ...UPDATE_TICKET_STATUS_FIELDS,
+  ...UPDATE_TICKET_PRIORITY_FIELDS,
+  ...UPDATE_TICKET_ASSIGNMENT_FIELDS,
+  ...UPDATE_TICKET_SLA_FIELDS,
+  ...UPDATE_TICKET_PLAN_FIELDS,
+  ...UPDATE_TICKET_METADATA_FIELDS,
+]);
 
 interface WorkflowNode {
   id: string;
@@ -123,6 +124,12 @@ export class WorkflowEngineService {
   constructor(
     private readonly supabase: SupabaseService,
     @Inject(forwardRef(() => DispatchService)) private readonly dispatchService: DispatchService,
+    // B.2.A.Step9 — `update_ticket` node's sla branch needs pre-computed
+    // timer due_at values (business-hours-adjusted) before calling
+    // `update_entity_combined`. Mirrors `WorkOrderService` injection
+    // pattern at apps/api/src/modules/work-orders/work-order.service.ts
+    // (sla branch at :469-480 calls the same helper).
+    private readonly slaService: SlaService,
   ) {}
 
   /**
@@ -244,37 +251,68 @@ export class WorkflowEngineService {
         break;
 
       case 'assign': {
+        // B.2.A.Step9 — workflow engine `assign` node cutover to §3.2
+        // `set_entity_assignment` RPC (00327 v2). Spec lines 1870-1873.
+        //
+        // Pre-Step 9 this node wrote directly to `tickets.assigned_*`
+        // via `.from('tickets').update(...)`, bypassing:
+        //   - the orchestrator's idempotency cache (command_operations)
+        //   - the orchestrator's atomic activity / domain_event emission
+        //   - the RPC's defense-in-depth tenant FK validation
+        //   - the cross-table polymorphism (status_category transition
+        //     handled by 00327, not by the workflow engine)
+        //
+        // The RPC's payload schema is `{assigned_team_id, assigned_user_id,
+        // assigned_vendor_id}` (00327:64-71). All three are optional;
+        // unset keys keep current value, explicit null clears. The
+        // workflow engine's node.config carries `team_id` and `user_id`
+        // historically — preserve that shape on the node-config side
+        // and translate to the RPC's canonical keys. No `vendor_id` on
+        // node.config today (the assign UI doesn't surface vendor
+        // assignment from a workflow); add when the editor supports it.
+        //
+        // Idempotency key shape: workflow:assignment:<instance>:<node>:<entity>.
+        // Stable across replays (same instance + same node + same entity
+        // ⇒ same key ⇒ command_operations short-circuits).
         const teamId = node.config.team_id as string | undefined;
         const userId = node.config.user_id as string | undefined;
         if (!ctx?.dryRun) {
-          // Plan A.2 / Commit 7 / gap map §MEDIUM workflow-engine.service.ts:148-154.
-          // node.config is user-defined JSONB stored on the workflow definition;
-          // the workflow itself is tenant-scoped, but a malformed / forged
-          // / imported definition could carry a foreign-tenant uuid that
-          // would land on the tickets row blind. Validate before write —
-          // skipForSystemActor: false because a workflow execution doesn't
-          // have an actor concept; the engine is the system, but the
-          // node.config came from user-authored data, so we DO validate.
-          if (tenant && (teamId || userId)) {
-            await validateAssigneesInTenant(
-              this.supabase,
-              {
-                assigned_team_id: teamId,
-                assigned_user_id: userId,
-              },
-              tenant.id,
+          if (tenant && (teamId !== undefined || userId !== undefined)) {
+            // Tenant-validate FKs at the RPC layer (00327 validates via
+            // `validate_assignees_in_tenant`). TS-side validation removed
+            // — the RPC is the single source of truth post-cutover.
+            const payload: Record<string, unknown> = {};
+            if (teamId !== undefined) payload.assigned_team_id = teamId;
+            if (userId !== undefined) payload.assigned_user_id = userId;
+
+            const idempotencyKey = buildWorkflowAssignmentIdempotencyKey(
+              instanceId,
+              node.id,
+              ticketId,
             );
-          }
-          const updates: Record<string, unknown> = {};
-          if (teamId) updates.assigned_team_id = teamId;
-          if (userId) updates.assigned_user_id = userId;
-          if (teamId || userId) updates.status_category = 'assigned';
-          if (tenant) {
-            await this.supabase.admin
-              .from('tickets')
-              .update(updates)
-              .eq('id', ticketId)
-              .eq('tenant_id', tenant.id);
+            // Resolve entity kind: cases live in `tickets`; work_orders
+            // live in `work_orders` (post step1c.10c). The workflow
+            // engine's instances bind to one or the other via the
+            // calling ticket id; today every workflow_instance.ticket_id
+            // points at a case (tickets table), per the auto-workflow
+            // start path at ticket.service.ts:902-917. Step 11 will add
+            // WO-side workflow instances; until then 'case' is correct
+            // for every live caller.
+            const { error } = await this.supabase.admin.rpc(
+              'set_entity_assignment',
+              {
+                p_entity_id: ticketId,
+                p_entity_kind: 'case',
+                p_tenant_id: tenant.id,
+                // Workflow engine has no actor — the engine itself is
+                // the system actor. Null lets the RPC's actor lookup
+                // (00327:98-103 pattern) fall through cleanly.
+                p_actor_user_id: null,
+                p_idempotency_key: idempotencyKey,
+                p_payload: payload,
+              },
+            );
+            if (error) throw mapRpcErrorToAppError(error);
           }
         }
         await this.advance(instanceId, graph, node.id, ticketId, undefined, ctx);
@@ -282,89 +320,92 @@ export class WorkflowEngineService {
       }
 
       case 'update_ticket': {
+        // B.2.A.Step9 — workflow engine `update_ticket` node cutover to
+        // §3.0 `update_entity_combined` RPC (00335 v5). Spec lines 1870-1873.
+        //
+        // Pre-Step 9 this node wrote directly to `tickets` via
+        // `.from('tickets').update(...)`, with a 29-field allowlist
+        // that drifted far from what the §3.0 orchestrator actually
+        // supports. Option 2 (decided 2026-05-11): tighten the
+        // allowlist to the orchestrator's 14-field surface and reject
+        // anything else with `workflow.update_ticket_field_not_allowed`.
+        //
+        // The 17 orphan fields and their phased remediation are
+        // documented in docs/follow-ups/b2-followups.md.
         const fields = node.config.fields as Record<string, unknown> | undefined;
         if (!ctx?.dryRun && fields && tenant) {
-          // Plan A.4 / Commit 4 (C3) — see allowlists at the top of this
-          // file. node.config.fields is user-authored JSONB on the
-          // workflow definition; treat as untrusted at execution time.
-          //
-          // 1. Bucket the incoming keys.
-          const safe: Record<string, unknown> = {};
-          const fkUpdates: Record<string, unknown> = {};
-          const forbidden: string[] = [];
-          for (const [k, v] of Object.entries(fields)) {
-            if (UPDATE_TICKET_SAFE_SCALAR_FIELDS.has(k)) {
-              safe[k] = v;
-            } else if (k in UPDATE_TICKET_FK_FIELDS) {
-              fkUpdates[k] = v;
-            } else {
-              forbidden.push(k);
-            }
-          }
-
-          // 2. Reject any forbidden fields up-front. Throwing (vs. silent
-          // drop) surfaces workflow definition bugs at execution time
-          // instead of letting them rot. Critically: `tenant_id`, `id`,
-          // `created_at`, `updated_at`, `created_by`, `updated_by`, all
-          // sla_* computed columns, and the unknown 'foo' workflow-author
-          // typo all land here.
-          if (forbidden.length > 0) {
-            throw AppErrors.validationFailed('workflow.update_ticket_field_not_allowed', {
-              detail: `workflow update_ticket node attempted to write disallowed field(s): ${forbidden.join(', ')}`,
+          // 1. Reject any field outside the tightened allowlist up-front.
+          //    Throwing (vs. silent drop) surfaces workflow definition
+          //    bugs at execution time. Per `project_no_wave1_yet` memory
+          //    no production tenant currently depends on these workflows
+          //    — risk-free in customer terms.
+          const offendingFields = Object.keys(fields).filter(
+            (k) => !UPDATE_TICKET_ALLOWED_FIELDS.has(k),
+          );
+          if (offendingFields.length > 0) {
+            // 422 unprocessable entity (not 400): the request payload
+            // is syntactically valid jsonb of the right shape, but the
+            // workflow definition itself is misconfigured — only an
+            // admin can fix it. Detail names the offending fields so
+            // the audit log surfaces actionable triage data; the
+            // user-facing copy (messages.en/nl) points to the
+            // followups doc for the supported set.
+            throw new AppError('workflow.update_ticket_field_not_allowed', 422, {
+              detail: `workflow update_ticket node attempted to write disallowed field(s): ${offendingFields.join(', ')}`,
             });
           }
 
-          // 3. Validate each FK against the tenant BEFORE the UPDATE.
-          //    null / undefined values are valid (clear the FK).
-          //    Assignees go through the trio validator; everything else
-          //    through assertTenantOwned.
-          const assigneeDiff: {
-            assigned_team_id?: unknown;
-            assigned_user_id?: unknown;
-            assigned_vendor_id?: unknown;
-          } = {};
-          for (const [field, value] of Object.entries(fkUpdates)) {
-            if (value === null || value === undefined) continue;
-            if (
-              field === 'assigned_team_id' ||
-              field === 'assigned_user_id' ||
-              field === 'assigned_vendor_id'
-            ) {
-              (assigneeDiff as Record<string, unknown>)[field] = value;
-              continue;
-            }
-            const fk = UPDATE_TICKET_FK_FIELDS[field];
-            if (typeof value !== 'string') {
-              throw AppErrors.validationFailed('reference.invalid_uuid', {
-                detail: `${fk.entityName} reference must be a string uuid`,
-              });
-            }
-            await assertTenantOwned(
-              this.supabase,
-              fk.table,
-              value,
-              tenant.id,
-              { entityName: fk.entityName },
-            );
-          }
-          if (
-            assigneeDiff.assigned_team_id !== undefined ||
-            assigneeDiff.assigned_user_id !== undefined ||
-            assigneeDiff.assigned_vendor_id !== undefined
-          ) {
-            await validateAssigneesInTenant(this.supabase, assigneeDiff, tenant.id);
+          // 2. Honest no-op short-circuit: empty fields object ⇒ no work.
+          //    Same shape as TicketService.update at ticket.service.ts:1118-1125.
+          const fieldKeys = Object.keys(fields);
+          if (fieldKeys.length === 0) {
+            await this.advance(instanceId, graph, node.id, ticketId, undefined, ctx);
+            break;
           }
 
-          // 4. UPDATE with explicit tenant filter — defense-in-depth even
-          // though every FK was validated. supabase.admin bypasses RLS.
-          const allUpdates = { ...safe, ...fkUpdates };
-          if (Object.keys(allUpdates).length > 0) {
-            await this.supabase.admin
-              .from('tickets')
-              .update(allUpdates)
-              .eq('id', ticketId)
-              .eq('tenant_id', tenant.id);
+          // 3. Build the orchestrator patches payload, bucketing each
+          //    allowlisted field into its branch. Mirrors the case-side
+          //    `TicketService.buildPatchesPayloadForCase` shape exactly.
+          const patches = await this.buildPatchesFromUpdateTicketFields(
+            fields,
+            tenant.id,
+          );
+
+          if (Object.keys(patches).length === 0) {
+            // Could happen if the field set was non-empty but all keys
+            // were filtered out by hasOwnProperty semantics (shouldn't
+            // happen given the allowlist gate above, but defensive).
+            await this.advance(instanceId, graph, node.id, ticketId, undefined, ctx);
+            break;
           }
+
+          // 4. Resolve entity kind. Today every workflow_instance.ticket_id
+          //    points at a case (per the auto-workflow start path at
+          //    ticket.service.ts:902-917). Plan branch will raise
+          //    `update_entity_combined.plan_not_supported_on_case` if a
+          //    workflow author writes planned_start_at on a case; that's
+          //    the right shape — the engine has no way to author a WO-
+          //    targeted workflow today. Step 11 will resolve WO-side
+          //    workflow instances by inspecting workflow_instances.parent_kind.
+          const idempotencyKey = buildWorkflowUpdateTicketIdempotencyKey(
+            instanceId,
+            node.id,
+            ticketId,
+          );
+          const { error } = await this.supabase.admin.rpc(
+            'update_entity_combined',
+            {
+              p_entity_kind: 'case',
+              p_entity_id: ticketId,
+              p_tenant_id: tenant.id,
+              // Workflow engine is the system actor. Null lets the
+              // RPC's actor lookup (00335:241-252) fall through.
+              p_actor_user_id: null,
+              p_idempotency_key: idempotencyKey,
+              p_patches: patches,
+            },
+          );
+          if (error) throw mapRpcErrorToAppError(error);
         }
         await this.advance(instanceId, graph, node.id, ticketId, undefined, ctx);
         break;
@@ -731,6 +772,109 @@ export class WorkflowEngineService {
       default:
         await this.advance(instanceId, graph, node.id, ticketId, undefined, ctx);
     }
+  }
+
+  /**
+   * Build the `p_patches` jsonb payload for `update_entity_combined`
+   * (00335 v5) from a workflow `update_ticket` node's `config.fields`
+   * object. Mirrors `TicketService.buildPatchesPayloadForCase` shape so
+   * the engine and the controller PATCH path produce identical patches
+   * for the same logical input.
+   *
+   * The caller must have already enforced the 14-field allowlist via
+   * `UPDATE_TICKET_ALLOWED_FIELDS`. This method assumes every key in
+   * `fields` is valid; unknown keys are dropped silently by the
+   * bucketing (a defense-in-depth no-op given the allowlist gate).
+   *
+   * SLA branch: when `sla_id` is non-null, the orchestrator requires a
+   * pre-computed `timers[]` array (00330:202-205 / 00335:357-373). The
+   * business-hours calendar resolution lives in TS, so we call
+   * `SlaService.buildTimersForRpc` here — same shape as the WO-side
+   * helper at work-order.service.ts:469-480. A null sla_id clears the
+   * policy (RPC's stop-only path); timers[] is omitted.
+   *
+   * Plan branch: the orchestrator rejects `plan` on cases
+   * (00335:170-173). Workflow definitions today never start on a WO,
+   * so a plan field on an update_ticket node is a misconfiguration —
+   * the RPC's raise (`plan_not_supported_on_case`) surfaces it
+   * cleanly. We still forward the keys; failing fast at the RPC layer
+   * is the right shape.
+   */
+  private async buildPatchesFromUpdateTicketFields(
+    fields: Record<string, unknown>,
+    tenantId: string,
+  ): Promise<Record<string, unknown>> {
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(fields, k);
+    const patches: Record<string, unknown> = {};
+
+    // Status branch — top-level (00335:159-160 / 254-281).
+    if (has('status')) patches.status = fields.status;
+    if (has('status_category')) patches.status_category = fields.status_category;
+    if (has('waiting_reason')) patches.waiting_reason = fields.waiting_reason;
+
+    // Priority — top-level (00335:163 / 283-337).
+    if (has('priority')) patches.priority = fields.priority;
+
+    // Assignment grouped (00335:161 / 339-355). Keys map verbatim:
+    // assigned_team_id / assigned_user_id / assigned_vendor_id.
+    if (
+      has('assigned_team_id') ||
+      has('assigned_user_id') ||
+      has('assigned_vendor_id')
+    ) {
+      const assignment: Record<string, unknown> = {};
+      if (has('assigned_team_id'))
+        assignment.assigned_team_id = fields.assigned_team_id;
+      if (has('assigned_user_id'))
+        assignment.assigned_user_id = fields.assigned_user_id;
+      if (has('assigned_vendor_id'))
+        assignment.assigned_vendor_id = fields.assigned_vendor_id;
+      patches.assignment = assignment;
+    }
+
+    // SLA grouped (00335:162 / 357-373). RPC schema: `{sla_id, timers?}`
+    // per 00330:98-108. Non-null sla_id requires timers[]; null sla_id
+    // clears (timers[] omitted).
+    if (has('sla_id')) {
+      const slaPayload: Record<string, unknown> = { sla_id: fields.sla_id };
+      if (fields.sla_id !== null && fields.sla_id !== undefined) {
+        slaPayload.timers = await this.slaService.buildTimersForRpc(
+          fields.sla_id as string,
+          tenantId,
+        );
+      }
+      patches.sla = slaPayload;
+    }
+
+    // Plan grouped (00335:164 / 375-481). WO-only — orchestrator rejects
+    // on case with `plan_not_supported_on_case` (00335:170-173). Keys
+    // forwarded verbatim; RPC fails fast on misconfiguration.
+    if (has('planned_start_at') || has('planned_duration_minutes')) {
+      const plan: Record<string, unknown> = {};
+      if (has('planned_start_at')) plan.planned_start_at = fields.planned_start_at;
+      if (has('planned_duration_minutes'))
+        plan.planned_duration_minutes = fields.planned_duration_minutes;
+      patches.plan = plan;
+    }
+
+    // Metadata grouped (00335:165 / 483-706).
+    if (
+      has('title') ||
+      has('description') ||
+      has('cost') ||
+      has('tags') ||
+      has('watchers')
+    ) {
+      const metadata: Record<string, unknown> = {};
+      if (has('title')) metadata.title = fields.title;
+      if (has('description')) metadata.description = fields.description;
+      if (has('cost')) metadata.cost = fields.cost;
+      if (has('tags')) metadata.tags = fields.tags;
+      if (has('watchers')) metadata.watchers = fields.watchers;
+      patches.metadata = metadata;
+    }
+
+    return patches;
   }
 
   /**

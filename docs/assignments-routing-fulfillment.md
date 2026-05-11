@@ -569,10 +569,18 @@ The routing/dispatch surface writes FK references (request type, assignees, SLA 
 2. **System actors do NOT bypass FK validation.** `__system__` (workflow engine, cron jobs, webhook ingest) bypasses *visibility* and *permission* gates because those agents legitimately operate on rows they couldn't otherwise see. They MUST NOT bypass *data-integrity* validation. Workflow node configs (`assign`, `approval`, `update_ticket`, `create_child_tasks`), routing config, and templates are all user-authored data; a forged or imported workflow definition can carry a foreign-tenant uuid, and the system-actor path was historically the one that wrote it blind. Plan A.4 / Commit 2 (C1) drops every `skipForSystemActor: actorAuthUid === SYSTEM_ACTOR` flag from the dispatch tenant validators for this reason.
 
 3. **Workflow JSONB nodes are treated as untrusted at execution time.** Specifically:
-   - `assign` node: `node.config.team_id` / `node.config.user_id` go through `validateAssigneesInTenant` before the tickets UPDATE.
+   - `assign` node (post B.2.A.Step9, 2026-05-11): cuts over to the §3.2 `set_entity_assignment` RPC (00327 v2). `node.config.team_id` / `node.config.user_id` are forwarded into `p_payload` as `assigned_team_id` / `assigned_user_id`; the RPC owns tenant FK validation (`validate_assignees_in_tenant`), the activity emit, the domain_event emit, and the status_category transition. Idempotency key is `workflow:assignment:<workflow_instance_id>:<node_id>:<entity_id>` (stable across replays). The direct `.from('tickets').update(...)` write is gone — the engine no longer bypasses the orchestrator.
    - `approval` node: `node.config.approver_person_id` / `node.config.approver_team_id` go through `assertTenantOwned('persons')` / `'teams'` before the approvals INSERT.
-   - `update_ticket` node: `node.config.fields` is split into a safe-scalar allowlist and an FK allowlist (full lists at the top of `apps/api/src/modules/workflow/workflow-engine.service.ts`). Anything outside both lists throws `workflow.update_ticket_field_not_allowed`. Each FK is then validated against the tenant, and the UPDATE itself carries an explicit `.eq('tenant_id', ...)` filter for defense-in-depth.
-   - `create_child_tasks` node: dispatches through `DispatchService.dispatch(ticketId, dto, '__system__')`, which runs the FK-validation pipeline above on every DTO field.
+   - `update_ticket` node (post B.2.A.Step9, 2026-05-11): cuts over to the §3.0 `update_entity_combined` RPC (00335 v5). The pre-cutover 29-field allowlist (20 safe-scalar + 9 FK) is **tightened to 14 fields** matching the orchestrator's six branches — see the `UPDATE_TICKET_ALLOWED_FIELDS` set in `apps/api/src/modules/workflow/workflow-engine.service.ts`. The 14 fields and their branches:
+     - **status**: `status`, `status_category`, `waiting_reason`
+     - **priority**: `priority`
+     - **assignment**: `assigned_team_id`, `assigned_user_id`, `assigned_vendor_id`
+     - **sla**: `sla_id` (TS pre-computes `timers[]` via `SlaService.buildTimersForRpc` when non-null)
+     - **plan** (WO-only): `planned_start_at`, `planned_duration_minutes`
+     - **metadata**: `title`, `description`, `cost`, `tags`, `watchers`
+
+     Any field outside this set throws `workflow.update_ticket_field_not_allowed` @ 422 with the offending field name in the AppError detail. The 17 orphan fields (`impact`, `urgency`, `interaction_mode`, `source_channel`, `satisfaction_rating`, `satisfaction_comment`, `form_data`, `close_reason`, `cancelled_reason`, `reclassified_reason`, `ticket_type_id`, `parent_ticket_id`, `requester_person_id`, `requested_for_person_id`, `location_id`, `asset_id`, `workflow_id`) and their phased remediation are tracked in `docs/follow-ups/b2-followups.md`. Idempotency key is `workflow:update_ticket:<workflow_instance_id>:<node_id>:<entity_id>`. All FK + tenant validation moves to the RPC layer; the engine no longer issues direct UPDATEs.
+   - `create_child_tasks` node: dispatches through `DispatchService.dispatchBatch(...)` (B.2.A.Step8, 00342 v3 batch RPC). Per-task FK validation runs inside the RPC's transaction; a single failure rolls back the entire batch (all-or-nothing contract).
 
 4. **The post-create automation and rerun-resolver paths ALSO validate the routing target.** Routing definitions are tenant-scoped at the source, but the resolver returns a structured payload — a routing-table compromise / rule import / test-time override could return a foreign uuid. Both `runPostCreateAutomation` (auto-routing on case create — `ticket.service.ts:777-787`) and `reassign(rerun_resolver=true)` (`ticket.service.ts:1276-1287`) call `validateAssigneesInTenant` on the resolver's target before propagating. Fail-soft: a foreign uuid throws → the existing try/catch logs + writes a `routing_evaluation_failed` system-event breadcrumb → ticket stays unassigned. Better than writing a cross-tenant FK.
 
@@ -589,9 +597,11 @@ The routing/dispatch surface writes FK references (request type, assignees, SLA 
 | `OrderService.cloneOrderForOccurrence` | `bundle_id` | yes |
 | `OrderService.createOrder` (private, single entry) | `bundle_id`, `requester_person_id` (active), `delivery_space_id`, `cost_center_id` | yes |
 | `InvitationService.create` | `co_host_person_ids`, `meeting_room_id`, `booking_id`; `building_id` via `assertBuildingInScope` | n/a |
-| `WorkflowEngineService.executeNode` (`assign`, `approval`, `update_ticket`) | per-node config | yes |
+| `WorkflowEngineService.executeNode` (`assign`) | RPC-side via `set_entity_assignment` (00327 v2) | yes (post Step 9) |
+| `WorkflowEngineService.executeNode` (`update_ticket`) | RPC-side via `update_entity_combined` (00335 v5) on a 14-field tightened allowlist | yes (post Step 9) |
+| `WorkflowEngineService.executeNode` (`approval`) | per-node config validated TS-side | yes |
 
-**When you add a new write to any of the trigger files listed in CLAUDE.md (the doc-drift mandate), update both this section and the `UPDATE_TICKET_*` allowlists in `workflow-engine.service.ts`. Drift is the failure mode the round-3/round-4 codex audits keep finding.**
+**When you add a new write to any of the trigger files listed in CLAUDE.md (the doc-drift mandate), update both this section and the `UPDATE_TICKET_ALLOWED_FIELDS` set in `workflow-engine.service.ts`. Drift is the failure mode the round-3/round-4 codex audits keep finding.**
 
 ---
 
