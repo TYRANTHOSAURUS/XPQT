@@ -1608,6 +1608,23 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kan niet uitdelen',
     detail: 'Het team hoort niet bij deze tenant.',
   },
+  // ─── B.4.A.3 edit_booking RPC (00361) ────────────────────────────────────
+  'edit_booking.actor_not_found': {
+    title: 'Kon de reservering niet opslaan',
+    detail: 'Je account is niet geregistreerd in deze tenant. Log opnieuw in of neem contact op met een beheerder.',
+  },
+  'edit_booking.not_found': {
+    title: 'Kon de reservering niet opslaan — niet gevonden',
+    detail: 'Deze reservering bestaat niet meer of je hebt er geen toegang toe.',
+  },
+  'edit_booking.invalid_plan_shape': {
+    title: 'Kon de reservering niet opslaan',
+    detail: 'Het bewerkingsverzoek was niet correct. Vernieuw de pagina en probeer het opnieuw.',
+  },
+  'edit_booking.approval_reconciliation_required': {
+    title: 'Kon de reservering niet opslaan — goedkeuring gewijzigd',
+    detail: 'Deze wijziging verandert de goedkeuringseis. Wijzigingen die de goedkeuringsstroom raken zijn nog niet ondersteund; draai de wijziging terug of wacht op de volgende release.',
+  },
 };
 
 /**

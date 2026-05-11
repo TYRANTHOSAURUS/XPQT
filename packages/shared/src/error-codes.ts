@@ -740,7 +740,17 @@ export type KnownErrorCode =
   | 'work_order.empty_assignment_update'
   | 'work_order.empty_metadata_update'
   | 'work_order.reassign_reason_required'
-  | 'work_order.rerun_resolver_unsupported';
+  | 'work_order.rerun_resolver_unsupported'
+
+  // ─── B.4.A.3 edit_booking RPC codes (00361) ─────────────────────────────
+  // Spec: docs/follow-ups/b4-booking-edit-pipeline.md §3.2 + §3.4.
+  // approval_reconciliation_required is the explicit v1↔v2 boundary —
+  // raised when p_plan.approval_outcome_changed=true. B.4.A.4 will
+  // REMOVE this code once approval reconciliation lands inside the RPC.
+  | 'edit_booking.actor_not_found'
+  | 'edit_booking.not_found'
+  | 'edit_booking.invalid_plan_shape'
+  | 'edit_booking.approval_reconciliation_required';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1305,6 +1315,11 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'validate_entity_in_tenant.booking_rule_not_in_tenant',
   'validate_entity_in_tenant.cost_center_not_in_tenant',
   'validate_entity_in_tenant.team_not_in_tenant',
+  // B.4.A.3 edit_booking RPC codes (00361).
+  'edit_booking.actor_not_found',
+  'edit_booking.not_found',
+  'edit_booking.invalid_plan_shape',
+  'edit_booking.approval_reconciliation_required',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

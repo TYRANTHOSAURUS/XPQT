@@ -1718,6 +1718,32 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't dispatch",
     detail: 'The team is not part of this tenant.',
   },
+  // ─── B.4.A.3 edit_booking RPC (00361) ────────────────────────────────────
+  // actor_not_found: the JWT's auth_uid has no users row in the tenant.
+  //   Defense-in-depth — TS auth guard normally rejects this earlier.
+  // not_found: the booking row is missing or in a different tenant.
+  //   Mirrors booking.not_found shape with the RPC-specific namespace.
+  // invalid_plan_shape: the TS-built plan failed top-level structural
+  //   validation (missing booking object, slot_patches array, etc.).
+  // approval_reconciliation_required: the plan reports a rule-outcome
+  //   change that crosses the approval boundary. v1 explicitly defers
+  //   §3.6.5 reconciliation to B.4.A.4; this title surfaces that boundary.
+  'edit_booking.actor_not_found': {
+    title: "Couldn't save the booking",
+    detail: 'Your account is not registered in this tenant. Sign in again or contact an administrator.',
+  },
+  'edit_booking.not_found': {
+    title: "Couldn't save the booking — not found",
+    detail: "This booking no longer exists, or you don't have access to it.",
+  },
+  'edit_booking.invalid_plan_shape': {
+    title: "Couldn't save the booking",
+    detail: 'The edit request was malformed. Refresh the page and try again.',
+  },
+  'edit_booking.approval_reconciliation_required': {
+    title: "Couldn't save the booking — approval change",
+    detail: 'This edit changes the approval requirement. Approval-reconciling edits are not yet supported; revert the change or wait for the next release.',
+  },
 };
 
 /**

@@ -87,6 +87,11 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'grant_ticket_approval.invalid_response': 400,
   'grant_ticket_approval.invalid_target_entity_type': 400,
   'grant_ticket_approval.tenant_mismatch': 400,
+  // B.4.A.3 — edit_booking RPC (00361). p_plan failed top-level shape
+  // checks (missing booking object, missing slot_patches array, missing
+  // _resolution_at string, etc.). TS plan-build mints these via a Zod
+  // schema; the raise is defense-in-depth for non-HTTP callers.
+  'edit_booking.invalid_plan_shape': 400,
 
   // ── 404 not_found ────────────────────────────────────────────────
   'transition_entity_status.not_found': 404,
@@ -135,6 +140,13 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   //   between approval insert + grant is the only way this fires.
   'grant_ticket_approval.approval_not_found': 404,
   'grant_ticket_approval.ticket_not_found': 404,
+  // B.4.A.3 — edit_booking RPC (00361). actor_not_found fires when the
+  // caller's auth_uid has no public.users row in the tenant (F-CRIT-1
+  // resolution miss). not_found fires when the booking row is missing
+  // or belongs to a different tenant. Same 404 shape as the other
+  // RPC-side miss paths in this family.
+  'edit_booking.actor_not_found': 404,
+  'edit_booking.not_found': 404,
 
   // ── 409 conflict ─────────────────────────────────────────────────
   // payload_mismatch: the client reused the same X-Client-Request-Id
@@ -194,6 +206,14 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // because the request payload is valid but the booking state blocks the
   // action (same shape as reclassify_ticket.terminal_ticket).
   'booking.cancelled_cannot_edit': 422,
+  // B.4.A.3 — edit_booking RPC (00361). Raised when the plan reports
+  // approval_outcome_changed=true. v1 explicitly defers §3.6.5 approval
+  // reconciliation to B.4.A.4 — this code is the loud boundary between
+  // them. B.4.A.4 ships the chain-expire / chain-insert logic and
+  // REMOVES this code from the registry. Until then, the controller-
+  // layer error handler should catch this and surface a "retry after
+  // approval reconciliation ships" message.
+  'edit_booking.approval_reconciliation_required': 422,
   // B.2.A semantic re-derivation gates — RPCs raise these when the
   // TS-side plan disagrees with the server's recomputation at write time
   // (workflow/SLA/scope-override changed, effective location resolved

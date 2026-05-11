@@ -1629,6 +1629,23 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't dispatch",
     detail: 'The team is not part of this tenant.',
   },
+  // ─── B.4.A.3 edit_booking RPC (00361) ────────────────────────────────────
+  'edit_booking.actor_not_found': {
+    title: "Couldn't save the booking",
+    detail: 'Your account is not registered in this tenant. Sign in again or contact an administrator.',
+  },
+  'edit_booking.not_found': {
+    title: "Couldn't save the booking — not found",
+    detail: "This booking no longer exists, or you don't have access to it.",
+  },
+  'edit_booking.invalid_plan_shape': {
+    title: "Couldn't save the booking",
+    detail: 'The edit request was malformed. Refresh the page and try again.',
+  },
+  'edit_booking.approval_reconciliation_required': {
+    title: "Couldn't save the booking — approval change",
+    detail: 'This edit changes the approval requirement. Approval-reconciling edits are not yet supported; revert the change or wait for the next release.',
+  },
 };
 
 /**
