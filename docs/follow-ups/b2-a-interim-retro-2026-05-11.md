@@ -1,5 +1,9 @@
 # B.2.A interim retrospective — 2026-05-11
 
+> **SUPERSEDED** by `b2-a-closing-retro-2026-05-11.md`. Kept for audit
+> history. This is the Step-7 snapshot; the closing retro covers Steps
+> 1–13 in full.
+
 Status check after Step 7 (smoke probe extension) shipped. Steps 8–13 still
 pending. This is not a closeout — it's a mid-workstream pulse so the next
 slice starts with a clear picture of what's solid and what isn't.
