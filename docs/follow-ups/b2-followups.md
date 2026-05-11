@@ -221,13 +221,20 @@ all_or_nothing | best_effort` can re-introduce partial-fanout if any
 tenant surface needs it. Not built yet — wait for concrete demand.
 
 **If you hit the new behavior unexpectedly:** the failure mode is N
-tasks DEFINED in a workflow, ZERO created on a partial-fail. The
-error surfaces on the workflow run as
-`dispatch_child_work_orders_batch.<reason>` or the per-task code
-(`dispatch_child_work_order.invalid_payload`,
+tasks DEFINED in a workflow, ZERO created on a partial-fail. Post
+Codex-S8-I3 remediation (2026-05-11) the workflow_instance HALTS at
+the `create_child_tasks` node — `status` flips to `'failed'`, a
+`node_failed` audit event is emitted (reason `dispatch_batch_failed`),
+and the workflow does NOT advance. Pre-remediation the engine
+`console.error`'d and advanced as if children had been created,
+producing an audit-log lie. The new shape exposes the same per-task
+error codes to ops:
+`dispatch_child_work_orders_batch.<reason>` or
+`dispatch_child_work_order.invalid_payload`,
 `validate_assignees_in_tenant.assigned_*_id_not_in_tenant`,
-`dispatch_child_work_order.timers_required`, etc.) — investigate the
-failing task's payload (assignee, sla_id, request_type).
+`validate_entity_in_tenant.<kind>_not_in_tenant`,
+`dispatch_child_work_order.timers_required`, etc. — investigate the
+failing task's payload (assignee, sla_id, routing_rule_id, request_type).
 
 ## §3.4 Step 8 self-review remediation (2026-05-11)
 
@@ -285,7 +292,61 @@ on matched steps. The final pick lands in the
 `work_orders.assigned_*_id` columns and goes through
 `validate_assignees_in_tenant`. Intermediate-step trace targets
 (non-final picks) are audit-only — they describe what the resolver
-considered, not what it wrote. Top-level `routing_rule_id` +
-`chosen_*_id` are the authoritative tenant-scoped ids and are
-validated. The trace is stored verbatim; embedded ids are NOT
-re-validated. Documented in the migration headers.
+considered, not what it wrote. Top-level `chosen_*_id` (mirrored from
+`work_orders.assigned_*_id`) are tenant-validated. The trace is stored
+verbatim; embedded ids are NOT re-validated.
+
+`routing_rule_id` is now ALSO tenant-validated as of the Codex-S8-I1
+remediation (2026-05-11) — see the §3.4 Step 8 codex remediation
+section below. Pre-remediation only the assignee fields had a tenant
+check; the routing_rule_id passed through into
+`routing_decisions.rule_id` unvalidated. The FK on that column is
+GLOBAL (00027:67), so a forged payload could leak across tenants in
+the audit row.
+
+## §3.4 Step 8 codex remediation (2026-05-11)
+
+Codex-S8 surfaced three Important findings + one nit on top of the
+self-review remediation. Resolved in one follow-up commit with
+migration v3 supersessions (00340 helper + 00341 single + 00342 batch):
+
+- **F-IMP-1 (codex-S8-I1) routing_rule_id tenant validation.**
+  `routing_decisions.rule_id` has a GLOBAL FK (00027:67) — no tenant
+  composite — so a forged dispatch payload could write tenant A's
+  audit row pointing at tenant B's rule. v2 dispatched without a
+  check. `validate_entity_in_tenant` v3 (00340) adds `'routing_rule'`
+  to the allowlist; 00341 (single) + 00342 (batch) call it after the
+  other top-level FK validations + before the `routing_decisions`
+  INSERT. The batch path checks per-task — a single failure rolls
+  back the whole batch (all-or-nothing contract preserved).
+- **F-IMP-2 (codex-S8-I2) validate_entity_in_tenant.* codes
+  registered.** The helper at 00321/00340 raises one code per kind
+  + `unknown_kind` + `dispatch_missing`. None were in
+  `KNOWN_ERROR_CODES`, so the defense-in-depth path
+  (`mapRpcErrorToAppError`) fell through to `unknown.server_error`
+  500. Now 12 codes registered: `case_not_in_tenant`,
+  `work_order_not_in_tenant`, `asset_not_in_tenant`,
+  `space_not_in_tenant`, `request_type_not_in_tenant`,
+  `scope_override_not_in_tenant`, `workflow_definition_not_in_tenant`,
+  `sla_policy_not_in_tenant`, `person_not_in_tenant`,
+  `routing_rule_not_in_tenant` (404), plus `unknown_kind` and
+  `dispatch_missing` (400). EN + NL message coverage in all 4 message
+  files (api + web).
+- **F-IMP-3 (codex-S8-I3) workflow batch failure halts.**
+  `workflow-engine.service.ts:468-486` previously caught dispatch
+  batch errors, `console.error`'d, and advanced the workflow as if
+  children had been created. With all-or-nothing batch semantics
+  (F-CRIT-4) this was an audit-log lie. Fix: on catch, flip
+  `workflow_instances.status` to `'failed'`, emit a `node_failed`
+  event (reason `dispatch_batch_failed` + task count + raw message),
+  do NOT call `advance()`. Workflow halts at the node so ops can
+  triage from the audit feed. Spec at
+  `workflow-engine.service.spec.ts:130` rewritten to assert HALT
+  (no advance, status='failed', node_failed event).
+- **F-NIT-1 (codex-S8-N1) controller-layer mapping assertion.**
+  Added a TS unit test in `dispatch.service.spec.ts` that exercises
+  `mapRpcErrorToAppError` against the
+  `validate_assignees_in_tenant.assigned_user_id_not_in_tenant`
+  raise shape, asserting AppError(422) with the registered code.
+  The harness scenario 8 still asserts the raise text from the
+  database; this new test proves the wire shape ships correctly.

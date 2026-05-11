@@ -646,3 +646,112 @@ describe('DispatchService', () => {
     expect(slaService.startTimers).not.toHaveBeenCalled();
   });
 });
+
+// F-NIT-1 (codex-S8-N1) — controller-layer wire-shape assertion.
+//
+// `dispatch_child_work_order.spec.ts` (concurrency harness) asserts the
+// raw RAISE message text from PostgREST. It does NOT exercise the
+// `mapRpcErrorToAppError` translator, so it can't prove that a forged
+// cross-tenant assignee surfaces with the registered code + 422 status
+// on the wire. The unit test below covers that gap by feeding a
+// PostgrestError-shaped Error directly into the translator.
+//
+// The translator + the registered codes (added by F-IMP-4) together
+// guarantee that:
+//   1. The RAISE message's leading namespace.specifier token is
+//      extracted (regex in extractCode).
+//   2. The token is in KNOWN_ERROR_CODES so the unknown-code fallback
+//      doesn't fire.
+//   3. STATUS_BY_CODE routes it to 422 (not the default 400 or the
+//      fallback 500).
+describe('mapRpcErrorToAppError — validate_assignees_in_tenant wire shape (F-NIT-1)', () => {
+  // Required to avoid loading the full Nest module graph just to import
+  // the mapper. Importing the file is safe; the helper has no side
+  // effects.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { mapRpcErrorToAppError } = require('../../common/errors/map-rpc-error') as typeof import('../../common/errors/map-rpc-error');
+  const { AppError } = require('../../common/errors/app-error') as typeof import('../../common/errors/app-error');
+
+  it('maps assigned_user_id_not_in_tenant to AppError(422) with the registered code', () => {
+    // Shape mirrors the helper's RAISE at
+    // supabase/migrations/00317_validate_assignees_in_tenant.sql plus
+    // the SQLSTATE postgrest carries through.
+    const pgError = {
+      message:
+        'validate_assignees_in_tenant.assigned_user_id_not_in_tenant: user <uuid> not in tenant <uuid>',
+      code: '42501',
+      details: null,
+      hint: null,
+    };
+
+    const appError = mapRpcErrorToAppError(pgError);
+    expect(appError).toBeInstanceOf(AppError);
+    expect(appError.code).toBe(
+      'validate_assignees_in_tenant.assigned_user_id_not_in_tenant',
+    );
+    expect(appError.status).toBe(422);
+  });
+
+  it('maps assigned_team_id_not_in_tenant to AppError(422)', () => {
+    const pgError = {
+      message:
+        'validate_assignees_in_tenant.assigned_team_id_not_in_tenant: team <uuid> not in tenant <uuid>',
+      code: '42501',
+    };
+    const appError = mapRpcErrorToAppError(pgError);
+    expect(appError.code).toBe(
+      'validate_assignees_in_tenant.assigned_team_id_not_in_tenant',
+    );
+    expect(appError.status).toBe(422);
+  });
+
+  it('maps assigned_vendor_id_not_in_tenant to AppError(422)', () => {
+    const pgError = {
+      message:
+        'validate_assignees_in_tenant.assigned_vendor_id_not_in_tenant: vendor <uuid> not in tenant <uuid>',
+      code: '42501',
+    };
+    const appError = mapRpcErrorToAppError(pgError);
+    expect(appError.code).toBe(
+      'validate_assignees_in_tenant.assigned_vendor_id_not_in_tenant',
+    );
+    expect(appError.status).toBe(422);
+  });
+
+  // Codex-S8-I2 (F-IMP-2): validate_entity_in_tenant.* coverage. Codex
+  // flagged that the per-kind raise codes from 00321/00340 were not in
+  // the registry; verify each newly-registered code rides the right
+  // status. routing_rule_not_in_tenant is the new branch added for
+  // codex-S8-I1 / F-IMP-1.
+  it('maps validate_entity_in_tenant.routing_rule_not_in_tenant to AppError(404)', () => {
+    const pgError = {
+      message:
+        'validate_entity_in_tenant.routing_rule_not_in_tenant: <uuid> does not reference a known routing_rule in tenant <uuid>',
+      code: '42501',
+    };
+    const appError = mapRpcErrorToAppError(pgError);
+    expect(appError.code).toBe('validate_entity_in_tenant.routing_rule_not_in_tenant');
+    expect(appError.status).toBe(404);
+  });
+
+  it('maps validate_entity_in_tenant.asset_not_in_tenant to AppError(404)', () => {
+    const pgError = {
+      message:
+        'validate_entity_in_tenant.asset_not_in_tenant: <uuid> does not reference a known asset in tenant <uuid>',
+      code: '42501',
+    };
+    const appError = mapRpcErrorToAppError(pgError);
+    expect(appError.code).toBe('validate_entity_in_tenant.asset_not_in_tenant');
+    expect(appError.status).toBe(404);
+  });
+
+  it('maps validate_entity_in_tenant.unknown_kind to AppError(400)', () => {
+    const pgError = {
+      message: 'validate_entity_in_tenant.unknown_kind: bogus_kind',
+      code: '42501',
+    };
+    const appError = mapRpcErrorToAppError(pgError);
+    expect(appError.code).toBe('validate_entity_in_tenant.unknown_kind');
+    expect(appError.status).toBe(400);
+  });
+});

@@ -1458,6 +1458,55 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kan toewijzing niet bijwerken',
     detail: 'De leverancier hoort niet bij deze tenant.',
   },
+  // Tenant-entity validation helper (00321 / 00340) — Codex-S8-I2 / F-IMP-2.
+  'validate_entity_in_tenant.unknown_kind': {
+    title: 'Kan niet uitdelen',
+    detail: 'De aanvraag verwees naar een onbekend type.',
+  },
+  'validate_entity_in_tenant.dispatch_missing': {
+    title: 'Kan niet uitdelen',
+    detail: 'De aanvraag verwees naar een onbekend type.',
+  },
+  'validate_entity_in_tenant.case_not_in_tenant': {
+    title: 'Kan niet uitdelen',
+    detail: 'De case hoort niet bij deze tenant.',
+  },
+  'validate_entity_in_tenant.work_order_not_in_tenant': {
+    title: 'Kan niet uitdelen',
+    detail: 'De werkorder hoort niet bij deze tenant.',
+  },
+  'validate_entity_in_tenant.asset_not_in_tenant': {
+    title: 'Kan niet uitdelen',
+    detail: 'Het asset hoort niet bij deze tenant.',
+  },
+  'validate_entity_in_tenant.space_not_in_tenant': {
+    title: 'Kan niet uitdelen',
+    detail: 'De ruimte hoort niet bij deze tenant.',
+  },
+  'validate_entity_in_tenant.request_type_not_in_tenant': {
+    title: 'Kan niet uitdelen',
+    detail: 'Het verzoektype hoort niet bij deze tenant.',
+  },
+  'validate_entity_in_tenant.scope_override_not_in_tenant': {
+    title: 'Kan niet uitdelen',
+    detail: 'De scope-uitzondering hoort niet bij deze tenant.',
+  },
+  'validate_entity_in_tenant.workflow_definition_not_in_tenant': {
+    title: 'Kan niet uitdelen',
+    detail: 'De workflow-definitie hoort niet bij deze tenant.',
+  },
+  'validate_entity_in_tenant.sla_policy_not_in_tenant': {
+    title: 'Kan niet uitdelen',
+    detail: 'Het SLA-beleid hoort niet bij deze tenant.',
+  },
+  'validate_entity_in_tenant.person_not_in_tenant': {
+    title: 'Kan niet uitdelen',
+    detail: 'De persoon hoort niet bij deze tenant.',
+  },
+  'validate_entity_in_tenant.routing_rule_not_in_tenant': {
+    title: 'Kan niet uitdelen',
+    detail: 'De routeringsregel hoort niet bij deze tenant.',
+  },
 };
 
 /**

@@ -29,6 +29,11 @@ function makeDeps() {
 
   // Only needs `admin.from` for the single "load parent ticket" call the node does.
   // After the refactor, the node does NOT insert rows itself — all inserts flow through dispatch.
+  // Codex-S8-I3 (F-IMP-3): the create_child_tasks node now also writes
+  // `status='failed'` on the workflow_instances row when dispatch batch
+  // raises. Mock the chain so the .from('workflow_instances').update(...)
+  // .eq().eq() call succeeds.
+  const workflowInstanceUpdates: Array<{ patch: Record<string, unknown>; filters: Record<string, unknown> }> = [];
   const supabase = {
     admin: {
       from: jest.fn((table: string) => {
@@ -44,12 +49,31 @@ function makeDeps() {
             }),
           } as unknown;
         }
+        if (table === 'workflow_instances') {
+          return {
+            update: (patch: Record<string, unknown>) => {
+              const filters: Record<string, unknown> = {};
+              return {
+                eq: (col1: string, val1: unknown) => {
+                  filters[col1] = val1;
+                  return {
+                    eq: async (col2: string, val2: unknown) => {
+                      filters[col2] = val2;
+                      workflowInstanceUpdates.push({ patch, filters });
+                      return { error: null };
+                    },
+                  };
+                },
+              };
+            },
+          } as unknown;
+        }
         return {} as unknown;
       }),
     },
   };
 
-  return { dispatchService, supabase, dispatchCalls };
+  return { dispatchService, supabase, dispatchCalls, workflowInstanceUpdates };
 }
 
 describe('WorkflowEngineService.create_child_tasks', () => {
@@ -127,19 +151,22 @@ describe('WorkflowEngineService.create_child_tasks', () => {
     expect(dispatchCalls[2].dto.assigned_user_id).toBe('u1');
   });
 
-  it('catches dispatch errors and advances the workflow', async () => {
-    const { supabase } = makeDeps();
+  it('halts the workflow when batch dispatch fails (Codex-S8-I3 / F-IMP-3)', async () => {
+    // Pre-remediation this test asserted swallow+advance. That was the
+    // exact bug Codex flagged: the batch is all-or-nothing, so a
+    // dispatch failure leaves ZERO children committed, but the
+    // workflow's audit log used to claim the node executed
+    // successfully. The new contract is HALT: instance flips to
+    // status='failed', a node_failed event is emitted, advance() is
+    // NOT called.
+    const { supabase, workflowInstanceUpdates } = makeDeps();
     const dispatchService = {
-      // Post-Step8: workflow create_child_tasks invokes the batch path.
-      // A failure in the batch RPC propagates as a single thrown error
-      // — same swallow+advance behaviour as the legacy per-task path,
-      // but ONE log entry instead of N.
       dispatch: jest.fn(),
       dispatchBatch: jest.fn().mockRejectedValue(new Error('dispatch_child_work_orders_batch failed')),
     };
     const engine = new WorkflowEngineService(supabase as never, dispatchService as never);
     const advance = jest.spyOn(engine as never, 'advance').mockResolvedValue(undefined as never);
-    jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
+    const emit = jest.spyOn(engine as never, 'emit').mockResolvedValue(undefined as never);
     const logSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
     const node = {
@@ -154,7 +181,22 @@ describe('WorkflowEngineService.create_child_tasks', () => {
 
     expect(dispatchService.dispatchBatch).toHaveBeenCalled();
     expect(logSpy).toHaveBeenCalled();
-    expect(advance).toHaveBeenCalled();
+    // HALT: the workflow MUST NOT advance after a batch failure.
+    expect(advance).not.toHaveBeenCalled();
+    // workflow_instances flips to status='failed' (filtered by id +
+    // tenant_id, both required by the cross-tenant write fix).
+    expect(workflowInstanceUpdates).toHaveLength(1);
+    expect(workflowInstanceUpdates[0].patch).toEqual({ status: 'failed' });
+    expect(workflowInstanceUpdates[0].filters).toEqual({ id: 'inst-1', tenant_id: 't1' });
+    // node_failed audit event surfaces the dispatch failure with the
+    // reason + task count so ops can triage from the audit feed.
+    const emitCalls = (emit.mock.calls as Array<[string, string, Record<string, unknown>, unknown?]>);
+    const nodeFailed = emitCalls.find((c) => c[1] === 'node_failed');
+    expect(nodeFailed).toBeDefined();
+    const payload = nodeFailed?.[2] as { node_id: string; payload: { reason: string; task_count: number } };
+    expect(payload.node_id).toBe('n1');
+    expect(payload.payload.reason).toBe('dispatch_batch_failed');
+    expect(payload.payload.task_count).toBe(1);
 
     logSpy.mockRestore();
   });

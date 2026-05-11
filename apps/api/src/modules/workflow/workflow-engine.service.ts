@@ -473,13 +473,41 @@ export class WorkflowEngineService {
               clientRequestId,
             );
           } catch (err) {
-            // All-or-nothing: a batch failure rolls back every task. The
-            // workflow node still advances (status-wise) — same behaviour
-            // as the legacy per-task path — but ops sees ONE error trace
-            // instead of N. The workflow audit log will show the
-            // node_entered event but no per-task child rows (correct: none
-            // were committed).
+            // Codex-S8-I3 (F-IMP-3): the pre-remediation behaviour was
+            // to console.error + advance the workflow as if nothing
+            // happened. That silently leaves the workflow in a state
+            // that says "child tasks created" when in fact ZERO were
+            // committed (batch is all-or-nothing). Same severity class
+            // as the legacy per-task swallow that F-CRIT-4 retired.
+            //
+            // Fix: halt the workflow at this node. Mark the instance
+            // status='failed' so ops can see it on the workflow run +
+            // re-investigate / re-run. Emit a node_failed event so the
+            // audit feed records the reason. Do NOT call advance() —
+            // the workflow's claim that children exist would be a lie.
             console.error('[workflow] create_child_tasks: batch dispatch failed', err);
+            if (tenant) {
+              await this.supabase.admin
+                .from('workflow_instances')
+                .update({ status: 'failed' })
+                .eq('id', instanceId)
+                .eq('tenant_id', tenant.id);
+            }
+            await this.emit(
+              instanceId,
+              'node_failed',
+              {
+                node_id: node.id,
+                node_type: 'create_child_tasks',
+                payload: {
+                  reason: 'dispatch_batch_failed',
+                  message: err instanceof Error ? err.message : String(err),
+                  task_count: taskDtos.length,
+                },
+              },
+              ctx,
+            );
+            break;
           }
         }
 

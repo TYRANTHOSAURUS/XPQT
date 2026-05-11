@@ -65,6 +65,13 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // defense-in-depth so that any future RPC-side raise of the same
   // code routes to 400 consistently.
   'sla.policy_has_no_targets': 400,
+  // Codex-S8-I2 (F-IMP-2). validate_entity_in_tenant raises
+  // `unknown_kind` / `dispatch_missing` when the caller passes a kind
+  // outside the allowlist (typo or partial migration). That's a 400
+  // class — the request payload itself referenced an unrecognised
+  // entity kind.
+  'validate_entity_in_tenant.unknown_kind': 400,
+  'validate_entity_in_tenant.dispatch_missing': 400,
 
   // ── 404 not_found ────────────────────────────────────────────────
   'transition_entity_status.not_found': 404,
@@ -73,6 +80,21 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'update_entity_combined.not_found': 404,
   'sla.policy_not_found': 404,
   'dispatch_child_work_order.parent_not_found': 404,
+  // Codex-S8-I2 (F-IMP-2). Every per-kind miss from
+  // validate_entity_in_tenant is a "the foreign-tenant ref doesn't exist
+  // in this tenant" condition — 404 is the right shape, matching the
+  // pattern used by `dispatch_child_work_order.parent_not_found`.
+  // routing_rule is added in v3 (00340) for codex-S8-I1 / F-IMP-1.
+  'validate_entity_in_tenant.case_not_in_tenant': 404,
+  'validate_entity_in_tenant.work_order_not_in_tenant': 404,
+  'validate_entity_in_tenant.asset_not_in_tenant': 404,
+  'validate_entity_in_tenant.space_not_in_tenant': 404,
+  'validate_entity_in_tenant.request_type_not_in_tenant': 404,
+  'validate_entity_in_tenant.scope_override_not_in_tenant': 404,
+  'validate_entity_in_tenant.workflow_definition_not_in_tenant': 404,
+  'validate_entity_in_tenant.sla_policy_not_in_tenant': 404,
+  'validate_entity_in_tenant.person_not_in_tenant': 404,
+  'validate_entity_in_tenant.routing_rule_not_in_tenant': 404,
 
   // ── 409 conflict ─────────────────────────────────────────────────
   // payload_mismatch: the client reused the same X-Client-Request-Id

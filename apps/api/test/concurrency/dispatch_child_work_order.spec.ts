@@ -470,6 +470,62 @@ describe('dispatch_child_work_order — §3.4 single-child RPC', () => {
   });
 
   // ────────────────────────────────────────────────────────────────────
+  // F-IMP-1 (codex-S8-I1) — cross-tenant routing_rule_id is rejected by
+  // validate_entity_in_tenant before the routing_decisions INSERT.
+  // routing_decisions.rule_id FK is GLOBAL (00027:67) — without this
+  // gate a forged payload could write tenant A's audit row pointing at
+  // tenant B's rule.
+  it('scenario 10: cross-tenant routing_rule_id — TENANT_A parent + TENANT_B rule → tenant validation rejects', async () => {
+    const baseA = await seedBaseFixture(pool, `disp-rrxtA-${Date.now()}`);
+    const baseB = await seedBaseFixture(pool, `disp-rrxtB-${Date.now()}`);
+    const { ticketId: parentId } = await seedCase(pool, baseA);
+    const assignee = await seedUser(pool, baseA.tenantId);
+
+    // Seed a routing_rule in TENANT_B then forge its uuid into a
+    // dispatch payload addressed to TENANT_A.
+    const foreignRuleId = randomUUID();
+    await pool.query(
+      `insert into public.routing_rules
+         (id, tenant_id, name, priority, conditions, active)
+       values ($1, $2, 'Cross-tenant probe rule', 0, '[]'::jsonb, true)`,
+      [foreignRuleId, baseB.tenantId],
+    );
+
+    const payload = buildPayload({
+      assigned_user_id: assignee.userId,
+      routing_rule_id: foreignRuleId,
+    });
+
+    const result = await runRpcCapture<DispatchResult>(
+      pool, 'public.dispatch_child_work_order',
+      [parentId, baseA.tenantId, null, `dispatch:rrxt:${parentId}`, payload],
+    );
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') return;
+    expect(result.error.message).toMatch(
+      /validate_entity_in_tenant\.routing_rule_not_in_tenant/,
+    );
+
+    // Atomicity: no partial writes — work_order, routing_decision,
+    // sla_timer, activity rows must all be zero for this child id.
+    const wo = await pool.query(
+      `select count(*) as n from public.work_orders where tenant_id = $1 and parent_ticket_id = $2`,
+      [baseA.tenantId, parentId],
+    );
+    expect(Number(wo.rows[0].n)).toBe(0);
+    const rd = await pool.query(
+      `select count(*) as n from public.routing_decisions
+        where tenant_id = $1 and ticket_id = $2`,
+      [baseA.tenantId, payload.child_id],
+    );
+    expect(Number(rd.rows[0].n)).toBe(0);
+
+    // Cleanup the seeded foreign rule (baseB's cleanup runs but doesn't
+    // know about routing_rules).
+    await pool.query('delete from public.routing_rules where id = $1', [foreignRuleId]);
+  });
+
+  // ────────────────────────────────────────────────────────────────────
   it('scenario 9: sla_id null path — payload omits sla_id; no timer rows; child + routing audit + activity present', async () => {
     const base = await seedBaseFixture(pool, `disp-nosla-${Date.now()}`);
     const { ticketId: parentId } = await seedCase(pool, base);

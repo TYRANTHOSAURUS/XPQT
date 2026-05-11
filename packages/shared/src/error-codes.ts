@@ -482,6 +482,27 @@ export type KnownErrorCode =
   | 'validate_assignees_in_tenant.assigned_user_id_not_in_tenant'
   | 'validate_assignees_in_tenant.assigned_vendor_id_not_in_tenant'
 
+  // ─── tenant-entity validation helper (00321 / 00340) — 404 + 400 codes ───
+  // `validate_entity_in_tenant` (00321 v2 + 00340 v3) raises 42501 on each
+  // per-kind miss plus a global `unknown_kind` / `dispatch_missing` raise
+  // for caller-side typos. Codex-S8-I2 (F-IMP-2): every code raised by
+  // the helper MUST be registered or the §3.0/§3.1/§3.2/§3.3/§3.4 RPCs'
+  // defense-in-depth path falls through `mapRpcErrorToAppError` to
+  // `unknown.server_error` 500 — same regression class as the
+  // validate_assignees_in_tenant pre-registration miss.
+  | 'validate_entity_in_tenant.unknown_kind'
+  | 'validate_entity_in_tenant.dispatch_missing'
+  | 'validate_entity_in_tenant.case_not_in_tenant'
+  | 'validate_entity_in_tenant.work_order_not_in_tenant'
+  | 'validate_entity_in_tenant.asset_not_in_tenant'
+  | 'validate_entity_in_tenant.space_not_in_tenant'
+  | 'validate_entity_in_tenant.request_type_not_in_tenant'
+  | 'validate_entity_in_tenant.scope_override_not_in_tenant'
+  | 'validate_entity_in_tenant.workflow_definition_not_in_tenant'
+  | 'validate_entity_in_tenant.sla_policy_not_in_tenant'
+  | 'validate_entity_in_tenant.person_not_in_tenant'
+  | 'validate_entity_in_tenant.routing_rule_not_in_tenant'
+
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
   | 'privacy.reason_required'
@@ -1199,6 +1220,18 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'validate_assignees_in_tenant.assigned_team_id_not_in_tenant',
   'validate_assignees_in_tenant.assigned_user_id_not_in_tenant',
   'validate_assignees_in_tenant.assigned_vendor_id_not_in_tenant',
+  'validate_entity_in_tenant.unknown_kind',
+  'validate_entity_in_tenant.dispatch_missing',
+  'validate_entity_in_tenant.case_not_in_tenant',
+  'validate_entity_in_tenant.work_order_not_in_tenant',
+  'validate_entity_in_tenant.asset_not_in_tenant',
+  'validate_entity_in_tenant.space_not_in_tenant',
+  'validate_entity_in_tenant.request_type_not_in_tenant',
+  'validate_entity_in_tenant.scope_override_not_in_tenant',
+  'validate_entity_in_tenant.workflow_definition_not_in_tenant',
+  'validate_entity_in_tenant.sla_policy_not_in_tenant',
+  'validate_entity_in_tenant.person_not_in_tenant',
+  'validate_entity_in_tenant.routing_rule_not_in_tenant',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

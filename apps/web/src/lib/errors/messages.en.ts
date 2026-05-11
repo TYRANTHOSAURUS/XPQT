@@ -1479,6 +1479,55 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't update assignment",
     detail: 'The vendor is not part of this tenant.',
   },
+  // Tenant-entity validation helper (00321 / 00340) — Codex-S8-I2 / F-IMP-2.
+  'validate_entity_in_tenant.unknown_kind': {
+    title: "Couldn't dispatch",
+    detail: 'The request referenced an unknown entity kind.',
+  },
+  'validate_entity_in_tenant.dispatch_missing': {
+    title: "Couldn't dispatch",
+    detail: 'The request referenced an unknown entity kind.',
+  },
+  'validate_entity_in_tenant.case_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The case is not part of this tenant.',
+  },
+  'validate_entity_in_tenant.work_order_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The work order is not part of this tenant.',
+  },
+  'validate_entity_in_tenant.asset_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The asset is not part of this tenant.',
+  },
+  'validate_entity_in_tenant.space_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The space is not part of this tenant.',
+  },
+  'validate_entity_in_tenant.request_type_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The request type is not part of this tenant.',
+  },
+  'validate_entity_in_tenant.scope_override_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The scope override is not part of this tenant.',
+  },
+  'validate_entity_in_tenant.workflow_definition_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The workflow definition is not part of this tenant.',
+  },
+  'validate_entity_in_tenant.sla_policy_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The SLA policy is not part of this tenant.',
+  },
+  'validate_entity_in_tenant.person_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The person is not part of this tenant.',
+  },
+  'validate_entity_in_tenant.routing_rule_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The routing rule is not part of this tenant.',
+  },
 };
 
 /**
