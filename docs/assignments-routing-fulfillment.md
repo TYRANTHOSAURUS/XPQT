@@ -773,7 +773,7 @@ An agent can change a parent case's `ticket_type_id` via `POST /tickets/:id/recl
 - `WorkflowStartHandler` — already shipped in Step 12; same handler the create / grant paths use.
 - `RoutingEvaluationHandler` — drains `routing.evaluation_required`. Calls `RoutingService.evaluate`; if the target differs from current → calls `set_entity_assignment` RPC (00327 v2) with `idempotency_key=routing-evaluation:<event_id>`. Always inserts a `routing_decisions` audit row (including `unassigned` outcomes per v5 / I4). Sets `tickets.routing_status='idle'` on success, `'failed'` only on resolver throws or RPC errors (writes a `routing_evaluation_failed` activity breadcrumb).
 
-**Rejected paths:** reclassifying a child work order (TS preflight in `ReclassifyService.assertReclassifiable` — RPC doesn't gate this), reclassifying a closed/resolved ticket (TS preflight only — RPC accepts terminal tickets as an admin-override path; see harness scenario 12), reclassifying to the same type (RPC raises `reclassify_ticket.target_same`), reclassifying to an inactive type (RPC raises `reclassify_ticket.new_request_type_invalid`), `reclassify_during_approval` (RPC raises — see step 3 above).
+**Rejected paths:** reclassifying a child work order (TS preflight in `ReclassifyService.assertReclassifiable` — RPC doesn't gate this), reclassifying a closed/resolved ticket (post 2026-05-11 self-review remediation, 00355 v2 enforces a PG-side defense-in-depth `terminal_ticket` reject — symmetric with the approval gate at step 3; harness scenarios 12a-12c assert closed/resolved both raise `reclassify_ticket.terminal_ticket` and roll back the row), reclassifying to the same type (RPC raises `reclassify_ticket.target_same`), reclassifying to an inactive type (RPC raises `reclassify_ticket.new_request_type_invalid`), `reclassify_during_approval` (RPC raises — see step 3 above).
 
 **Idempotency:** the outer key is `reclassify:<ticket_id>:<clientRequestId>` (helper `buildReclassifyIdempotencyKey` in `@prequest/shared`). The controller's `RequireClientRequestIdGuard` enforces presence at the HTTP boundary; the service-layer hard-fail enforces it for internal callers.
 
@@ -785,7 +785,8 @@ An agent can change a parent case's `ticket_type_id` via `POST /tickets/:id/recl
 - `apps/api/src/modules/outbox/handlers/sla-timer-repoint.handler.ts` — new outbox handler
 - `apps/api/src/modules/outbox/handlers/routing-evaluation.handler.ts` — new outbox handler
 - `supabase/migrations/00353_repoint_sla_timer_v2.sql` — accepts `p_started_at` (codex-S12-I2 mirror)
-- `supabase/migrations/00354_reclassify_ticket_rpc.sql` — new RPC body
+- `supabase/migrations/00354_reclassify_ticket_rpc.sql` — new RPC body (v1)
+- `supabase/migrations/00355_reclassify_ticket_v2.sql` — terminal-state guard (defense-in-depth)
 - `packages/shared/src/idempotency.ts` — `buildReclassifyIdempotencyKey`
 - `apps/api/test/concurrency/reclassify_ticket.spec.ts` — 12 concurrency scenarios
 

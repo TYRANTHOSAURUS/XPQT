@@ -231,7 +231,13 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
       expect(args.p_payload.assigned_team_id).toBe(TEAM_ID);
       expect(args.p_payload.assigned_user_id).toBeNull();
       expect(args.p_payload.assigned_vendor_id).toBeNull();
-      expect(args.p_payload.reason).toBe('Auto-routed via rule');
+      // codex-S11-I2 remediation: handler does NOT pass `reason` —
+      // doing so would trigger set_entity_assignment's manual-reassign
+      // audit branch (00327_v2:258) and write a duplicate routing_decisions
+      // row classified as `manual_reassign`. The handler writes its own
+      // resolver-audit row at step 6 with `chosen_by='rule'` (or whatever
+      // the evaluation produced).
+      expect(args.p_payload.reason).toBeUndefined();
 
       // routing_decisions row inserted.
       const decisionInserts = supabase.captured.inserts.filter(

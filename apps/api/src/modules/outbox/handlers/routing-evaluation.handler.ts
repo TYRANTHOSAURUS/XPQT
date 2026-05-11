@@ -192,7 +192,13 @@ export class RoutingEvaluationHandler
         assigned_team_id: target.kind === 'team' ? target.team_id : null,
         assigned_user_id: target.kind === 'user' ? target.user_id : null,
         assigned_vendor_id: target.kind === 'vendor' ? target.vendor_id : null,
-        reason: `Auto-routed via ${evaluation.chosen_by}`,
+        // No `reason` field — passing one would trigger
+        // set_entity_assignment's manual-reassign audit branch
+        // (00327_v2:258) and write a routing_decisions row classified
+        // as `manual_reassign`. We want only the resolver-audit row
+        // written below at step 6, classified by `evaluation.chosen_by`
+        // (rule / asset_override / location_team / etc.). codex-S11-I2
+        // (2026-05-11).
       };
 
       const idempotencyKey = buildRoutingEvaluationIdempotencyKey(event.id);
@@ -232,7 +238,12 @@ export class RoutingEvaluationHandler
     // Spec line 2762-2764: "the resolver should re-run to record the
     // breadcrumb". Even when target == current, we record the decision
     // so the audit feed shows the evaluation happened.
-    await this.supabase.admin.from('routing_decisions').insert({
+    //
+    // codex-S11-I1 (2026-05-11): inspect .error explicitly. A silent
+    // failure here leaves the ticket flapping in routing_status='pending'
+    // with no audit row and no failure breadcrumb — exactly the failure
+    // mode the outbox worker's retry contract exists to surface.
+    const decisionRes = await this.supabase.admin.from('routing_decisions').insert({
       tenant_id: event.tenant_id,
       ticket_id,
       strategy: evaluation.strategy,
@@ -251,12 +262,24 @@ export class RoutingEvaluationHandler
         outbox_event_id: event.id,
       },
     });
+    if (decisionRes.error) {
+      // The assignment write at step 5 already committed (if it ran).
+      // Surface the audit-row failure so ops can investigate; the outbox
+      // worker's retry will re-attempt the audit insert on next tick.
+      throw new Error(
+        `routing.evaluation_required.audit_insert_failed event=${event.id}: ${decisionRes.error.message}`,
+      );
+    }
 
     // ── 7. Clear routing_status to 'idle' ──────────────────────────────
     //
     // Both target-found and unassigned-outcome converge to `idle`
     // (v5 / I4). `failed` is reserved for the catch-paths above.
-    await this.supabase.admin
+    //
+    // codex-S11-I1: inspect .error explicitly. A silent failure leaves
+    // the ticket pinned in routing_status='pending' even though the
+    // assignment + audit-row commits succeeded.
+    const tStatusRes = await this.supabase.admin
       .from('tickets')
       .update({
         routing_status: 'idle',
@@ -264,6 +287,11 @@ export class RoutingEvaluationHandler
       })
       .eq('id', ticket_id)
       .eq('tenant_id', event.tenant_id);
+    if (tStatusRes.error) {
+      throw new Error(
+        `routing.evaluation_required.status_clear_failed event=${event.id}: ${tStatusRes.error.message}`,
+      );
+    }
 
     this.log.log(
       `evaluated ticket=${ticket_id} chosen_by=${evaluation.chosen_by} ` +
