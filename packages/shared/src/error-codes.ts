@@ -456,6 +456,7 @@ export type KnownErrorCode =
   | 'update_entity_combined.invalid_metadata'
   | 'update_entity_combined.invalid_cost'
   | 'update_entity_combined.invalid_watcher'
+  | 'update_entity_combined.invalid_plan'
 
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
@@ -1161,6 +1162,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'update_entity_combined.invalid_metadata',
   'update_entity_combined.invalid_cost',
   'update_entity_combined.invalid_watcher',
+  'update_entity_combined.invalid_plan',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

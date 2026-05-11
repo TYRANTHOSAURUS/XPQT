@@ -2,10 +2,11 @@
  * B.2.A.8 concurrency probe — update_entity_combined (§3.0 orchestrator).
  *
  * Spec ref: docs/follow-ups/b2-survey-and-design.md §3.0 (lines 1781-1897).
- * Migration: supabase/migrations/00331_update_entity_combined_rpc.sql.
+ * Migration: supabase/migrations/00332_update_entity_combined_v2.sql
+ *   (supersedes 00331; F1-F4 fixes folded in).
  * Harness style follows update_entity_sla.spec.ts (00330).
  *
- * Nine scenarios, all against the live local Supabase stack:
+ * Eleven scenarios, all against the live local Supabase stack:
  *   1. Multi-branch happy path — patches with status + priority +
  *      assignment + metadata; all branches commit in one tx; assert
  *      returned branches_applied + row state on tickets +
@@ -20,9 +21,10 @@
  *      branches → returns noop=true, no rows written anywhere.
  *   5. Plan-on-case rejected — kind='case' with patches.plan →
  *      'update_entity_combined.plan_not_supported_on_case'.
- *   6. Cross-tenant watcher rejected — metadata.watchers references a
- *      person from a different tenant → invalid_watcher; verify NO
- *      partial writes (the outer tx rolls back all branches).
+ *   6. Cross-tenant watcher rejected — TWO sub-probes:
+ *        6a. watcher is a person in tenant B (cross-tenant) → invalid_watcher.
+ *        6b. watcher is a ghost uuid (gen_random_uuid()) → invalid_watcher.
+ *      Both raise the SAME registered code. Verify NO partial writes.
  *   7. Nested idempotency replay — outer key reused with same payload;
  *      verifies that the SECOND outer call hits the OUTER cache and
  *      short-circuits before re-entering any inner RPC (only ONE row
@@ -32,6 +34,18 @@
  *   9. WO plan branch happy path — kind='work_order' with plan: {…}
  *      updates work_orders columns, emits one plan_changed activity,
  *      no domain_events.
+ *  10. Duplicate watcher uuid in metadata input — F2 dedup. Send
+ *      `metadata.watchers = [uuidA, uuidA]` where uuidA is a valid
+ *      tenant person. RPC succeeds (no false invalid_watcher);
+ *      persisted tickets.watchers = [uuidA]; one metadata_changed
+ *      activity with the deduped diff.
+ *  11. Invalid plan input — bad timestamp (F3). Send
+ *      kind='work_order' with plan = {planned_start_at: 'not-a-date'}
+ *      raises 'update_entity_combined.invalid_plan'. No partial writes.
+ *
+ * Sentinel for inner idempotency keys (F1): `__combined__:`. Direct
+ * callers of transition_entity_status / set_entity_assignment /
+ * update_entity_sla MUST NOT mint keys with this prefix.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -389,8 +403,11 @@ describe('update_entity_combined — §3.0 orchestrator RPC', () => {
     expect(co.rowCount).toBe(3);
     const keys = co.rows.map((r) => r.idempotency_key);
     expect(keys).toContain(idem);
-    expect(keys).toContain(`${idem}:status:case:${ticketId}`);
-    expect(keys).toContain(`${idem}:assignment:case:${ticketId}`);
+    // F1: inner keys carry the `__combined__:` sentinel prefix so direct
+    // callers of sibling RPCs cannot collide with orchestrator-derived
+    // inner keys. Suffix is `:<branch>:<kind>:<id>:<outer>`.
+    expect(keys).toContain(`__combined__:status:case:${ticketId}:${idem}`);
+    expect(keys).toContain(`__combined__:assignment:case:${ticketId}:${idem}`);
   });
 
   // ─────────────────────────────────────────────────────────────────────
@@ -561,58 +578,110 @@ describe('update_entity_combined — §3.0 orchestrator RPC', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────
-  it('scenario 6: cross-tenant watcher rejected — outer tx rolls back; no partial writes from other branches', async () => {
+  it('scenario 6: cross-tenant + ghost-uuid watcher both rejected with invalid_watcher; outer tx rolls back; no partial writes', async () => {
+    // Probe 6a: foreign-tenant person (genuine cross-tenant probe).
+    // Probe 6b: a uuid-shaped value that doesn't exist anywhere
+    //          (gen_random_uuid()). Same registered code expected.
+    // Documents that the RPC normalizes both failure modes to the same
+    // surface — consistent with the TS surface's behavior (see
+    // apps/api/src/common/tenant-validation.ts:295-309).
+
     const tenantA = await seedBaseFixture(pool, `comb-xwatch-a-${Date.now()}`);
     const tenantB = await seedBaseFixture(pool, `comb-xwatch-b-${Date.now()}`);
 
-    const { ticketId } = await seedCase(pool, tenantA, { priority: 'medium', title: 'Orig' });
-    // Foreign person — belongs to tenantB. tenantA must reject.
+    // ── 6a — cross-tenant ─────────────────────────────────────────────
+    const { ticketId: ticketIdA } = await seedCase(pool, tenantA, { priority: 'medium', title: 'Orig' });
     const foreignPersonId = tenantB.personId;
 
-    const idem = `comb-xwatch-${ticketId}`;
+    const idemA = `comb-xwatch-cross-${ticketIdA}`;
     // Include a successful-looking priority branch BEFORE the metadata
     // branch. If atomicity is broken the priority write would leak.
-    const result = await runRpcCapture<CombinedResult>(
+    const resultA = await runRpcCapture<CombinedResult>(
       pool,
       'public.update_entity_combined',
       [
         'case',
-        ticketId,
+        ticketIdA,
         tenantA.tenantId,
         null,
-        idem,
+        idemA,
         {
           priority: 'high',
           metadata: { title: 'Patched title', watchers: [foreignPersonId] },
         },
       ],
     );
-    expect(result.kind).toBe('error');
-    if (result.kind !== 'error') return;
-    expect(result.error.message).toMatch(/update_entity_combined\.invalid_watcher/);
+    expect(resultA.kind).toBe('error');
+    if (resultA.kind !== 'error') return;
+    expect(resultA.error.message).toMatch(/update_entity_combined\.invalid_watcher/);
 
     // tickets row unchanged — priority + title roll back with metadata.
-    const t = await pool.query(
+    const tA = await pool.query(
       'select priority, title from public.tickets where id = $1',
-      [ticketId],
+      [ticketIdA],
     );
-    expect(t.rows[0].priority).toBe('medium');
-    expect(t.rows[0].title).toBe('Orig');
+    expect(tA.rows[0].priority).toBe('medium');
+    expect(tA.rows[0].title).toBe('Orig');
 
-    // No partial activities; no command_operations row.
-    const acts = await pool.query(
+    const actsA = await pool.query(
       `select count(*)::int as n from public.ticket_activities
         where tenant_id = $1 and ticket_id = $2`,
-      [tenantA.tenantId, ticketId],
+      [tenantA.tenantId, ticketIdA],
     );
-    expect(acts.rows[0].n).toBe(0);
+    expect(actsA.rows[0].n).toBe(0);
 
-    const co = await pool.query(
+    const coA = await pool.query(
       `select count(*)::int as n from public.command_operations
         where tenant_id = $1 and idempotency_key = $2`,
-      [tenantA.tenantId, idem],
+      [tenantA.tenantId, idemA],
     );
-    expect(co.rows[0].n).toBe(0);
+    expect(coA.rows[0].n).toBe(0);
+
+    // ── 6b — ghost uuid (random, doesn't exist) ───────────────────────
+    const { ticketId: ticketIdB } = await seedCase(pool, tenantA, { priority: 'medium', title: 'Orig' });
+    const ghostUuid = randomUUID();
+
+    const idemB = `comb-xwatch-ghost-${ticketIdB}`;
+    const resultB = await runRpcCapture<CombinedResult>(
+      pool,
+      'public.update_entity_combined',
+      [
+        'case',
+        ticketIdB,
+        tenantA.tenantId,
+        null,
+        idemB,
+        {
+          priority: 'high',
+          metadata: { title: 'Patched title', watchers: [ghostUuid] },
+        },
+      ],
+    );
+    expect(resultB.kind).toBe('error');
+    if (resultB.kind !== 'error') return;
+    // Same registered code as 6a — invalid_watcher.
+    expect(resultB.error.message).toMatch(/update_entity_combined\.invalid_watcher/);
+
+    const tB = await pool.query(
+      'select priority, title from public.tickets where id = $1',
+      [ticketIdB],
+    );
+    expect(tB.rows[0].priority).toBe('medium');
+    expect(tB.rows[0].title).toBe('Orig');
+
+    const actsB = await pool.query(
+      `select count(*)::int as n from public.ticket_activities
+        where tenant_id = $1 and ticket_id = $2`,
+      [tenantA.tenantId, ticketIdB],
+    );
+    expect(actsB.rows[0].n).toBe(0);
+
+    const coB = await pool.query(
+      `select count(*)::int as n from public.command_operations
+        where tenant_id = $1 and idempotency_key = $2`,
+      [tenantA.tenantId, idemB],
+    );
+    expect(coB.rows[0].n).toBe(0);
   });
 
   // ─────────────────────────────────────────────────────────────────────
@@ -755,10 +824,11 @@ describe('update_entity_combined — §3.0 orchestrator RPC', () => {
     expect(co.rowCount).toBe(2);
 
     // And case A also wrote its status sub-key row (nested idempotency).
+    // F1: sentinel-prefixed key.
     const subCo = await pool.query(
       `select idempotency_key from public.command_operations
         where tenant_id = $1 and idempotency_key = $2`,
-      [base.tenantId, `${idemA}:status:case:${ticketId}`],
+      [base.tenantId, `__combined__:status:case:${ticketId}:${idemA}`],
     );
     expect(subCo.rowCount).toBe(1);
   });
@@ -830,6 +900,116 @@ describe('update_entity_combined — §3.0 orchestrator RPC', () => {
       [base.tenantId, workOrderId],
     );
     expect(evs.rows[0].n).toBe(0);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  it('scenario 10: duplicate watcher uuid in metadata input — dedup happy path; persisted set is deduped', async () => {
+    // F2 — `[uuidA, uuidA]` must NOT false-reject. The dedup happens
+    // before the tenant-membership count check; the persisted set is
+    // the deduped one (matches the TS surface's
+    // [...new Set(watchers)] at tenant-validation.ts:269).
+
+    const base = await seedBaseFixture(pool, `comb-watch-dedup-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base, { title: 'Orig', watchers: [] });
+
+    // `base.personId` is the seeded requester person; it's already in
+    // the tenant so it's a legal watcher. Pass it twice.
+    const uuidA = base.personId;
+
+    const idem = `comb-watch-dedup-${ticketId}`;
+    const result = await runRpcCapture<CombinedResult>(
+      pool,
+      'public.update_entity_combined',
+      [
+        'case',
+        ticketId,
+        base.tenantId,
+        null,
+        idem,
+        { metadata: { watchers: [uuidA, uuidA] } },
+      ],
+    );
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.metadata?.changed).toBe(true);
+    expect(result.value.any_changed).toBe(true);
+
+    // tickets.watchers persisted as the deduped set (single element).
+    const t = await pool.query(
+      'select watchers from public.tickets where id = $1',
+      [ticketId],
+    );
+    expect(t.rows[0].watchers).toEqual([uuidA]);
+
+    // Exactly one metadata_changed activity row. The `changes.watchers`
+    // diff reports the deduped next set.
+    const acts = await pool.query(
+      `select metadata->>'event' as event,
+              metadata->'changes'->'watchers'->'previous' as prev,
+              metadata->'changes'->'watchers'->'next'     as next
+         from public.ticket_activities
+        where tenant_id = $1 and ticket_id = $2`,
+      [base.tenantId, ticketId],
+    );
+    expect(acts.rowCount).toBe(1);
+    expect(acts.rows[0].event).toBe('metadata_changed');
+    expect(acts.rows[0].prev).toEqual([]);
+    expect(acts.rows[0].next).toEqual([uuidA]);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  it('scenario 11: invalid plan input — bad timestamp raises invalid_plan; no partial writes', async () => {
+    // F3 — original 00331 used `nullif(..., '')::timestamptz` which
+    // raised raw 22007 (datetime_invalid_format) on a malformed input.
+    // v2 type-checks the jsonb value first and raises the registered
+    // code instead.
+
+    const base = await seedBaseFixture(pool, `comb-bad-plan-${Date.now()}`);
+    const { workOrderId } = await seedWorkOrder(pool, base, {
+      plannedStartAt: null,
+      plannedDurationMinutes: null,
+    });
+
+    const idem = `comb-bad-plan-${workOrderId}`;
+    const result = await runRpcCapture<CombinedResult>(
+      pool,
+      'public.update_entity_combined',
+      [
+        'work_order',
+        workOrderId,
+        base.tenantId,
+        null,
+        idem,
+        { plan: { planned_start_at: 'not-an-iso-date' } },
+      ],
+    );
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') return;
+    expect(result.error.message).toMatch(/update_entity_combined\.invalid_plan/);
+
+    // work_orders row unchanged.
+    const wo = await pool.query(
+      `select planned_start_at, planned_duration_minutes
+         from public.work_orders where id = $1`,
+      [workOrderId],
+    );
+    expect(wo.rows[0].planned_start_at).toBeNull();
+    expect(wo.rows[0].planned_duration_minutes).toBeNull();
+
+    // No partial activities; no command_operations row.
+    const acts = await pool.query(
+      `select count(*)::int as n from public.ticket_activities
+        where tenant_id = $1 and ticket_id = $2`,
+      [base.tenantId, workOrderId],
+    );
+    expect(acts.rows[0].n).toBe(0);
+
+    const co = await pool.query(
+      `select count(*)::int as n from public.command_operations
+        where tenant_id = $1 and idempotency_key = $2`,
+      [base.tenantId, idem],
+    );
+    expect(co.rows[0].n).toBe(0);
   });
 });
 

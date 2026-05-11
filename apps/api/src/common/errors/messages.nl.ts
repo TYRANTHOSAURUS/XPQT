@@ -1507,6 +1507,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon niet bijwerken',
     detail: 'Een of meer volgers horen niet bij deze tenant.',
   },
+  'update_entity_combined.invalid_plan': {
+    title: 'Kon niet bijwerken',
+    detail: 'Plandata moeten een geldige ISO-tijdstempel zijn en duur moet een niet-negatief geheel getal zijn.',
+  },
 };
 
 /**

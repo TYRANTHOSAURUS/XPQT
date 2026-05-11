@@ -1507,6 +1507,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't update",
     detail: 'One or more watchers are not part of this tenant.',
   },
+  'update_entity_combined.invalid_plan': {
+    title: "Couldn't update",
+    detail: 'Plan dates must be a valid ISO timestamp and duration must be a non-negative integer.',
+  },
 };
 
 /**
