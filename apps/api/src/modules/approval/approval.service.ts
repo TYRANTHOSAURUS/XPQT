@@ -1,6 +1,8 @@
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { AppErrors } from '../../common/errors';
+import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
 import { randomUUID } from 'node:crypto';
+import { buildApprovalGrantIdempotencyKey } from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { TicketService } from '../ticket/ticket.service';
@@ -73,17 +75,66 @@ type GrantBookingApprovalResult =
     };
 
 /**
+ * Possible outcomes of `grant_ticket_approval` (00343 / spec §3.5).
+ * Mirrors the jsonb `kind` field the RPC returns. The shape is parallel
+ * to GrantBookingApprovalResult but distinct on the post-grant
+ * automation flags (sla_started / workflow_started /
+ * routing_evaluation_emitted) instead of slot/booking transitions.
+ */
+type GrantTicketApprovalResult =
+  | { kind: 'non_ticket_approved'; approval_id: string; target_entity_type: string }
+  | {
+      kind: 'already_responded';
+      approval_id: string;
+      ticket_id: string;
+      prior_status: string;
+    }
+  | {
+      kind: 'partial_approved';
+      approval_id: string;
+      ticket_id: string;
+      ticket_status: string | null;
+      ticket_status_category: string;
+      sla_started: false;
+      workflow_started: false;
+      routing_evaluation_emitted: false;
+      remaining: number;
+    }
+  | {
+      kind: 'resolved';
+      approval_id: string;
+      ticket_id: string;
+      final_decision: 'approved' | 'rejected';
+      ticket_status: string;
+      ticket_status_category: string;
+      sla_started: boolean;
+      workflow_started: boolean;
+      routing_evaluation_emitted: boolean;
+    };
+
+/**
  * `respond` return shape — pre-cutover this was the post-CAS approvals
  * row. Post-cutover the booking branch returns the RPC's structured
- * outcome (one of the four `kind` shapes above). The non-booking branch
- * still returns the approvals row.
+ * outcome (one of the four `kind` shapes above). The ticket branch
+ * (Step 10) does the same with GrantTicketApprovalResult. The
+ * visitor_invite branch still returns the approvals row.
  */
-type RespondReturn = ApprovalRow | GrantBookingApprovalResult;
+type RespondReturn =
+  | ApprovalRow
+  | GrantBookingApprovalResult
+  | GrantTicketApprovalResult;
 
 @Injectable()
 export class ApprovalService {
   constructor(
     private readonly supabase: SupabaseService,
+    // TicketService is no longer called from approval.service after the
+    // B.2.A.Step10 cutover (the `grant_ticket_approval` RPC subsumes
+    // TicketService.onApprovalDecision's effects atomically). The DI
+    // wiring stays for module-load compatibility with the existing
+    // forwardRef graph (TicketModule imports ApprovalModule and vice
+    // versa); we void the field below until a future refactor removes
+    // it from this constructor.
     @Inject(forwardRef(() => TicketService)) private readonly ticketService: TicketService,
     @Inject(forwardRef(() => BookingNotificationsService))
     private readonly bookingNotifications: BookingNotificationsService,
@@ -104,6 +155,7 @@ export class ApprovalService {
   ) {
     // Kept on the class for DI compatibility — see comment above.
     void this.bundleService;
+    void this.ticketService;
   }
 
   /**
@@ -463,13 +515,31 @@ export class ApprovalService {
       );
     }
 
-    // ── Non-booking branches — unchanged from pre-B.0.D.3 ──
+    // ── Ticket branch — B.2.A.Step10 cutover to grant_ticket_approval RPC ──
+    //
+    // Spec §3.5 / migration 00343. Replaces the pre-Step-10 multi-step write
+    // sequence (approvals CAS → domain_events → tickets UPDATE → activity
+    // → optional post-create automation) with a single atomic RPC. The RPC
+    // also handles chain / parallel-group resolution + emits the three
+    // post-grant automation outbox events (sla / routing / workflow) when
+    // the chain fully resolves with approved. See grantTicketApproval()
+    // below for the full RPC outcome mapping.
+    if (approval.target_entity_type === 'ticket') {
+      return this.grantTicketApproval(
+        approval as ApprovalRow,
+        dto,
+        respondingPersonId,
+        respondingUserId,
+        clientRequestId,
+      );
+    }
+
+    // ── visitor_invite branch — unchanged ──
     //
     // The approval row CAS update + downstream dispatch stay in TS for
-    // tickets and visitor_invites because their downstream effects
-    // (TicketService.onApprovalDecision, VisitorService.onApprovalDecided)
-    // are individually atomic per-row. Spec §10.1 explicitly excludes
-    // these from the atomic-RPC cutover.
+    // visitor_invites because their downstream effects
+    // (VisitorService.onApprovalDecided) are individually atomic per-row.
+    // Spec §3.5 covers only the ticket branch in this Step.
 
     // CAS — codex 2026-04-30 review found a read-then-unconditional-write
     // race: two concurrent respond() calls can both pass the read-side
@@ -508,16 +578,6 @@ export class ApprovalService {
     // For sequential chains: if approved, check if next step should activate
     if (dto.status === 'approved' && approval.approval_chain_id) {
       await this.advanceChain(approval.approval_chain_id, approval.step_number);
-    }
-
-    // Notify the target entity when its approval is resolved.
-    // For single-step approvals on tickets, this unblocks routing/SLA/workflow.
-    if (approval.target_entity_type === 'ticket' && !approval.approval_chain_id && !approval.parallel_group) {
-      try {
-        await this.ticketService.onApprovalDecision(approval.target_entity_id, dto.status);
-      } catch (err) {
-        console.error('[approval] ticket notification failed', err);
-      }
     }
 
     // For visitor invites (slice 3 — visitor management v1 §11.3):
@@ -721,6 +781,126 @@ export class ApprovalService {
     return AppErrors.server('approval.grant_failed', {
       detail: message || 'Approval grant failed unexpectedly.',
     });
+  }
+
+  /**
+   * B.2.A.Step10 — ticket-target approval grant. Calls the atomic
+   * `grant_ticket_approval` RPC (00343 / spec §3.5) which:
+   *   - Locks the approval row (advisory + FOR UPDATE)
+   *   - Validates target_entity_type='ticket' + status='pending'
+   *   - Applies the CAS update on the approval row
+   *   - Resolves chain / parallel-group decision (partial_approved
+   *     short-circuit when peer approvals remain)
+   *   - Transitions the ticket: rejected → status='rejected',
+   *     status_category='closed', closed_at=now(); approved →
+   *     status='new', status_category='new'.
+   *   - INSERTs ticket_activities (system_event 'approval_<decision>')
+   *     and domain_events (event_type='approval_<decision>').
+   *   - On approve + fully resolved, emits three outbox events
+   *     (conditional on the ticket carrying the relevant FK):
+   *     sla.timer_recompute_required (when ticket.sla_id non-null),
+   *     routing.evaluation_required (always),
+   *     workflow.start_required (when ticket.workflow_id non-null).
+   *
+   * All of the above commits in one Postgres transaction. Pre-cutover
+   * each step was a separate HTTP call; a mid-flow crash could leave
+   * the approval row decided but the ticket still in pending_approval
+   * with no path forward (§1.3 + §1.19 critical severity).
+   *
+   * Possible RPC outcomes (jsonb `kind` field):
+   *   - 'non_ticket_approved' — defensive (caller routed a non-ticket
+   *     approval to this method; the RPC bails out cleanly without
+   *     mutating). We surface as 400 with a registered code.
+   *   - 'already_responded' — race: another caller decided between
+   *     the read-side check + this RPC's lock. Returns 409 with the
+   *     existing `approval.already_responded` code so the FE renders
+   *     the pre-cutover message.
+   *   - 'partial_approved' — multi-step chain or parallel group; this
+   *     approver's decision committed but peers are still pending.
+   *     Returned to the caller as-is (the controller / FE renders
+   *     "thanks, waiting on others").
+   *   - 'resolved' — final decision committed; ticket transitioned;
+   *     post-grant automation outbox events emitted as applicable.
+   *
+   * **Outbox-handler caveat.** The three event types emitted by this
+   * RPC (sla.timer_recompute_required / routing.evaluation_required /
+   * workflow.start_required) have no registered handlers today (see
+   * comment in 00343 migration file). They will dead-letter after
+   * retry exhaustion until §3.9.3 handlers ship. The transactional
+   * boundary collapse is still the headline win — handler wiring is a
+   * separate workstream that doesn't change this RPC's contract.
+   *
+   * Post-RPC best-effort: none yet. Notifications fan-out for ticket
+   * approvals lives downstream of the routing/workflow handlers, not
+   * here.
+   */
+  private async grantTicketApproval(
+    approval: ApprovalRow,
+    dto: RespondDto,
+    respondingPersonId: string,
+    respondingUserId: string | undefined,
+    clientRequestId: string | undefined,
+  ): Promise<RespondReturn> {
+    const tenant = TenantContext.current();
+    // clientRequestId is enforced at the HTTP boundary by
+    // RequireClientRequestIdGuard. Internal callers (none today; the
+    // only call-site is the controller) would have to supply one.
+    // Match the buildPatchIdempotencyKey fail-fast pattern: we DO
+    // accept undefined here for backwards-compat with pre-Step10
+    // callers passing nothing, but we mint a random uuid so the key
+    // is still well-formed.
+    const idempotencyKey = buildApprovalGrantIdempotencyKey(
+      approval.id,
+      clientRequestId ?? randomUUID(),
+    );
+
+    const { data, error } = await this.supabase.admin.rpc('grant_ticket_approval', {
+      p_approval_id:     approval.id,
+      p_tenant_id:       tenant.id,
+      p_actor_user_id:   respondingUserId ?? null,
+      p_decision:        dto.status,
+      p_comments:        dto.comments ?? null,
+      p_idempotency_key: idempotencyKey,
+    });
+
+    if (error) {
+      // The new RPC raises structured codes (grant_ticket_approval.*)
+      // mapped through mapRpcErrorToAppError → AppError with the right
+      // HTTP status. Fallback for catastrophic / unmapped failures
+      // routes to approval.grant_failed to preserve the existing 500
+      // shape.
+      throw mapRpcErrorToAppError(error, { fallbackCode: 'approval.grant_failed' });
+    }
+
+    const result = (data ?? null) as GrantTicketApprovalResult | null;
+    if (!result) {
+      throw AppErrors.server('approval.grant_failed', {
+        detail: 'grant_ticket_approval RPC returned no result',
+      });
+    }
+
+    // Race / no-op outcomes — surface as a conflict so the pre-cutover
+    // UX is preserved (the FE renders "Approval already responded to").
+    if (result.kind === 'already_responded') {
+      throw AppErrors.conflict('approval.already_responded', {
+        detail: 'Approval already responded to',
+      });
+    }
+    if (result.kind === 'non_ticket_approved') {
+      // Defensive — should not happen because respond() routed only
+      // ticket-targets here. If it does, an admin re-typed an approval
+      // row and the RPC bailed out cleanly.
+      throw AppErrors.validationFailed('grant_ticket_approval.invalid_target_entity_type', {
+        detail: 'Cannot grant approval on non-ticket target via this path.',
+      });
+    }
+
+    // Surface the RPC's structured outcome to the caller. The pre-
+    // cutover return shape was the post-CAS approvals row — callers
+    // didn't actually read most fields. The new shape exposes the
+    // RPC's `kind` + decision metadata which is more useful.
+    void respondingPersonId;
+    return result;
   }
 
   // B.0.D.3 — `handleBookingApprovalDecided` + `areAllTargetApprovalsApproved`

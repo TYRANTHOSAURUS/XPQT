@@ -277,6 +277,13 @@ export type KnownErrorCode =
   | 'approval.non_booking_approved'
   | 'approval.cas_lost'
   | 'approval.invalid_decision'
+  // B.2.A.Step10 §3.5 — grant_ticket_approval RPC codes (00343).
+  | 'grant_ticket_approval.approval_not_found'
+  | 'grant_ticket_approval.invalid_target_entity_type'
+  | 'grant_ticket_approval.tenant_mismatch'
+  | 'grant_ticket_approval.invalid_response'
+  | 'grant_ticket_approval.ticket_not_found'
+  | 'grant_ticket_approval.cas_lost'
   | 'vendor.unavailable'
   | 'vendor.not_in_scope'
 
@@ -904,6 +911,12 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'approval.non_booking_approved',
   'approval.cas_lost',
   'approval.invalid_decision',
+  'grant_ticket_approval.approval_not_found',
+  'grant_ticket_approval.invalid_target_entity_type',
+  'grant_ticket_approval.tenant_mismatch',
+  'grant_ticket_approval.invalid_response',
+  'grant_ticket_approval.ticket_not_found',
+  'grant_ticket_approval.cas_lost',
   'vendor.unavailable',
   'vendor.not_in_scope',
   'insert_failed',

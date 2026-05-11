@@ -673,6 +673,30 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
   'approval.invalid_decision': {
     title: "Couldn't grant — decision must be approved or rejected",
   },
+  'grant_ticket_approval.approval_not_found': {
+    title: "Couldn't respond to approval",
+    detail: "We can't find that approval anymore — it may have been removed.",
+  },
+  'grant_ticket_approval.invalid_target_entity_type': {
+    title: "Couldn't respond to approval",
+    detail: 'This approval is for a different kind of target and uses a different grant path.',
+  },
+  'grant_ticket_approval.tenant_mismatch': {
+    title: "Couldn't respond to approval",
+    detail: "That approval doesn't belong to this workspace.",
+  },
+  'grant_ticket_approval.invalid_response': {
+    title: "Couldn't respond to approval",
+    detail: 'Decision must be approved or rejected.',
+  },
+  'grant_ticket_approval.ticket_not_found': {
+    title: "Couldn't respond to approval",
+    detail: 'The case this approval is for no longer exists.',
+  },
+  'grant_ticket_approval.cas_lost': {
+    title: 'Approval state changed during grant attempt',
+    detail: 'Please retry.',
+  },
 
   // ─── vendor ──────────────────────────────────────────────────────────────
   'vendor.unavailable': { title: 'Vendor unavailable' },

@@ -441,6 +441,40 @@ A case can sit in `status_category = 'pending_approval'` while an approver weigh
 - `DispatchService.dispatch` **refuses** — you cannot spawn work orders until the approval is settled. This prevents the rollup trigger from flipping the parent away from `pending_approval` prematurely.
 - The resolver still runs at case creation; assignment itself is not blocked, only dispatch.
 
+### Grant path — atomic RPC (B.2.A.Step10, 2026-05-11)
+
+The ticket-target approval grant is one atomic Postgres transaction via `grant_ticket_approval` (migration `00343`). Replaces the pre-Step-10 multi-step write sequence (approvals CAS → domain_events → tickets UPDATE → activity → automation) that could leave the ticket stranded in `pending_approval` if any later step failed.
+
+Callgraph:
+
+- `POST /approvals/:id/respond` → `ApprovalService.respond(...)` → if `target_entity_type='ticket'` → `ApprovalService.grantTicketApproval(...)` → `grant_ticket_approval` RPC (00343).
+- TS layer keeps preflight (`callerCanRespond` authorisation gate + idempotency-key minting via `buildApprovalGrantIdempotencyKey`); the RPC owns the writes.
+
+What the RPC commits in one tx:
+
+1. Advisory lock on `(tenant_id, ':approval:', approval_id)` + `command_operations` idempotency gate keyed on `(tenant_id, p_idempotency_key)`.
+2. `SELECT ... FOR UPDATE` on `approvals`; validates `target_entity_type='ticket'` + `status='pending'`. Non-ticket targets exit as `kind='non_ticket_approved'`; already-decided rows exit as `kind='already_responded'`.
+3. CAS update on the approval row (status + responded_at + comments).
+4. Chain / parallel-group all-resolved gate — if peers in the same chain/group still have `status IN ('pending','delegated')`, returns `kind='partial_approved'` and no ticket transition fires.
+5. `SELECT ... FOR UPDATE` on the target ticket (full projection: `workflow_id`, `sla_id`, `location_id`, `asset_id`, `created_at`).
+6. **Ticket transition** — applied only if ticket is still in `pending_approval`:
+   - `approved` → `(status='new', status_category='new')`.
+   - `rejected` → `(status='rejected', status_category='closed', closed_at=coalesce(closed_at, now()))`.
+7. **Post-grant automation emits** — approve + fully-resolved only:
+   - `sla.timer_recompute_required` (only when `ticket.sla_id` is non-null) — handler reads `ticket.sla_id` at fire time and computes due_at against `started_at = now()` (grant time per spec §3.5 v9 / P-I2).
+   - `routing.evaluation_required` (always) — handler runs the resolver post-commit. Routing eval stays out of the RPC because it touches many tables; porting to PL/pgSQL is a project (§3.5 "Why outbox for routing").
+   - `workflow.start_required` (only when `ticket.workflow_id` is non-null) — handler reads `ticket.workflow_id` at fire time and inserts a `workflow_instances` row with `ON CONFLICT DO NOTHING` against the partial unique index.
+8. `ticket_activities` system_event row + `domain_events` row.
+9. `command_operations` row flipped to `success` with `cached_result`.
+
+**Outbox-handler status (2026-05-11):** the three handlers named above (`SlaTimerHandler`, `RoutingEvaluationHandler`, `WorkflowStartHandler`) are described in spec §3.9.3 but NOT yet implemented. Until they ship, the events emitted by this RPC dead-letter after retry exhaustion (`apps/api/src/modules/outbox/outbox.worker.ts:200-207`, reason='no_handler_registered'). The transactional-boundary collapse is the headline win of this step; handler wiring is a separate workstream. The same pre-existing condition applies to `sla.timer_recompute_required` emitted from 00323 / 00325 / 00334 / 00335.
+
+Idempotency-key shape: `approval:grant:<approval_id>:<client_request_id>`. Helper: `buildApprovalGrantIdempotencyKey(approvalId, clientRequestId)` in `@prequest/shared`. **No actor in the key** — Step-6 lesson (F-CRIT-2): tying the key to actor identity creates a doubling hazard when a delegated approver retries after a network blip.
+
+Booking-target approvals still route through `grant_booking_approval` (00310 / spec §10.1); the two RPCs are siblings with separate idempotency-key prefixes (`approval.grant:` for booking, `approval:grant:` for ticket — the punctuation difference is intentional to prevent cross-prefix collisions).
+
+`visitor_invite`-target approvals still use the legacy TS path; spec §3.5 covers only the ticket branch in this Step.
+
 ---
 
 ## 8a. Changing an assignee — audited paths
