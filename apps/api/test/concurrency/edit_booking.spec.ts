@@ -1,8 +1,8 @@
 /**
- * B.4.A.3 concurrency probe — edit_booking RPC v1 skeleton.
+ * B.4.A.3 concurrency probe — edit_booking RPC v2.
  *
  * Spec ref: docs/follow-ups/b4-booking-edit-pipeline.md §3.2 + §3.4.
- * Migration: supabase/migrations/00361_edit_booking_rpc.sql.
+ * Migration: supabase/migrations/00362_edit_booking_rpc_v2.sql (supersedes 00361).
  *
  * Harness pattern mirrors create_booking_with_attach_plan.spec.ts (00309)
  * + grant_booking_approval.spec.ts (00310) + reclassify_ticket.spec.ts
@@ -14,7 +14,8 @@
  *      domain_events rows written; one booking.location_changed outbox
  *      event emitted.
  *   2. Idempotent replay — same key + same payload returns cached_result;
- *      one bookings row update, one audit event, one outbox emit.
+ *      one bookings row update, one audit event, exactly the same outbox
+ *      emit count after replay (v2 Fix 7).
  *   3. Payload mismatch — same key + different payload →
  *      'command_operations.payload_mismatch'.
  *   4. Stale resolution — bump room_booking_rules.updated_at between
@@ -36,6 +37,10 @@
  *  12. Two concurrent edits on the same booking — second blocks via
  *      advisory lock, then commits (if different key) or returns the
  *      cached_result (if same key).
+ *  13. v2 Fix 6 — work_order_sla_patches with needs_repoint=true emits a
+ *      sla.timer_repointed_required outbox row with the canonical shape
+ *      (work_order_id + started_at + source='edit_booking'). Producer-side
+ *      assertion only; the handler is still ticket-specific until B.4.A.4.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -259,6 +264,72 @@ async function seedBookingRule(
 }
 
 /**
+ * Seed a work_order with the canonical shape for repoint scenarios.
+ * Mirrors the parent_kind='case' shape from update_entity_sla.spec.ts:144-150,
+ * but we don't need a ticket parent for the producer-side outbox emit
+ * assertion — work_orders.parent_kind is mandatory per the polymorphic
+ * split (00213+), so we still need a ticket row. Inline-seed both.
+ */
+async function seedWorkOrderForRepoint(
+  pool: Pool,
+  base: BaseFixture,
+): Promise<{ ticketId: string; workOrderId: string }> {
+  const ticketId = randomUUID();
+  const workOrderId = randomUUID();
+  await withClient(pool, async (c) => {
+    await c.query('begin');
+    try {
+      await c.query(
+        `insert into public.tickets
+           (id, tenant_id, title, status, status_category,
+            requester_person_id, source_channel)
+         values ($1, $2, 'Edit Booking Probe Parent Case', 'new', 'new', $3, 'system')`,
+        [ticketId, base.tenantId, base.personId],
+      );
+      await c.query(
+        `insert into public.work_orders
+           (id, tenant_id, parent_kind, parent_ticket_id,
+            title, status, status_category, source_channel,
+            planned_start_at)
+         values ($1, $2, 'case', $3,
+                 'Edit Booking Probe Setup WO', 'new', 'new', 'system',
+                 '2026-10-01T08:00:00Z'::timestamptz)`,
+        [workOrderId, base.tenantId, ticketId],
+      );
+      await c.query('commit');
+    } catch (e) {
+      await c.query('rollback');
+      throw e;
+    }
+  });
+  // Cleanup. The base fixture cleans up work_orders for the tenant (helpers.ts
+  // :330 inside seedBaseFixture's cleanup transaction) but does NOT clean up
+  // tickets. Registering a separate ticket cleanup here would pop in LIFO
+  // order ahead of the base fixture's cleanup — but at that point the
+  // work_orders still FK-reference the ticket via parent_case_id, so the
+  // delete fails. Workaround: register a tenant-scoped ticket cleanup that
+  // runs AFTER work_orders are gone by enrolling it BEFORE the base fixture's
+  // cleanup… but we can't (the base fixture was registered first). Simpler:
+  // wrap the cleanup in a SET LOCAL session_replication_role='replica' burst
+  // to suppress RI triggers, mirroring the pattern in
+  // seedSecondTenantSpace / seedBaseFixture cleanup blocks (helpers.ts:223-233).
+  registerCleanup(async () => {
+    await withClient(pool, async (c) => {
+      await c.query('begin');
+      try {
+        await c.query("set local session_replication_role = 'replica'");
+        await c.query('delete from public.tickets where id = $1', [ticketId]);
+        await c.query('commit');
+      } catch (e) {
+        await c.query('rollback');
+        throw e;
+      }
+    });
+  });
+  return { ticketId, workOrderId };
+}
+
+/**
  * Build a minimal-but-valid EditPlan that moves the slot's space (and
  * therefore bookings.location_id) to a target space, leaves the time
  * window intact, and bumps the calendar_etag. All optional arrays default
@@ -440,6 +511,21 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
     );
     expect(cmdOpsRows.rows).toHaveLength(1);
     expect(cmdOpsRows.rows[0].outcome).toBe('success');
+
+    // v2 Fix 7 — replay must not double-emit. The RPC's idempotency gate
+    // returns cached_result on the second call, but if it somehow ran
+    // outbox.emit() a second time, the unique-key constraint on
+    // outbox.events would either error or accept duplicates by event_type.
+    // Assert the count seen after the second call equals the count seen
+    // after the first.
+    const outboxCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from outbox.events
+        where tenant_id = $1 and aggregate_id = $2`,
+      [base.tenantId, booking.bookingId],
+    );
+    // First call had a location swap → exactly one booking.location_changed.
+    // Second call (cached_result) must not add to that count.
+    expect(outboxCount.rows[0].n).toBe(1);
   });
 
   // ── Scenario 3: payload mismatch ─────────────────────────────────────
@@ -795,5 +881,95 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
       clientA.release();
       clientB.release();
     }
+  });
+
+  // ── Scenario 13 (v2 Fix 6): needs_repoint outbox shape ───────────────
+  it('needs_repoint WO patch — emits sla.timer_repointed_required with canonical payload', async () => {
+    const base = await seedBaseFixture(pool, `edit-repoint-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    const { workOrderId } = await seedWorkOrderForRepoint(pool, base);
+
+    const newStartAt = '2026-10-01T09:30:00Z';
+    const newSlaDueAt = '2026-10-01T13:30:00Z';
+    const plan: Record<string, unknown> = {
+      _resolution_at: '2026-09-15T00:00:00Z',
+      rule_outcome_fingerprint: 'fingerprint-repoint',
+      client_request_id: 'edit-repoint-crid',
+      approval_outcome_changed: false,
+      booking: {
+        // Required keys (v2 Fix 2). Same space + same window → no
+        // location_changed / cost_changed emits, so the outbox row count
+        // for this booking remains zero. The repoint emit is keyed on
+        // the work_order_id, not the booking.
+        location_id: base.spaceId,
+        start_at: '2026-10-01T10:00:00Z',
+        end_at: '2026-10-01T11:00:00Z',
+        cost_amount_snapshot: 100.0,
+      },
+      slot_patches: [
+        {
+          slot_id: booking.slotId,
+          space_id: base.spaceId,
+          start_at: '2026-10-01T10:00:00Z',
+          end_at: '2026-10-01T11:00:00Z',
+          setup_buffer_minutes: 0,
+          teardown_buffer_minutes: 0,
+          attendee_count: null,
+          attendee_person_ids: null,
+        },
+      ],
+      asset_reservation_patches: [],
+      order_patches: [],
+      work_order_sla_patches: [
+        {
+          id: workOrderId,
+          planned_start_at: newStartAt,
+          sla_due_at: newSlaDueAt,
+          needs_repoint: true,
+        },
+      ],
+    };
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-repoint');
+
+    const result = await runRpcCapture<EditResult>(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.wo_updated).toBe(1);
+    expect(result.value.follow_ups).toContain('sla.timer_repointed_required');
+
+    // Producer-side outbox shape assertion. Handler is ticket-only per
+    // sla-timer-repoint.handler.ts:74-100 — that's a B.4.A.4 follow-up;
+    // here we just assert the emit fired with the right payload so the
+    // future WO-side handler picks it up.
+    const repointRows = await pool.query<{ event_type: string; payload: Record<string, unknown> }>(
+      `select event_type, payload from outbox.events
+        where tenant_id = $1
+          and aggregate_type = 'work_order'
+          and aggregate_id = $2`,
+      [base.tenantId, workOrderId],
+    );
+    expect(repointRows.rows).toHaveLength(1);
+    expect(repointRows.rows[0].event_type).toBe('sla.timer_repointed_required');
+    expect(repointRows.rows[0].payload.work_order_id).toBe(workOrderId);
+    expect(repointRows.rows[0].payload.source).toBe('edit_booking');
+    expect(typeof repointRows.rows[0].payload.started_at).toBe('string');
+
+    // Sanity check the actual work_orders row was rewritten.
+    const woRow = await pool.query<{ planned_start_at: string; sla_resolution_due_at: string }>(
+      'select planned_start_at, sla_resolution_due_at from public.work_orders where id = $1',
+      [workOrderId],
+    );
+    expect(new Date(woRow.rows[0].planned_start_at).toISOString()).toBe(
+      new Date(newStartAt).toISOString(),
+    );
+    expect(new Date(woRow.rows[0].sla_resolution_due_at).toISOString()).toBe(
+      new Date(newSlaDueAt).toISOString(),
+    );
   });
 });

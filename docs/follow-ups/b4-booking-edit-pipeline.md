@@ -13,6 +13,10 @@
 ## Revision history
 
 - **v1 (2026-05-08).** First spec. Hand-verification was thin; internal review surfaced 7 critical citation/contract errors + missed items.
+- **v3.2 (2026-05-12, self-review on B.4.A.3 — supersession via 00362).** Folds 9 fixes into the migration shape. The two doc-impacting items:
+  - §3.2 RPC return shape extended from `{ booking, follow_ups }` to all 6 keys actually returned (booking, follow_ups, slots_updated, assets_updated, orders_updated, wo_updated). TS consumers use the counts for telemetry + operator UX.
+  - §3.4 step 5 semantic-gate narrowing clarified: 00362 narrows the room_booking_rules MAX(updated_at) query to scope-aware buckets mirroring RuleResolverService specificity. `room`-scope rules narrow to exact location match; `space_subtree` + `room_type` stay conservative tenant-wide until the resolver's ancestor walk is replicated in PL/pgSQL (TODO B.4.A.4). No `request_type_id` filter — bookings has no such column (verified live).
+  - Other 7 fixes in 00362 are migration-internal (preserve-or-overwrite optional fields, host_person_id/recurrence_overridden/config_release_id in EditPlan, F-CRIT-2 v_started_at on command_operations.completed_at, service_role-only grant, search_path=public,outbox, concurrency scenario 13 added [12→13], idempotent-replay outbox count assertion).
 - **v3.1 (2026-05-12, codex pass — B.4.A.2 follow-up).** Closes 1 critical on the `validate_entity_in_tenant` allowlist for the §3.6.5 approval-chain INSERTs: `approvals.approver_team_id` (`00012_approvals.sql:12`) references `teams.id` GLOBALLY — the FK does NOT join through `teams.tenant_id` (`00003_people_users_roles.sql:100`). The TS approval-row builder at `apps/api/src/modules/reservations/booking-flow.service.ts:1275-1283` (mirrored by the upcoming edit_booking RPC) writes `approver_team_id` from `ApprovalConfig.required_approvers` with no cross-table tenant check. Same shape as the v3 routing_rule leak (Codex-S8-I1) and v4 booking_rule/cost_center additions. **Fix:** migration 00360 lands `validate_entity_in_tenant` v5 with a `team` kind that joins through `teams.tenant_id`; §3.4 step 4 updated to enumerate it explicitly.
 - **v3 (2026-05-08, codex pass).** Closes 2 criticals + 3 importants + 1 nit on v2:
   - §3.6.5 approval reconciliation extended to cover ALL terminal + non-terminal states. Terminal `approved` + new-different-chain-config is the dangerous gap codex called out: silently preserving the old approval would bypass new approvers. v3 explicitly handles it by expiring old chain + inserting a fresh chain even when terminal-approved.
@@ -119,8 +123,21 @@ public.edit_booking(
   p_tenant_id     uuid,
   p_actor_user_id uuid,
   p_idempotency_key text
-) returns jsonb     -- { booking: row, follow_ups: [...event types emitted] }
+) returns jsonb
 ```
+
+**Return shape (v2 — 6 keys, doc-synced 2026-05-12 self-review Fix 8 in 00362):**
+
+| Key | Type | Description |
+|---|---|---|
+| `booking` | jsonb object | Post-edit booking row — id, tenant_id, location_id, start_at, end_at, cost_amount_snapshot, cost_center_id, calendar_etag, applied_rule_ids, policy_snapshot, host_person_id, recurrence_overridden, config_release_id, status, updated_at. TS callers refresh local cache from this object — it's the canonical post-edit state. |
+| `follow_ups` | jsonb array (strings) | Event-type names that were emitted to the outbox: any of `'booking.location_changed'`, `'booking.cost_changed'`, `'sla.timer_repointed_required'`. Empty array if no derived events fired. |
+| `slots_updated` | int | Count of `booking_slots` rows touched. |
+| `assets_updated` | int | Count of `asset_reservations` rows touched. |
+| `orders_updated` | int | Count of `orders` rows touched (delivery_location_id / requested_for_* fields). |
+| `wo_updated` | int | Count of `work_orders` rows touched (planned_start_at / sla_resolution_due_at). |
+
+TS consumers MUST use the counts for telemetry + the operator-facing UX (e.g. "3 catering orders rescheduled, 1 work order repointed"). A count of 0 with a non-empty patches array of that type signals an FK that wasn't tenant-owned and got filtered at write-time — surface as a 500 (the validate_entity_in_tenant gate should have caught this; reaching this branch is a bug).
 
 ### 3.3 TS plan-build phase
 
@@ -141,7 +158,12 @@ public.edit_booking(
 4. **Tenant-validate every FK in `p_plan`** via `validate_entity_in_tenant` [B.2 dependency]. Rooms (`space`), asset ids (`asset`), line items, work orders (`work_order`), booking rule ids (`booking_rule` for `bookings.applied_rule_ids[]`), cost centers (`cost_center` for `bookings.cost_center_id`), and team approvers (`team` for `approvals.approver_team_id` per §3.6.5 — the FK at `00012_approvals.sql:12` is GLOBAL and does NOT join through `teams.tenant_id`).
 5. **Semantic re-derivation gate** — TS-driven, NOT PG-internal (v3 / codex correction). `RuleResolverService` is TS-only (`apps/api/src/modules/room-booking-rules/rule-resolver.service.ts:87`); there's no PL/pgSQL equivalent. Implementation pattern:
    - The RPC accepts `p_plan.rule_outcome_fingerprint` (a hash of the resolver outcome — final + matched_rule_ids + effects).
-   - **Inside the RPC**, after acquiring the row lock, PG returns the `booking_rules.updated_at` MAX for the affected request_type+scope. If `> p_plan._resolution_at`, the rule set has shifted since plan-build → return 409 `automation_plan.stale_resolution` immediately.
+   - **Inside the RPC**, after acquiring the row lock, PG returns the `room_booking_rules.updated_at` MAX for rules that COULD have matched this booking's location. v2 (00362, Fix 3) narrows from the tenant-wide MAX to a scope-aware MAX mirroring `RuleResolverService` specificity (`rule-resolver.service.ts:84-156` + `bucketRulesBySpecificity` at `:424-464`):
+     - `target_scope = 'tenant'` — always relevant.
+     - `target_scope = 'room' AND target_id = bookings.location_id` — exact leaf match (filters out edits to OTHER rooms' rules, the dominant case on a multi-room tenant).
+     - `target_scope IN ('space_subtree', 'room_type')` — conservative include. Tightening these requires the resolver's ancestor walk (`rule-resolver.service.ts:209-236`) or a `space.type` lookup; both are non-trivial in PL/pgSQL and TODO B.4.A.4 if telemetry shows tenant-wide stale-resolution false-positives remain a hot path even with the room-scope fix.
+     - **No `request_type_id` filter** — `bookings` has no such column (verified against the live remote schema 2026-05-12). The resolver scopes on space/scope, not request type.
+   - If the narrowed MAX `> p_plan._resolution_at`, the relevant rule set has shifted since plan-build → return 409 `automation_plan.stale_resolution` immediately.
    - **The TS caller** wraps the RPC call: if 409 stale_resolution, re-run the resolver, assert the outcome fingerprint matches the previous attempt's, retry once. If the fingerprint changed (new rule, new effect), return 422 `automation_plan.semantic_mismatch` with both fingerprints and the detected delta — operator must review the new outcome before retrying.
    - Single retry by design — repeated stale_resolution implies a hot tenant with admins thrashing rules; user gets surfaced friction, not silent commit of stale state.
    - The PG row lock prevents another writer from racing PAST the gate during the commit; the TS-driven re-derivation handles the case where rules changed BEFORE the gate fired.
