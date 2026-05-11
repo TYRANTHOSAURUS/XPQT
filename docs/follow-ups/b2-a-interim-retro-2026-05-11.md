@@ -14,7 +14,7 @@ all CI gates are 0-violation.
 |---|---|---|---|
 | 1 | Foundation migrations (00316–00322) + helpers | 7 | `d9f63f22…b0c2d32b` |
 | 2 | `RequireClientRequestIdGuard` wave (I1) | 6 | `561c69bc…bdeb98bf` |
-| 3 | §3.1 `transition_entity_status` RPC (00323–00325) | 6 | `909119bc…cda238c4` |
+| 3 | §3.1 `transition_entity_status` RPC (00323–00325) | 4 | `909119bc…cda238c4` |
 | 4 | §3.2 `set_entity_assignment` RPC (00326–00327) | 4 | `0142a16b…524fdfc5` |
 | 5 | §3.3 `update_entity_sla` RPC (00328–00330) | 4 | `aa7a977e…1f2ba339` |
 | 6 | §3.0 `update_entity_combined` orchestrator + controller cutover (00331–00335) | 10 | `bad140d3…aba4c3f7` |
@@ -182,10 +182,18 @@ Step 13's closing retro will sweep them.
 (structural defense against an accidental regression to the
 pre-cutover TS write path).
 
-`pnpm smoke:tickets` — new sibling, 43 probes, all pass. Case-side
+`pnpm smoke:tickets` — new sibling, 88 probes, all pass. Case-side
 mutation matrix (status / waiting_reason / priority / assignment /
-metadata) + concurrency probes (idempotent replay, payload mismatch,
-missing X-Client-Request-Id) + cross-tenant ghost-uuid probes +
+metadata) + concurrency probes (idempotent replay with response-body
+identity, payload mismatch, missing X-Client-Request-Id) + cross-tenant
+probes (ghost uuid + ghost team + cross-tenant assigned_user_id with
+TENANT_B fixture) + state-machine probes (has_open_children gate,
+resolve→close→reopen→re-resolve cycle, terminal-stamp clear-on-leave
++ stamp-fresh-on-reentry per 00325 v2 :199-209, documented whitespace-
+title divergence vs WO trim) + RequireClientRequestIdGuard surface
+coverage (8 endpoints: POST /tickets, /tickets/:id/reassign,
+/tickets/:id/reclassify, /portal/tickets, /approvals/:id/respond,
+/reservations, /reservations/multi-room, /reservations/:id/services) +
 boundary probes (empty body short-circuit, sla_id immutable).
 
 Run both before claiming any future WO/case-surface work shipped:
@@ -195,10 +203,19 @@ pnpm dev:api &
 pnpm smoke:work-orders && pnpm smoke:tickets
 ```
 
-Total: **92 probes** asserting the §3.0 surface end-to-end against
+Total: **137 probes** asserting the §3.0 surface end-to-end against
 the live remote DB. This is the structural gate that catches the
 recurring "tests-pass-but-RPC-was-bypassed" failure mode the WO smoke
 script was originally written to defend against.
+
+Idempotency-key shape is the same on both sides: shared constant
+`PATCH_IDEMPOTENCY_KEY_PREFIX = 'patch'` + helper
+`buildPatchIdempotencyKey(kind, id, cri)` in
+`@prequest/shared/idempotency`. TS services + both smoke scripts
+import / replicate the same shape — a future cutover that changes the
+prefix touches one file in TS and one replica in each .mjs (search
+`PATCH_IDEMPOTENCY_KEY_PREFIX`). The replicas carry cross-reference
+comments so they don't drift.
 
 ## CI gate status at retro
 

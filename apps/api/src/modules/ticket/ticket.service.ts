@@ -1,5 +1,6 @@
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { buildPatchIdempotencyKey } from '@prequest/shared';
 import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
 import { hasOwnDefined } from '../../common/has-own-defined';
 import { SupabaseService } from '../../common/supabase/supabase.service';
@@ -924,10 +925,11 @@ export class TicketService {
     actorAuthUid: string,
     // B.2.A Commit B (§3.0 controller cutover) — threaded from
     // RequireClientRequestIdGuard via the controller for `PATCH /tickets/:id`.
-    // Mints the orchestrator idempotency key as
-    //   `patch:case:${id}:${clientRequestId}`
-    // per spec line 1892. Un-underscored from `_clientRequestId` (Step 2
-    // placeholder) now that the value is actually consumed.
+    // The orchestrator idempotency key is minted via
+    // `buildPatchIdempotencyKey('case', …)` from
+    // `@prequest/shared/idempotency` — single source of truth shared
+    // with the smoke scripts. Un-underscored from `_clientRequestId`
+    // (Step 2 placeholder) now that the value is actually consumed.
     clientRequestId?: string,
   ) {
     const tenant = TenantContext.current();
@@ -1146,7 +1148,7 @@ export class TicketService {
         // (users.auth_uid), NOT users.id. SYSTEM_ACTOR collapses to null
         // so the RPC's lookup at 00333:268-274 falls back cleanly.
         p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
-        p_idempotency_key: this.combinedIdempotencyKey('case', id, clientRequestId),
+        p_idempotency_key: buildPatchIdempotencyKey('case', id, clientRequestId),
         p_patches: patches,
       });
       if (error) throw mapRpcErrorToAppError(error);
@@ -1257,26 +1259,6 @@ export class TicketService {
     // plan columns per 00011_tickets.sql:1-44).
 
     return patches;
-  }
-
-  /**
-   * Mint the outer idempotency key for `update_entity_combined` per spec
-   * line 1892:
-   *   `patch:<kind>:<id>:<client_request_id>`
-   *
-   * F-CRIT-1 (plan-review 2026-05-11): the caller (update()) guards
-   * against a missing clientRequestId by throwing
-   * `command_operations.client_request_id_required` BEFORE this helper
-   * is reached. The legacy randomUUID() fallback has been removed —
-   * a fresh UUID per call was a real footgun (every retry mints a new
-   * key → idempotency is meaningless).
-   */
-  private combinedIdempotencyKey(
-    kind: 'case' | 'work_order',
-    entityId: string,
-    clientRequestId: string,
-  ): string {
-    return `patch:${kind}:${entityId}:${clientRequestId}`;
   }
 
   /**

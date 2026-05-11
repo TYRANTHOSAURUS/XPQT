@@ -3,6 +3,7 @@ import {
   Injectable,
   forwardRef,
 } from '@nestjs/common';
+import { buildPatchIdempotencyKey } from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import {
@@ -156,7 +157,9 @@ export class WorkOrderService {
    * - Commits via a single `update_entity_combined` RPC call (00335 v5).
    *   The RPC writes every branch in one transaction, emits all activity
    *   rows + domain events, and is idempotent via the
-   *   `patch:work_order:<id>:<clientRequestId>` outer key (spec 1892).
+   *   outer key minted via `buildPatchIdempotencyKey('work_order', …)`
+   *   (`@prequest/shared/idempotency`) — shape
+   *   `patch:work_order:<id>:<clientRequestId>` (spec 1892).
    * - Refetches the row after the RPC returns so the response reflects
    *   every RPC-side side effect (resolved_at / closed_at synthesised
    *   by status branch, sla_response_due_at / sla_resolution_due_at
@@ -176,10 +179,11 @@ export class WorkOrderService {
     actorAuthUid: string,
     // B.2.A Commit B (§3.0 controller cutover) — threaded from
     // RequireClientRequestIdGuard via the controller for
-    // `PATCH /work-orders/:id`. Mints the orchestrator idempotency key as
-    //   `patch:work_order:${id}:${clientRequestId}`
-    // per spec line 1892. Un-underscored from `_clientRequestId` (Step 2
-    // placeholder) now that the value is actually consumed.
+    // `PATCH /work-orders/:id`. The orchestrator idempotency key is
+    // minted via `buildPatchIdempotencyKey('work_order', …)` from
+    // `@prequest/shared/idempotency` — single source of truth shared
+    // with the smoke scripts. Un-underscored from `_clientRequestId`
+    // (Step 2 placeholder) now that the value is actually consumed.
     clientRequestId?: string,
   ): Promise<WorkOrderRow> {
     if (!dto || typeof dto !== 'object') {
@@ -367,7 +371,7 @@ export class WorkOrderService {
         p_tenant_id: tenant.id,
         // 00325:89-94 — p_actor_user_id is the auth UID, not users.id.
         p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
-        p_idempotency_key: this.combinedIdempotencyKey(workOrderId, clientRequestId),
+        p_idempotency_key: buildPatchIdempotencyKey('work_order', workOrderId, clientRequestId),
         p_patches: patches,
       },
     );
@@ -487,24 +491,6 @@ export class WorkOrderService {
     }
 
     return patches;
-  }
-
-  /**
-   * Mint the outer idempotency key for `update_entity_combined` per spec
-   * line 1892.
-   *
-   * F-CRIT-1 (plan-review 2026-05-11): the caller (update()) guards
-   * against a missing clientRequestId by throwing
-   * `command_operations.client_request_id_required` BEFORE this helper
-   * is reached. The legacy randomUUID() fallback has been removed — a
-   * fresh UUID per call was a real footgun (every retry mints a new
-   * key → idempotency is meaningless).
-   */
-  private combinedIdempotencyKey(
-    workOrderId: string,
-    clientRequestId: string,
-  ): string {
-    return `patch:work_order:${workOrderId}:${clientRequestId}`;
   }
 
   /**

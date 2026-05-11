@@ -97,17 +97,46 @@ const REAL_PERSON = 'b3a0aa30-3648-4783-92fa-973090877238';
 const GHOST_UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
 // ─────────────────────────────────────────────────────────────────────
+// Idempotency-key shape — kept in lockstep with @prequest/shared/idempotency
+// (packages/shared/src/idempotency.ts:34 + :60-66). The .mjs runtime can't
+// import the TS source directly (no compile step for smoke scripts), so the
+// helper is replicated here with a cross-reference comment. If you change
+// the prefix or shape, update BOTH places in the same commit.
+// Mirrored verbatim in apps/api/scripts/smoke-tickets.mjs:96-100.
+// ─────────────────────────────────────────────────────────────────────
+
+const PATCH_IDEMPOTENCY_KEY_PREFIX = 'patch';
+
+function buildPatchIdempotencyKey(kind, entityId, clientRequestId) {
+  return `${PATCH_IDEMPOTENCY_KEY_PREFIX}:${kind}:${entityId}:${clientRequestId}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Supabase admin singleton — used for command_operations assertion +
+// cleanup of created entities. Lifted to module-level so probes (and
+// mintAdminToken below) can query the table directly without re-creating
+// a client per call. Matches smoke-tickets.mjs:97-110 pattern.
+// ─────────────────────────────────────────────────────────────────────
+
+let SUPA = null;
+function supa() {
+  if (SUPA) return SUPA;
+  SUPA = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  return SUPA;
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Auth — mint a real Admin JWT via Supabase auth.admin.generateLink
 // ─────────────────────────────────────────────────────────────────────
 
 async function mintAdminToken() {
-  const supa = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-  const { data: u } = await supa.auth.admin.getUserById(ADMIN_AUTH_UID);
+  const adm = supa();
+  const { data: u } = await adm.auth.admin.getUserById(ADMIN_AUTH_UID);
   if (!u?.user) throw new Error(`admin auth uid ${ADMIN_AUTH_UID} not found`);
 
-  const { data: link, error: linkErr } = await supa.auth.admin.generateLink({
+  const { data: link, error: linkErr } = await adm.auth.admin.generateLink({
     type: 'magiclink',
     email: u.user.email,
   });
@@ -122,21 +151,6 @@ async function mintAdminToken() {
   const m = loc?.match(/access_token=([^&]+)/);
   if (!m) throw new Error(`no access_token in verify redirect: ${loc}`);
   return m[1];
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Supabase admin singleton — used for command_operations assertion +
-// cleanup of created entities. Lifted to module-level so probes can
-// query the table directly without re-creating a client per call.
-// ─────────────────────────────────────────────────────────────────────
-
-let SUPA = null;
-function supa() {
-  if (SUPA) return SUPA;
-  SUPA = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-  return SUPA;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -212,7 +226,7 @@ async function assertCommandOpRow(name, tenantId, kind, entityId, xCid) {
     console.log(`  ✗ ${name} (command_op assert) — no X-Client-Request-Id captured`);
     return false;
   }
-  const idempotencyKey = `patch:${kind}:${entityId}:${xCid}`;
+  const idempotencyKey = buildPatchIdempotencyKey(kind, entityId, xCid);
   const { data, error } = await supa()
     .from('command_operations')
     .select('outcome, cached_result, completed_at')
