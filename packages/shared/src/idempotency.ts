@@ -315,3 +315,41 @@ export function buildApprovalGrantIdempotencyKey(
 ): string {
   return `${APPROVAL_GRANT_IDEMPOTENCY_KEY_PREFIX}:${approvalId}:${clientRequestId}`;
 }
+
+/**
+ * Prefix for the `edit_booking` outer idempotency key. B.4.A.2 foundation —
+ * paired with the upcoming `edit_booking(...)` RPC (B.4 §3.4). Namespaced
+ * separately from every other prefix so an edit retry against a booking
+ * can never collide with a dispatch / patch / approval call.
+ *
+ * Citations:
+ *   - docs/follow-ups/b4-booking-edit-pipeline.md §3.2 (RPC signature
+ *     accepts `p_idempotency_key text`)
+ *   - docs/follow-ups/b4-booking-edit-pipeline.md §3.4 step 2 (the RPC
+ *     gates on `command_operations` keyed on this prefix)
+ */
+export const EDIT_BOOKING_IDEMPOTENCY_KEY_PREFIX = 'booking:edit';
+
+/**
+ * Build the outer idempotency key for `edit_booking`. Shape:
+ *   `booking:edit:<booking_id>:<clientRequestId>`
+ *
+ * Same booking + same clientRequestId ⇒ same key ⇒ `command_operations`
+ * short-circuits the second call. **No actor in the key** — F-CRIT-2 /
+ * plan-C1 (dispatch RPC) and the matching B.2.A.Step8 lesson: the
+ * clientRequestId is the deduplication boundary. Tying it to actor
+ * identity defeats the deduplication contract — same booking + same
+ * client retry across a delegation switch (e.g. operator A retries,
+ * operator B picks it up with the same crid) would mint different keys
+ * and double-write.
+ *
+ * Cross-actor collisions are the controller's concern: different
+ * operations should mint different clientRequestIds client-side. That's
+ * a request-shape contract, not a key-shape one.
+ */
+export function buildEditBookingIdempotencyKey(
+  bookingId: string,
+  clientRequestId: string,
+): string {
+  return `${EDIT_BOOKING_IDEMPOTENCY_KEY_PREFIX}:${bookingId}:${clientRequestId}`;
+}

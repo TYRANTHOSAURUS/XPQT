@@ -1700,6 +1700,17 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't dispatch",
     detail: 'The routing rule is not part of this tenant.',
   },
+  // v4 (00359) — B.4.A.2 booking-edit foundation. Same voice as the rest
+  // of the family even though the trigger surface is the upcoming
+  // edit_booking RPC, not dispatch — the registry shape stays uniform.
+  'validate_entity_in_tenant.booking_rule_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The booking rule is not part of this tenant.',
+  },
+  'validate_entity_in_tenant.cost_center_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The cost center is not part of this tenant.',
+  },
 };
 
 /**

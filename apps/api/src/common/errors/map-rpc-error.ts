@@ -110,6 +110,12 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'validate_entity_in_tenant.sla_policy_not_in_tenant': 404,
   'validate_entity_in_tenant.person_not_in_tenant': 404,
   'validate_entity_in_tenant.routing_rule_not_in_tenant': 404,
+  // booking_rule + cost_center added in v4 (00359) for B.4.A.2 — same
+  // 404 shape as the rest of the family. booking_rule guards
+  // bookings.applied_rule_ids[] (→ public.room_booking_rules);
+  // cost_center guards bookings.cost_center_id (→ public.cost_centers).
+  'validate_entity_in_tenant.booking_rule_not_in_tenant': 404,
+  'validate_entity_in_tenant.cost_center_not_in_tenant': 404,
   // B.2.A.Step12 §3.11 — create RPC's request-type-not-found path.
   'create_ticket_with_automation.request_type_not_found': 404,
   // B.2.A.Step11 §3.10 — reclassify_ticket RPC.

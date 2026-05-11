@@ -1592,6 +1592,16 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kan niet uitdelen',
     detail: 'De routeringsregel hoort niet bij deze tenant.',
   },
+  // v4 (00359) — B.4.A.2 booking-edit foundation. Voice mirrors the
+  // rest of the validate_entity_in_tenant family.
+  'validate_entity_in_tenant.booking_rule_not_in_tenant': {
+    title: 'Kan niet uitdelen',
+    detail: 'De boekingsregel hoort niet bij deze tenant.',
+  },
+  'validate_entity_in_tenant.cost_center_not_in_tenant': {
+    title: 'Kan niet uitdelen',
+    detail: 'De kostenplaats hoort niet bij deze tenant.',
+  },
 };
 
 /**

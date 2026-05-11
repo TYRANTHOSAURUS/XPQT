@@ -535,6 +535,14 @@ export type KnownErrorCode =
   | 'validate_entity_in_tenant.sla_policy_not_in_tenant'
   | 'validate_entity_in_tenant.person_not_in_tenant'
   | 'validate_entity_in_tenant.routing_rule_not_in_tenant'
+  // v4 (00359) — B.4.A.2 edit_booking foundation. booking_rule covers the
+  // bookings.applied_rule_ids[] (→ room_booking_rules) cross-tenant gap;
+  // cost_center covers the bookings.cost_center_id (→ cost_centers) FK
+  // the edit_booking RPC rewrites when the host's default differs by
+  // building. Both routed to 404 by map-rpc-error STATUS_BY_CODE,
+  // mirroring the v3 'routing_rule' addition.
+  | 'validate_entity_in_tenant.booking_rule_not_in_tenant'
+  | 'validate_entity_in_tenant.cost_center_not_in_tenant'
 
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
@@ -1287,6 +1295,8 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'validate_entity_in_tenant.sla_policy_not_in_tenant',
   'validate_entity_in_tenant.person_not_in_tenant',
   'validate_entity_in_tenant.routing_rule_not_in_tenant',
+  'validate_entity_in_tenant.booking_rule_not_in_tenant',
+  'validate_entity_in_tenant.cost_center_not_in_tenant',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */
