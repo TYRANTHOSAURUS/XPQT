@@ -448,6 +448,7 @@ export type KnownErrorCode =
   | 'update_entity_sla.timers_required'
   | 'update_entity_sla.sla_id_required'
   | 'sla.policy_not_found'
+  | 'sla.policy_has_no_targets'
 
   // ─── B.2.A §3.0 update_entity_combined RPC (00331) ───────────────────────
   | 'update_entity_combined.unknown_kind'
@@ -1158,6 +1159,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'update_entity_sla.timers_required',
   'update_entity_sla.sla_id_required',
   'sla.policy_not_found',
+  'sla.policy_has_no_targets',
   'update_entity_combined.unknown_kind',
   'update_entity_combined.not_found',
   'update_entity_combined.invalid_patches',

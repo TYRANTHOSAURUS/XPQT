@@ -579,6 +579,10 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon SLA niet bijwerken',
     detail: 'SLA-beleid niet gevonden in deze tenant.',
   },
+  'sla.policy_has_no_targets': {
+    title: 'Kon SLA niet toewijzen',
+    detail: 'Deze SLA-policy heeft geen response- of resolution-target ingesteld. Stel er minimaal één in voordat je deze toewijst.',
+  },
   'order.line_invalid': { title: 'Kon niet toevoegen — ongeldige regel' },
 
   // ─── reference / fk ──────────────────────────────────────────────────────

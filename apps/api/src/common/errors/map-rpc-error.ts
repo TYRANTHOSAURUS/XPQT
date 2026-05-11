@@ -59,6 +59,12 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // layer guard at TicketService.update + WorkOrderService.update which
   // catches internal callers bypassing the controller.
   'command_operations.client_request_id_required': 400,
+  // CODEX-B-3: SLA policy missing both response_time_minutes +
+  // resolution_time_minutes. Raised TS-side in
+  // SlaService.buildTimersForRpc (not by an RPC) — listed here for
+  // defense-in-depth so that any future RPC-side raise of the same
+  // code routes to 400 consistently.
+  'sla.policy_has_no_targets': 400,
 
   // ── 404 not_found ────────────────────────────────────────────────
   'transition_entity_status.not_found': 404,
@@ -132,32 +138,31 @@ export function mapRpcErrorToAppError(
 
   const code = candidate as KnownErrorCode;
   const status = STATUS_BY_CODE[code] ?? 400;
-  const detail = stripCodePrefix(message);
 
+  // CODEX-B-1 (2026-05-11): for REGISTERED codes, do NOT pass `detail`.
+  // The renderer (normalize.ts:181-189) prefers an explicit detail
+  // override over the registry copy from messages.en/nl. Passing the
+  // stripped SQL raise tail (`case=<uuid> open_children=3`,
+  // `kind=case id=<uuid>`, etc.) leaked operator-only diagnostic
+  // strings into user-visible wire bodies — e.g.
+  // `transition_entity_status.has_open_children` was rendered as the
+  // SQL tail instead of the curated "This case has open work orders."
+  // copy. Keep `cause: error` so the filter's logger captures the
+  // PostgrestError for traceId association; the user just sees the
+  // registry detail.
   switch (status) {
     case 404:
       // notFoundWithCode rather than notFound(entity, id) because the entity
       // alias on the wire is `<namespace>.<specifier>`, not the standard
       // `<entity>.not_found` shape.
-      return AppErrors.notFoundWithCode(code, detail, { cause: error });
+      return AppErrors.notFoundWithCode(code, undefined, { cause: error });
     case 409:
-      return AppErrors.conflict(code, { detail, cause: error });
+      return AppErrors.conflict(code, { cause: error });
     case 500:
-      return AppErrors.server(code, { detail, cause: error });
+      return AppErrors.server(code, { cause: error });
     case 400:
     default:
-      return AppErrors.validationFailed(code, { detail, cause: error });
+      return AppErrors.validationFailed(code, { cause: error });
   }
 }
 
-/**
- * Strip the leading `<namespace>.<specifier>: ` prefix from a RAISE message
- * so callers can present the human-readable tail. If the message is just
- * the code (no `: tail`), returns undefined so AppError.detail stays unset.
- */
-function stripCodePrefix(message: string): string | undefined {
-  const idx = message.indexOf(': ');
-  if (idx < 0) return undefined;
-  const tail = message.slice(idx + 2).trim();
-  return tail.length > 0 ? tail : undefined;
-}

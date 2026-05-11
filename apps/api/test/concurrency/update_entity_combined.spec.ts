@@ -100,6 +100,34 @@
  *      two 'sla.timer_recompute_required' rows
  *      (actions = ['pause','post_sla_install_in_waiting']).
  *
+ *  17. SLA no-op fast path does NOT trigger v4 post-sla hook (v5 /
+ *      codex CODEX-B-2). Pre-seed slaA with paused timers via a status
+ *      branch (so `status_category='waiting', waiting_reason='vendor'`
+ *      and timers carry recompute_pending=true from the status branch).
+ *      Then call the orchestrator with a status branch that re-asserts
+ *      waiting + an sla branch whose sla_id is UNCHANGED + no timers
+ *      payload — the sla sub-RPC's no-op fast path
+ *      (00330:179-194) returns `noop=true, timers_inserted=0` without
+ *      writing rows. v5 gates the post-sla hook on `timers_inserted > 0`,
+ *      so no second 'post_sla_install_in_waiting' outbox event should
+ *      fire. Asserts branches_applied includes sla, v_sla_result is
+ *      noop with timers_inserted=0, and exactly ONE
+ *      'sla.timer_recompute_required' row (from the status branch),
+ *      NOT two.
+ *
+ *  18. SLA-only repoint in pre-existing waiting state still fires the
+ *      v4 hook when fresh timers are installed (v5 / codex CODEX-B-2
+ *      "gate correctness, not gate-everything"). Pre-seed: place the
+ *      case in waiting/vendor with slaA timers via separate calls.
+ *      Then orchestrator call with NO status branch but an sla branch
+ *      that swaps slaA → slaB (fresh timers payload). The sub-RPC
+ *      inserts 2 fresh timers (timers_inserted=2). v5 should still
+ *      fire the post-sla hook (post-call status is still 'waiting' and
+ *      timers_inserted > 0). Asserts: fresh active timers under slaB
+ *      with recompute_pending=true, ONE additional
+ *      'sla.timer_recompute_required' outbox event with
+ *      action='post_sla_install_in_waiting'.
+ *
  * Sentinel for inner idempotency keys (F1): `__combined__:`. Direct
  * callers of transition_entity_status / set_entity_assignment /
  * update_entity_sla MUST NOT mint keys with this prefix.
@@ -1710,6 +1738,266 @@ describe('update_entity_combined — §3.0 orchestrator RPC', () => {
     expect(outboxRows.rowCount).toBe(2);
     const actions = outboxRows.rows.map((r) => r.action).sort();
     expect(actions).toEqual(['pause', 'post_sla_install_in_waiting'].sort());
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  it('scenario 17: sla no-op fast path does NOT trigger v4 post-sla hook — v5 / codex CODEX-B-2 gate', async () => {
+    // Plan-review CODEX-B-2 (00335 v5): the v4 hook fired whenever the
+    // sla branch was present (00334:744). But the sla sub-RPC has a
+    // no-op fast path (00330:179-194) — same sla_id + no timers payload
+    // returns `noop=true, timers_inserted=0` without writing any rows.
+    // Under v4 the hook STILL fired in that case, redundantly bumping
+    // recompute_pending=true on whatever timers existed and emitting a
+    // spurious outbox event with action='post_sla_install_in_waiting'
+    // that didn't describe reality (no fresh timers installed).
+    //
+    // v5 gates the hook on `timers_inserted > 0` in addition to the
+    // branch-applied check (00335:737-738). When the sub-RPC short-
+    // circuits via its no-op fast path, the hook MUST NOT fire.
+    //
+    // Setup: place the case in waiting/vendor with slaA timers via a
+    // separate (non-combined) call so we have a clean "no-op input"
+    // scenario for the orchestrator (same sla_id, no timers payload).
+    const base = await seedBaseFixture(pool, `comb-sla-noop-hook-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const slaA = await seedSlaPolicy(pool, base.tenantId, { name: 'slaA' });
+
+    // Step 1: install slaA with timers.
+    const setupSla = await runRpcCapture<SlaInnerResult>(
+      pool,
+      'public.update_entity_sla',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `comb-sla-noop-hook-setup-sla-${ticketId}`,
+        { sla_id: slaA.slaId, timers: buildTimersPayload(slaA) },
+      ],
+    );
+    expect(setupSla.kind).toBe('ok');
+
+    // Step 2: transition to waiting/vendor (status branch alone) so
+    // active timers have recompute_pending=true.
+    const setupStatus = await runRpcCapture<Record<string, unknown>>(
+      pool,
+      'public.transition_entity_status',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `comb-sla-noop-hook-setup-status-${ticketId}`,
+        { status_category: 'waiting', waiting_reason: 'vendor' },
+      ],
+    );
+    expect(setupStatus.kind).toBe('ok');
+
+    // Snapshot outbox count BEFORE the orchestrator call. The setup
+    // status branch emits one 'sla.timer_recompute_required'
+    // (action='pause') because 'vendor' is in slaA's default
+    // pause_on_waiting_reasons (00008:11).
+    const outboxBefore = (await pool.query(
+      `select count(*)::int as n from outbox.events
+        where tenant_id = $1 and aggregate_id = $2
+          and event_type = 'sla.timer_recompute_required'`,
+      [base.tenantId, ticketId],
+    )).rows[0].n as number;
+    expect(outboxBefore).toBe(1);
+
+    // Snapshot active timers — should all be present + paused.
+    const beforeTimers = await pool.query(
+      `select id, recompute_pending, paused
+         from public.sla_timers
+        where tenant_id = $1 and ticket_id = $2
+          and stopped_at is null and completed_at is null`,
+      [base.tenantId, ticketId],
+    );
+    expect(beforeTimers.rowCount).toBe(2);
+
+    // Orchestrator call: status branch re-asserts waiting/vendor
+    // (no-op at the status sub-RPC since the entity is already
+    // waiting/vendor) + sla branch with SAME sla_id and NO timers
+    // payload (the no-op fast-path scenario at 00330:179-194).
+    const idem = `comb-sla-noop-hook-${ticketId}`;
+    const result = await runRpcCapture<CombinedResult>(
+      pool,
+      'public.update_entity_combined',
+      [
+        'case',
+        ticketId,
+        base.tenantId,
+        null,
+        idem,
+        {
+          status_category: 'waiting',
+          waiting_reason: 'vendor',
+          sla: { sla_id: slaA.slaId }, // same sla_id, no timers — no-op
+        },
+      ],
+    );
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.branches_applied.sort()).toEqual(['sla', 'status'].sort());
+
+    // Sub-RPC result confirms no-op fast path.
+    const slaResult = result.value.sla as unknown as SlaInnerResult;
+    expect(slaResult.noop).toBe(true);
+    expect(slaResult.timers_inserted).toBe(0);
+
+    // v5 assertion: outbox count UNCHANGED. The v4 hook should NOT
+    // have fired (no fresh timers were installed). Under v4 this
+    // would have been outboxBefore + 1.
+    const outboxAfter = (await pool.query(
+      `select count(*)::int as n from outbox.events
+        where tenant_id = $1 and aggregate_id = $2
+          and event_type = 'sla.timer_recompute_required'`,
+      [base.tenantId, ticketId],
+    )).rows[0].n as number;
+    expect(outboxAfter).toBe(outboxBefore);
+
+    // Specifically: no row carries action='post_sla_install_in_waiting'.
+    const postHookRows = await pool.query(
+      `select 1 from outbox.events
+        where tenant_id = $1 and aggregate_id = $2
+          and event_type = 'sla.timer_recompute_required'
+          and payload->>'action' = 'post_sla_install_in_waiting'`,
+      [base.tenantId, ticketId],
+    );
+    expect(postHookRows.rowCount).toBe(0);
+
+    // Active timers are unchanged — same ids, recompute_pending value
+    // preserved from whatever the status branch / setup left them at.
+    // (The status sub-RPC itself is a no-op here because the entity
+    // is already waiting/vendor, so it shouldn't re-bump.)
+    const afterTimers = await pool.query(
+      `select id, recompute_pending, paused
+         from public.sla_timers
+        where tenant_id = $1 and ticket_id = $2
+          and stopped_at is null and completed_at is null
+        order by id`,
+      [base.tenantId, ticketId],
+    );
+    expect(afterTimers.rowCount).toBe(2);
+    // Same ids — the sla branch did NOT stop + reinsert.
+    const beforeIds = beforeTimers.rows.map((r) => r.id as string).sort();
+    const afterIds = afterTimers.rows.map((r) => r.id as string).sort();
+    expect(afterIds).toEqual(beforeIds);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  it('scenario 18: pre-existing waiting state + sla repoint with fresh insert STILL fires v4 hook — v5 gate correctness', async () => {
+    // Companion to scenario 17. The v5 gate (`timers_inserted > 0`)
+    // should NOT block the hook when the sla branch genuinely installs
+    // fresh timers. This scenario verifies the gate is correct: the
+    // hook fires even when there's no status branch in the current
+    // PATCH, as long as (a) the entity is in waiting state and (b)
+    // the sla sub-RPC installed fresh timers.
+    //
+    // Setup: place the case in waiting/vendor with slaA timers, like
+    // scenario 17. Then orchestrator call with NO status branch and
+    // an sla swap (slaA → slaB, fresh timers payload). Sub-RPC inserts
+    // 2 fresh timers (timers_inserted=2). v5 gate is satisfied, hook
+    // fires.
+    const base = await seedBaseFixture(pool, `comb-sla-repoint-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const slaA = await seedSlaPolicy(pool, base.tenantId, { name: 'slaA' });
+    const slaB = await seedSlaPolicy(pool, base.tenantId, { name: 'slaB' });
+
+    // Step 1: install slaA with timers.
+    const setupSla = await runRpcCapture<SlaInnerResult>(
+      pool,
+      'public.update_entity_sla',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `comb-sla-repoint-setup-sla-${ticketId}`,
+        { sla_id: slaA.slaId, timers: buildTimersPayload(slaA) },
+      ],
+    );
+    expect(setupSla.kind).toBe('ok');
+
+    // Step 2: transition to waiting/vendor.
+    const setupStatus = await runRpcCapture<Record<string, unknown>>(
+      pool,
+      'public.transition_entity_status',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `comb-sla-repoint-setup-status-${ticketId}`,
+        { status_category: 'waiting', waiting_reason: 'vendor' },
+      ],
+    );
+    expect(setupStatus.kind).toBe('ok');
+
+    // Snapshot outbox count BEFORE — setup status branch emitted one
+    // 'pause' row.
+    const outboxBefore = (await pool.query(
+      `select count(*)::int as n from outbox.events
+        where tenant_id = $1 and aggregate_id = $2
+          and event_type = 'sla.timer_recompute_required'`,
+      [base.tenantId, ticketId],
+    )).rows[0].n as number;
+    expect(outboxBefore).toBe(1);
+
+    // Orchestrator call: NO status branch, just sla swap with fresh
+    // timers. The sub-RPC stops slaA timers, inserts slaB timers
+    // (timers_inserted=2). v5 hook gate satisfied; the orchestrator
+    // re-reads post-call status (still 'waiting' from setup), bumps
+    // fresh timers recompute_pending=true, and emits one
+    // 'post_sla_install_in_waiting' event.
+    const idem = `comb-sla-repoint-${ticketId}`;
+    const result = await runRpcCapture<CombinedResult>(
+      pool,
+      'public.update_entity_combined',
+      [
+        'case',
+        ticketId,
+        base.tenantId,
+        null,
+        idem,
+        { sla: { sla_id: slaB.slaId, timers: buildTimersPayload(slaB) } },
+      ],
+    );
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.branches_applied).toEqual(['sla']);
+
+    // Sub-RPC inserted fresh rows.
+    const slaResult = result.value.sla as unknown as SlaInnerResult;
+    expect(slaResult.noop).toBe(false);
+    expect(slaResult.timers_inserted).toBe(2);
+
+    // v5 hook fired: fresh slaB timers carry recompute_pending=true.
+    const freshTimers = await pool.query(
+      `select sla_policy_id, recompute_pending
+         from public.sla_timers
+        where tenant_id = $1 and ticket_id = $2
+          and stopped_at is null and completed_at is null
+        order by timer_type`,
+      [base.tenantId, ticketId],
+    );
+    expect(freshTimers.rowCount).toBe(2);
+    expect(freshTimers.rows.every((r) => r.sla_policy_id === slaB.slaId)).toBe(true);
+    expect(freshTimers.rows.every((r) => r.recompute_pending === true)).toBe(true);
+
+    // Exactly ONE additional outbox event from this call, with action=
+    // 'post_sla_install_in_waiting' (no status branch in this call, so
+    // no extra 'pause' / 'resume').
+    const outboxAfter = await pool.query(
+      `select payload->>'action' as action
+         from outbox.events
+        where tenant_id = $1 and aggregate_id = $2
+          and event_type = 'sla.timer_recompute_required'
+        order by enqueued_at`,
+      [base.tenantId, ticketId],
+    );
+    expect(outboxAfter.rowCount).toBe(outboxBefore + 1);
+    expect(outboxAfter.rows[outboxAfter.rowCount! - 1].action).toBe('post_sla_install_in_waiting');
   });
 });
 

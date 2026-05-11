@@ -600,6 +600,10 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't update SLA",
     detail: 'SLA policy not found in this tenant.',
   },
+  'sla.policy_has_no_targets': {
+    title: "Couldn't assign SLA",
+    detail: 'This SLA policy has no response or resolution targets configured. Set at least one before assigning it.',
+  },
   'order.line_invalid': { title: "Couldn't add — invalid line" },
 
   // ─── reference / fk ──────────────────────────────────────────────────────

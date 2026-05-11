@@ -85,3 +85,48 @@ were intentionally not folded into the Commit-B remediation pass
   return the full updated row in cached_result (currently it returns
   only branch-specific subset). Defer to a 00335+ migration alongside
   Step 7 (smoke probe extension).
+
+## §3.0 update_entity_combined — Commit B codex remediation (v5)
+
+Items shipped as 00335 (v5 supersedes 00334) and TS-side fixes
+following the post-Commit-B codex review (2026-05-11):
+
+- **00335 v5 supersedes 00334 v4.** v4's post-SLA recompute hook
+  (00334:744-766) fired whenever the sla branch was present, but the
+  sla sub-RPC has a no-op fast path (00330:179-194) that returns
+  `noop=true, timers_inserted=0` without writing rows. Under v4 the
+  hook emitted a spurious outbox event with action=
+  'post_sla_install_in_waiting' that didn't describe reality (no
+  fresh timers installed) + redundantly UPDATEd recompute_pending=true
+  on whatever timers already existed. v5 gates the hook on
+  `coalesce((v_sla_result->>'timers_inserted')::int, 0) > 0`
+  (00335:737-738) so it only fires when fresh rows were actually
+  installed. Verified by harness scenarios 17 + 18.
+
+- **`sla.policy_has_no_targets` registered (codex CODEX-B-3,
+  2026-05-11).** sla_policies.response_time_minutes +
+  resolution_time_minutes are BOTH nullable in schema (00008:8-9);
+  the admin POST/PATCH accepts that shape. Pre-fix, assigning such a
+  no-target policy to an entity resulted in `buildTimersForRpc`
+  returning `[]`, the RPC raising `update_entity_sla.timers_required`,
+  which mapped to 500 (a programmer-error code). The actual problem is
+  user/admin configuration → fix is to reject in
+  `SlaService.buildTimersForRpc` with the new `sla.policy_has_no_targets`
+  code (400 with curated copy: "This SLA policy has no response or
+  resolution targets configured. Set at least one before assigning
+  it."). Registered in `packages/shared/src/error-codes.ts` +
+  `messages.{en,nl}.ts` (both apps/api + apps/web) +
+  `STATUS_BY_CODE['sla.policy_has_no_targets'] = 400`.
+
+- **AppError detail leak on registered codes (codex CODEX-B-1,
+  2026-05-11).** `mapRpcErrorToAppError` previously passed
+  `detail: stripCodePrefix(message)` into every AppError factory when
+  the RPC raised a registered code. `normalize.ts:181-189` prefers an
+  explicit detail override over the registry copy from messages.en/nl,
+  so the operator-only SQL raise tail (`kind=case id=<uuid>`,
+  `case=<uuid> open_children=3`) leaked onto the wire instead of the
+  curated user-facing copy. Fix: when the code is REGISTERED, do NOT
+  pass `detail` to the factory — let the renderer fall through to the
+  registry copy. The original PostgrestError stays attached as `cause`
+  for server-side logging. Only the fallback / unknown-code path keeps
+  `detail: message`. Reference: `apps/api/src/common/errors/map-rpc-error.ts`.

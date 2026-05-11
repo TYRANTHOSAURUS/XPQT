@@ -179,6 +179,26 @@ export class SlaService {
       );
     }
 
+    // CODEX-B-3 (2026-05-11): reject SLA policies that have no targets.
+    // sla_policies.response_time_minutes + resolution_time_minutes are
+    // BOTH nullable in schema (00008:8-9); the admin POST/PATCH at
+    // sla-policy.controller.ts:79-93 accepts that shape. But the timer-
+    // build contract for the RPC requires at least one timer in the
+    // payload — without targets we return `[]`, the RPC sees a non-null
+    // sla_id without timers, and raises `update_entity_sla.timers_required`
+    // which maps to 500 (a programmer-error code). The real problem is
+    // user/admin configuration — "this policy has no SLA targets" — and
+    // surfaces best as a 400 with a registered code the renderer knows.
+    if (
+      (policy.response_time_minutes as number | null | undefined) == null &&
+      (policy.resolution_time_minutes as number | null | undefined) == null
+    ) {
+      throw AppErrors.badRequest(
+        'sla.policy_has_no_targets',
+        `SLA policy ${slaPolicyId} has no response_time_minutes or resolution_time_minutes configured. Set at least one before assigning it to an entity.`,
+      );
+    }
+
     const calendar = await this.loadCalendar(
       (policy.business_hours_calendar_id as string | null) ?? null,
     );
