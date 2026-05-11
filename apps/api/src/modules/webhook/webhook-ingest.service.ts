@@ -4,7 +4,6 @@ import { TenantContext } from '../../common/tenant-context';
 import { AppErrors } from '../../common/errors';
 import { TenantService } from '../tenant/tenant.service';
 import { TicketService } from '../ticket/ticket.service';
-import { WorkflowEngineService } from '../workflow/workflow-engine.service';
 import { WebhookAuthService } from './webhook-auth.service';
 import { WebhookEventService } from './webhook-event.service';
 import { WebhookMappingService } from './webhook-mapping.service';
@@ -36,7 +35,6 @@ export class WebhookIngestService {
     private readonly mapping: WebhookMappingService,
     private readonly events: WebhookEventService,
     @Inject(forwardRef(() => TicketService)) private readonly tickets: TicketService,
-    @Inject(forwardRef(() => WorkflowEngineService)) private readonly workflow: WorkflowEngineService,
   ) {}
 
   async ingest(payload: Record<string, unknown>, meta: IngestRequestMeta): Promise<IngestResponse> {
@@ -80,14 +78,23 @@ export class WebhookIngestService {
           externalId: meta.externalId,
         });
 
-        const webhookHasWorkflowOverride = !!webhook.workflow_id;
-        const ticket = await this.tickets.create(dto, { skipWorkflow: webhookHasWorkflowOverride });
+        // F-CRIT-2 / Option B: pre-cutover the webhook called
+        // TicketService.create({ skipWorkflow: true }) then explicitly
+        // ran WorkflowEngineService.startForTicket(ticket.id, webhook.workflow_id).
+        // Post-cutover the RPC also emits workflow.start_required → race
+        // between the explicit start and the handler. Fix: thread the
+        // webhook's workflow_id as forceWorkflowDefinitionId so the RPC
+        // owns the override; tickets.workflow_id + the outbox emit
+        // carry the forced id; the handler starts the right workflow.
+        // No separate startForTicket call needed.
+        const ticket = await this.tickets.create(dto, {
+          forceWorkflowDefinitionId: webhook.workflow_id ?? undefined,
+        });
 
-        let workflowInstanceId: string | null = null;
-        if (webhookHasWorkflowOverride && webhook.workflow_id) {
-          const instance = await this.workflow.startForTicket(ticket.id as string, webhook.workflow_id);
-          workflowInstanceId = instance?.id ?? null;
-        }
+        // workflow_instance_id is no longer available synchronously
+        // (start is handler-driven). Return null; the response shape is
+        // preserved for upstream contract compatibility.
+        const workflowInstanceId: string | null = null;
 
         await this.markUsed(webhook.id, webhook.tenant_id);
         await this.events.log({

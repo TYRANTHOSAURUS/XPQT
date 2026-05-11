@@ -310,6 +310,36 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon niet herclassificeren — gebruiker niet in deze werkruimte',
   },
 
+  // ─── create_ticket_with_automation (§3.11) ───────────────────────────────
+  'create_ticket_with_automation.input_invalid': {
+    title: 'Kon ticket niet aanmaken — verzoek was ongeldig',
+    detail: 'Verplichte velden ontbraken of waren onjuist. Ververs en probeer opnieuw.',
+  },
+  'create_ticket_with_automation.request_type_not_found': {
+    title: 'Kon ticket niet aanmaken — verzoektype is inactief of bestaat niet',
+    detail: 'Mogelijk is dit verzoektype gedeactiveerd. Kies een ander.',
+  },
+  'create_ticket_with_automation.malformed_response': {
+    title: 'Kon ticket niet aanmaken — onverwacht serverantwoord',
+    detail: 'Probeer opnieuw. Als het probleem blijft, neem contact op met support.',
+  },
+  'automation_plan.effective_location_mismatch': {
+    title: 'Kon ticket niet aanmaken — locatieresolutie is gewijzigd',
+    detail: 'Ververs en probeer opnieuw — de pagina toont verouderde gegevens.',
+  },
+  'automation_plan.semantic_mismatch': {
+    title: 'Kon ticket niet aanmaken — verzoektype-configuratie is gewijzigd',
+    detail: 'Ververs en probeer opnieuw — de pagina toont verouderde gegevens.',
+  },
+  'automation_plan.scope_override_mismatch': {
+    title: 'Kon ticket niet aanmaken — verzoektype-configuratie is gewijzigd',
+    detail: 'Ververs en probeer opnieuw — de pagina toont verouderde gegevens.',
+  },
+  'automation_plan.routing_input_mismatch': {
+    title: 'Kon ticket niet aanmaken — routeringgegevens zijn gewijzigd',
+    detail: 'Ververs en probeer opnieuw — de pagina toont verouderde gegevens.',
+  },
+
   // ─── dispatch ────────────────────────────────────────────────────────────
   'dispatch.title_required': { title: 'Kon niet uitsturen — titel verplicht' },
   'dispatch.from_work_order': {

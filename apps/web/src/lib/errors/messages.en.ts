@@ -331,6 +331,36 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't reclassify — actor not in this workspace",
   },
 
+  // ─── create_ticket_with_automation (§3.11) ───────────────────────────────
+  'create_ticket_with_automation.input_invalid': {
+    title: "Couldn't create ticket — request was invalid",
+    detail: 'Some required fields were missing or malformed. Refresh and try again.',
+  },
+  'create_ticket_with_automation.request_type_not_found': {
+    title: "Couldn't create ticket — request type is inactive or missing",
+    detail: 'Someone may have deactivated this request type. Pick another one.',
+  },
+  'create_ticket_with_automation.malformed_response': {
+    title: "Couldn't create ticket — unexpected server response",
+    detail: 'Try again. If the problem persists, contact support.',
+  },
+  'automation_plan.effective_location_mismatch': {
+    title: "Couldn't create ticket — location resolution changed",
+    detail: 'Refresh and try again — the page is showing stale data.',
+  },
+  'automation_plan.semantic_mismatch': {
+    title: "Couldn't create ticket — request type configuration changed",
+    detail: 'Refresh and try again — the page is showing stale data.',
+  },
+  'automation_plan.scope_override_mismatch': {
+    title: "Couldn't create ticket — request type configuration changed",
+    detail: 'Refresh and try again — the page is showing stale data.',
+  },
+  'automation_plan.routing_input_mismatch': {
+    title: "Couldn't create ticket — routing inputs changed",
+    detail: 'Refresh and try again — the page is showing stale data.',
+  },
+
   // ─── dispatch ────────────────────────────────────────────────────────────
   'dispatch.title_required': { title: "Couldn't dispatch — title required" },
   'dispatch.from_work_order': {

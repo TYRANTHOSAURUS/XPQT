@@ -68,6 +68,11 @@ export interface CreateTicketDto {
   asset_id?: string;
   assigned_team_id?: string;
   assigned_user_id?: string;
+  // F-IMP-6: vendor assignee mirror for defense-in-depth against the
+  // caller-assignee gate. The RPC's gate (00350:430-431) already checks
+  // all three; the DTO doesn't surface vendor in any current code path,
+  // but typing it keeps the TS gate aligned with the RPC.
+  assigned_vendor_id?: string;
   interaction_mode?: string;
   source_channel?: string;
   form_data?: Record<string, unknown>;
@@ -77,11 +82,19 @@ export interface CreateTicketDto {
 
 export interface CreateTicketOptions {
   /**
-   * When true, skip the request-type's workflow start inside
-   * runPostCreateAutomation. Used by webhook ingest when the webhook row
-   * carries its own workflow_id override so exactly one instance starts.
+   * Pre-empts PG's semantic re-derivation for workflow_definition_id.
+   * Webhook ingest passes the webhook row's `workflow_id` here when the
+   * webhook carries an explicit override — the RPC bypasses the
+   * workflow-mismatch gate, writes `tickets.workflow_id = <forced>`, and
+   * the `workflow.start_required` outbox emit carries the forced id so
+   * the WorkflowStartHandler starts the right workflow with no separate
+   * `startForTicket` call (closes the race that existed under
+   * `skipWorkflow` + explicit start). Spec §3.11 / F-CRIT-2 / Option B.
+   *
+   * Replaces the legacy `skipWorkflow` flag (post-cutover no-op since
+   * 00349; removed in 00350 + this commit).
    */
-  skipWorkflow?: boolean;
+  forceWorkflowDefinitionId?: string;
 }
 
 export interface UpdateTicketDto {
@@ -704,8 +717,12 @@ export class TicketService {
     // 4. (Optional) routing resolver — sync per §3.9.2 v4. Skipped if
     //    caller passed an assignee or if request type requires approval
     //    (routing happens at grant time via §3.5 — future RPC).
+    // F-IMP-6: include assigned_vendor_id in the caller-assignee gate.
+    // RPC at 00350:430-431 already checks all three; the TS DTO doesn't
+    // currently carry vendor (so this is latent today) but mirroring the
+    // RPC defensively closes the gap when DTO grows that field.
     const callerProvidedAssignee = Boolean(
-      dto.assigned_team_id || dto.assigned_user_id,
+      dto.assigned_team_id || dto.assigned_user_id || dto.assigned_vendor_id,
     );
     const willRequireApproval =
       requestTypeCfg?.requires_approval === true &&
@@ -779,13 +796,18 @@ export class TicketService {
       asset_id: dto.asset_id ?? null,
       assigned_team_id: dto.assigned_team_id ?? null,
       assigned_user_id: dto.assigned_user_id ?? null,
-      assigned_vendor_id: null,
+      assigned_vendor_id: dto.assigned_vendor_id ?? null,
       watchers: [],
       source_channel: dto.source_channel ?? 'portal',
       interaction_mode: dto.interaction_mode ?? 'internal',
       form_data: dto.form_data ?? null,
       external_system: dto.external_system ?? null,
       external_id: dto.external_id ?? null,
+      // F-CRIT-2 / Option B: optional webhook-ingest workflow override.
+      // When present, the RPC pre-empts semantic re-derivation for
+      // workflow_definition_id and emits workflow.start_required with
+      // this value — no separate startForTicket call required.
+      force_workflow_definition_id: options.forceWorkflowDefinitionId ?? null,
     };
 
     // Resolve auth_uid → users.id for the RPC's actor stamp (it then
@@ -814,11 +836,11 @@ export class TicketService {
     }
 
     // Step 1c.10c: synthesize ticket_kind for frontend contract.
-    void options; // options.skipWorkflow no longer honored — workflow start
-                  // is now handler-driven (00345 unique index + handler is
-                  // the SoT). The legacy skipWorkflow path was only used by
-                  // a webhook-ingest variant; that path will need its own
-                  // §3.11 cousin (out of scope for Step 12).
+    // F-CRIT-2 / Option B: options.forceWorkflowDefinitionId is the
+    // post-cutover replacement for the legacy skipWorkflow flag. Webhook
+    // ingest threads it via inputPayload.force_workflow_definition_id;
+    // the RPC owns the override → no race window between TS create + a
+    // separate startForTicket call.
     return { ...(out.ticket as Record<string, unknown>), ticket_kind: 'case' as const } as Record<string, unknown> & { ticket_kind: 'case' };
   }
 
@@ -1025,7 +1047,12 @@ export class TicketService {
 
     // ── Auto-workflow ─────────────────────────────────────────
     // Same precedence: scope override's workflow_definition_id wins.
-    if (effectiveWorkflowDefinitionId && !options.skipWorkflow) {
+    // F-CRIT-2: legacy `options.skipWorkflow` removed from CreateTicketOptions.
+    // This path now only runs from onApprovalDecision (post-grant) which
+    // never had a skip-workflow case. The webhook-override path went
+    // through the create() RPC's force_workflow_definition_id instead.
+    void options;
+    if (effectiveWorkflowDefinitionId) {
       try {
         await this.workflowEngine.startForTicket(data.id as string, effectiveWorkflowDefinitionId);
       } catch (err) {
