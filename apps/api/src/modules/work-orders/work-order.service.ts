@@ -211,50 +211,15 @@ export class WorkOrderService {
       });
     }
 
-    // Pre-flight validation — closes the partial-commit-on-validation-
-    // failure hole. Without this, a multi-field PATCH like
-    // `{ priority: 'high', assigned_team: 'X', title: '' }` would write
-    // priority + assignment, then reject the empty title — leaving the
-    // user with two committed changes they thought "failed".
-    //
-    // preflightValidateUpdate runs every check that any per-field method
-    // could throw on (visibility, tenant-validation, permission RPCs,
-    // format / enum / range), but does NOT write. If it throws, the
-    // dispatch loop below never starts and no partial state lands.
-    //
-    // Per-field methods retain their own validations as defense-in-depth
-    // — preflight is not a substitute for them, just a structural gate
-    // that closes the multi-field race.
-    //
-    // HONEST SCOPE NOTE — what preflight does and does NOT close:
-    //
-    // Closed by preflight:
-    //   • All validation throws on the work_orders row write itself.
-    //     A multi-field PATCH where one field is malformed/forbidden
-    //     now rejects atomically with no partial state.
-    //
-    // NOT closed (still partial-commit hazards on the WO orchestrator):
-    //   1. **Activity-row insert failures** — every per-field method
-    //      writes an activity row in a try/catch that `console.error`s
-    //      on failure (status_changed, priority_changed,
-    //      assignment_changed, sla_changed, plan_changed,
-    //      metadata_changed). The work_orders row commits; the audit
-    //      row may be missing. User sees a 200 but the audit log is
-    //      lying. Tagged as known debt across the file.
-    //   2. **SLA timer churn** — `applyWaitingStateTransition`,
-    //      `restartTimers`, `pauseTimers` write to sla_timers AFTER
-    //      the work_orders write commits. Failure leaves status
-    //      committed and timers stale.
-    //   3. **Multi-field WRITE race** — between phase-2 writes (six
-    //      independent UPDATE statements per orchestrator call), a
-    //      transient DB error / serialization conflict / row-deleted-
-    //      concurrently can leave 1-N branches committed and 1-N not.
-    //
-    // The fix for all three is full transactional wrapping via
-    // `DbService.tx` + raw-SQL writes — separate class-wide debt that
-    // also subsumes the activity-row swallow pattern. Until shipped,
-    // partial commits beyond validation failures remain possible.
-    // Don't claim "atomic"; claim "validation-atomic".
+    // Pre-flight validation. Runs every check that could reject the
+    // write (visibility, tenant-validation, permission RPCs, format / enum
+    // / range) BEFORE the RPC is invoked. If it throws, the
+    // `update_entity_combined` call below never happens and no partial
+    // state lands. Post-§3.0 cutover (Commit B, 2026-05-11) the RPC owns
+    // the multi-table write atomically, so the partial-commit hazards
+    // documented in the pre-cutover version of this comment no longer
+    // apply — they were the failure mode the orchestrator RPC was built
+    // to close.
     await this.preflightValidateUpdate(workOrderId, dto, actorAuthUid, {
       hasSla, hasPlan, hasStatus, hasPriority, hasAssignment, hasMetadata,
     });
@@ -543,13 +508,13 @@ export class WorkOrderService {
   }
 
   /**
-   * Pre-flight validation for the orchestrator. Runs every check the per-
-   * field methods would run, but writes nothing. If any check fails,
-   * the orchestrator throws BEFORE dispatching to per-field methods —
-   * eliminating partial-commit-on-validation-failure for multi-field
-   * PATCH calls.
+   * Pre-flight validation for the §3.0 `update_entity_combined` RPC.
+   * Runs every check that could reject the eventual write — but performs
+   * no writes itself. If any check fails, `update()` throws BEFORE the
+   * RPC call lands, so no partial state can result from a multi-field
+   * PATCH with one bad field.
    *
-   * What it checks (mirrors per-field method validation):
+   * What it checks:
    *   - Visibility: assertCanPlan (operator floor)
    *   - Permissions: sla.override (if hasSla), tickets.change_priority
    *     (if hasPriority), tickets.assign (if hasAssignment) — all
@@ -562,14 +527,9 @@ export class WorkOrderService {
    *   - Metadata: empty title, finite cost, tags-are-strings,
    *     watchers-are-strings
    *
-   * SYSTEM_ACTOR bypass — matches the existing per-field method
-   * convention. Workflow engine + cron writes pass through without
-   * paying for the preflight DB round-trips.
-   *
-   * NOT in scope: runtime DB error mid-write (concurrent serialization,
-   * row-deleted-between-read-and-write, transient connection error).
-   * Those still partial-commit; closing them needs full transactional
-   * wrapping via DbService.tx — separate slice.
+   * SYSTEM_ACTOR bypass — workflow engine + cron writes pass through
+   * without paying for the preflight DB round-trips. The RPC itself
+   * still enforces the same invariants server-side as defense-in-depth.
    */
   private async preflightValidateUpdate(
     workOrderId: string,

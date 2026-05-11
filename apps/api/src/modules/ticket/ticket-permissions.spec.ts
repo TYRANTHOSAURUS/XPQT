@@ -622,6 +622,15 @@ describe('TicketService — per-action permission gates', () => {
       expect(deps.visibility.loadContext).not.toHaveBeenCalled();
       expect(deps.visibility.assertVisible).not.toHaveBeenCalled();
       expect(deps.permissionChecks).toHaveLength(0);
+      // codex-C-I1 (2026-05-11): also assert the write LANDED — gate-bypass
+      // tests previously only proved "permission path skipped", which would
+      // pass even if the reassign short-circuited before the
+      // `.from('tickets').update(...)` write at ticket.service.ts:1431. The
+      // supabase mock at the top of this file applies the patch onto `row`,
+      // so the row state IS the write proof.
+      expect(deps.row().assigned_team_id).toBe(
+        '33333333-3333-3333-3333-333333333333',
+      );
     });
 
     it('passes the gate when caller has tickets.assign granted', async () => {

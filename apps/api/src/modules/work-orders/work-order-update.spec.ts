@@ -4,11 +4,10 @@
 // Post-§3.0 cutover (Commit B): the per-field dispatcher chain
 // (`updateSla → setPlan → updateStatus → updatePriority → updateAssignment
 //  → updateMetadata`) was replaced by ONE `update_entity_combined` RPC
-// call (00333) that commits every branch in one transaction. The per-field
-// service methods remain on the class as legacy entry points exercised by
-// their own spec files (`work-order-{sla-edit,set-plan,update-status,
-// update-priority,update-assignment,update-metadata}.spec.ts`) — they are
-// no longer reached by the `update()` orchestrator.
+// call (00335 v5) that commits every branch in one transaction. The per-
+// field service methods AND their spec files were deleted in the C-
+// remediation commit (2026-05-11) — `update()` is now the sole mutation
+// entry point on this service.
 //
 // What this spec asserts post-cutover:
 //   1. `update()` calls `supabase.admin.rpc('update_entity_combined', …)`
@@ -34,6 +33,30 @@ import {
   SYSTEM_ACTOR,
   type WorkOrderRow,
 } from './work-order.service';
+import type { SlaService } from '../sla/sla.service';
+
+// Typed timer fixture — binds against `SlaService.buildTimersForRpc`'s
+// return type so any future drift between the SLA service contract and
+// the RPC's `jsonb_to_recordset` schema (00330:279-284) fails this spec
+// at *compile* time, not just at runtime. codex-C-I2 / 2026-05-11.
+type TimerForRpc = Awaited<
+  ReturnType<SlaService['buildTimersForRpc']>
+>[number];
+
+const TIMER_FIXTURE: readonly TimerForRpc[] = [
+  {
+    timer_type: 'response',
+    target_minutes: 60,
+    due_at: '2026-06-01T10:00:00.000Z',
+    business_hours_calendar_id: null,
+  },
+  {
+    timer_type: 'resolution',
+    target_minutes: 240,
+    due_at: '2026-06-01T18:00:00.000Z',
+    business_hours_calendar_id: null,
+  },
+];
 
 const TENANT = 't1';
 const CRI = 'cri-test-1';
@@ -179,30 +202,11 @@ function makeSvc(opts?: {
     completeTimers: jest.fn(),
     startTimers: jest.fn(),
     applyWaitingStateTransition: jest.fn(),
-    buildTimersForRpc: jest.fn().mockResolvedValue([
-      // Mirrors the real return shape of `SlaService.buildTimersForRpc`
-      // (apps/api/src/modules/sla/sla.service.ts:150-160) which is built
-      // to match the RPC's jsonb_to_recordset schema at
-      // supabase/migrations/00330_update_entity_sla_v3.sql:279-284:
-      //   (timer_type text, target_minutes int, due_at timestamptz,
-      //    business_hours_calendar_id uuid).
-      // C-remediation fix (2026-05-11): the previous mock used
-      // `{ kind, deadline_at }` which passed tautologically — the orchestrator
-      // forwarded whatever objects came out of the mock as-is, so the test
-      // never asserted shape parity with the real RPC contract.
-      {
-        timer_type: 'response',
-        target_minutes: 60,
-        due_at: '2026-06-01T10:00:00.000Z',
-        business_hours_calendar_id: null,
-      },
-      {
-        timer_type: 'resolution',
-        target_minutes: 240,
-        due_at: '2026-06-01T18:00:00.000Z',
-        business_hours_calendar_id: null,
-      },
-    ]),
+    // codex-C-I2 (2026-05-11): typed fixture binds against the real
+    // SlaService.buildTimersForRpc return type — drift between the SLA
+    // service contract and the RPC's jsonb_to_recordset schema
+    // (00330:279-284) now fails this spec at compile time.
+    buildTimersForRpc: jest.fn().mockResolvedValue([...TIMER_FIXTURE]),
   };
   const visibility = {
     loadContext: jest.fn().mockResolvedValue({
@@ -267,22 +271,12 @@ describe('WorkOrderService.update — §3.0 orchestrator call shape', () => {
       p_patches: {
         sla: {
           sla_id: 'sla-x',
-          // Shape mirrors the RPC's jsonb_to_recordset schema
-          // (00330:279-284) — see makeSvc()'s buildTimersForRpc mock.
-          timers: [
-            {
-              timer_type: 'response',
-              target_minutes: 60,
-              due_at: '2026-06-01T10:00:00.000Z',
-              business_hours_calendar_id: null,
-            },
-            {
-              timer_type: 'resolution',
-              target_minutes: 240,
-              due_at: '2026-06-01T18:00:00.000Z',
-              business_hours_calendar_id: null,
-            },
-          ],
+          // Single source of truth for shape: TIMER_FIXTURE (typed against
+          // SlaService.buildTimersForRpc return type). Drift in either the
+          // SLA service contract or the RPC's jsonb_to_recordset schema
+          // (00330:279-284) fails this spec at compile time via the
+          // typed-fixture bind at the top of the file.
+          timers: TIMER_FIXTURE,
         },
       },
     });
