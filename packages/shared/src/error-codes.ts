@@ -461,6 +461,15 @@ export type KnownErrorCode =
   | 'update_entity_combined.invalid_watcher'
   | 'update_entity_combined.invalid_plan'
 
+  // ─── B.2.A §3.4 dispatch_child_work_order RPC (00336 / 00337) ────────────
+  | 'dispatch_child_work_order.parent_not_found'
+  | 'dispatch_child_work_order.parent_not_dispatchable'
+  | 'dispatch_child_work_order.parent_not_case'
+  | 'dispatch_child_work_order.invalid_payload'
+  | 'dispatch_child_work_order.timers_required'
+  | 'dispatch_child_work_orders_batch.empty_tasks'
+  | 'dispatch_child_work_orders_batch.invalid_payload'
+
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
   | 'privacy.reason_required'
@@ -1169,6 +1178,13 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'update_entity_combined.invalid_cost',
   'update_entity_combined.invalid_watcher',
   'update_entity_combined.invalid_plan',
+  'dispatch_child_work_order.parent_not_found',
+  'dispatch_child_work_order.parent_not_dispatchable',
+  'dispatch_child_work_order.parent_not_case',
+  'dispatch_child_work_order.invalid_payload',
+  'dispatch_child_work_order.timers_required',
+  'dispatch_child_work_orders_batch.empty_tasks',
+  'dispatch_child_work_orders_batch.invalid_payload',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

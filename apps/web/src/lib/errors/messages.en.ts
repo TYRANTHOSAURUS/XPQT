@@ -1444,6 +1444,33 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't update",
     detail: 'Plan dates must be a valid ISO timestamp and duration must be a non-negative integer.',
   },
+
+  // B.2.A §3.4 dispatch_child_work_order RPC (00336 / 00337)
+  'dispatch_child_work_order.parent_not_found': { title: "Couldn't find that case" },
+  'dispatch_child_work_order.parent_not_dispatchable': {
+    title: "Couldn't dispatch a work order",
+    detail: 'This case is pending approval or already closed.',
+  },
+  'dispatch_child_work_order.parent_not_case': {
+    title: "Couldn't dispatch a work order",
+    detail: 'Work orders can only be dispatched from a parent case.',
+  },
+  'dispatch_child_work_order.invalid_payload': {
+    title: "Couldn't dispatch a work order",
+    detail: 'The dispatch payload is malformed.',
+  },
+  'dispatch_child_work_order.timers_required': {
+    title: "Couldn't dispatch a work order",
+    detail: 'An SLA policy was set without any timer thresholds. Try again.',
+  },
+  'dispatch_child_work_orders_batch.empty_tasks': {
+    title: "Couldn't dispatch work orders",
+    detail: 'No tasks were provided to dispatch.',
+  },
+  'dispatch_child_work_orders_batch.invalid_payload': {
+    title: "Couldn't dispatch work orders",
+    detail: 'The dispatch batch payload is malformed.',
+  },
 };
 
 /**

@@ -439,28 +439,47 @@ export class WorkflowEngineService {
             node_id: node.id, node_type: 'create_child_tasks',
             payload: { dry_run_would_create: tasks?.length ?? 0 },
           }, ctx);
-        } else if (tasks && tenant) {
-          for (let i = 0; i < tasks.length; i++) {
-            const task = tasks[i];
-            const title = task.title?.trim() || `Subtask ${i + 1}`;
-            try {
-              await this.dispatchService.dispatch(ticketId, {
-                title,
-                description: task.description,
-                assigned_team_id: task.assigned_team_id,
-                assigned_user_id: task.assigned_user_id,
-                assigned_vendor_id: task.assigned_vendor_id,
-                priority: task.priority,
-                interaction_mode: task.interaction_mode as 'internal' | 'external' | undefined,
-                // Pass through ONLY if the task explicitly set the field. `undefined` falls through
-                // to DispatchService.resolveChildSla; explicit `null` means "No SLA".
-                ...(Object.prototype.hasOwnProperty.call(task, 'sla_policy_id')
-                  ? { sla_id: task.sla_policy_id ?? null }
-                  : {}),
-              }, '__system__');
-            } catch (err) {
-              console.error('[workflow] create_child_tasks: dispatch failed', err);
-            }
+        } else if (tasks && tasks.length > 0 && tenant) {
+          // B.2.A.Step8 — cut over from per-task loop to the atomic batch RPC
+          // (`dispatch_child_work_orders_batch` 00337). Spec §3.4
+          // lines 2228-2234: a single tx commits all N children or rolls
+          // back the entire batch, eliminating the partial-fanout failure
+          // mode where the workflow advanced after dispatch #3 of 5 failed
+          // (§1.18, severity:critical).
+          //
+          // Stable clientRequestId per (instanceId, node.id) — workflow
+          // resume replays the same node with the same id, so the batch
+          // idempotency key is stable across retries.
+          const clientRequestId = `workflow:${instanceId}:${node.id}`;
+          const taskDtos = tasks.map((task, i) => ({
+            title: task.title?.trim() || `Subtask ${i + 1}`,
+            description: task.description,
+            assigned_team_id: task.assigned_team_id,
+            assigned_user_id: task.assigned_user_id,
+            assigned_vendor_id: task.assigned_vendor_id,
+            priority: task.priority,
+            interaction_mode: task.interaction_mode as 'internal' | 'external' | undefined,
+            // sla_policy_id semantics preserved: explicit key (including
+            // null) passes through; absent falls back to resolveChildSla.
+            ...(Object.prototype.hasOwnProperty.call(task, 'sla_policy_id')
+              ? { sla_id: task.sla_policy_id ?? null }
+              : {}),
+          }));
+          try {
+            await this.dispatchService.dispatchBatch(
+              ticketId,
+              taskDtos,
+              '__system__',
+              clientRequestId,
+            );
+          } catch (err) {
+            // All-or-nothing: a batch failure rolls back every task. The
+            // workflow node still advances (status-wise) — same behaviour
+            // as the legacy per-task path — but ops sees ONE error trace
+            // instead of N. The workflow audit log will show the
+            // node_entered event but no per-task child rows (correct: none
+            // were committed).
+            console.error('[workflow] create_child_tasks: batch dispatch failed', err);
           }
         }
 

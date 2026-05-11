@@ -1423,6 +1423,33 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon niet bijwerken',
     detail: 'Plandata moeten een geldige ISO-tijdstempel zijn en duur moet een niet-negatief geheel getal zijn.',
   },
+
+  // B.2.A §3.4 dispatch_child_work_order RPC (00336 / 00337)
+  'dispatch_child_work_order.parent_not_found': { title: 'Case niet gevonden' },
+  'dispatch_child_work_order.parent_not_dispatchable': {
+    title: 'Kan geen werkorder uitdelen',
+    detail: 'Deze case wacht op goedkeuring of is al afgesloten.',
+  },
+  'dispatch_child_work_order.parent_not_case': {
+    title: 'Kan geen werkorder uitdelen',
+    detail: 'Werkorders kunnen alleen vanuit een case worden uitgedeeld.',
+  },
+  'dispatch_child_work_order.invalid_payload': {
+    title: 'Kan geen werkorder uitdelen',
+    detail: 'De uitdeel-payload is onjuist.',
+  },
+  'dispatch_child_work_order.timers_required': {
+    title: 'Kan geen werkorder uitdelen',
+    detail: 'Er is een SLA gekozen zonder drempelwaardes. Probeer opnieuw.',
+  },
+  'dispatch_child_work_orders_batch.empty_tasks': {
+    title: 'Kan geen werkorders uitdelen',
+    detail: 'Er zijn geen taken opgegeven om uit te delen.',
+  },
+  'dispatch_child_work_orders_batch.invalid_payload': {
+    title: 'Kan geen werkorders uitdelen',
+    detail: 'De batch-payload is onjuist.',
+  },
 };
 
 /**

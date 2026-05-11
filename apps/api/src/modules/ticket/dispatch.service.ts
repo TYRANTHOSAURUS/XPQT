@@ -1,5 +1,9 @@
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { v5 as uuidv5 } from 'uuid';
+import { buildDispatchIdempotencyKey } from '@prequest/shared';
 import { AppErrors } from '../../common/errors';
+import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import {
@@ -11,6 +15,14 @@ import { ScopeOverrideResolverService } from '../routing/scope-override-resolver
 import { SlaService } from '../sla/sla.service';
 import { TicketService, SYSTEM_ACTOR } from './ticket.service';
 import { TicketVisibilityService } from './ticket-visibility.service';
+
+/**
+ * Stable namespace for deterministic child_id minting (uuidv5). The
+ * value is a one-off random uuid generated for this codebase; pinning
+ * it as a constant means `uuidv5(idempotencyKey, NS)` is reproducible
+ * across processes + retries. RFC 4122 §4.3.
+ */
+const DISPATCH_CHILD_ID_NAMESPACE = 'a3f4b21e-7c5d-4e6f-9a8b-1c2d3e4f5061';
 
 /**
  * Naming asymmetry — intentional (B.2 §0.1).
@@ -60,11 +72,13 @@ export class DispatchService {
     parentId: string,
     dto: DispatchDto,
     actorAuthUid: string,
-    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
-    // controller for `POST /tickets/:id/dispatch`. Plumbed only today;
-    // Step 3+ uses it as the idempotency-key seed for the dispatch RPC
-    // (spec §3.4 + §3.9.1).
-    _clientRequestId?: string,
+    // B.2.A.Step8 — threaded from RequireClientRequestIdGuard via the
+    // controller for `POST /tickets/:id/dispatch`. Used as the
+    // idempotency-key seed for `dispatch_child_work_order` (00336) per
+    // spec §3.4 + §3.9.1. Internal callers (workflow engine, cron) must
+    // pass a stable id derived from the originating operation — see
+    // F-CRIT-1 guard below.
+    clientRequestId?: string,
   ) {
     const tenant = TenantContext.current();
 
@@ -190,34 +204,26 @@ export class DispatchService {
       ? await this.loadRequestTypeConfig(ticketTypeId)
       : { domain: null };
 
-    // Step 1c.4 cutover (data-model-redesign-2026-04-30.md): write directly
-    // to public.work_orders. ticket_kind is gone (work_orders is single-kind);
-    // parent_kind='case' explicit (dispatch is always case→wo). The reverse
-    // shadow trigger keeps tickets in sync during the bridge.
-    const row: Record<string, unknown> = {
-      tenant_id: tenant.id,
-      parent_kind: 'case',
-      parent_ticket_id: parentId,
-      ticket_type_id: ticketTypeId,
-      title: dto.title,
-      description: dto.description ?? null,
-      priority,
-      interaction_mode: dto.interaction_mode ?? 'internal',
-      location_id: locationId,
-      asset_id: assetId,
-      requester_person_id: (parent.requester_person_id as string | null) ?? null,
-      status: 'new',
-      status_category: 'new',
-      assigned_team_id: dto.assigned_team_id ?? null,
-      assigned_user_id: dto.assigned_user_id ?? null,
-      assigned_vendor_id: dto.assigned_vendor_id ?? null,
-      sla_id: null, // placeholder; resolveChildSla overwrites if it finds one
-    };
+    // ──────────────────────────────────────────────────────────────────
+    // B.2.A.Step8 — TS plan-build phase for `dispatch_child_work_order`
+    // (00336). Resolver evaluation + SLA resolution stay in TS (they're
+    // read-only / config lookups). The multi-table WRITE phase moves
+    // entirely into the RPC: work_orders INSERT + routing_decisions
+    // INSERT + sla_timers INSERT + work_orders UPDATE (due-dates) +
+    // ticket_activities INSERT on parent — all in one tx. See spec
+    // §3.4 (docs/follow-ups/b2-survey-and-design.md lines 2165-2234).
+    //
+    // Pre-resolved assignee container (no longer the row literal).
+    let chosenTeamId   = dto.assigned_team_id   ?? null;
+    let chosenUserId   = dto.assigned_user_id   ?? null;
+    let chosenVendorId = dto.assigned_vendor_id ?? null;
 
-    // Routing fills in assignees if none were passed.
+    // Routing: evaluate read-only when no explicit assignees. The RPC
+    // gets the resolver target via the pre-set `assigned_*_id` columns
+    // and the trace/strategy/rule_id via routing_trace + routing_chosen_by.
     let routingCtx: Parameters<RoutingService['evaluate']>[0] | null = null;
     let routingEvaluation: Awaited<ReturnType<RoutingService['evaluate']>> | null = null;
-    if (!row.assigned_team_id && !row.assigned_user_id && !row.assigned_vendor_id && ticketTypeId) {
+    if (!chosenTeamId && !chosenUserId && !chosenVendorId && ticketTypeId) {
       routingCtx = {
         tenant_id: tenant.id,
         ticket_id: 'pending',
@@ -227,64 +233,380 @@ export class DispatchService {
         asset_id: assetId,
         location_id: locationId,
       };
-      // Child work-order dispatch → evaluator's 'child_dispatch' hook. During
-      // dual-run this is a pass-through to the legacy resolver; once a tenant
-      // attaches a child_dispatch_policy and flips routing_v2_mode, the v2
-      // split + per-child resolver takes over.
       routingEvaluation = await this.routingService.evaluate(routingCtx, 'child_dispatch');
       if (routingEvaluation.target) {
-        if (routingEvaluation.target.kind === 'team') row.assigned_team_id = routingEvaluation.target.team_id;
-        if (routingEvaluation.target.kind === 'user') row.assigned_user_id = routingEvaluation.target.user_id;
-        if (routingEvaluation.target.kind === 'vendor') row.assigned_vendor_id = routingEvaluation.target.vendor_id;
-        row.status_category = 'assigned';
+        if (routingEvaluation.target.kind === 'team')   chosenTeamId   = routingEvaluation.target.team_id;
+        if (routingEvaluation.target.kind === 'user')   chosenUserId   = routingEvaluation.target.user_id;
+        if (routingEvaluation.target.kind === 'vendor') chosenVendorId = routingEvaluation.target.vendor_id;
       }
-    } else if (row.assigned_team_id || row.assigned_user_id || row.assigned_vendor_id) {
-      row.status_category = 'assigned';
     }
 
-    // Resolve child SLA based on (now finalised) assignees + dto override.
-    // Plan A.4 / Commit 2 (C1) — actorAuthUid no longer threaded; the
-    // override-SLA validator now runs unconditionally (no system-actor
-    // bypass).
-    const resolvedSlaId = await this.resolveChildSla(dto, row);
-    row.sla_id = resolvedSlaId;
+    // SLA resolution — read-only TS path. The RPC writes the result.
+    const rowForSla: Record<string, unknown> = {
+      ticket_type_id: ticketTypeId,
+      location_id: locationId,
+      asset_id: assetId,
+      assigned_team_id: chosenTeamId,
+      assigned_user_id: chosenUserId,
+      assigned_vendor_id: chosenVendorId,
+    };
+    const resolvedSlaId = await this.resolveChildSla(dto, rowForSla);
 
-    const { data: inserted, error } = await this.supabase.admin
+    // SLA timers: TS pre-computes business-hours-adjusted due_at per
+    // timer (the RPC just INSERTs). When resolvedSlaId is null we
+    // pass an empty array → no timer writes.
+    let timers: Array<{
+      timer_type: 'response' | 'resolution';
+      target_minutes: number;
+      due_at: string;
+      business_hours_calendar_id: string | null;
+    }> = [];
+    if (resolvedSlaId) {
+      timers = await this.slaService.buildTimersForRpc(resolvedSlaId, tenant.id);
+    }
+
+    // F-CRIT-1 parity with TicketService.update — internal callers
+    // bypassing the controller's RequireClientRequestIdGuard MUST
+    // supply a stable clientRequestId. Workflow-engine + cron paths
+    // pass one explicitly; HTTP path gets one from the guard. A
+    // randomUUID fallback for SYSTEM_ACTOR keeps tests working today
+    // (deterministic-per-call) while making the missing-key story
+    // explicit for non-system callers. F-CRIT-1 retro logged in
+    // b2-a-interim-retro-2026-05-11.md.
+    let effectiveClientRequestId = clientRequestId;
+    if (!effectiveClientRequestId) {
+      if (actorAuthUid === SYSTEM_ACTOR) {
+        // System actor without an explicit id: fresh uuid per call.
+        // Workflow-engine cutover at workflow-engine.service.ts uses
+        // the batch RPC with a derived id; the single-RPC system
+        // callers (today: none) get a per-invocation fresh id.
+        effectiveClientRequestId = randomUUID();
+      } else {
+        throw AppErrors.badRequest(
+          'command_operations.client_request_id_required',
+          'POST /tickets/:id/dispatch requires X-Client-Request-Id header per I1 (RequireClientRequestIdGuard).',
+        );
+      }
+    }
+
+    const idempotencyKey = buildDispatchIdempotencyKey(
+      parentId,
+      actorAuthUid === SYSTEM_ACTOR ? SYSTEM_ACTOR : actorAuthUid,
+      effectiveClientRequestId,
+    );
+
+    // Deterministic child_id (uuidv5 of the idempotency_key) — replay
+    // of the same key produces the same row, not a new one.
+    const childId = uuidv5(idempotencyKey, DISPATCH_CHILD_ID_NAMESPACE);
+
+    // Payload shape per spec §3.4 (lines 2180-2197).
+    const payload: Record<string, unknown> = {
+      child_id: childId,
+      title: dto.title,
+      description: dto.description ?? null,
+      priority,
+      interaction_mode: dto.interaction_mode ?? 'internal',
+      ticket_type_id: ticketTypeId,
+      asset_id: assetId,
+      location_id: locationId,
+      assigned_team_id: chosenTeamId,
+      assigned_user_id: chosenUserId,
+      assigned_vendor_id: chosenVendorId,
+      // sla_id: when resolveChildSla returns null we DON'T include the key
+      // (RPC reads "absent" as null). When non-null we pass the uuid.
+      // Either way TS owns the resolution outcome.
+      ...(resolvedSlaId ? { sla_id: resolvedSlaId, timers } : {}),
+      // Routing trace snapshot — the RPC writes the audit row in-tx.
+      ...(routingEvaluation
+        ? {
+            routing_trace:    routingEvaluation.trace ?? [],
+            routing_chosen_by: routingEvaluation.chosen_by,
+            routing_strategy:  routingEvaluation.strategy,
+            routing_rule_id:   routingEvaluation.rule_id ?? null,
+            routing_context: routingCtx
+              ? {
+                  request_type_id: routingCtx.request_type_id,
+                  domain:          routingCtx.domain,
+                  priority:        routingCtx.priority,
+                  asset_id:        routingCtx.asset_id,
+                  location_id:     routingCtx.location_id,
+                }
+              : {},
+          }
+        : {
+            routing_trace:    [],
+            routing_chosen_by: 'manual',
+            routing_strategy:  'manual',
+          }),
+    };
+
+    const { error: rpcError } = await this.supabase.admin.rpc('dispatch_child_work_order', {
+      p_parent_id: parentId,
+      p_tenant_id: tenant.id,
+      p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
+      p_idempotency_key: idempotencyKey,
+      p_payload: payload,
+    });
+    if (rpcError) throw mapRpcErrorToAppError(rpcError);
+
+    // Refetch — the RPC's return value is a summary; controllers expect
+    // the full work_orders row (joined columns the desk UI consumes).
+    // Tenant-scoped lookup; we just wrote this id so it must exist.
+    const { data: child, error: fetchError } = await this.supabase.admin
       .from('work_orders')
-      .insert(row)
-      .select()
+      .select('*')
+      .eq('id', childId)
+      .eq('tenant_id', tenant.id)
       .single();
-    if (error) throw error;
-    const child = inserted as Record<string, unknown>;
+    if (fetchError) throw fetchError;
+    return child as Record<string, unknown>;
+  }
 
-    // Post-insert side effects.
-    try {
-      if (routingCtx && routingEvaluation) {
-        routingCtx.ticket_id = child.id as string;
-        await this.routingService.recordDecision(child.id as string, routingCtx, routingEvaluation);
-      }
-
-      if (resolvedSlaId) {
-        await this.slaService.startTimers(child.id as string, tenant.id, resolvedSlaId);
-      }
-
-      await this.tickets.addActivity(parentId, {
-        activity_type: 'system_event',
-        visibility: 'system',
-        metadata: {
-          event: 'dispatched',
-          child_id: child.id,
-          assigned_team_id: row.assigned_team_id,
-          assigned_user_id: row.assigned_user_id,
-          assigned_vendor_id: row.assigned_vendor_id,
-          sla_id: resolvedSlaId,
-        },
-      }, undefined, SYSTEM_ACTOR);
-    } catch (err) {
-      console.error('[dispatch] post-insert automation failed', err);
+  /**
+   * Batch sibling of `dispatch()`. Replaces §1.18
+   * (workflow-engine.service.ts:425-469 per-task loop) by dispatching
+   * N children atomically via `dispatch_child_work_orders_batch` (00337).
+   * One transaction commits all N or none — eliminates the
+   * partial-fanout failure mode where a workflow advances after dispatch
+   * #3 of 5 failed.
+   *
+   * Behaviour:
+   *   - TS preflight runs once for the PARENT (visibility +
+   *     dispatchability gates).
+   *   - For each task: SLA + routing resolution + tenant-FK validation
+   *     happen in TS plan-build, just like the single path.
+   *   - The RPC re-validates server-side and writes all N children +
+   *     routing_decisions + sla_timers + ticket_activities rows in one
+   *     tx.
+   *   - clientRequestId is required and seeds the batch idempotency key.
+   *     The deterministic child_id per task is uuidv5(idempotencyKey +
+   *     ':' + taskIndex, NS) so a retry produces the same N rows.
+   *
+   * Returns the array of dispatched work_order rows in input order.
+   */
+  async dispatchBatch(
+    parentId: string,
+    tasks: DispatchDto[],
+    actorAuthUid: string,
+    clientRequestId: string,
+  ): Promise<Array<Record<string, unknown>>> {
+    if (!clientRequestId) {
+      throw AppErrors.badRequest(
+        'command_operations.client_request_id_required',
+        'dispatchBatch requires a stable clientRequestId per I1 (RequireClientRequestIdGuard).',
+      );
+    }
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      // Surface at the TS boundary so the workflow engine doesn't burn
+      // an RPC round-trip for an empty batch.
+      throw AppErrors.validationFailed('dispatch_child_work_orders_batch.empty_tasks', {
+        detail: 'dispatchBatch requires at least one task',
+      });
     }
 
-    return child;
+    const tenant = TenantContext.current();
+
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(parentId, ctx, 'write');
+    }
+
+    // Parent lookup once (used by all tasks). Same shape as dispatch():
+    // getById throws AppError(ticket.not_found) on miss.
+    const parent = await this.tickets.getById(parentId, SYSTEM_ACTOR) as Record<string, unknown>;
+    if (parent.ticket_kind === 'work_order') {
+      throw AppErrors.validationFailed('dispatch.from_work_order', {
+        detail: 'cannot dispatch from a work_order; dispatch from the parent case',
+      });
+    }
+    if (parent.status_category === 'pending_approval') {
+      throw AppErrors.validationFailed('dispatch.parent_pending_approval', {
+        detail: 'cannot dispatch while parent is pending approval',
+      });
+    }
+    if (parent.status_category === 'resolved' || parent.status_category === 'closed') {
+      throw AppErrors.validationFailed('dispatch.parent_terminal', {
+        detail: `cannot dispatch a work order on a ${parent.status_category as string} case`,
+      });
+    }
+
+    const batchKey = `dispatch_batch:${parentId}:${actorAuthUid === SYSTEM_ACTOR ? SYSTEM_ACTOR : actorAuthUid}:${clientRequestId}`;
+
+    // Build the per-task payload array.
+    const taskPayloads: Array<Record<string, unknown>> = [];
+    const childIds: string[] = [];
+    for (let i = 0; i < tasks.length; i++) {
+      const dto = tasks[i];
+      if (!dto.title?.trim()) {
+        throw AppErrors.validationFailed('dispatch.title_required', {
+          detail: `dispatchBatch[${i}] requires a non-empty title`,
+        });
+      }
+
+      // Per-task preflight FK validation (mirror the single path).
+      if (dto.ticket_type_id !== undefined && dto.ticket_type_id !== null) {
+        await assertTenantOwned(
+          this.supabase,
+          'request_types',
+          dto.ticket_type_id,
+          tenant.id,
+          { entityName: 'request type' },
+        );
+      }
+      await validateAssigneesInTenant(
+        this.supabase,
+        {
+          assigned_team_id: dto.assigned_team_id,
+          assigned_user_id: dto.assigned_user_id,
+          assigned_vendor_id: dto.assigned_vendor_id,
+        },
+        tenant.id,
+      );
+      if (typeof dto.sla_id === 'string') {
+        await assertTenantOwned(
+          this.supabase,
+          'sla_policies',
+          dto.sla_id,
+          tenant.id,
+          { entityName: 'SLA policy' },
+        );
+      }
+      if (dto.location_id !== undefined && dto.location_id !== null) {
+        await assertTenantOwned(
+          this.supabase,
+          'spaces',
+          dto.location_id,
+          tenant.id,
+          { entityName: 'location' },
+        );
+      }
+      if (dto.asset_id !== undefined && dto.asset_id !== null) {
+        await assertTenantOwned(
+          this.supabase,
+          'assets',
+          dto.asset_id,
+          tenant.id,
+          { entityName: 'asset' },
+        );
+      }
+
+      const ticketTypeId = dto.ticket_type_id ?? (parent.ticket_type_id as string | null);
+      const locationId   = dto.location_id   ?? (parent.location_id   as string | null);
+      const assetId      = dto.asset_id      ?? (parent.asset_id      as string | null);
+      const priority     = dto.priority      ?? ((parent.priority     as string | null) ?? 'medium');
+
+      const rtCfg = ticketTypeId ? await this.loadRequestTypeConfig(ticketTypeId) : { domain: null };
+
+      let chosenTeamId   = dto.assigned_team_id   ?? null;
+      let chosenUserId   = dto.assigned_user_id   ?? null;
+      let chosenVendorId = dto.assigned_vendor_id ?? null;
+
+      let routingCtx: Parameters<RoutingService['evaluate']>[0] | null = null;
+      let routingEvaluation: Awaited<ReturnType<RoutingService['evaluate']>> | null = null;
+      if (!chosenTeamId && !chosenUserId && !chosenVendorId && ticketTypeId) {
+        routingCtx = {
+          tenant_id: tenant.id,
+          ticket_id: 'pending',
+          request_type_id: ticketTypeId,
+          domain: rtCfg.domain,
+          priority,
+          asset_id: assetId,
+          location_id: locationId,
+        };
+        routingEvaluation = await this.routingService.evaluate(routingCtx, 'child_dispatch');
+        if (routingEvaluation.target) {
+          if (routingEvaluation.target.kind === 'team')   chosenTeamId   = routingEvaluation.target.team_id;
+          if (routingEvaluation.target.kind === 'user')   chosenUserId   = routingEvaluation.target.user_id;
+          if (routingEvaluation.target.kind === 'vendor') chosenVendorId = routingEvaluation.target.vendor_id;
+        }
+      }
+
+      const rowForSla: Record<string, unknown> = {
+        ticket_type_id: ticketTypeId,
+        location_id: locationId,
+        asset_id: assetId,
+        assigned_team_id: chosenTeamId,
+        assigned_user_id: chosenUserId,
+        assigned_vendor_id: chosenVendorId,
+      };
+      const resolvedSlaId = await this.resolveChildSla(dto, rowForSla);
+
+      let timers: Array<{
+        timer_type: 'response' | 'resolution';
+        target_minutes: number;
+        due_at: string;
+        business_hours_calendar_id: string | null;
+      }> = [];
+      if (resolvedSlaId) {
+        timers = await this.slaService.buildTimersForRpc(resolvedSlaId, tenant.id);
+      }
+
+      // Per-task child_id derived from (batchKey, index). Same key + same
+      // index → same child uuid on retry.
+      const childId = uuidv5(`${batchKey}:${i}`, DISPATCH_CHILD_ID_NAMESPACE);
+      childIds.push(childId);
+
+      taskPayloads.push({
+        child_id: childId,
+        title: dto.title,
+        description: dto.description ?? null,
+        priority,
+        interaction_mode: dto.interaction_mode ?? 'internal',
+        ticket_type_id: ticketTypeId,
+        asset_id: assetId,
+        location_id: locationId,
+        assigned_team_id: chosenTeamId,
+        assigned_user_id: chosenUserId,
+        assigned_vendor_id: chosenVendorId,
+        ...(resolvedSlaId ? { sla_id: resolvedSlaId, timers } : {}),
+        ...(routingEvaluation
+          ? {
+              routing_trace:    routingEvaluation.trace ?? [],
+              routing_chosen_by: routingEvaluation.chosen_by,
+              routing_strategy:  routingEvaluation.strategy,
+              routing_rule_id:   routingEvaluation.rule_id ?? null,
+              routing_context: routingCtx
+                ? {
+                    request_type_id: routingCtx.request_type_id,
+                    domain:          routingCtx.domain,
+                    priority:        routingCtx.priority,
+                    asset_id:        routingCtx.asset_id,
+                    location_id:     routingCtx.location_id,
+                  }
+                : {},
+            }
+          : {
+              routing_trace:    [],
+              routing_chosen_by: 'manual',
+              routing_strategy:  'manual',
+            }),
+      });
+    }
+
+    const { error: rpcError } = await this.supabase.admin.rpc('dispatch_child_work_orders_batch', {
+      p_parent_id: parentId,
+      p_tenant_id: tenant.id,
+      p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
+      p_idempotency_key: batchKey,
+      p_tasks: taskPayloads,
+    });
+    if (rpcError) throw mapRpcErrorToAppError(rpcError);
+
+    // Refetch all N children in one query (order preserved by inserting
+    // the array index column via a CTE-style approach is overkill — the
+    // childIds list is already in insert order; sort by it client-side).
+    const { data: children, error: fetchError } = await this.supabase.admin
+      .from('work_orders')
+      .select('*')
+      .in('id', childIds)
+      .eq('tenant_id', tenant.id);
+    if (fetchError) throw fetchError;
+
+    const byId = new Map<string, Record<string, unknown>>();
+    for (const row of (children ?? []) as Array<Record<string, unknown>>) {
+      byId.set(row.id as string, row);
+    }
+    return childIds.map((id) => byId.get(id) as Record<string, unknown>).filter((r) => !!r);
   }
 
   /**

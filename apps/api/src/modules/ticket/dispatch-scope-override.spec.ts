@@ -53,12 +53,62 @@ function makeDeps(parent: ParentRow) {
     getById: jest.fn(async () => parent),
     addActivity: jest.fn().mockResolvedValue(undefined),
   };
+
+  // Step8 row-from-payload bridge (see dispatch.service.spec.ts).
+  const rowFromPayload = (p: Record<string, unknown>): Record<string, unknown> => ({
+    id: p.child_id,
+    tenant_id: parent.tenant_id,
+    parent_kind: 'case',
+    parent_ticket_id: parent.id,
+    ticket_type_id: (p.ticket_type_id as string | null) ?? parent.ticket_type_id,
+    title: p.title,
+    description: (p.description as string | null) ?? null,
+    priority: (p.priority as string | null) ?? parent.priority,
+    interaction_mode: p.interaction_mode ?? 'internal',
+    location_id: (p.location_id as string | null) ?? parent.location_id,
+    asset_id: (p.asset_id as string | null) ?? parent.asset_id,
+    requester_person_id: parent.requester_person_id,
+    status: 'new',
+    status_category:
+      p.assigned_team_id || p.assigned_user_id || p.assigned_vendor_id ? 'assigned' : 'new',
+    assigned_team_id: p.assigned_team_id ?? null,
+    assigned_user_id: p.assigned_user_id ?? null,
+    assigned_vendor_id: p.assigned_vendor_id ?? null,
+    sla_id: (p.sla_id as string | null | undefined) ?? null,
+  });
+
   const supabase = {
     admin: {
+      rpc: jest.fn(async (name: string, args: Record<string, unknown>) => {
+        if (name === 'dispatch_child_work_order') {
+          inserted.push(rowFromPayload(args.p_payload as Record<string, unknown>));
+        } else if (name === 'dispatch_child_work_orders_batch') {
+          for (const t of args.p_tasks as Array<Record<string, unknown>>) {
+            inserted.push(rowFromPayload(t));
+          }
+        }
+        return { error: null };
+      }),
       from: jest.fn((table: string) => {
         // Step 1c.4: dispatch now writes to work_orders. Mock both for compat.
         if (table === 'work_orders' || table === 'tickets') {
           return {
+            select: () => ({
+              eq: (_c: string, idVal: string) => ({
+                eq: () => ({
+                  single: async () => {
+                    const row = inserted.find((r) => r.id === idVal) ?? null;
+                    return { data: row, error: row ? null : { code: 'PGRST116' } };
+                  },
+                }),
+              }),
+              in: (_c: string, idsArr: string[]) => ({
+                eq: () => Promise.resolve({
+                  data: inserted.filter((r) => idsArr.includes(r.id as string)),
+                  error: null,
+                }),
+              }),
+            }),
             insert: (row: Record<string, unknown>) => {
               inserted.push(row);
               return {
@@ -120,7 +170,17 @@ function makeDeps(parent: ParentRow) {
     }),
     recordDecision: jest.fn().mockResolvedValue(undefined),
   };
-  const slaService = { startTimers: jest.fn().mockResolvedValue(undefined) };
+  const slaService = {
+    startTimers: jest.fn().mockResolvedValue(undefined),
+    buildTimersForRpc: jest.fn(async (_slaId: string, _tenantId: string) => [
+      {
+        timer_type: 'response' as const,
+        target_minutes: 60,
+        due_at: '2099-01-01T00:00:00Z',
+        business_hours_calendar_id: null,
+      },
+    ]),
+  };
   const visibility = {
     loadContext: jest.fn().mockResolvedValue({}),
     assertVisible: jest.fn().mockResolvedValue(undefined),

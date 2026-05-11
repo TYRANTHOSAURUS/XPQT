@@ -211,19 +211,35 @@ A **work order** is a child of a case, representing a specific unit of executor 
 
 ### 6.3 What `DispatchService.dispatch` does
 
-1. Validates the parent:
-   - Parent must exist (via `TicketService.getById`, throws `NotFoundException` if missing).
-   - Parent must **not** be a `work_order` (cannot dispatch from a work order).
-   - Parent must **not** be in `status_category = 'pending_approval'` (would bypass the approval gate).
+**B.2.A.Step8 cutover (2026-05-11):** dispatch is now atomic. The TS service runs plan-build (preflight + resolver + SLA resolution) read-only and then hands a single payload to the PL/pgSQL RPC `dispatch_child_work_order` (migration `00336`). The RPC commits child WO + routing audit + SLA timers + parent activity in one transaction — the legacy multi-step write path that fanned out 5 supabase-js calls (and could partial-commit on any mid-sequence failure) is gone.
+
+1. **TS preflight (read-only):**
+   - Visibility / write-permission check via `TicketVisibilityService.assertVisible` (skipped for `SYSTEM_ACTOR`).
+   - Parent loaded via `TicketService.getById` (throws `ticket.not_found` if missing).
+   - Parent must **not** be `ticket_kind = 'work_order'` and must **not** be in `status_category` of `pending_approval`, `resolved`, or `closed`.
    - DTO must have a non-empty `title`.
-2. Copies parent context into the child row: `ticket_type_id`, `location_id`, `asset_id`, `priority`, `requester_person_id`. DTO fields override each.
-3. Loads `(domain, sla_policy_id)` from `request_types` in a single query.
-4. If DTO has no assignee AND a `ticket_type_id` is set, runs the resolver exactly once. Applies the target to the insert row (`assigned_team_id` / `assigned_user_id` / `assigned_vendor_id`) and sets `status_category = 'assigned'`.
-5. Inserts the child with `ticket_kind = 'work_order'`, `parent_ticket_id = parentId`, `sla_id` already populated.
-6. Post-insert (wrapped in try/catch so a partial failure doesn't orphan the child):
-   - Writes the `routing_decisions` audit row (reusing the single `evaluate` result — the trace matches the assignment).
-   - Starts SLA timers via `slaService.startTimers(childId, tenantId, sla_policy_id)`.
-   - Appends a `system_event` activity on the **parent** with metadata `{ event: 'dispatched', child_id, assigned_* }`.
+   - Every DTO uuid (`ticket_type_id`, `assigned_*_id`, `sla_id`, `location_id`, `asset_id`) validated against the tenant via `assertTenantOwned` / `validateAssigneesInTenant`.
+2. **TS plan-build (read-only):**
+   - Copies parent context into the row: `ticket_type_id`, `location_id`, `asset_id`, `priority`, `requester_person_id`. DTO fields override.
+   - Loads `(domain)` from `request_types` for routing.
+   - Runs `RoutingService.evaluate(...)` exactly once when no DTO assignee + has `ticket_type_id`. The target updates `assigned_*_id`; the trace + `chosen_by` + `rule_id` ride into the RPC payload as `routing_trace` / `routing_chosen_by` / `routing_rule_id`.
+   - Resolves child SLA via `DispatchService.resolveChildSla(dto, row)` (precedence in §7) and calls `SlaService.buildTimersForRpc(slaPolicyId, tenantId)` to pre-compute business-hours-adjusted `due_at` per timer.
+   - Mints a **deterministic** `child_id` via `uuidv5(idempotencyKey, NS)` — replays produce the same row.
+   - Builds the outer idempotency key with `buildDispatchIdempotencyKey(parentId, actorAuthUid, clientRequestId)` (prefix `dispatch:`).
+3. **One RPC call → one transaction:**
+   - The RPC re-validates every FK server-side (defense-in-depth: `validate_assignees_in_tenant` + `validate_entity_in_tenant`).
+   - INSERT into `public.work_orders` (using the deterministic `id`).
+   - INSERT into `public.routing_decisions` (entity_kind='work_order', work_order_id, full trace).
+   - For each timer in payload: INSERT into `public.sla_timers` + UPDATE `work_orders.sla_response_due_at` / `sla_resolution_due_at`.
+   - INSERT a `system_event` activity on the **parent** with metadata `{ event: 'dispatched', child_id, assigned_*, sla_id }`.
+   - Marks `command_operations` success and returns a summary jsonb.
+4. **TS refetch:** the controller-facing response shape is the full joined work_order row — TS reads it back from `public.work_orders` after the RPC commits.
+
+**Atomicity:** the entire write phase is one tx; any raise (FK gate, validation, parent-status gate, payload mismatch) rolls back every row. No more `[child created, no routing audit]` or `[child created, no SLA timers]` half-states.
+
+**Idempotency:** `(tenant_id, idempotency_key)` is the cache primary key in `command_operations`. Same key + same payload returns the cached result. Same key + different payload raises `command_operations.payload_mismatch` (409).
+
+**Workflow batch path:** the engine's `create_child_tasks` node calls `DispatchService.dispatchBatch(parentId, tasks[], …)` which uses the sibling RPC `dispatch_child_work_orders_batch` (migration `00337`). All N tasks commit in one tx or the entire batch rolls back. Replaces the per-task loop that silently swallowed mid-loop failures (§1.18 severity:critical).
 
 ### 6.4 Parent-status rollup trigger
 
@@ -247,7 +263,9 @@ This means: service desk sees the parent case move from `new` → `assigned` whe
 
 ### 6.6 Workflow-spawned children
 
-Workflows with a `create_child_tasks` node also insert `ticket_kind = 'work_order'` rows. This ensures the rollup trigger fires and clients that filter `?kind=case` get clean case lists.
+Workflows with a `create_child_tasks` node also produce work_order rows. Post-B.2.A.Step8 the node calls `DispatchService.dispatchBatch(...)` which uses the atomic batch RPC `dispatch_child_work_orders_batch` (00337). All N tasks commit in one transaction or the batch rolls back — eliminating the historical partial-fanout failure mode where dispatch #3 of 5 failed and the workflow advanced anyway with three half-orphaned children and two missing.
+
+Stable `clientRequestId` per `(instanceId, nodeId)` keeps the batch idempotency key stable across workflow resumes — replays of the same node deterministically replay the batch (same `child_id` per task index, same rows).
 
 ### 6.7 Parent close guard
 

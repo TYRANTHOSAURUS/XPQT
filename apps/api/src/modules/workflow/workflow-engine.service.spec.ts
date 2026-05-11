@@ -2,12 +2,28 @@ import { WorkflowEngineService } from './workflow-engine.service';
 import { TenantContext } from '../../common/tenant-context';
 
 function makeDeps() {
+  // B.2.A.Step8 — workflow create_child_tasks now goes through the batch
+  // RPC (dispatch_child_work_orders_batch / 00337). The dispatchService
+  // mock captures BOTH legacy `dispatch()` (for any not-yet-migrated
+  // call sites) AND the new `dispatchBatch()` and projects per-task
+  // entries into `dispatchCalls` so the existing assertions still work.
   const dispatchCalls: Array<{ parentId: string; dto: Record<string, unknown> }> = [];
 
   const dispatchService = {
     dispatch: jest.fn(async (parentId: string, dto: Record<string, unknown>, _actorAuthUid: string) => {
       dispatchCalls.push({ parentId, dto });
       return { id: `child-${dispatchCalls.length}` };
+    }),
+    dispatchBatch: jest.fn(async (
+      parentId: string,
+      tasks: Array<Record<string, unknown>>,
+      _actorAuthUid: string,
+      _clientRequestId: string,
+    ) => {
+      for (const dto of tasks) {
+        dispatchCalls.push({ parentId, dto });
+      }
+      return tasks.map((_t, i) => ({ id: `child-${dispatchCalls.length - tasks.length + i + 1}` }));
     }),
   };
 
@@ -114,7 +130,12 @@ describe('WorkflowEngineService.create_child_tasks', () => {
   it('catches dispatch errors and advances the workflow', async () => {
     const { supabase } = makeDeps();
     const dispatchService = {
-      dispatch: jest.fn().mockRejectedValue(new Error('cannot dispatch while parent is pending approval')),
+      // Post-Step8: workflow create_child_tasks invokes the batch path.
+      // A failure in the batch RPC propagates as a single thrown error
+      // — same swallow+advance behaviour as the legacy per-task path,
+      // but ONE log entry instead of N.
+      dispatch: jest.fn(),
+      dispatchBatch: jest.fn().mockRejectedValue(new Error('dispatch_child_work_orders_batch failed')),
     };
     const engine = new WorkflowEngineService(supabase as never, dispatchService as never);
     const advance = jest.spyOn(engine as never, 'advance').mockResolvedValue(undefined as never);
@@ -131,7 +152,7 @@ describe('WorkflowEngineService.create_child_tasks', () => {
       executeNode: (i: string, g: unknown, n: unknown, t: string, c: unknown) => Promise<void>;
     }).executeNode('inst-1', { nodes: [], edges: [] }, node, 'parent-1', undefined);
 
-    expect(dispatchService.dispatch).toHaveBeenCalled();
+    expect(dispatchService.dispatchBatch).toHaveBeenCalled();
     expect(logSpy).toHaveBeenCalled();
     expect(advance).toHaveBeenCalled();
 

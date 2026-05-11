@@ -46,7 +46,17 @@ function makeDeps(rowsByTable: RowsByTable) {
 
   function buildSelectChain(table: string, _cols: string) {
     const filters: Record<string, unknown> = {};
-    const rows = rowsByTable[table] ?? [];
+    // Post-Step8: work_orders SELECT after dispatch RPC commits reads
+    // back the row TS will refetch. Pull from insertCalls so the
+    // post-RPC refetch returns a non-null row (otherwise the success
+    // tests crash on the `data: null` branch).
+    const rows = (table === 'work_orders' && insertCalls.length > 0)
+      ? insertCalls.filter((c) => c.table === 'work_orders').map((c) => ({
+          ...c.row,
+          id: c.row.child_id ?? c.row.id,
+          tenant_id: c.row.tenant_id ?? TENANT.id,
+        }))
+      : rowsByTable[table] ?? [];
     const chain: Record<string, unknown> = {
       eq: (col: string, val: unknown) => {
         filters[col] = val;
@@ -83,6 +93,21 @@ function makeDeps(rowsByTable: RowsByTable) {
 
   const supabase = {
     admin: {
+      // B.2.A.Step8 — dispatch now writes via RPC. The mock captures
+      // the payload into insertCalls under table='work_orders' so the
+      // existing "insertCalls is empty when validation rejects" assertions
+      // still hold (a rejected dispatch throws BEFORE reaching the RPC).
+      rpc: jest.fn(async (name: string, args: Record<string, unknown>) => {
+        if (name === 'dispatch_child_work_order') {
+          const payload = args.p_payload as Record<string, unknown>;
+          insertCalls.push({ table: 'work_orders', row: payload });
+        } else if (name === 'dispatch_child_work_orders_batch') {
+          for (const t of args.p_tasks as Array<Record<string, unknown>>) {
+            insertCalls.push({ table: 'work_orders', row: t });
+          }
+        }
+        return { error: null };
+      }),
       from: (table: string) => ({
         select: (cols: string) => buildSelectChain(table, cols),
         insert: (row: Record<string, unknown>) => {
@@ -116,7 +141,17 @@ function makeDeps(rowsByTable: RowsByTable) {
       trace: [] }),
     recordDecision: jest.fn().mockResolvedValue(undefined) };
 
-  const slaService = { startTimers: jest.fn().mockResolvedValue(undefined) };
+  const slaService = {
+    startTimers: jest.fn().mockResolvedValue(undefined),
+    buildTimersForRpc: jest.fn(async () => [
+      {
+        timer_type: 'response' as const,
+        target_minutes: 60,
+        due_at: '2099-01-01T00:00:00Z',
+        business_hours_calendar_id: null,
+      },
+    ]),
+  };
 
   const visibilityService = {
     loadContext: jest.fn().mockResolvedValue({}),
@@ -236,7 +271,9 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
       ticket_type_id: VALID_UUID_A,
       assigned_team_id: VALID_UUID_B,
       sla_id: VALID_UUID_A };
-    await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).resolves.toBeTruthy();
+    // B.2.A.Step8: non-system actor MUST pass a clientRequestId — see
+    // F-CRIT-1 guard in dispatch.service.ts.
+    await expect(svc.dispatch(PARENT_ID, dto, ACTOR, 'cri-success-1')).resolves.toBeTruthy();
   });
 
   // Plan A.4 / Commit 5 (I1) — DTO location_id + asset_id pre-flight.
@@ -269,7 +306,7 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
       const deps = makeDeps({});
       const svc = makeService(deps);
       const dto: DispatchDto = { title: 'do x' };
-      await expect(svc.dispatch(PARENT_ID, dto, ACTOR)).resolves.toBeTruthy();
+      await expect(svc.dispatch(PARENT_ID, dto, ACTOR, 'cri-inherit-1')).resolves.toBeTruthy();
     });
   });
 

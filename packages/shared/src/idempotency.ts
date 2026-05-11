@@ -67,3 +67,52 @@ export function buildPatchIdempotencyKey(
 ): string {
   return `${PATCH_IDEMPOTENCY_KEY_PREFIX}:${kind}:${entityId}:${clientRequestId}`;
 }
+
+/**
+ * Prefix for every `dispatch_child_work_order` outer idempotency key.
+ * Mirrors `PATCH_IDEMPOTENCY_KEY_PREFIX` but namespaced separately so the
+ * two RPCs never collide on a shared (tenant_id, idempotency_key).
+ *
+ * Citations:
+ *   - 00336_dispatch_child_work_order_rpc.sql (single)
+ *   - 00337_dispatch_child_work_orders_batch.sql (batch)
+ *   - spec §3.4 (docs/follow-ups/b2-survey-and-design.md lines 2165-2234)
+ */
+export const DISPATCH_IDEMPOTENCY_KEY_PREFIX = 'dispatch';
+export const DISPATCH_BATCH_IDEMPOTENCY_KEY_PREFIX = 'dispatch_batch';
+
+/**
+ * Build the outer idempotency key for `dispatch_child_work_order`. Shape:
+ *   `dispatch:<parentId>:<actorUserId>:<clientRequestId>`
+ *
+ * `actorUserId` is the supabase auth uid (users.auth_uid), NOT users.id —
+ * see 00325:89-94 + dispatch.service.ts post-Step8. SYSTEM_ACTOR callers
+ * (workflow engine, cron) pass the literal sentinel `__system__` so the
+ * key remains stable across retries from the same actor identity.
+ */
+export function buildDispatchIdempotencyKey(
+  parentId: string,
+  actorUserId: string,
+  clientRequestId: string,
+): string {
+  return `${DISPATCH_IDEMPOTENCY_KEY_PREFIX}:${parentId}:${actorUserId}:${clientRequestId}`;
+}
+
+/**
+ * Build the outer idempotency key for `dispatch_child_work_orders_batch`.
+ * Shape:
+ *   `dispatch_batch:<parentId>:<actorUserId>:<clientRequestId>`
+ *
+ * Identical actor/parent semantics as the single key — different prefix so
+ * a single-dispatch retry against the same parent can never collide with a
+ * batch-dispatch retry. Workflow-engine call sites supply a stable
+ * `clientRequestId` derived from the workflow instance + node id so that
+ * replay of the same node deterministically replays the batch.
+ */
+export function buildDispatchBatchIdempotencyKey(
+  parentId: string,
+  actorUserId: string,
+  clientRequestId: string,
+): string {
+  return `${DISPATCH_BATCH_IDEMPOTENCY_KEY_PREFIX}:${parentId}:${actorUserId}:${clientRequestId}`;
+}

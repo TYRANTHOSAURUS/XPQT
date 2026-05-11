@@ -72,6 +72,7 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'update_entity_sla.not_found': 404,
   'update_entity_combined.not_found': 404,
   'sla.policy_not_found': 404,
+  'dispatch_child_work_order.parent_not_found': 404,
 
   // ── 409 conflict ─────────────────────────────────────────────────
   // payload_mismatch: the client reused the same X-Client-Request-Id
@@ -82,6 +83,8 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // a client mistake — the message copy makes that explicit.)
   'transition_entity_status.has_open_children': 409,
   'command_operations.payload_mismatch': 409,
+  'dispatch_child_work_order.parent_not_dispatchable': 409,
+  'dispatch_child_work_order.parent_not_case': 409,
 
   // ── 500 server ───────────────────────────────────────────────────
   // timers_required is a programmer error: TS plan-build always
@@ -90,6 +93,7 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // surface as a server error so the caller's UX shows a generic
   // failure and ops see the trace.
   'update_entity_sla.timers_required': 500,
+  'dispatch_child_work_order.timers_required': 500,
   'command_operations.unexpected_state': 500,
 };
 
