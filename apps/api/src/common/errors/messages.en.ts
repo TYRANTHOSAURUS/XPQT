@@ -646,6 +646,28 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'approval.invalid_decision': {
     title: "Couldn't grant — decision must be approved or rejected",
   },
+
+  // ─── grant_ticket_approval RPC (B.2.A.Step10 reland §3.5) ────────────────
+  'grant_ticket_approval.approval_not_found': {
+    title: "We can't find that approval",
+  },
+  'grant_ticket_approval.invalid_target_entity_type': {
+    title: "Couldn't grant — wrong approval path for this target",
+  },
+  'grant_ticket_approval.tenant_mismatch': {
+    title: "Couldn't grant — approval doesn't belong to this workspace",
+  },
+  'grant_ticket_approval.invalid_response': {
+    title: "Couldn't grant — decision must be approved or rejected",
+  },
+  'grant_ticket_approval.ticket_not_found': {
+    title: "Couldn't grant — the related request is no longer available",
+  },
+  'grant_ticket_approval.cas_lost': {
+    title: 'Approval state changed during grant attempt',
+    detail: 'Please retry.',
+  },
+
   'vendor.unavailable': {
     title: 'Vendor unavailable',
   },

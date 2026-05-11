@@ -497,24 +497,338 @@ describe('ApprovalService — booking grant via grant_booking_approval RPC (B.0.
     ).rejects.toThrow('Approval not found');
   });
 
-  it('does NOT call grant_booking_approval for non-booking targets', async () => {
-    // Ticket-target approvals stay on the legacy TS path — verify the
-    // dispatcher routes them away from the booking-RPC.
+  it('does NOT call grant_booking_approval for ticket targets (routes to grant_ticket_approval instead)', async () => {
+    // B.2.A.Step10 reland — ticket-target approvals now have their own
+    // atomic RPC (grant_ticket_approval / 00356). The dispatcher in
+    // respond() must route ticket-targets to that RPC, NOT to
+    // grant_booking_approval.
     const { svc, rpcCalls } = makeBookingService({
       approval: approvalRow({ target_entity_type: 'ticket' }),
-      rpcStub: () => Promise.resolve({ data: null, error: null }),
+      // Whichever RPC the dispatcher picks, return a resolved outcome
+      // so the test can read the kind off the result.
+      rpcStub: (fn) => {
+        if (fn === 'grant_ticket_approval') {
+          return Promise.resolve({
+            data: {
+              kind: 'resolved',
+              approval_id: 'apr-1',
+              ticket_id: 'booking-1',
+              final_decision: 'approved',
+              ticket_status: 'new',
+              ticket_status_category: 'new',
+              sla_started: false,
+              workflow_started: false,
+              routing_evaluation_emitted: true,
+            },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: null, error: null });
+      },
     });
 
-    // The legacy path's `from('approvals').update(...).eq().select().maybeSingle()`
-    // will hit the fallback chain; we don't assert its result here, just
-    // that the RPC wasn't called.
-    try {
-      await svc.respond('apr-1', { status: 'approved' }, 'P-1', 'U-1');
-    } catch {
-      // The legacy path may throw because the fallback mock is
-      // intentionally minimal — that's fine for this test.
-    }
+    await svc.respond('apr-1', { status: 'approved' }, 'P-1', 'U-1');
 
     expect(rpcCalls.find((c) => c.fn === 'grant_booking_approval')).toBeUndefined();
+    expect(rpcCalls.find((c) => c.fn === 'grant_ticket_approval')).toBeDefined();
+  });
+});
+
+/**
+ * B.2.A.Step10 reland — `ApprovalService.respond` ticket branch cutover
+ * to grant_ticket_approval RPC (00356 / spec §3.5).
+ *
+ * Mirrors the booking-grant describe block. Asserts: dispatcher routing,
+ * idempotency key shape (no actor), error mapping for the 6 new RPC
+ * codes, partial_approved pass-through, already_responded surfaced as
+ * 409, and that the ticket-fallthrough no longer fires the legacy
+ * onApprovalDecision call path.
+ */
+describe('ApprovalService — ticket grant via grant_ticket_approval RPC (B.2.A.Step10 reland)', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  type RpcCall = { fn: string; args: Record<string, unknown> };
+  type RpcStub = (
+    fn: string,
+    args: Record<string, unknown>,
+  ) => Promise<{ data: unknown; error: { code?: string; message?: string } | null }>;
+
+  function makeTicketService(opts: {
+    approval: Record<string, unknown>;
+    rpcStub: RpcStub;
+  }): { svc: ApprovalService; rpcCalls: RpcCall[]; ticketSpy: jest.Mock } {
+    const rpcCalls: RpcCall[] = [];
+    const supabase = {
+      admin: {
+        rpc: jest.fn(async (fn: string, args: Record<string, unknown>) => {
+          rpcCalls.push({ fn, args });
+          return opts.rpcStub(fn, args);
+        }),
+        from(table: string) {
+          if (table === 'approvals') {
+            return {
+              select: () => ({
+                eq: () => ({
+                  eq: () => ({
+                    single: () => Promise.resolve({ data: opts.approval, error: null }),
+                  }),
+                }),
+              }),
+            };
+          }
+          // Fallback for delegations / users / team_members.
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => Promise.resolve({ data: null, error: null }),
+                maybeSingle: () => Promise.resolve({ data: null, error: null }),
+              }),
+            }),
+          };
+        },
+      },
+    };
+
+    jest.spyOn(TenantContext, 'current').mockReturnValue({ id: 'T' } as never);
+
+    // The legacy TicketService.onApprovalDecision MUST NOT be called
+    // post-cutover. We spy on it so the test asserts it's untouched.
+    const ticketSpy = jest.fn();
+    const svc = new ApprovalService(
+      supabase as never,
+      { onApprovalDecision: ticketSpy } as never,
+      { onApprovalDecided: jest.fn() } as never,
+      { onApprovalDecided: jest.fn() } as never,
+      { onApprovalDecided: jest.fn() } as never,
+    );
+
+    jest
+      .spyOn(svc as unknown as { callerCanRespond: () => Promise<boolean> }, 'callerCanRespond')
+      .mockResolvedValue(true);
+
+    return { svc, rpcCalls, ticketSpy };
+  }
+
+  function ticketApprovalRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'apr-T',
+      tenant_id: 'T',
+      target_entity_type: 'ticket',
+      target_entity_id: 'ticket-1',
+      parallel_group: null,
+      approval_chain_id: null,
+      status: 'pending',
+      approver_person_id: 'P-1',
+      approver_team_id: null,
+      ...overrides,
+    };
+  }
+
+  it('routes ticket-target grant through grant_ticket_approval RPC', async () => {
+    const { svc, rpcCalls, ticketSpy } = makeTicketService({
+      approval: ticketApprovalRow(),
+      rpcStub: () =>
+        Promise.resolve({
+          data: {
+            kind: 'resolved',
+            approval_id: 'apr-T',
+            ticket_id: 'ticket-1',
+            final_decision: 'approved',
+            ticket_status: 'new',
+            ticket_status_category: 'new',
+            sla_started: true,
+            workflow_started: true,
+            routing_evaluation_emitted: true,
+          },
+          error: null,
+        }),
+    });
+
+    const result = await svc.respond(
+      'apr-T',
+      { status: 'approved' },
+      'P-1',
+      'U-1',
+      '99999999-9999-4999-8999-999999999999',
+    );
+
+    expect(rpcCalls).toHaveLength(1);
+    expect(rpcCalls[0].fn).toBe('grant_ticket_approval');
+    expect(rpcCalls[0].args).toMatchObject({
+      p_approval_id: 'apr-T',
+      p_tenant_id: 'T',
+      p_actor_user_id: 'U-1',
+      p_decision: 'approved',
+    });
+    expect((result as { kind: string }).kind).toBe('resolved');
+    // The legacy TS fan-out path MUST NOT fire — the RPC owns the
+    // post-grant outbox emits now.
+    expect(ticketSpy).not.toHaveBeenCalled();
+  });
+
+  it('threads idempotency_key as `approval:grant:${approvalId}:${clientRequestId}`', async () => {
+    const { svc, rpcCalls } = makeTicketService({
+      approval: ticketApprovalRow(),
+      rpcStub: () =>
+        Promise.resolve({
+          data: {
+            kind: 'partial_approved',
+            approval_id: 'apr-T',
+            ticket_id: 'ticket-1',
+            ticket_status: null,
+            ticket_status_category: 'pending_approval',
+            sla_started: false,
+            workflow_started: false,
+            routing_evaluation_emitted: false,
+            remaining: 1,
+          },
+          error: null,
+        }),
+    });
+
+    await svc.respond(
+      'apr-T',
+      { status: 'approved' },
+      'P-1',
+      'U-1',
+      'bbbb2222-3333-4444-8555-666677778888',
+    );
+
+    expect(rpcCalls[0].args.p_idempotency_key).toBe(
+      'approval:grant:apr-T:bbbb2222-3333-4444-8555-666677778888',
+    );
+  });
+
+  it('surfaces the partial_approved RPC outcome to the caller (waiting on peers)', async () => {
+    const { svc } = makeTicketService({
+      approval: ticketApprovalRow(),
+      rpcStub: () =>
+        Promise.resolve({
+          data: {
+            kind: 'partial_approved',
+            approval_id: 'apr-T',
+            ticket_id: 'ticket-1',
+            ticket_status: null,
+            ticket_status_category: 'pending_approval',
+            sla_started: false,
+            workflow_started: false,
+            routing_evaluation_emitted: false,
+            remaining: 2,
+          },
+          error: null,
+        }),
+    });
+
+    const result = await svc.respond('apr-T', { status: 'approved' }, 'P-1', 'U-1');
+
+    expect(result).toMatchObject({ kind: 'partial_approved', remaining: 2 });
+  });
+
+  it('maps already_responded RPC outcome to ConflictException', async () => {
+    const { svc } = makeTicketService({
+      approval: ticketApprovalRow(),
+      rpcStub: () =>
+        Promise.resolve({
+          data: {
+            kind: 'already_responded',
+            approval_id: 'apr-T',
+            ticket_id: 'ticket-1',
+            prior_status: 'approved',
+          },
+          error: null,
+        }),
+    });
+
+    await expect(
+      svc.respond('apr-T', { status: 'approved' }, 'P-1', 'U-1'),
+    ).rejects.toMatchObject({
+      code: 'approval.already_responded',
+    });
+  });
+
+  it('maps non_ticket_approved RPC outcome to validation error', async () => {
+    const { svc } = makeTicketService({
+      approval: ticketApprovalRow(),
+      rpcStub: () =>
+        Promise.resolve({
+          data: {
+            kind: 'non_ticket_approved',
+            approval_id: 'apr-T',
+            target_entity_type: 'booking',
+          },
+          error: null,
+        }),
+    });
+
+    await expect(
+      svc.respond('apr-T', { status: 'approved' }, 'P-1', 'U-1'),
+    ).rejects.toMatchObject({
+      code: 'grant_ticket_approval.invalid_target_entity_type',
+    });
+  });
+
+  it('maps RPC error grant_ticket_approval.approval_not_found to a 404 AppError', async () => {
+    const { svc } = makeTicketService({
+      approval: ticketApprovalRow(),
+      rpcStub: () =>
+        Promise.resolve({
+          data: null,
+          error: { message: 'grant_ticket_approval.approval_not_found: id=apr-T tenant=T' },
+        }),
+    });
+
+    await expect(
+      svc.respond('apr-T', { status: 'approved' }, 'P-1', 'U-1'),
+    ).rejects.toMatchObject({
+      code: 'grant_ticket_approval.approval_not_found',
+    });
+  });
+
+  it('maps RPC error grant_ticket_approval.cas_lost to a 409 AppError', async () => {
+    const { svc } = makeTicketService({
+      approval: ticketApprovalRow(),
+      rpcStub: () =>
+        Promise.resolve({
+          data: null,
+          error: { message: 'grant_ticket_approval.cas_lost: id=apr-T' },
+        }),
+    });
+
+    await expect(
+      svc.respond('apr-T', { status: 'approved' }, 'P-1', 'U-1'),
+    ).rejects.toMatchObject({
+      code: 'grant_ticket_approval.cas_lost',
+    });
+  });
+
+  it('rejected resolved outcome surfaces ticket_status=rejected', async () => {
+    const { svc, ticketSpy } = makeTicketService({
+      approval: ticketApprovalRow(),
+      rpcStub: () =>
+        Promise.resolve({
+          data: {
+            kind: 'resolved',
+            approval_id: 'apr-T',
+            ticket_id: 'ticket-1',
+            final_decision: 'rejected',
+            ticket_status: 'rejected',
+            ticket_status_category: 'closed',
+            sla_started: false,
+            workflow_started: false,
+            routing_evaluation_emitted: false,
+          },
+          error: null,
+        }),
+    });
+
+    const result = await svc.respond('apr-T', { status: 'rejected' }, 'P-1', 'U-1');
+
+    expect(result).toMatchObject({
+      kind: 'resolved',
+      final_decision: 'rejected',
+      ticket_status: 'rejected',
+      ticket_status_category: 'closed',
+    });
+    expect(ticketSpy).not.toHaveBeenCalled();
   });
 });

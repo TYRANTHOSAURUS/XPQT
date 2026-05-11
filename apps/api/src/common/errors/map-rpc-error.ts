@@ -72,6 +72,21 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // entity kind.
   'validate_entity_in_tenant.unknown_kind': 400,
   'validate_entity_in_tenant.dispatch_missing': 400,
+  // B.2.A.Step10 reland §3.5 — grant_ticket_approval input/state errors.
+  // invalid_response: p_decision was not 'approved' | 'rejected'. The
+  //   TS layer narrows dto.status before calling, so this is a 400
+  //   defense-in-depth.
+  // invalid_target_entity_type: caller routed a non-ticket approval
+  //   through this RPC arm. respond() in TS filters on
+  //   target_entity_type === 'ticket' before calling — RPC bails out
+  //   cleanly without mutating. 400 (client routing mistake).
+  // tenant_mismatch: defense-in-depth for the rare case where the
+  //   tenant_id passed to the RPC doesn't match the approval row's
+  //   tenant_id. 400 — caller passed mismatched values (TS should never
+  //   do this, but a future non-HTTP caller could).
+  'grant_ticket_approval.invalid_response': 400,
+  'grant_ticket_approval.invalid_target_entity_type': 400,
+  'grant_ticket_approval.tenant_mismatch': 400,
 
   // ── 404 not_found ────────────────────────────────────────────────
   'transition_entity_status.not_found': 404,
@@ -99,6 +114,15 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'create_ticket_with_automation.request_type_not_found': 404,
   // B.2.A.Step11 §3.10 — reclassify_ticket RPC.
   'reclassify_ticket.ticket_not_found': 404,
+  // B.2.A.Step10 reland §3.5 — grant_ticket_approval RPC's miss paths.
+  // approval_not_found: the approvals row was deleted between TS read
+  //   and the RPC's FOR UPDATE select.
+  // ticket_not_found: defense-in-depth — the approvals FK doesn't
+  //   constrain target_entity_id to tickets, but in practice a
+  //   ticket-target row always references a real ticket. Hard-delete
+  //   between approval insert + grant is the only way this fires.
+  'grant_ticket_approval.approval_not_found': 404,
+  'grant_ticket_approval.ticket_not_found': 404,
 
   // ── 409 conflict ─────────────────────────────────────────────────
   // payload_mismatch: the client reused the same X-Client-Request-Id
@@ -110,6 +134,11 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'transition_entity_status.has_open_children': 409,
   'command_operations.payload_mismatch': 409,
   'dispatch_child_work_order.parent_not_dispatchable': 409,
+  // B.2.A.Step10 reland §3.5 — grant_ticket_approval CAS race.
+  // CAS update missed despite advisory lock + FOR UPDATE; bug in the
+  // lock code, not a normal user race. Surface as 409 + log so ops can
+  // triage. Symmetric with approval.cas_lost from grant_booking_approval.
+  'grant_ticket_approval.cas_lost': 409,
 
   // ── 422 unprocessable entity ─────────────────────────────────────
   // Tenant-FK validation helper (00317) raises 42501 on first

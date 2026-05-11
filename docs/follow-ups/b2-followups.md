@@ -462,34 +462,38 @@ than the error `code` field) regresses. The error system is code-keyed
 end-to-end so risk is small, but worth a one-line cite when reviewing
 any frontend that consumes workflow-misconfiguration errors.
 
-## Step 10 (grant_ticket_approval) reland — NOT "mechanical"
+## Step 10 (grant_ticket_approval) reland — NOT "mechanical" — RESOLVED 2026-05-11
 
-The original Step 10 commit (3834b702) was reverted at fde350df. With
-Step 12 + Step 11 shipped, the prerequisite infrastructure is in place
-(tickets.workflow_id / sla_id populated at create; SlaTimerHandler /
-WorkflowStartHandler / RoutingEvaluationHandler registered).
+**Status:** Shipped as B.2.A.Step10 reland. Migration `00356_grant_ticket_approval_rpc.sql`
+on remote. TS cutover live in `ApprovalService.grantTicketApproval`. Dead
+code (`TicketService.onApprovalDecision` + `runPostCreateAutomation`)
+deleted in the same commit.
 
-But the reland is NOT a straight cherry-pick. Three contract drifts
-since the revert require fixes:
+All three contract drifts addressed:
 
-1. **Approval enum gap (v10 / C2 from spec §3.10).** The reverted RPC
-   at line 226 filters `status <> 'pending'`. Spec lines 2612-2633
-   added `delegated` to the non-terminal set. Reland must extend the
-   CAS pre-check AND the chain/group resolution count to include
-   `delegated`.
+1. **Approval enum gap (v10 / C2).** Both the CAS pre-check (RPC step 6
+   surfaces `'already_responded'` for any non-`pending` status, which
+   includes `delegated`) AND the chain/group resolution count
+   (`status in ('pending', 'delegated')` at step 8 line 295) include
+   the full non-terminal set. Harness scenario 8 asserts a delegated
+   peer keeps the chain open even after all `pending` peers grant.
 
-2. **F-CRIT-1 actor resolution (Step 12 pattern).** The reverted RPC
-   inserts p_actor_user_id into activities/domain_events directly,
-   triggering 23503 FK violations on the FK to users.id. Reland must
-   resolve auth_uid → users.id once and use that for the audit writes.
+2. **F-CRIT-1 actor resolution.** RPC step 3 resolves
+   `p_actor_user_id` (auth_uid) → `v_actor_users_id` + `v_actor_person_id`
+   via a single lookup against `users` (citation: 00356:215-222 mirrors
+   00350:499-512). Both partial-decision (step 8) and final-decision
+   (step 13) domain_events INSERTs use `v_actor_users_id`. Harness
+   scenario 9 asserts the FK resolves cleanly + the persisted value is
+   `users.id` not `auth_uid`.
 
-3. **F-CRIT-2 / S12-I2 started_at semantics.** The reverted RPC emits
-   `started_at: now()` inline. Post-Step-12, the SlaTimerHandler
-   passes `event.payload.started_at` to `start_sla_timers` (00352 v2)
-   which persists that value. The reland's emit must carry an
-   appropriate `started_at` value (likely `now()` per spec line 2279,
-   since SLA clock starts at approval grant time, not earlier).
+3. **F-CRIT-2 / S12-I2 started_at semantics.** RPC step 11 emits
+   `sla.timer_recompute_required` with explicit `started_at: now()` in
+   the payload (citation: 00356:434). The Step-12 SlaTimerHandler
+   passes that value through to `start_sla_timers(p_started_at=...)`
+   which persists it. Harness scenario 10 asserts the emit payload's
+   `started_at` ≈ wall clock at grant time.
 
-A new migration slot must be used (00343 was dropped; next free is
-00356 if Step 11 remediation uses 00355). Reclassify the work as a
-fresh feature commit, not a revert-of-revert.
+The migration occupies slot 00356 (00343 dropped via 00344; 00345-00355
+allocated to Steps 11/12 + their hardenings). Shipped as a fresh feature
+commit — not a revert-of-revert — so the audit trail reflects the
+3-drift remediation work as deliberate net-new code.

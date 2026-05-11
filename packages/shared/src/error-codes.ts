@@ -298,6 +298,16 @@ export type KnownErrorCode =
   | 'approval.non_booking_approved'
   | 'approval.cas_lost'
   | 'approval.invalid_decision'
+  // ─── grant_ticket_approval RPC (B.2.A.Step10 reland §3.5) ────────────────
+  // Six codes raised by migration 00356_grant_ticket_approval_rpc.sql.
+  // mapRpcErrorToAppError routes them via STATUS_BY_CODE entries in
+  // apps/api/src/common/errors/map-rpc-error.ts.
+  | 'grant_ticket_approval.approval_not_found'
+  | 'grant_ticket_approval.invalid_target_entity_type'
+  | 'grant_ticket_approval.tenant_mismatch'
+  | 'grant_ticket_approval.invalid_response'
+  | 'grant_ticket_approval.ticket_not_found'
+  | 'grant_ticket_approval.cas_lost'
   | 'vendor.unavailable'
   | 'vendor.not_in_scope'
 
@@ -938,6 +948,13 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'approval.non_booking_approved',
   'approval.cas_lost',
   'approval.invalid_decision',
+  // ─── grant_ticket_approval RPC (B.2.A.Step10 reland §3.5) ────────────────
+  'grant_ticket_approval.approval_not_found',
+  'grant_ticket_approval.invalid_target_entity_type',
+  'grant_ticket_approval.tenant_mismatch',
+  'grant_ticket_approval.invalid_response',
+  'grant_ticket_approval.ticket_not_found',
+  'grant_ticket_approval.cas_lost',
   'vendor.unavailable',
   'vendor.not_in_scope',
   'insert_failed',

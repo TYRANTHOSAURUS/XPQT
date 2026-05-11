@@ -216,7 +216,13 @@ describe('Cross-tenant FK leak regression — WRITE side', () => {
     expect(captures[0].filters.tenant_id).toBe(TENANT_A);
   });
 
-  it('site 12b: ticket.onApprovalDecision rejected — tickets.update filters by tenant_id', async () => {
+  it('site 12b: grant_ticket_approval rejected branch — tickets.update filters by tenant_id (RPC mirror)', async () => {
+    // B.2.A.Step10 reland — the legacy TicketService.onApprovalDecision
+    // is gone; the tickets.update for rejected approvals now lives
+    // inside the grant_ticket_approval RPC (00356, step 10). This probe
+    // still asserts the call shape that supabase-js writes carry a
+    // tenant_id filter — symmetric defense for any future TS sibling
+    // that touches the same fields.
     const captures: FilterCapture[] = [];
     const client = buildWriteCaptureClient(captures);
     await (client as any)
@@ -227,7 +233,7 @@ describe('Cross-tenant FK leak regression — WRITE side', () => {
     expect(captures[0].filters.tenant_id).toBe(TENANT_A);
   });
 
-  it('site 12c: ticket.onApprovalDecision approved — tickets.update filters by tenant_id', async () => {
+  it('site 12c: grant_ticket_approval approved branch — tickets.update filters by tenant_id (RPC mirror)', async () => {
     const captures: FilterCapture[] = [];
     const client = buildWriteCaptureClient(captures);
     await (client as any)

@@ -232,6 +232,16 @@ export class TicketService {
     // unused-locals lint. Future cleanup: migrate tests to NestJS testing
     // factories then drop this injection.
     void this.approvalService;
+    // B.2.A.Step10 reland: slaService + workflowEngine were called by
+    // runPostCreateAutomation. With that method deleted (the
+    // grant_ticket_approval RPC + the §3.9.3 handlers own the
+    // post-grant SLA / workflow start), both injections are now unused
+    // by this service. Kept on the constructor for positional-ordering
+    // compatibility with existing test fixtures (same rationale as
+    // approvalService above). Future cleanup: migrate tests to NestJS
+    // testing factories then drop these injections.
+    void this.slaService;
+    void this.workflowEngine;
   }
 
   async list(filters: TicketListFilters = {}, actorAuthUid: string) {
@@ -844,231 +854,32 @@ export class TicketService {
     return { ...(out.ticket as Record<string, unknown>), ticket_kind: 'case' as const } as Record<string, unknown> & { ticket_kind: 'case' };
   }
 
-  /**
-   * Called by approval flow after a ticket's approval request is resolved.
-   * Runs routing/SLA/workflow on approval; marks ticket cancelled on rejection.
-   */
-  async onApprovalDecision(ticketId: string, outcome: 'approved' | 'rejected') {
-    const tenant = TenantContext.current();
-    const ticket = await this.getById(ticketId, SYSTEM_ACTOR);
-    if (ticket.status_category !== 'pending_approval') return;
-
-    // Cross-tenant write fix (codex post-fix review 2026-05-08): both
-    // approval-decision branches updated tickets by id alone. supabase.admin
-    // bypasses RLS — filter by tenant. tenant resolved via TenantContext at
-    // the top of this method.
-    if (outcome === 'rejected') {
-      await this.supabase.admin
-        .from('tickets')
-        .update({ status: 'rejected', status_category: 'closed', closed_at: new Date().toISOString() })
-        .eq('id', ticketId)
-        .eq('tenant_id', tenant.id);
-      await this.addActivity(ticketId, {
-        activity_type: 'system_event',
-        visibility: 'system',
-        metadata: { event: 'approval_rejected' },
-      });
-      return;
-    }
-
-    // Approved — move out of pending_approval and run automation
-    await this.supabase.admin
-      .from('tickets')
-      .update({ status: 'new', status_category: 'new' })
-      .eq('id', ticketId)
-      .eq('tenant_id', tenant.id);
-    const ticketRecord = await this.getById(ticketId, SYSTEM_ACTOR);
-
-    await this.addActivity(ticketId, {
-      activity_type: 'system_event',
-      visibility: 'system',
-      metadata: { event: 'approval_approved' },
-    });
-
-    const cfg = ticketRecord.ticket_type_id
-      ? (await this.supabase.admin
-          .from('request_types')
-          .select('domain, sla_policy_id, workflow_definition_id')
-          .eq('id', ticketRecord.ticket_type_id)
-          .eq('tenant_id', tenant.id)
-          .maybeSingle()).data
-      : null;
-
-    await this.runPostCreateAutomation(ticketRecord as Record<string, unknown>, tenant.id, cfg);
-  }
-
-  private async runPostCreateAutomation(
-    data: Record<string, unknown>,
-    tenantId: string,
-    requestTypeCfg: Record<string, unknown> | null,
-    options: CreateTicketOptions = {},
-  ) {
-    // Step 1c.10c: tickets is case-only. runPostCreateAutomation only runs
-    // for cases — work_orders go through dispatch.service.ts +
-    // createBookingOriginWorkOrder paths which don't call this. So
-    // isWorkOrder is unconditionally false here. Kept as a const to
-    // preserve the existing branching logic in this method.
-    const isWorkOrder = false;
-
-    // Scope-override lookup is advisory for the resolver (which runs its own
-    // copy) but authoritative for workflow / case SLA below. Asset-backed
-    // location fallback (locationId → assetId.assigned_space_id → null) lives
-    // inside the scope-override service so every consumer sees the same rule.
-    // One extra STABLE RPC call when we also need effectiveLocation for the
-    // auto-routing branch; the service caches nothing but the overhead is a
-    // single-row index lookup.
-    const overrideIntake = {
-      locationId: (data.location_id as string | null) ?? null,
-      assetId: (data.asset_id as string | null) ?? null,
-    };
-    const effectiveLocation = await this.scopeOverrides.deriveEffectiveLocation(
-      tenantId,
-      overrideIntake,
-    );
-    const scopeOverride = (data.ticket_type_id && !isWorkOrder)
-      ? await this.scopeOverrides.resolveForLocation(
-          tenantId,
-          data.ticket_type_id as string,
-          effectiveLocation,
-        )
-      : null;
-    const effectiveWorkflowDefinitionId =
-      scopeOverride?.workflow_definition_id ??
-      (requestTypeCfg?.workflow_definition_id as string | null | undefined) ??
-      null;
-    const effectiveCaseSlaPolicyId =
-      scopeOverride?.case_sla_policy_id ??
-      (requestTypeCfg?.sla_policy_id as string | null | undefined) ??
-      null;
-
-    // ── Auto-routing ──────────────────────────────────────────
-    if (!isWorkOrder && !data.assigned_team_id && !data.assigned_user_id && !data.assigned_vendor_id) {
-      try {
-
-        const evalCtx = {
-          tenant_id: tenantId,
-          ticket_id: data.id as string,
-          request_type_id: (data.ticket_type_id as string | null) ?? null,
-          domain: (requestTypeCfg?.domain as string | null) ?? null,
-          priority: data.priority as string | null,
-          asset_id: (data.asset_id as string | null) ?? null,
-          location_id: effectiveLocation,
-        };
-
-        const result = await this.routingService.evaluate(evalCtx);
-        await this.routingService.recordDecision(data.id as string, evalCtx, result);
-
-        if (result.target) {
-          const updates: Record<string, unknown> = { status_category: 'assigned' };
-          if (result.target.kind === 'team') updates.assigned_team_id = result.target.team_id;
-          if (result.target.kind === 'user') updates.assigned_user_id = result.target.user_id;
-          if (result.target.kind === 'vendor') updates.assigned_vendor_id = result.target.vendor_id;
-          if (effectiveLocation && !data.location_id) updates.location_id = effectiveLocation;
-
-          // Plan A.4 / Commit 6 (I2) / round-4 codex flag
-          // ticket.service.ts:777-787. Post-create auto-routing writes
-          // routing.target.{team_id,user_id,vendor_id} to tickets
-          // without validation. Symmetric to the rerun-resolver fix
-          // (commit bd5882d / line 1277): routing definitions are
-          // tenant-scoped, but a routing-table compromise / rule import /
-          // test override could return a foreign uuid that lands on the
-          // tickets row blind. Validate before the UPDATE — wrapped
-          // inside the existing try/catch (line 765) so a foreign uuid
-          // throws → caught → logged → routing_evaluation_failed
-          // breadcrumb added. Fail-soft matches rerun-resolver semantics:
-          // better to leave the ticket unassigned than to mark it
-          // cross-tenant.
-          await validateAssigneesInTenant(
-            this.supabase,
-            {
-              assigned_team_id: updates.assigned_team_id,
-              assigned_user_id: updates.assigned_user_id,
-              assigned_vendor_id: updates.assigned_vendor_id,
-            },
-            tenantId,
-          );
-
-          await this.supabase.admin
-            .from('tickets')
-            .update(updates)
-            .eq('id', data.id as string)
-            .eq('tenant_id', tenantId);
-          Object.assign(data, updates);
-
-          await this.addActivity(data.id as string, {
-            activity_type: 'system_event',
-            visibility: 'system',
-            metadata: {
-              event: 'auto_routed',
-              chosen_by: result.chosen_by,
-              strategy: result.strategy,
-              rule: result.rule_name,
-            },
-          });
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error('[routing] evaluate failed', err);
-        // Always leave a system-event breadcrumb on the ticket so operators
-        // see why their ticket landed unassigned. The previous code only
-        // logged to stdout, which was invisible to anyone outside the API box.
-        await this.addActivity(data.id as string, {
-          activity_type: 'system_event',
-          visibility: 'system',
-          metadata: { event: 'routing_evaluation_failed', error: message },
-        }).catch(() => undefined);
-      }
-    }
-
-    // ── Auto-SLA ──────────────────────────────────────────────
-    // Scope override's case_sla_policy_id wins over request_types.sla_policy_id
-    // when set. Null override leaves the request-type default intact.
-    if (effectiveCaseSlaPolicyId) {
-      try {
-        await this.slaService.startTimers(data.id as string, tenantId, effectiveCaseSlaPolicyId);
-        // Cross-tenant write fix (codex post-fix review 2026-05-08):
-        // explicit tenant filter on the SLA-id stamp.
-        await this.supabase.admin
-          .from('tickets')
-          .update({ sla_id: effectiveCaseSlaPolicyId })
-          .eq('id', data.id as string)
-          .eq('tenant_id', tenantId);
-      } catch (err) {
-        // SLA failure should not block ticket creation, but record the breadcrumb.
-        const message = err instanceof Error ? err.message : String(err);
-        console.error('[sla] start timers failed', err);
-        await this.addActivity(data.id as string, {
-          activity_type: 'system_event',
-          visibility: 'system',
-          metadata: { event: 'sla_start_failed', error: message },
-        }).catch(() => undefined);
-      }
-    }
-
-    // ── Auto-workflow ─────────────────────────────────────────
-    // Same precedence: scope override's workflow_definition_id wins.
-    // F-CRIT-2: legacy `options.skipWorkflow` removed from CreateTicketOptions.
-    // This path now only runs from onApprovalDecision (post-grant) which
-    // never had a skip-workflow case. The webhook-override path went
-    // through the create() RPC's force_workflow_definition_id instead.
-    void options;
-    if (effectiveWorkflowDefinitionId) {
-      try {
-        await this.workflowEngine.startForTicket(data.id as string, effectiveWorkflowDefinitionId);
-      } catch (err) {
-        // Workflow failure should not block ticket creation, but record it.
-        const message = err instanceof Error ? err.message : String(err);
-        console.error('[workflow] start failed', err);
-        await this.addActivity(data.id as string, {
-          activity_type: 'system_event',
-          visibility: 'system',
-          metadata: { event: 'workflow_start_failed', error: message },
-        }).catch(() => undefined);
-      }
-    }
-
-    return data;
-  }
+  // B.2.A.Step10 reland — `onApprovalDecision` + `runPostCreateAutomation`
+  // were deleted in this commit. Their multi-step write sequence
+  // (tickets UPDATE → re-fetch → activity → optional routing/SLA/workflow
+  // fan-out) was the headline lie §1.3 + §1.19 called out: there was no
+  // transaction wrapping the steps, so a mid-flow crash left the ticket
+  // in pending_approval with no path forward. The atomic
+  // `grant_ticket_approval` RPC (00356 / spec §3.5) replaces all of it:
+  //
+  //   - State-machine guard (`status_category=='pending_approval'`) is
+  //     the conditional `if v_ticket.status_category = 'pending_approval'`
+  //     check at step 10 of the RPC.
+  //   - Tickets UPDATE for rejected → closed | approved → new lives in
+  //     step 10.
+  //   - The post-grant routing/SLA/workflow fan-out is now three outbox
+  //     events (sla.timer_recompute_required, routing.evaluation_required,
+  //     workflow.start_required) emitted at step 11 — drained by the
+  //     respective §3.9.3 handlers shipped in Step 11 + Step 12.
+  //
+  // The `runPostCreateAutomation` private helper was the second caller
+  // of routingService.evaluate / slaService.startTimers /
+  // workflowEngine.startForTicket. With its only caller (this method)
+  // deleted, the helper is dead — also removed in this commit.
+  //
+  // The `force_workflow_definition_id` webhook override path (Step 12)
+  // does NOT touch this helper — it threads through the RPC's
+  // p_input.force_workflow_definition_id parameter instead.
 
   async update(
     id: string,

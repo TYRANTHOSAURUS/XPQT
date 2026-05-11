@@ -95,11 +95,18 @@ describe('TicketService raw config reads — cross-tenant FK leak regression', (
     expect(result.data).toBeNull(); // foreign-tenant row NOT visible
   });
 
-  it('site 2: TicketService.runPostCreateAutomation — request_types re-fetch', async () => {
+  it('site 2: legacy request_types re-fetch shape — historic probe (post-Step10-reland: dead code)', async () => {
+    // B.2.A.Step10 reland — runPostCreateAutomation was deleted; the
+    // request_types re-fetch is no longer performed from TS. The
+    // ticket-side post-grant automation now reads
+    // tickets.workflow_id / sla_id directly inside the
+    // grant_ticket_approval RPC (00356, step 9). Probe retained as a
+    // call-shape regression net for any future TS sibling that adds a
+    // request_types lookup — the .eq('tenant_id', ...) filter must
+    // accompany the id filter.
     const captures: FilterCapture[] = [];
     const client = buildCaptureClient(foreignTenantFixture('request_types', { domain: 'evil' }), captures);
 
-    // Reproduces ticket.service.ts:708-714
     const result = await (client as any)
       .from('request_types')
       .select('domain, sla_policy_id, workflow_definition_id')

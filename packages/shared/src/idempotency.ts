@@ -282,3 +282,36 @@ export function buildReclassifyIdempotencyKey(
 ): string {
   return `${RECLASSIFY_IDEMPOTENCY_KEY_PREFIX}:${ticketId}:${clientRequestId}`;
 }
+
+/**
+ * Prefix for the `grant_ticket_approval` outer idempotency key.
+ * B.2.A.Step10 reland §3.5 — the RPC's `command_operations` gate is
+ * keyed on (tenant_id, idempotency_key); a retry of the SAME approval
+ * grant (same approval id + same clientRequestId) collapses to the
+ * cached result.
+ *
+ * Citations:
+ *   - 00356_grant_ticket_approval_rpc.sql (B.2.A.Step10 reland)
+ *   - spec §3.5 (docs/follow-ups/b2-survey-and-design.md lines 2238-2350)
+ *   - apps/api/src/modules/approval/approval.service.ts
+ *     (ApprovalService.respond — ticket branch dispatcher)
+ */
+export const APPROVAL_GRANT_IDEMPOTENCY_KEY_PREFIX = 'approval:grant';
+
+/**
+ * Build the outer idempotency key for `grant_ticket_approval`. Shape:
+ *   `approval:grant:<approval_id>:<clientRequestId>`
+ *
+ * Same approval + same clientRequestId ⇒ same key ⇒ command_operations
+ * short-circuits the second call. **No actor in the key** per
+ * F-CRIT-2 / plan-C1 (dispatch RPC); the clientRequestId is the
+ * deduplication boundary. Tying it to actor identity defeats the
+ * deduplication contract — same approval + same client retry across
+ * a delegation switch would mint different keys and double-decide.
+ */
+export function buildApprovalGrantIdempotencyKey(
+  approvalId: string,
+  clientRequestId: string,
+): string {
+  return `${APPROVAL_GRANT_IDEMPOTENCY_KEY_PREFIX}:${approvalId}:${clientRequestId}`;
+}

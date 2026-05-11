@@ -708,6 +708,27 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon niet goedkeuren — beslissing moet goedgekeurd of afgewezen zijn',
   },
 
+  // ─── grant_ticket_approval RPC (B.2.A.Step10 reland §3.5) ────────────────
+  'grant_ticket_approval.approval_not_found': {
+    title: 'Kon die goedkeuring niet vinden',
+  },
+  'grant_ticket_approval.invalid_target_entity_type': {
+    title: 'Kon niet goedkeuren — verkeerd goedkeurpad voor dit doel',
+  },
+  'grant_ticket_approval.tenant_mismatch': {
+    title: 'Kon niet goedkeuren — goedkeuring hoort niet bij deze workspace',
+  },
+  'grant_ticket_approval.invalid_response': {
+    title: 'Kon niet goedkeuren — beslissing moet goedgekeurd of afgewezen zijn',
+  },
+  'grant_ticket_approval.ticket_not_found': {
+    title: 'Kon niet goedkeuren — het bijbehorende verzoek bestaat niet meer',
+  },
+  'grant_ticket_approval.cas_lost': {
+    title: 'Goedkeuringsstatus is gewijzigd tijdens de poging',
+    detail: 'Probeer het opnieuw.',
+  },
+
   // ─── vendor ──────────────────────────────────────────────────────────────
   'vendor.unavailable': { title: 'Leverancier niet beschikbaar' },
   'vendor.not_in_scope': { title: 'Kon niet kiezen — leverancier niet toegestaan' },
