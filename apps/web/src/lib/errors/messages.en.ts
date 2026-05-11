@@ -1646,6 +1646,22 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't save the booking — approval change",
     detail: 'This edit changes the approval requirement. Approval-reconciling edits are not yet supported; revert the change or wait for the next release.',
   },
+  // v3 (00363) — codex Critical 2 — booking-scope rejections for child-row
+  // patches. The plan referenced a work order / order / asset reservation
+  // that belongs to a different booking (or none). "Refresh and try again"
+  // recovers by rebuilding the plan against the current booking state.
+  'edit_booking.work_order_not_in_booking': {
+    title: "Couldn't save the booking — not found",
+    detail: 'A work order in the edit no longer belongs to this booking. Refresh the page and try again.',
+  },
+  'edit_booking.order_not_in_booking': {
+    title: "Couldn't save the booking — not found",
+    detail: 'An order in the edit no longer belongs to this booking. Refresh the page and try again.',
+  },
+  'edit_booking.asset_reservation_not_in_booking': {
+    title: "Couldn't save the booking — not found",
+    detail: 'An asset reservation in the edit no longer belongs to this booking. Refresh the page and try again.',
+  },
 };
 
 /**

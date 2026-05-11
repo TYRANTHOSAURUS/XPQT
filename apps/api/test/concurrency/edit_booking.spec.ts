@@ -242,20 +242,24 @@ async function seedSecondTenantSpace(
 
 /**
  * Seed a room_booking_rules row so the stale_resolution gate has a row
- * whose updated_at can be bumped between plan-build and RPC.
+ * whose updated_at can be bumped between plan-build and RPC. v3 added
+ * optional target_scope + target_id to enable scenario 17 (destination-
+ * room rule update triggering stale_resolution via the v3 dual-room gate).
  */
 async function seedBookingRule(
   pool: Pool,
   tenantId: string,
-  opts: { updatedAtIso?: string } = {},
+  opts: { updatedAtIso?: string; targetScope?: 'tenant' | 'room'; targetId?: string } = {},
 ): Promise<{ ruleId: string; updatedAt: string }> {
   const ruleId = randomUUID();
   const updatedAt = opts.updatedAtIso ?? '2026-09-01T00:00:00Z';
+  const targetScope = opts.targetScope ?? 'tenant';
+  const targetId = opts.targetId ?? null;
   await pool.query(
     `insert into public.room_booking_rules
-       (id, tenant_id, name, target_scope, applies_when, effect, active, created_at, updated_at)
-     values ($1, $2, 'Edit Booking Rule', 'tenant', '{}'::jsonb, 'allow_override', true, $3, $3)`,
-    [ruleId, tenantId, updatedAt],
+       (id, tenant_id, name, target_scope, target_id, applies_when, effect, active, created_at, updated_at)
+     values ($1, $2, 'Edit Booking Rule', $3, $4, '{}'::jsonb, 'allow_override', true, $5, $5)`,
+    [ruleId, tenantId, targetScope, targetId, updatedAt],
   );
   registerCleanup(async () => {
     await pool.query('delete from public.room_booking_rules where id = $1', [ruleId]);
@@ -264,37 +268,97 @@ async function seedBookingRule(
 }
 
 /**
- * Seed a work_order with the canonical shape for repoint scenarios.
- * Mirrors the parent_kind='case' shape from update_entity_sla.spec.ts:144-150,
- * but we don't need a ticket parent for the producer-side outbox emit
- * assertion — work_orders.parent_kind is mandatory per the polymorphic
- * split (00213+), so we still need a ticket row. Inline-seed both.
+ * Seed a booking-anchored work_order for repoint scenarios. v3 (00363)
+ * Critical 2 requires every work_order patch row to have
+ * `booking_id = p_booking_id`. The single-parent CHECK on work_orders
+ * (00213:42-45, post-rename in 00278:86 — column renamed booking_bundle_id
+ * → booking_id; parent_kind enum literal updated to 'booking' per the live
+ * remote schema) allows EITHER parent_kind='case' + parent_ticket_id, OR
+ * parent_kind='booking' + booking_id, but never both. v2 (00362) test
+ * seeded the case-anchored variant; v3 requires the booking-anchored
+ * variant, so we drop the ticket fixture entirely and seed directly under
+ * the booking.
  */
 async function seedWorkOrderForRepoint(
   pool: Pool,
   base: BaseFixture,
-): Promise<{ ticketId: string; workOrderId: string }> {
-  const ticketId = randomUUID();
+  bookingId: string,
+): Promise<{ workOrderId: string }> {
   const workOrderId = randomUUID();
+  await pool.query(
+    `insert into public.work_orders
+       (id, tenant_id, parent_kind, booking_id,
+        title, status, status_category, source_channel,
+        planned_start_at)
+     values ($1, $2, 'booking', $3,
+             'Edit Booking Probe Setup WO', 'new', 'new', 'system',
+             '2026-10-01T08:00:00Z'::timestamptz)`,
+    [workOrderId, base.tenantId, bookingId],
+  );
+  // Base fixture's cleanup deletes all work_orders for the tenant; no
+  // explicit cleanup needed here.
+  return { workOrderId };
+}
+
+/**
+ * Seed a second confirmed booking + a booking-anchored work_order under
+ * THAT second booking. Used by the v3 cross-booking leak scenarios — the
+ * test plans an edit on booking A and tries to patch booking B's child
+ * row; the RPC must reject with *_not_in_booking.
+ */
+async function seedForeignBookingWithWorkOrder(
+  pool: Pool,
+  base: BaseFixture,
+): Promise<{ foreignBookingId: string; foreignWorkOrderId: string }> {
+  const foreignBookingId = randomUUID();
+  const foreignSlotId = randomUUID();
+  const foreignWorkOrderId = randomUUID();
+  // Reuse the base fixture's space — the foreign booking just needs to
+  // exist; its location doesn't matter for the leak-rejection assertion.
   await withClient(pool, async (c) => {
     await c.query('begin');
     try {
       await c.query(
-        `insert into public.tickets
-           (id, tenant_id, title, status, status_category,
-            requester_person_id, source_channel)
-         values ($1, $2, 'Edit Booking Probe Parent Case', 'new', 'new', $3, 'system')`,
-        [ticketId, base.tenantId, base.personId],
+        `insert into public.bookings
+           (id, tenant_id, title, requester_person_id, location_id,
+            start_at, end_at, timezone, status, source, calendar_etag,
+            cost_amount_snapshot, policy_snapshot, applied_rule_ids)
+         values ($1, $2, 'Foreign Booking', $3, $4,
+                 $5, $6, 'UTC', 'confirmed', 'desk', $7,
+                 100.00, '{}'::jsonb, '{}'::uuid[])`,
+        [
+          foreignBookingId,
+          base.tenantId,
+          base.personId,
+          base.spaceId,
+          '2026-10-02T10:00:00Z',
+          '2026-10-02T11:00:00Z',
+          `etag-foreign-${foreignBookingId.slice(0, 8)}`,
+        ],
+      );
+      await c.query(
+        `insert into public.booking_slots
+           (id, tenant_id, booking_id, slot_type, space_id,
+            start_at, end_at, status, display_order)
+         values ($1, $2, $3, 'room', $4, $5, $6, 'confirmed', 0)`,
+        [
+          foreignSlotId,
+          base.tenantId,
+          foreignBookingId,
+          base.spaceId,
+          '2026-10-02T10:00:00Z',
+          '2026-10-02T11:00:00Z',
+        ],
       );
       await c.query(
         `insert into public.work_orders
-           (id, tenant_id, parent_kind, parent_ticket_id,
+           (id, tenant_id, parent_kind, booking_id,
             title, status, status_category, source_channel,
             planned_start_at)
-         values ($1, $2, 'case', $3,
-                 'Edit Booking Probe Setup WO', 'new', 'new', 'system',
-                 '2026-10-01T08:00:00Z'::timestamptz)`,
-        [workOrderId, base.tenantId, ticketId],
+         values ($1, $2, 'booking', $3,
+                 'Foreign Booking WO', 'new', 'new', 'system',
+                 '2026-10-02T08:00:00Z'::timestamptz)`,
+        [foreignWorkOrderId, base.tenantId, foreignBookingId],
       );
       await c.query('commit');
     } catch (e) {
@@ -302,23 +366,97 @@ async function seedWorkOrderForRepoint(
       throw e;
     }
   });
-  // Cleanup. The base fixture cleans up work_orders for the tenant (helpers.ts
-  // :330 inside seedBaseFixture's cleanup transaction) but does NOT clean up
-  // tickets. Registering a separate ticket cleanup here would pop in LIFO
-  // order ahead of the base fixture's cleanup — but at that point the
-  // work_orders still FK-reference the ticket via parent_case_id, so the
-  // delete fails. Workaround: register a tenant-scoped ticket cleanup that
-  // runs AFTER work_orders are gone by enrolling it BEFORE the base fixture's
-  // cleanup… but we can't (the base fixture was registered first). Simpler:
-  // wrap the cleanup in a SET LOCAL session_replication_role='replica' burst
-  // to suppress RI triggers, mirroring the pattern in
-  // seedSecondTenantSpace / seedBaseFixture cleanup blocks (helpers.ts:223-233).
+  // Base fixture cleans bookings + work_orders + booking_slots for the
+  // tenant; no explicit cleanup needed.
+  return { foreignBookingId, foreignWorkOrderId };
+}
+
+/**
+ * Seed an order linked to a specific booking. Used by v3 scenario 15
+ * (cross-booking order leak rejection). Returns the order id; caller
+ * provides the booking id to anchor against.
+ */
+async function seedOrderForBooking(
+  pool: Pool,
+  base: BaseFixture,
+  bookingId: string,
+): Promise<{ orderId: string }> {
+  const orderId = randomUUID();
+  await pool.query(
+    `insert into public.orders
+       (id, tenant_id, requester_person_id, booking_id,
+        status, policy_snapshot)
+     values ($1, $2, $3, $4, 'submitted', '{}'::jsonb)`,
+    [orderId, base.tenantId, base.personId, bookingId],
+  );
+  // Base fixture cleanup handles orders.
+  return { orderId };
+}
+
+/**
+ * Seed an asset_type + asset + asset_reservation linked to a specific
+ * booking. Used by v3 scenario 16 (cross-booking asset_reservation leak
+ * rejection). assets requires asset_type_id (NOT NULL, 00142 schema) +
+ * asset_role + a valid status enum value ('available'|'assigned'|
+ * 'in_maintenance'|'retired'|'disposed' per the CHECK constraint).
+ * asset_types requires name + default_role. Cleanup not handled by
+ * seedBaseFixture for asset_reservations / assets / asset_types, so
+ * register explicit teardown.
+ */
+async function seedAssetReservationForBooking(
+  pool: Pool,
+  base: BaseFixture,
+  bookingId: string,
+): Promise<{ assetTypeId: string; assetId: string; reservationId: string }> {
+  const assetTypeId = randomUUID();
+  const assetId = randomUUID();
+  const reservationId = randomUUID();
+  await withClient(pool, async (c) => {
+    await c.query('begin');
+    try {
+      await c.query("set local session_replication_role = 'replica'");
+      await c.query(
+        `insert into public.asset_types
+           (id, tenant_id, name, default_role, active)
+         values ($1, $2, 'Edit Probe Asset Type', 'fixed', true)`,
+        [assetTypeId, base.tenantId],
+      );
+      await c.query(
+        `insert into public.assets
+           (id, tenant_id, asset_type_id, asset_role, name, status, lifecycle_state)
+         values ($1, $2, $3, 'fixed', 'Edit Probe Asset', 'available', 'active')`,
+        [assetId, base.tenantId, assetTypeId],
+      );
+      // asset_reservations.status CHECK constraint:
+      //   status IN ('confirmed','cancelled','released')
+      // 'reserved' is NOT a valid value — use 'confirmed'.
+      await c.query(
+        `insert into public.asset_reservations
+           (id, tenant_id, asset_id, requester_person_id, booking_id,
+            start_at, end_at, status)
+         values ($1, $2, $3, $4, $5,
+                 '2026-10-02T10:00:00Z'::timestamptz,
+                 '2026-10-02T11:00:00Z'::timestamptz,
+                 'confirmed')`,
+        [reservationId, base.tenantId, assetId, base.personId, bookingId],
+      );
+      await c.query('commit');
+    } catch (e) {
+      await c.query('rollback');
+      throw e;
+    }
+  });
+  // seedBaseFixture.cleanup (helpers.ts:307-355) does NOT delete
+  // asset_reservations / assets / asset_types. Register them here so the
+  // tenant teardown succeeds.
   registerCleanup(async () => {
     await withClient(pool, async (c) => {
       await c.query('begin');
       try {
         await c.query("set local session_replication_role = 'replica'");
-        await c.query('delete from public.tickets where id = $1', [ticketId]);
+        await c.query('delete from public.asset_reservations where id = $1', [reservationId]);
+        await c.query('delete from public.assets where id = $1', [assetId]);
+        await c.query('delete from public.asset_types where id = $1', [assetTypeId]);
         await c.query('commit');
       } catch (e) {
         await c.query('rollback');
@@ -326,7 +464,7 @@ async function seedWorkOrderForRepoint(
       }
     });
   });
-  return { ticketId, workOrderId };
+  return { assetTypeId, assetId, reservationId };
 }
 
 /**
@@ -883,11 +1021,16 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
     }
   });
 
-  // ── Scenario 13 (v2 Fix 6): needs_repoint outbox shape ───────────────
+  // ── Scenario 13 (v2 Fix 6, v3-corrected): needs_repoint outbox shape ─
+  // v3 Critical 2: the work_order must be booking-anchored so the
+  // booking-scope check (work_orders.booking_id = p_booking_id) passes.
+  // v2 (00362) seeded a case-anchored WO with parent_ticket_id; that was
+  // never actually scoped to this booking, so the assertion was locking
+  // in the pre-v3 unsafe behavior. v3 seeds the WO under bookingId.
   it('needs_repoint WO patch — emits sla.timer_repointed_required with canonical payload', async () => {
     const base = await seedBaseFixture(pool, `edit-repoint-${Date.now()}`);
     const booking = await seedConfirmedBooking(pool, base);
-    const { workOrderId } = await seedWorkOrderForRepoint(pool, base);
+    const { workOrderId } = await seedWorkOrderForRepoint(pool, base, booking.bookingId);
 
     const newStartAt = '2026-10-01T09:30:00Z';
     const newSlaDueAt = '2026-10-01T13:30:00Z';
@@ -971,5 +1114,292 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
     expect(new Date(woRow.rows[0].sla_resolution_due_at).toISOString()).toBe(
       new Date(newSlaDueAt).toISOString(),
     );
+  });
+
+  // ── Scenario 14 (v3 Critical 2): work_order leak rejection ───────────
+  // Booking A's edit references a work_order anchored to booking B. v2
+  // tenant-only filtering would have rewritten booking B's WO; v3 must
+  // raise edit_booking.work_order_not_in_booking and leave the row alone.
+  it('cross-booking WO patch — raises edit_booking.work_order_not_in_booking + no row mutation', async () => {
+    const base = await seedBaseFixture(pool, `edit-wo-leak-${Date.now()}`);
+    const bookingA = await seedConfirmedBooking(pool, base);
+    const { foreignBookingId, foreignWorkOrderId } = await seedForeignBookingWithWorkOrder(
+      pool,
+      base,
+    );
+
+    // Capture the foreign WO's planned_start_at BEFORE the RPC so we can
+    // assert it didn't change after the (expected) error.
+    const beforeRow = await pool.query<{ planned_start_at: string }>(
+      'select planned_start_at from public.work_orders where id = $1',
+      [foreignWorkOrderId],
+    );
+    const beforePlannedStart = beforeRow.rows[0].planned_start_at;
+
+    // Plan edits booking A but smuggles a WO patch targeting booking B's WO.
+    const plan: Record<string, unknown> = {
+      _resolution_at: '2026-09-15T00:00:00Z',
+      rule_outcome_fingerprint: 'fingerprint-wo-leak',
+      client_request_id: 'edit-wo-leak-crid',
+      approval_outcome_changed: false,
+      booking: {
+        location_id: base.spaceId,
+        start_at: '2026-10-01T10:00:00Z',
+        end_at: '2026-10-01T11:00:00Z',
+        cost_amount_snapshot: 100.0,
+      },
+      slot_patches: [
+        {
+          slot_id: bookingA.slotId,
+          space_id: base.spaceId,
+          start_at: '2026-10-01T10:00:00Z',
+          end_at: '2026-10-01T11:00:00Z',
+          setup_buffer_minutes: 0,
+          teardown_buffer_minutes: 0,
+          attendee_count: null,
+          attendee_person_ids: null,
+        },
+      ],
+      asset_reservation_patches: [],
+      order_patches: [],
+      work_order_sla_patches: [
+        {
+          id: foreignWorkOrderId,
+          planned_start_at: '2099-01-01T00:00:00Z',
+          needs_repoint: false,
+        },
+      ],
+    };
+    const idempotencyKey = buildEditBookingIdempotencyKey(bookingA.bookingId, 'crid-wo-leak');
+
+    const result = await runRpcCapture(pool, 'public.edit_booking', [
+      bookingA.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') return;
+    expect(result.error.message).toContain('edit_booking.work_order_not_in_booking');
+
+    // Foreign WO untouched. pg returns timestamptz columns as JS Date
+    // objects, not strings — compare as ISO to avoid identity mismatch.
+    const afterRow = await pool.query<{ planned_start_at: string }>(
+      'select planned_start_at from public.work_orders where id = $1',
+      [foreignWorkOrderId],
+    );
+    expect(new Date(afterRow.rows[0].planned_start_at).toISOString()).toBe(
+      new Date(beforePlannedStart).toISOString(),
+    );
+
+    // Foreign booking still exists (defensive sanity check).
+    const foreignBookingRow = await pool.query<{ id: string }>(
+      'select id from public.bookings where id = $1',
+      [foreignBookingId],
+    );
+    expect(foreignBookingRow.rows).toHaveLength(1);
+  });
+
+  // ── Scenario 15 (v3 Critical 2): order leak rejection ─────────────────
+  it('cross-booking order patch — raises edit_booking.order_not_in_booking + no row mutation', async () => {
+    const base = await seedBaseFixture(pool, `edit-order-leak-${Date.now()}`);
+    const bookingA = await seedConfirmedBooking(pool, base);
+    // Seed a foreign booking + an order anchored to that foreign booking.
+    const { foreignBookingId } = await seedForeignBookingWithWorkOrder(pool, base);
+    const { orderId: foreignOrderId } = await seedOrderForBooking(
+      pool,
+      base,
+      foreignBookingId,
+    );
+
+    const beforeRow = await pool.query<{ delivery_location_id: string | null }>(
+      'select delivery_location_id from public.orders where id = $1',
+      [foreignOrderId],
+    );
+    const beforeDeliveryLocation = beforeRow.rows[0].delivery_location_id;
+
+    const plan: Record<string, unknown> = {
+      _resolution_at: '2026-09-15T00:00:00Z',
+      rule_outcome_fingerprint: 'fingerprint-order-leak',
+      client_request_id: 'edit-order-leak-crid',
+      approval_outcome_changed: false,
+      booking: {
+        location_id: base.spaceId,
+        start_at: '2026-10-01T10:00:00Z',
+        end_at: '2026-10-01T11:00:00Z',
+        cost_amount_snapshot: 100.0,
+      },
+      slot_patches: [
+        {
+          slot_id: bookingA.slotId,
+          space_id: base.spaceId,
+          start_at: '2026-10-01T10:00:00Z',
+          end_at: '2026-10-01T11:00:00Z',
+          setup_buffer_minutes: 0,
+          teardown_buffer_minutes: 0,
+          attendee_count: null,
+          attendee_person_ids: null,
+        },
+      ],
+      asset_reservation_patches: [],
+      order_patches: [
+        {
+          id: foreignOrderId,
+          delivery_location_id: base.spaceId, // try to flip the delivery loc
+        },
+      ],
+      work_order_sla_patches: [],
+    };
+    const idempotencyKey = buildEditBookingIdempotencyKey(bookingA.bookingId, 'crid-order-leak');
+
+    const result = await runRpcCapture(pool, 'public.edit_booking', [
+      bookingA.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') return;
+    expect(result.error.message).toContain('edit_booking.order_not_in_booking');
+
+    // Foreign order untouched.
+    const afterRow = await pool.query<{ delivery_location_id: string | null }>(
+      'select delivery_location_id from public.orders where id = $1',
+      [foreignOrderId],
+    );
+    expect(afterRow.rows[0].delivery_location_id).toBe(beforeDeliveryLocation);
+  });
+
+  // ── Scenario 16 (v3 Critical 2): asset_reservation leak rejection ────
+  it('cross-booking asset_reservation patch — raises edit_booking.asset_reservation_not_in_booking', async () => {
+    const base = await seedBaseFixture(pool, `edit-asset-leak-${Date.now()}`);
+    const bookingA = await seedConfirmedBooking(pool, base);
+    const { foreignBookingId } = await seedForeignBookingWithWorkOrder(pool, base);
+    const { reservationId: foreignReservationId } = await seedAssetReservationForBooking(
+      pool,
+      base,
+      foreignBookingId,
+    );
+
+    const beforeRow = await pool.query<{ start_at: string }>(
+      'select start_at from public.asset_reservations where id = $1',
+      [foreignReservationId],
+    );
+    const beforeStart = beforeRow.rows[0].start_at;
+
+    const plan: Record<string, unknown> = {
+      _resolution_at: '2026-09-15T00:00:00Z',
+      rule_outcome_fingerprint: 'fingerprint-asset-leak',
+      client_request_id: 'edit-asset-leak-crid',
+      approval_outcome_changed: false,
+      booking: {
+        location_id: base.spaceId,
+        start_at: '2026-10-01T10:00:00Z',
+        end_at: '2026-10-01T11:00:00Z',
+        cost_amount_snapshot: 100.0,
+      },
+      slot_patches: [
+        {
+          slot_id: bookingA.slotId,
+          space_id: base.spaceId,
+          start_at: '2026-10-01T10:00:00Z',
+          end_at: '2026-10-01T11:00:00Z',
+          setup_buffer_minutes: 0,
+          teardown_buffer_minutes: 0,
+          attendee_count: null,
+          attendee_person_ids: null,
+        },
+      ],
+      asset_reservation_patches: [
+        {
+          id: foreignReservationId,
+          start_at: '2099-01-01T00:00:00Z',
+          end_at: '2099-01-01T01:00:00Z',
+        },
+      ],
+      order_patches: [],
+      work_order_sla_patches: [],
+    };
+    const idempotencyKey = buildEditBookingIdempotencyKey(bookingA.bookingId, 'crid-asset-leak');
+
+    const result = await runRpcCapture(pool, 'public.edit_booking', [
+      bookingA.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') return;
+    expect(result.error.message).toContain('edit_booking.asset_reservation_not_in_booking');
+
+    // Foreign reservation untouched.
+    const afterRow = await pool.query<{ start_at: string }>(
+      'select start_at from public.asset_reservations where id = $1',
+      [foreignReservationId],
+    );
+    expect(new Date(afterRow.rows[0].start_at).toISOString()).toBe(
+      new Date(beforeStart).toISOString(),
+    );
+    // Foreign booking still exists (defensive).
+    expect(foreignBookingId).toBeTruthy();
+  });
+
+  // ── Scenario 17 (v3 Critical 1): destination-room rule gates stale_resolution
+  // Booking starts in room A; we move it to room B. A `target_scope='room'
+  // target_id=B` rule was updated AFTER plan._resolution_at. v2's gate
+  // (room-scope filtered on origin only) would have missed this update;
+  // v3 must see B's updated_at and raise automation_plan.stale_resolution.
+  it('destination-room rule update — raises automation_plan.stale_resolution under v3 gate', async () => {
+    const base = await seedBaseFixture(pool, `edit-dest-room-stale-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    const destinationRoomId = await seedTargetMeetingRoom(pool, base);
+
+    // Plan-build resolution timestamp: T0. Rule on DESTINATION room
+    // updated at T0+5d → must trigger stale_resolution under v3.
+    await seedBookingRule(pool, base.tenantId, {
+      targetScope: 'room',
+      targetId: destinationRoomId,
+      updatedAtIso: '2026-09-20T00:00:00Z',
+    });
+
+    // Sanity check: a rule on the ORIGIN room with updated_at BEFORE the
+    // resolution timestamp must NOT trip the gate on its own — this
+    // proves the assertion isn't passing by accident on the wrong rule.
+    await seedBookingRule(pool, base.tenantId, {
+      targetScope: 'room',
+      targetId: base.spaceId,
+      updatedAtIso: '2026-09-01T00:00:00Z',
+    });
+
+    const plan = buildLocationSwapPlan({
+      bookingId: booking.bookingId,
+      slotId: booking.slotId,
+      fromSpaceId: base.spaceId,
+      toSpaceId: destinationRoomId,
+      resolutionAtIso: '2026-09-15T00:00:00Z',
+    });
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-dest-stale');
+
+    const result = await runRpcCapture(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') return;
+    expect(result.error.message).toContain('automation_plan.stale_resolution');
+
+    // Booking row must NOT have been rewritten (the gate fires before the
+    // write block).
+    const bookingRow = await pool.query<{ location_id: string }>(
+      'select location_id from public.bookings where id = $1',
+      [booking.bookingId],
+    );
+    expect(bookingRow.rows[0].location_id).toBe(base.spaceId);
   });
 });

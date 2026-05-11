@@ -1625,6 +1625,19 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon de reservering niet opslaan — goedkeuring gewijzigd',
     detail: 'Deze wijziging verandert de goedkeuringseis. Wijzigingen die de goedkeuringsstroom raken zijn nog niet ondersteund; draai de wijziging terug of wacht op de volgende release.',
   },
+  // v3 (00363) — codex Critical 2 — booking-scope rejections.
+  'edit_booking.work_order_not_in_booking': {
+    title: 'Kon de reservering niet opslaan — niet gevonden',
+    detail: 'Een werkbon in deze bewerking hoort niet meer bij deze reservering. Vernieuw de pagina en probeer het opnieuw.',
+  },
+  'edit_booking.order_not_in_booking': {
+    title: 'Kon de reservering niet opslaan — niet gevonden',
+    detail: 'Een bestelling in deze bewerking hoort niet meer bij deze reservering. Vernieuw de pagina en probeer het opnieuw.',
+  },
+  'edit_booking.asset_reservation_not_in_booking': {
+    title: 'Kon de reservering niet opslaan — niet gevonden',
+    detail: 'Een asset-reservering in deze bewerking hoort niet meer bij deze reservering. Vernieuw de pagina en probeer het opnieuw.',
+  },
 };
 
 /**

@@ -147,6 +147,15 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // RPC-side miss paths in this family.
   'edit_booking.actor_not_found': 404,
   'edit_booking.not_found': 404,
+  // v3 (00363) — codex Critical 2 — booking-scope rejections for child-row
+  // patches. The plan referenced a work_order / order / asset_reservation
+  // that isn't anchored to this booking (NULL booking_id, or anchored to a
+  // different booking in the same tenant). 404 mirrors the not_found shape:
+  // from the caller's perspective the row is invisible inside this edit's
+  // scope.
+  'edit_booking.work_order_not_in_booking': 404,
+  'edit_booking.order_not_in_booking': 404,
+  'edit_booking.asset_reservation_not_in_booking': 404,
 
   // ── 409 conflict ─────────────────────────────────────────────────
   // payload_mismatch: the client reused the same X-Client-Request-Id

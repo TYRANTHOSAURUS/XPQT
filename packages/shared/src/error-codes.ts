@@ -747,10 +747,18 @@ export type KnownErrorCode =
   // approval_reconciliation_required is the explicit v1↔v2 boundary —
   // raised when p_plan.approval_outcome_changed=true. B.4.A.4 will
   // REMOVE this code once approval reconciliation lands inside the RPC.
+  // v3 (00363) — codex Critical 2 — new booking-scope rejections for
+  // child-row patches. NULLABLE booking_id on the three sibling tables
+  // (00278:91/116/140) meant tenant-only filtering let cross-booking
+  // patches sneak through; v3 raises these 404s when a patch references
+  // a child row not anchored to p_booking_id.
   | 'edit_booking.actor_not_found'
   | 'edit_booking.not_found'
   | 'edit_booking.invalid_plan_shape'
-  | 'edit_booking.approval_reconciliation_required';
+  | 'edit_booking.approval_reconciliation_required'
+  | 'edit_booking.work_order_not_in_booking'
+  | 'edit_booking.order_not_in_booking'
+  | 'edit_booking.asset_reservation_not_in_booking';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1320,6 +1328,10 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'edit_booking.not_found',
   'edit_booking.invalid_plan_shape',
   'edit_booking.approval_reconciliation_required',
+  // v3 (00363) — codex Critical 2 — booking-scope rejections.
+  'edit_booking.work_order_not_in_booking',
+  'edit_booking.order_not_in_booking',
+  'edit_booking.asset_reservation_not_in_booking',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */
