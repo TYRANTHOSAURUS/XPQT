@@ -1,6 +1,6 @@
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import {
   assertTenantOwned,
@@ -921,11 +921,13 @@ export class TicketService {
     id: string,
     dto: UpdateTicketDto,
     actorAuthUid: string,
-    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
-    // controller for `PATCH /tickets/:id`. Plumbed only today; Step 3+
-    // uses it as the idempotency-key seed for `set_entity_field` /
-    // `set_entity_assignment` RPCs (spec §3.0–3.2 + §3.9.1).
-    _clientRequestId?: string,
+    // B.2.A Commit B (§3.0 controller cutover) — threaded from
+    // RequireClientRequestIdGuard via the controller for `PATCH /tickets/:id`.
+    // Mints the orchestrator idempotency key as
+    //   `patch:case:${id}:${clientRequestId}`
+    // per spec line 1892. Un-underscored from `_clientRequestId` (Step 2
+    // placeholder) now that the value is actually consumed.
+    clientRequestId?: string,
   ) {
     const tenant = TenantContext.current();
 
@@ -1075,9 +1077,12 @@ export class TicketService {
     // IEEE-754 floats, so a UI-derived `0.1 + 0.2 = 0.30000000000000004`
     // PATCH would round to 0.30 on write but compare against 0.3 on the
     // next refetch — the no-op fast-path below would never fire and every
-    // PATCH with a fractional cost would re-write the row. Mirrors the
-    // WO-side normalization in WorkOrderService.updateMetadata; backported
-    // here per /full-review I3 (case-side parity gap).
+    // PATCH with a fractional cost would re-write the row. Normalize at
+    // the TS boundary so the orchestrator's `payload_hash` is stable
+    // across replays and the RPC's idempotency cache hits cleanly.
+    //
+    // The combined RPC (00333:542) also `round((... ->>'cost')::numeric, 2)`
+    // before persisting — defence in depth.
     const dtoNormalized: typeof dto = { ...dto };
     if (
       Object.prototype.hasOwnProperty.call(dto, 'cost') &&
@@ -1087,172 +1092,169 @@ export class TicketService {
       dtoNormalized.cost = Math.round(dto.cost * 100) / 100;
     }
 
-    const updateData: Record<string, unknown> = {};
-    const changes: Record<string, { from: unknown; to: unknown }> = {};
-
-    for (const [key, value] of Object.entries(dtoNormalized)) {
-      if (value !== undefined && (current as Record<string, unknown>)[key] !== value) {
-        updateData[key] = value;
-        changes[key] = { from: (current as Record<string, unknown>)[key], to: value };
-      }
-    }
-
-    if (Object.keys(updateData).length === 0) return current;
-
-    // Handle status transitions
-    if (updateData.status_category === 'resolved' && !current.resolved_at) {
-      updateData.resolved_at = new Date().toISOString();
-    }
-    if (updateData.status_category === 'closed' && !current.closed_at) {
-      updateData.closed_at = new Date().toISOString();
-    }
-
-    const { data, error } = await this.supabase.admin
-      .from('tickets')
-      .update(updateData)
-      .eq('id', id)
-      .eq('tenant_id', tenant.id)
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    // ── SLA pause/resume on waiting-state transitions ──────────
-    if (changes.status_category || changes.waiting_reason) {
-      try {
-        const currentRow = current as Record<string, unknown>;
-        const dataRow = data as Record<string, unknown>;
-        await this.slaService.applyWaitingStateTransition(
-          id,
-          tenant.id,
-          {
-            status_category: (currentRow.status_category as string) ?? '',
-            waiting_reason: (currentRow.waiting_reason as string | null) ?? null,
-            sla_id: (currentRow.sla_id as string | null) ?? null,
-          },
-          {
-            status_category: (dataRow.status_category as string) ?? '',
-            waiting_reason: (dataRow.waiting_reason as string | null) ?? null,
-            sla_id: (dataRow.sla_id as string | null) ?? null,
-          },
-        );
-      } catch (err) {
-        console.error('[sla] pause/resume failed', err);
-      }
-    }
-
-    // ── SLA policy change on a child: stop old timers, start fresh ones ──────
-    if (changes.sla_id) {
-      try {
-        await this.slaService.restartTimers(id, tenant.id, changes.sla_id.to as string | null);
-        await this.addActivity(id, {
-          activity_type: 'system_event',
-          visibility: 'system',
-          metadata: {
-            event: 'sla_changed',
-            from_sla_id: changes.sla_id.from,
-            to_sla_id: changes.sla_id.to,
-          },
-        }, undefined, actorAuthUid);
-      } catch (err) {
-        console.error('[sla] restart on sla_id change failed', err);
-      }
-    }
-
-    // Log changes as system events.
+    // ──────────────────────────────────────────────────────────────────
+    // B.2.A Commit B (§3.0 controller cutover) — the multi-table TS write
+    // path (tickets UPDATE + ticket_activities INSERT + domain_events
+    // INSERT + sla_timers reshuffle) has moved into `update_entity_combined`
+    // (00333 v3). TS continues to own preflight (permission gates above,
+    // tenant validation above, sla_id immutability + parent close guard
+    // above, cost normalization above). The single RPC commits every
+    // branch in one transaction; nested idempotency keys per spec §3.0.
     //
-    // Activity metadata shape: `{ event, previous, next }` with per-field
-    // snapshots in `previous`/`next`. Mirrors the WorkOrderService surface
-    // (work-order.service.ts:589/845/1039) — code-review C2 alignment.
-    // The activity feed renderer (ticket-activity-feed.tsx) reads only
-    // `metadata.event` for the system-row label, so the inner shape is free
-    // to be whatever serves audit consumers best.
-    if (changes.status_category) {
-      const previous: Record<string, unknown> = { status_category: changes.status_category.from };
-      const next: Record<string, unknown> = { status_category: changes.status_category.to };
-      // status (the granular sub-status) frequently changes alongside
-      // status_category — include the snapshot if it was in the dto so the
-      // audit row captures both axes.
-      if (changes.status) {
-        previous.status = changes.status.from;
-        next.status = changes.status.to;
-      }
-      // Same for waiting_reason, which is meaningful for waiting-state diffs.
-      if (changes.waiting_reason) {
-        previous.waiting_reason = changes.waiting_reason.from;
-        next.waiting_reason = changes.waiting_reason.to;
-      }
-      await this.addActivity(id, {
-        activity_type: 'system_event',
-        visibility: 'system',
-        metadata: { event: 'status_changed', previous, next },
-      }, undefined, actorAuthUid);
-      await this.logDomainEvent(id, 'ticket_status_changed', { previous, next });
+    // Citations:
+    //   - 00333:182-187 — branch detection on top-level keys.
+    //   - 00333:295    — inner sentinel `__combined__:`.
+    //   - spec line 1892 — outer idempotency key shape.
+    // ──────────────────────────────────────────────────────────────────
+    const patches = this.buildPatchesPayloadForCase(dtoNormalized);
+
+    // Honest no-op short-circuit: no branch keys ⇒ no write to attempt.
+    // The RPC's `update_entity_combined.invalid_patches` does NOT cover
+    // "valid object, zero recognised branches" — it would just return a
+    // noop result. Save the round-trip + idempotency-cache pollution.
+    if (Object.keys(patches).length === 0) {
+      // satisfaction_* fall through to the side-write below; if neither
+      // is set, return the current row unchanged.
+      const wantsSatisfaction =
+        Object.prototype.hasOwnProperty.call(dto, 'satisfaction_rating') ||
+        Object.prototype.hasOwnProperty.call(dto, 'satisfaction_comment');
+      if (!wantsSatisfaction) return current;
     }
 
-    if (changes.assigned_team_id || changes.assigned_user_id || changes.assigned_vendor_id) {
-      const previous: Record<string, string | null> = {};
-      const next: Record<string, string | null> = {};
-      if (changes.assigned_team_id) {
-        previous.assigned_team_id = changes.assigned_team_id.from as string | null;
-        next.assigned_team_id = changes.assigned_team_id.to as string | null;
-      }
-      if (changes.assigned_user_id) {
-        previous.assigned_user_id = changes.assigned_user_id.from as string | null;
-        next.assigned_user_id = changes.assigned_user_id.to as string | null;
-      }
-      if (changes.assigned_vendor_id) {
-        previous.assigned_vendor_id = changes.assigned_vendor_id.from as string | null;
-        next.assigned_vendor_id = changes.assigned_vendor_id.to as string | null;
-      }
-      await this.addActivity(id, {
-        activity_type: 'system_event',
-        visibility: 'system',
-        metadata: {
-          event: 'assignment_changed',
-          previous,
-          next,
-        },
-      }, undefined, actorAuthUid);
-      await this.logDomainEvent(id, 'ticket_assigned', { previous, next });
+    if (Object.keys(patches).length > 0) {
+      const { error } = await this.supabase.admin.rpc('update_entity_combined', {
+        p_entity_kind: 'case',
+        p_entity_id: id,
+        p_tenant_id: tenant.id,
+        // Per 00325:89-94 — `p_actor_user_id` is the SUPABASE AUTH UID
+        // (users.auth_uid), NOT users.id. SYSTEM_ACTOR collapses to null
+        // so the RPC's lookup at 00333:268-274 falls back cleanly.
+        p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
+        p_idempotency_key: this.combinedIdempotencyKey('case', id, clientRequestId),
+        p_patches: patches,
+      });
+      if (error) throw mapRpcErrorToAppError(error);
     }
 
-    // priority_changed activity — case side previously only logged this
-    // event for assignment + status changes. Bringing case audit closer
-    // to parity with WO surface (which has logged priority_changed since
-    // Slice 2). Matches the WorkOrderService.updatePriority shape.
-    if (changes.priority) {
-      await this.addActivity(id, {
-        activity_type: 'system_event',
-        visibility: 'system',
-        metadata: {
-          event: 'priority_changed',
-          previous: changes.priority.from,
-          next: changes.priority.to,
-        },
-      }, undefined, actorAuthUid);
+    // satisfaction_rating + satisfaction_comment are not part of the
+    // §3.0 RPC patches schema (00333 supports status / priority /
+    // assignment / sla / plan / metadata only). They have no audit-row
+    // or domain-event side effects — the legacy write path applied them
+    // via the catch-all `Object.entries` block with no activity emission.
+    // Preserve the API surface here as a direct UPDATE (gated by the
+    // same preflight permission/visibility checks above). Used by the
+    // satisfaction-survey workflow; not exercised by the desk UI today.
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'satisfaction_rating') ||
+      Object.prototype.hasOwnProperty.call(dto, 'satisfaction_comment')
+    ) {
+      const satPatch: Record<string, unknown> = {};
+      if (Object.prototype.hasOwnProperty.call(dto, 'satisfaction_rating')) {
+        satPatch.satisfaction_rating = dto.satisfaction_rating;
+      }
+      if (Object.prototype.hasOwnProperty.call(dto, 'satisfaction_comment')) {
+        satPatch.satisfaction_comment = dto.satisfaction_comment;
+      }
+      const { error: satErr } = await this.supabase.admin
+        .from('tickets')
+        .update(satPatch)
+        .eq('id', id)
+        .eq('tenant_id', tenant.id);
+      if (satErr) throw satErr;
     }
 
-    // metadata_changed activity — title / description / cost / tags /
-    // watchers. One row per call (not per field) so the audit feed
-    // stays scannable when a bulk PATCH changes several at once.
-    // Mirrors WorkOrderService.updateMetadata's emission shape.
-    const metadataChanges: Record<string, { previous: unknown; next: unknown }> = {};
-    if (changes.title) metadataChanges.title = { previous: changes.title.from, next: changes.title.to };
-    if (changes.description) metadataChanges.description = { previous: changes.description.from, next: changes.description.to };
-    if (changes.cost) metadataChanges.cost = { previous: changes.cost.from, next: changes.cost.to };
-    if (changes.tags) metadataChanges.tags = { previous: changes.tags.from, next: changes.tags.to };
-    if (changes.watchers) metadataChanges.watchers = { previous: changes.watchers.from, next: changes.watchers.to };
-    if (Object.keys(metadataChanges).length > 0) {
-      await this.addActivity(id, {
-        activity_type: 'system_event',
-        visibility: 'system',
-        metadata: { event: 'metadata_changed', changes: metadataChanges },
-      }, undefined, actorAuthUid);
+    // Refetch so the response shape matches today's API contract
+    // (joined requester / location / asset / assigned_* / request_type).
+    // SYSTEM_ACTOR bypasses visibility — preflight above already checked
+    // the actor's write permission.
+    return await this.getById(id, SYSTEM_ACTOR);
+  }
+
+  /**
+   * Build the `p_patches` jsonb payload for `update_entity_combined`
+   * (00333) from an UpdateTicketDto. Uses key-presence (`hasOwnProperty`)
+   * — absent key ⇒ no branch; present key with `null` ⇒ explicit clear
+   * where the column allows.
+   *
+   * Citations: 00333:182-187 (branch detection) + 00333:289-295 (status
+   * payload shape) + 00333:362-377 (assignment payload shape) + 00333:
+   * 379-395 (sla payload shape) + 00333:397-503 (plan payload shape) +
+   * 00333:505-732 (metadata payload shape).
+   *
+   * Case-only — caller must enforce `sla_id` immutability before this
+   * helper sees the dto (the §3.0 RPC accepts `sla` on cases, but our
+   * product rule says parent SLAs are locked; ticket.service.ts:1049
+   * is the gate).
+   */
+  private buildPatchesPayloadForCase(
+    dto: UpdateTicketDto,
+  ): Record<string, unknown> {
+    const patches: Record<string, unknown> = {};
+    const has = (k: keyof UpdateTicketDto) =>
+      Object.prototype.hasOwnProperty.call(dto, k);
+
+    // ── Status branch — top-level keys (00333:182, 277-303).
+    if (has('status')) patches.status = dto.status;
+    if (has('status_category')) patches.status_category = dto.status_category;
+    if (has('waiting_reason')) patches.waiting_reason = dto.waiting_reason;
+
+    // ── Priority — top-level (00333:185, 305-359).
+    if (has('priority')) patches.priority = dto.priority;
+
+    // ── Assignment — grouped under `assignment` (00333:183, 361-377).
+    if (
+      has('assigned_team_id') ||
+      has('assigned_user_id') ||
+      has('assigned_vendor_id')
+    ) {
+      const assignment: Record<string, unknown> = {};
+      if (has('assigned_team_id'))
+        assignment.assigned_team_id = dto.assigned_team_id;
+      if (has('assigned_user_id'))
+        assignment.assigned_user_id = dto.assigned_user_id;
+      if (has('assigned_vendor_id'))
+        assignment.assigned_vendor_id = dto.assigned_vendor_id;
+      patches.assignment = assignment;
     }
 
-    // Step 1c.10c: synthesize ticket_kind for frontend contract.
-    return { ...data, ticket_kind: 'case' as const };
+    // ── Metadata — grouped under `metadata` (00333:187, 505-732).
+    // description is NOT a top-level Update DTO field on the case-side
+    // surface today; check both names defensively to keep parity with
+    // the WO side and future UpdateTicketDto growth.
+    const metadata: Record<string, unknown> = {};
+    if (has('title')) metadata.title = dto.title;
+    if (has('description')) metadata.description = dto.description;
+    if (has('cost')) metadata.cost = dto.cost;
+    if (has('tags')) metadata.tags = dto.tags;
+    if (has('watchers')) metadata.watchers = dto.watchers;
+    if (Object.keys(metadata).length > 0) {
+      patches.metadata = metadata;
+    }
+
+    // sla / plan branches NOT emitted on the case path. sla_id rejected
+    // upstream by ticket.service.ts:1049 (case SLA immutability). plan
+    // rejected by the RPC's early gate at 00333:192-194 (case has no
+    // plan columns per 00011_tickets.sql:1-44).
+
+    return patches;
+  }
+
+  /**
+   * Mint the outer idempotency key for `update_entity_combined` per spec
+   * line 1892:
+   *   `patch:<kind>:<id>:<client_request_id>`
+   * When `clientRequestId` is absent (legacy callers / SYSTEM_ACTOR
+   * paths that haven't been wired through the controller yet), fall
+   * back to a fresh randomUUID so every call earns its own idempotency
+   * row — better than colliding multiple distinct PATCHes under one key.
+   */
+  private combinedIdempotencyKey(
+    kind: 'case' | 'work_order',
+    entityId: string,
+    clientRequestId: string | undefined,
+  ): string {
+    const seed = clientRequestId ?? randomUUID();
+    return `patch:${kind}:${entityId}:${seed}`;
   }
 
   /**

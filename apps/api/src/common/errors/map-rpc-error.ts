@@ -1,0 +1,142 @@
+/**
+ * mapRpcErrorToAppError — translate a PostgrestError raised by a plpgsql RPC
+ * into an AppError carrying the registered code.
+ *
+ * The plpgsql RPCs (00323–00333) raise exceptions of the shape:
+ *
+ *     <namespace>.<specifier>[: <details...>]
+ *
+ * supabase-js surfaces the RAISE message verbatim on `PostgrestError.message`.
+ * This helper extracts the leading `<namespace>.<specifier>` token, checks
+ * it against the registered `KNOWN_ERROR_CODES` set (defence-in-depth — the
+ * AppError filter fail-closes on unregistered codes anyway), and routes it
+ * to the right AppError factory based on a per-code status mapping.
+ *
+ * The status mapping is hand-curated rather than parsed from SQLSTATE because
+ * plpgsql RPCs use `errcode = 'P0001'` for ~every domain error — SQLSTATE is
+ * not informative. The mapping below is keyed on the registered code itself.
+ *
+ * Reference: spec §3.0/§3.1/§3.2/§3.3 of
+ *   docs/follow-ups/b2-survey-and-design.md
+ *
+ * Citations:
+ *   - 00325:84-86  transition_entity_status.unknown_kind
+ *   - 00325:142    transition_entity_status.not_found
+ *   - 00325:179-181 transition_entity_status.has_open_children
+ *   - 00327:122-126 set_entity_assignment.resolver_rerun_not_supported_at_rpc
+ *   - 00330:84-95   argument-shape preflight
+ *   - 00330:104-107 update_entity_sla.sla_id_required
+ *   - 00330:163-165 update_entity_sla.not_found
+ *   - 00330:202-205 update_entity_sla.timers_required
+ *   - 00333:172-179 argument-shape + invalid_patches
+ *   - 00333:192-194 plan_not_supported_on_case
+ *   - 00333:249-251 update_entity_combined.not_found
+ *   - 00333:307-315 invalid_priority
+ *   - 00333:509-510 invalid_metadata
+ *   - 00333:544-549 invalid_cost
+ *   - 00333:601-637 invalid_watcher
+ *   - 00333:413-450 invalid_plan
+ */
+
+import { KNOWN_ERROR_CODES, type KnownErrorCode } from '@prequest/shared';
+import { AppError, AppErrors } from './app-error';
+
+interface PostgrestErrorLike {
+  message?: string;
+  code?: string;
+  details?: string | null;
+  hint?: string | null;
+}
+
+/**
+ * Map from registered RPC code → HTTP status. Codes not listed default to
+ * 400 (validation/domain error). 404/409/500 must be explicit.
+ */
+const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
+  // ── 404 not_found ────────────────────────────────────────────────
+  'transition_entity_status.not_found': 404,
+  'set_entity_assignment.not_found': 404,
+  'update_entity_sla.not_found': 404,
+  'update_entity_combined.not_found': 404,
+
+  // ── 409 conflict ─────────────────────────────────────────────────
+  'transition_entity_status.has_open_children': 409,
+  'command_operations.payload_mismatch': 409,
+
+  // ── 500 server ───────────────────────────────────────────────────
+  // timers_required is a programmer error: TS plan-build always
+  // computes timers when sla_id is non-null. If the RPC sees a
+  // non-null sla_id without timers, TS skipped its responsibility —
+  // surface as a server error so the caller's UX shows a generic
+  // failure and ops see the trace.
+  'update_entity_sla.timers_required': 500,
+  'command_operations.unexpected_state': 500,
+};
+
+/**
+ * Extract the leading `<namespace>.<specifier>` token from a RAISE message.
+ * Matches the shape every B.2.A RPC uses (00325:142 / 00327:179 / 00330:163 /
+ * 00333:250 etc.). Returns null when no recognisable token is present.
+ */
+function extractCode(message: string): string | null {
+  const match = message.match(/^([a-z_][a-z0-9_]*\.[a-z0-9_]+)/i);
+  return match?.[1] ?? null;
+}
+
+/**
+ * Map a PostgrestError (or plain Error with a postgrest-shaped message) to
+ * an AppError. Unknown codes route to `unknown.server_error` so the renderer
+ * fails closed.
+ */
+export function mapRpcErrorToAppError(
+  error: PostgrestErrorLike | Error | null | undefined,
+  options: { fallbackCode?: KnownErrorCode } = {},
+): AppError {
+  const fallback = options.fallbackCode ?? 'unknown.server_error';
+
+  if (!error) {
+    return AppErrors.server(fallback);
+  }
+
+  const message =
+    (error as PostgrestErrorLike).message ?? (error as Error).message ?? '';
+  const candidate = extractCode(message);
+
+  if (!candidate || !KNOWN_ERROR_CODES.has(candidate as KnownErrorCode)) {
+    // Defence-in-depth: filter normalises unregistered codes to
+    // `unknown.server_error`. Surface the raw RAISE message as `detail` so
+    // ops can triage from logs.
+    return AppErrors.server(fallback, { detail: message || undefined });
+  }
+
+  const code = candidate as KnownErrorCode;
+  const status = STATUS_BY_CODE[code] ?? 400;
+  const detail = stripCodePrefix(message);
+
+  switch (status) {
+    case 404:
+      // notFoundWithCode rather than notFound(entity, id) because the entity
+      // alias on the wire is `<namespace>.<specifier>`, not the standard
+      // `<entity>.not_found` shape.
+      return AppErrors.notFoundWithCode(code, detail);
+    case 409:
+      return AppErrors.conflict(code, { detail });
+    case 500:
+      return AppErrors.server(code, { detail });
+    case 400:
+    default:
+      return AppErrors.validationFailed(code, { detail });
+  }
+}
+
+/**
+ * Strip the leading `<namespace>.<specifier>: ` prefix from a RAISE message
+ * so callers can present the human-readable tail. If the message is just
+ * the code (no `: tail`), returns undefined so AppError.detail stays unset.
+ */
+function stripCodePrefix(message: string): string | undefined {
+  const idx = message.indexOf(': ');
+  if (idx < 0) return undefined;
+  const tail = message.slice(idx + 2).trim();
+  return tail.length > 0 ? tail : undefined;
+}

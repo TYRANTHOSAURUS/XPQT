@@ -23,3 +23,4 @@ export {
 } from './normalize';
 export { AllExceptionsFilter } from './all-exceptions.filter';
 export { resolveMessageEn, type ErrorMessage } from './messages.en';
+export { mapRpcErrorToAppError } from './map-rpc-error';

@@ -3,6 +3,7 @@ import {
   Injectable,
   forwardRef,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import {
@@ -11,7 +12,7 @@ import {
 } from '../../common/tenant-validation';
 import { SlaService } from '../sla/sla.service';
 import { TicketVisibilityService } from '../ticket/ticket-visibility.service';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
 
 export const SYSTEM_ACTOR = '__system__';
 
@@ -156,11 +157,13 @@ export class WorkOrderService {
     workOrderId: string,
     dto: UpdateWorkOrderDto,
     actorAuthUid: string,
-    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
-    // controller for `PATCH /work-orders/:id`. Plumbed only today;
-    // Step 3+ uses it as the idempotency-key seed for `set_entity_field`
-    // / `set_entity_assignment` RPCs (spec §3.0–3.2 + §3.9.1).
-    _clientRequestId?: string,
+    // B.2.A Commit B (§3.0 controller cutover) — threaded from
+    // RequireClientRequestIdGuard via the controller for
+    // `PATCH /work-orders/:id`. Mints the orchestrator idempotency key as
+    //   `patch:work_order:${id}:${clientRequestId}`
+    // per spec line 1892. Un-underscored from `_clientRequestId` (Step 2
+    // placeholder) now that the value is actually consumed.
+    clientRequestId?: string,
   ): Promise<WorkOrderRow> {
     if (!dto || typeof dto !== 'object') {
       throw AppErrors.validationFailed('work_order.body_required', { detail: 'body required' });
@@ -239,38 +242,28 @@ export class WorkOrderService {
       hasSla, hasPlan, hasStatus, hasPriority, hasAssignment, hasMetadata,
     });
 
-    let last: WorkOrderRow | null = null;
-    const dispatched: Array<'sla' | 'plan' | 'status' | 'priority' | 'assignment' | 'metadata'> = [];
-
-    // SLA first — its restartTimers side effect changes columns that
-    // downstream status transitions read (sla_id is loaded before the
-    // pause/resume helper runs).
-    if (hasSla) {
-      last = await this.updateSla(workOrderId, dto.sla_id ?? null, actorAuthUid);
-      dispatched.push('sla');
-    }
+    // ──────────────────────────────────────────────────────────────────
+    // Plan-branch preflight (kept from the per-field dispatcher era —
+    // the §3.0 RPC does NOT enforce "duration requires start" and would
+    // silently persist a duration alongside a null start).
+    //
+    // The RPC's plan branch (00333:397-503) is partial-update friendly:
+    // present keys override, absent keys preserve. So we don't pre-merge
+    // here; we just sanity-check that the eventual row state isn't a
+    // duration-without-start. To do that we need the current row when
+    // only one of the two keys is in the patch.
+    // ──────────────────────────────────────────────────────────────────
+    const tenant = TenantContext.current();
 
     if (hasPlan) {
-      // Phase 1.1 — preserve plan fields on partial update.
-      //
-      // Bug fixed: when the dto only carried `planned_duration_minutes`
-      // (start absent) and no SLA branch had run, `last` was null, so
-      // `last?.planned_start_at ?? null` resolved to null and was passed
-      // to `setPlan`. setPlan's "duration without a start makes no sense"
-      // invariant then forced finalDuration = null too — the row's plan
-      // was silently cleared. Mirror the per-field controller here by
-      // reading the current row before merging.
-      let currentPlan: {
-        planned_start_at: string | null;
-        planned_duration_minutes: number | null;
-      };
-      if (last) {
-        currentPlan = {
-          planned_start_at: last.planned_start_at ?? null,
-          planned_duration_minutes: last.planned_duration_minutes ?? null,
-        };
-      } else {
-        const tenant = TenantContext.current();
+      let currentStart: string | null = null;
+      let currentDuration: number | null = null;
+      // Read current row only when we need it: i.e., one of the two plan
+      // keys is missing from the dto. If both are present, dto values
+      // decide the post-write state without consulting current.
+      const needCurrent =
+        !present('planned_start_at') || !present('planned_duration_minutes');
+      if (needCurrent) {
         const { data: cur, error: curErr } = await this.supabase.admin
           .from('work_orders')
           .select('planned_start_at, planned_duration_minutes')
@@ -285,127 +278,214 @@ export class WorkOrderService {
           planned_start_at: string | null;
           planned_duration_minutes: number | null;
         };
-        currentPlan = {
-          planned_start_at: curRow.planned_start_at ?? null,
-          planned_duration_minutes: curRow.planned_duration_minutes ?? null,
-        };
+        currentStart = curRow.planned_start_at ?? null;
+        currentDuration = curRow.planned_duration_minutes ?? null;
       }
 
-      // For each plan field: present-in-dto wins (including explicit null);
-      // otherwise carry the current value forward.
       const finalStart = present('planned_start_at')
         ? (dto.planned_start_at ?? null)
-        : currentPlan.planned_start_at;
-      // Duration merge has one wrinkle: an explicit start=null patch (with no
-      // duration in the dto) is the established "clear plan" gesture. The
-      // matching setPlan invariant collapses duration to null when start is
-      // null, but the orchestrator's validation below would 400 if we carried
-      // the old duration forward. Honour the clear-start gesture by NOT
-      // carrying the old duration when start is being explicitly cleared.
+        : currentStart;
+      // Honour the established "clear plan" gesture: explicit start=null
+      // with no duration in the dto collapses duration to null too.
       let finalDuration: number | null;
       if (present('planned_duration_minutes')) {
         finalDuration = dto.planned_duration_minutes ?? null;
       } else if (present('planned_start_at') && finalStart === null) {
         finalDuration = null;
+        // Override dto to send an explicit null so the RPC's plan branch
+        // clears the column rather than preserving the old duration.
+        // The RPC's UPDATE uses `case when v_plan_has_duration_key then
+        // ... else planned_duration_minutes end` (00333:462); without
+        // marking the key present, an explicit start=null patch with no
+        // duration key would leave the prior duration on the row.
+        (dto as UpdateWorkOrderDto).planned_duration_minutes = null;
       } else {
-        finalDuration = currentPlan.planned_duration_minutes;
+        finalDuration = currentDuration;
       }
 
-      // Reject duration-without-start at the orchestrator boundary so the
-      // caller gets a structured 400 (`work_order.plan_invalid`) instead of
-      // the silent collapse setPlan would do downstream. This covers both:
-      //   1. duration-only patch when current start is null
-      //   2. simultaneous { start: null, duration: N } patch
       if (finalDuration !== null && finalStart === null) {
         throw AppErrors.validationFailed('work_order.plan_invalid', {
           detail: 'planned_duration_minutes requires planned_start_at',
         });
       }
-
-      last = await this.setPlan(workOrderId, finalStart, finalDuration, actorAuthUid);
-      dispatched.push('plan');
     }
 
-    if (hasStatus) {
-      const statusDto: { status?: string; status_category?: string; waiting_reason?: string | null } = {};
-      if (present('status')) statusDto.status = dto.status;
-      if (present('status_category')) statusDto.status_category = dto.status_category;
-      if (present('waiting_reason')) statusDto.waiting_reason = dto.waiting_reason ?? null;
-      last = await this.updateStatus(workOrderId, statusDto, actorAuthUid);
-      dispatched.push('status');
+    // Cost normalization — numeric(12,2) round-trip parity. The RPC also
+    // rounds (00333:542) but normalising at the TS boundary stabilises
+    // the orchestrator's payload_hash across replays. Mirrors the case-
+    // side normalisation at ticket.service.ts:1082-1088.
+    const dtoNormalized: UpdateWorkOrderDto = { ...dto };
+    if (
+      Object.prototype.hasOwnProperty.call(dto, 'cost') &&
+      typeof dto.cost === 'number' &&
+      Number.isFinite(dto.cost)
+    ) {
+      dtoNormalized.cost = Math.round(dto.cost * 100) / 100;
     }
 
-    if (hasPriority) {
-      // Priority is required-when-present; the type-narrowing already
-      // forbids undefined here.
-      last = await this.updatePriority(workOrderId, dto.priority as 'low' | 'medium' | 'high' | 'critical', actorAuthUid);
-      dispatched.push('priority');
+    // ──────────────────────────────────────────────────────────────────
+    // B.2.A Commit B (§3.0 controller cutover) — replace the per-field
+    // dispatch chain (updateSla → setPlan → updateStatus → updatePriority
+    // → updateAssignment → updateMetadata) with one `update_entity_combined`
+    // RPC call. The RPC commits every branch in one transaction, emits
+    // the same activity rows + domain events the per-field methods
+    // emitted, and removes the validation-atomic-only / activity-row-
+    // swallow caveats called out above. The per-field service methods
+    // remain on the class for internal callers (cron, workflow engine,
+    // SYSTEM_ACTOR paths); they are not called from the PATCH path.
+    //
+    // SLA branch needs TS-computed timers (the RPC raises
+    // update_entity_sla.timers_required if sla_id is non-null and
+    // timers[] is missing — 00330:202-205). buildTimersForRpc owns the
+    // business-hours calendar lookup + `addBusinessMinutes` arithmetic.
+    //
+    // Citations: 00333 (orchestrator) + 00325/00327/00330 (sub-RPCs)
+    //          + spec line 1892 (idempotency key shape).
+    // ──────────────────────────────────────────────────────────────────
+    const patches = await this.buildPatchesPayloadForWorkOrder(
+      dtoNormalized,
+      tenant.id,
+      { hasSla, hasPlan, hasStatus, hasPriority, hasAssignment, hasMetadata },
+    );
+
+    const { error: rpcErr } = await this.supabase.admin.rpc(
+      'update_entity_combined',
+      {
+        p_entity_kind: 'work_order',
+        p_entity_id: workOrderId,
+        p_tenant_id: tenant.id,
+        // 00325:89-94 — p_actor_user_id is the auth UID, not users.id.
+        p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
+        p_idempotency_key: this.combinedIdempotencyKey(workOrderId, clientRequestId),
+        p_patches: patches,
+      },
+    );
+    if (rpcErr) throw mapRpcErrorToAppError(rpcErr);
+
+    // Refetch the row so the response shape matches what the per-field
+    // methods used to return (with every RPC-side side effect — resolved_at,
+    // closed_at, sla_response_due_at, sla_resolution_due_at — applied).
+    const { data: refreshed, error: refetchErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('*')
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (refetchErr) throw refetchErr;
+    if (!refreshed) {
+      throw AppErrors.forbidden(
+        'work_order.no_longer_accessible',
+        'Work order no longer accessible',
+      );
+    }
+    return refreshed as WorkOrderRow;
+  }
+
+  /**
+   * Build the `p_patches` jsonb payload for `update_entity_combined`
+   * (00333) from an UpdateWorkOrderDto. Uses key-presence (hasOwnProperty
+   * + `!== undefined`) — absent key ⇒ no branch; present key with `null`
+   * ⇒ explicit clear (where the column allows).
+   *
+   * Citations mirror the case-side helper. The SLA branch additionally
+   * computes the `timers[]` payload (00330:279-284) via
+   * SlaService.buildTimersForRpc — the RPC needs pre-computed timer
+   * due_at values because the business-hours calendar resolution lives
+   * in TS (apps/api/src/modules/sla/business-hours.service.ts).
+   */
+  private async buildPatchesPayloadForWorkOrder(
+    dto: UpdateWorkOrderDto,
+    tenantId: string,
+    flags: {
+      hasSla: boolean;
+      hasPlan: boolean;
+      hasStatus: boolean;
+      hasPriority: boolean;
+      hasAssignment: boolean;
+      hasMetadata: boolean;
+    },
+  ): Promise<Record<string, unknown>> {
+    const patches: Record<string, unknown> = {};
+    const has = (k: keyof UpdateWorkOrderDto) =>
+      Object.prototype.hasOwnProperty.call(dto, k) &&
+      (dto as Record<string, unknown>)[k] !== undefined;
+
+    // Status branch (00333:182, 277-303).
+    if (flags.hasStatus) {
+      if (has('status')) patches.status = dto.status;
+      if (has('status_category')) patches.status_category = dto.status_category;
+      if (has('waiting_reason')) patches.waiting_reason = dto.waiting_reason ?? null;
     }
 
-    if (hasAssignment) {
-      const assignmentDto: {
-        assigned_team_id?: string | null;
-        assigned_user_id?: string | null;
-        assigned_vendor_id?: string | null;
-      } = {};
+    // Priority — top-level (00333:185, 305-359).
+    if (flags.hasPriority) {
+      patches.priority = dto.priority;
+    }
+
+    // Assignment grouped (00333:183, 361-377).
+    if (flags.hasAssignment) {
+      const assignment: Record<string, unknown> = {};
       for (const f of ASSIGNMENT_FIELDS) {
-        if (present(f)) {
-          assignmentDto[f] = dto[f] ?? null;
+        if (has(f)) {
+          assignment[f] = (dto as Record<string, unknown>)[f] ?? null;
         }
       }
-      last = await this.updateAssignment(workOrderId, assignmentDto, actorAuthUid);
-      dispatched.push('assignment');
+      patches.assignment = assignment;
     }
 
-    if (hasMetadata) {
-      // Slice 3.1 fields are last in the dispatch order — they're plain
-      // metadata writes with no side-effects on timers, status promotion,
-      // or assignment cascade. Order doesn't matter relative to them but
-      // running them last keeps the side-effect-bearing branches first.
-      const metadataDto: {
-        title?: string;
-        description?: string | null;
-        cost?: number | null;
-        tags?: string[] | null;
-        watchers?: string[] | null;
-      } = {};
-      if (present('title')) metadataDto.title = dto.title;
-      if (present('description')) metadataDto.description = dto.description ?? null;
-      if (present('cost')) metadataDto.cost = dto.cost ?? null;
-      if (present('tags')) metadataDto.tags = dto.tags ?? null;
-      if (present('watchers')) metadataDto.watchers = dto.watchers ?? null;
-      last = await this.updateMetadata(workOrderId, metadataDto, actorAuthUid);
-      dispatched.push('metadata');
+    // Plan grouped (00333:186, 397-503).
+    if (flags.hasPlan) {
+      const plan: Record<string, unknown> = {};
+      if (has('planned_start_at')) plan.planned_start_at = dto.planned_start_at;
+      if (has('planned_duration_minutes'))
+        plan.planned_duration_minutes = dto.planned_duration_minutes;
+      patches.plan = plan;
     }
 
-    // Multi-field calls: refetch once so the final row reflects every side
-    // effect. Single-field calls already returned a fresh row from the
-    // per-field method.
-    if (dispatched.length > 1) {
-      const tenant = TenantContext.current();
-      const { data: refreshed, error: refetchErr } = await this.supabase.admin
-        .from('work_orders')
-        .select('*')
-        .eq('id', workOrderId)
-        .eq('tenant_id', tenant.id)
-        .maybeSingle();
-      if (refetchErr) throw refetchErr;
-      if (!refreshed) {
-        throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
+    // SLA grouped (00333:184, 379-395). The RPC's payload schema is
+    // `{ sla_id, timers? }` per 00330:98-108 + 00330:140-145.
+    // - null sla_id ⇒ clear (RPC's stop-only path; timers[] omitted).
+    // - non-null sla_id ⇒ install (RPC requires timers[], else raises
+    //   update_entity_sla.timers_required).
+    if (flags.hasSla) {
+      const slaPayload: Record<string, unknown> = {
+        sla_id: dto.sla_id ?? null,
+      };
+      if (dto.sla_id) {
+        slaPayload.timers = await this.slaService.buildTimersForRpc(
+          dto.sla_id,
+          tenantId,
+        );
       }
-      return refreshed as WorkOrderRow;
+      patches.sla = slaPayload;
     }
 
-    // Defensive: dispatched is non-empty (we threw on empty DTO above), so
-    // `last` is always set here. The `!` would be unsafe-looking; throw
-    // explicitly for clarity instead.
-    if (!last) {
-      throw AppErrors.validationFailed('work_order.empty_update', {
-        detail:
-          'update requires at least one of: sla_id, planned_start_at, planned_duration_minutes, status, status_category, waiting_reason, priority, assigned_team_id, assigned_user_id, assigned_vendor_id, title, description, cost, tags, watchers',
-      });
+    // Metadata grouped (00333:187, 505-732).
+    if (flags.hasMetadata) {
+      const metadata: Record<string, unknown> = {};
+      if (has('title')) metadata.title = dto.title;
+      if (has('description')) metadata.description = dto.description ?? null;
+      if (has('cost')) metadata.cost = dto.cost ?? null;
+      if (has('tags')) metadata.tags = dto.tags ?? null;
+      if (has('watchers')) metadata.watchers = dto.watchers ?? null;
+      patches.metadata = metadata;
     }
-    return last;
+
+    return patches;
+  }
+
+  /**
+   * Mint the outer idempotency key for `update_entity_combined` per spec
+   * line 1892. Falls back to a fresh randomUUID when clientRequestId is
+   * absent (SYSTEM_ACTOR / legacy callers); collision-free per call so
+   * the RPC's command_operations cache never serves a stale result.
+   */
+  private combinedIdempotencyKey(
+    workOrderId: string,
+    clientRequestId: string | undefined,
+  ): string {
+    const seed = clientRequestId ?? randomUUID();
+    return `patch:work_order:${workOrderId}:${seed}`;
   }
 
   /**

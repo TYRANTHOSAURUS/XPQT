@@ -125,6 +125,89 @@ export class SlaService {
     }
   }
 
+  /**
+   * Build the `timers[]` payload for `update_entity_sla` (00330) and its
+   * orchestrator wrapper `update_entity_combined` (00333 §3.0). Returns the
+   * pre-computed business-hours-adjusted due_at values for response and
+   * resolution timers, in the shape the RPC's `jsonb_to_recordset` expects
+   * (00330:279-284). No DB writes — the RPC owns the INSERT.
+   *
+   * Pre-conditions:
+   *   - `slaPolicyId` is tenant-owned (caller already validated, or the
+   *     RPC's `validate_entity_in_tenant` will reject before insert).
+   *
+   * Returns an empty array when the policy carries neither response nor
+   * resolution thresholds — the caller's branch should then treat the
+   * write as a clear-only (sla_id may still be non-null but the RPC will
+   * raise `timers_required`). This matches the historical
+   * `SlaService.startTimers` skip-when-empty behaviour (line 88+ / 106+).
+   *
+   * Used by `TicketService.update` + `WorkOrderService.update` (B.2.A
+   * Commit B controller cutover) so the RPC receives the timers array
+   * alongside `sla_id` instead of TS computing them post-write via the
+   * legacy `restartTimers` path.
+   */
+  async buildTimersForRpc(
+    slaPolicyId: string,
+    tenantId: string,
+  ): Promise<
+    Array<{
+      timer_type: 'response' | 'resolution';
+      target_minutes: number;
+      due_at: string;
+      business_hours_calendar_id: string | null;
+    }>
+  > {
+    const { data: policy } = await this.supabase.admin
+      .from('sla_policies')
+      .select('response_time_minutes, resolution_time_minutes, business_hours_calendar_id')
+      .eq('id', slaPolicyId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (!policy) return [];
+
+    const calendar = await this.loadCalendar(
+      (policy.business_hours_calendar_id as string | null) ?? null,
+    );
+    const now = new Date();
+    const timers: Array<{
+      timer_type: 'response' | 'resolution';
+      target_minutes: number;
+      due_at: string;
+      business_hours_calendar_id: string | null;
+    }> = [];
+
+    if (policy.response_time_minutes) {
+      const responseDue = this.businessHours.addBusinessMinutes(
+        calendar,
+        now,
+        policy.response_time_minutes as number,
+      );
+      timers.push({
+        timer_type: 'response',
+        target_minutes: policy.response_time_minutes as number,
+        due_at: responseDue.toISOString(),
+        business_hours_calendar_id: (policy.business_hours_calendar_id as string | null) ?? null,
+      });
+    }
+
+    if (policy.resolution_time_minutes) {
+      const resolutionDue = this.businessHours.addBusinessMinutes(
+        calendar,
+        now,
+        policy.resolution_time_minutes as number,
+      );
+      timers.push({
+        timer_type: 'resolution',
+        target_minutes: policy.resolution_time_minutes as number,
+        due_at: resolutionDue.toISOString(),
+        business_hours_calendar_id: (policy.business_hours_calendar_id as string | null) ?? null,
+      });
+    }
+
+    return timers;
+  }
+
   private async loadCalendar(calendarId: string | null): Promise<BusinessHoursCalendar | null> {
     if (!calendarId) return null;
     const { data } = await this.supabase.admin
