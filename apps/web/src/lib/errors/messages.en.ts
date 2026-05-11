@@ -1623,6 +1623,12 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't dispatch",
     detail: 'The cost center is not part of this tenant.',
   },
+  // v5 (00360) — codex finding. Voice mirrors the rest of the
+  // validate_entity_in_tenant family.
+  'validate_entity_in_tenant.team_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The team is not part of this tenant.',
+  },
 };
 
 /**

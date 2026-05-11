@@ -1711,6 +1711,13 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't dispatch",
     detail: 'The cost center is not part of this tenant.',
   },
+  // v5 (00360) — codex finding. Same voice as the rest of the family;
+  // surface is the upcoming edit_booking RPC §3.6.5 approval-chain
+  // INSERTs but the registry shape stays uniform.
+  'validate_entity_in_tenant.team_not_in_tenant': {
+    title: "Couldn't dispatch",
+    detail: 'The team is not part of this tenant.',
+  },
 };
 
 /**

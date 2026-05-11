@@ -1602,6 +1602,12 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kan niet uitdelen',
     detail: 'De kostenplaats hoort niet bij deze tenant.',
   },
+  // v5 (00360) — codex finding. NL uses 'team' (same word in Dutch);
+  // voice mirrors the rest of the family.
+  'validate_entity_in_tenant.team_not_in_tenant': {
+    title: 'Kan niet uitdelen',
+    detail: 'Het team hoort niet bij deze tenant.',
+  },
 };
 
 /**

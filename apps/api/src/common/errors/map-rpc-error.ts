@@ -116,6 +116,12 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // cost_center guards bookings.cost_center_id (→ public.cost_centers).
   'validate_entity_in_tenant.booking_rule_not_in_tenant': 404,
   'validate_entity_in_tenant.cost_center_not_in_tenant': 404,
+  // team added in v5 (00360) — codex finding. Guards
+  // approvals.approver_team_id (00012:12 GLOBAL FK with no tenant
+  // join) against the §3.6.5 edit_booking approval-chain INSERTs.
+  // Same defense-in-depth shape as the v3 routing_rule (Codex-S8-I1)
+  // and v4 booking_rule/cost_center additions.
+  'validate_entity_in_tenant.team_not_in_tenant': 404,
   // B.2.A.Step12 §3.11 — create RPC's request-type-not-found path.
   'create_ticket_with_automation.request_type_not_found': 404,
   // B.2.A.Step11 §3.10 — reclassify_ticket RPC.

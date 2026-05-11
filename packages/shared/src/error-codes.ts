@@ -543,6 +543,13 @@ export type KnownErrorCode =
   // mirroring the v3 'routing_rule' addition.
   | 'validate_entity_in_tenant.booking_rule_not_in_tenant'
   | 'validate_entity_in_tenant.cost_center_not_in_tenant'
+  // v5 (00360) — codex finding. team covers the
+  // approvals.approver_team_id (→ teams) GLOBAL FK gap that the
+  // edit_booking RPC §3.6.5 approval-chain INSERTs would otherwise
+  // commit cross-tenant. Same shape as Codex-S8-I1 routing_rule
+  // (the team FK at 00012:12 doesn't join through teams.tenant_id
+  // at 00003:100). Routed to 404 by map-rpc-error STATUS_BY_CODE.
+  | 'validate_entity_in_tenant.team_not_in_tenant'
 
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
@@ -1297,6 +1304,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'validate_entity_in_tenant.routing_rule_not_in_tenant',
   'validate_entity_in_tenant.booking_rule_not_in_tenant',
   'validate_entity_in_tenant.cost_center_not_in_tenant',
+  'validate_entity_in_tenant.team_not_in_tenant',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */
