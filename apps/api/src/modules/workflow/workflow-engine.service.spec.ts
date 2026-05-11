@@ -855,17 +855,15 @@ describe('WorkflowEngineService.executeNode (update_ticket) — B.2.A.Step9 RPC 
     expect(rpcCalls).toEqual([]);
   });
 
-  it('forwards plan keys to the RPC (orchestrator rejects on case via plan_not_supported_on_case)', async () => {
-    // plan is in the allowlist but the §3.0 orchestrator rejects plan
-    // on case (00335:170-173). The engine intentionally forwards the
-    // keys; the RPC fails fast with the registered code, which
-    // mapRpcErrorToAppError surfaces as 422.
-    const { supabase, rpcCalls, slaService } = makeUpdateDeps({
-      rpcError: {
-        message:
-          'update_entity_combined.plan_not_supported_on_case: plan dates can only be set on work orders',
-      },
-    });
+  it('rejects plan keys up front — they are now allowlist orphans (case-only surface)', async () => {
+    // Post 2026-05-11 review-remediation: plan fields are NO LONGER in
+    // UPDATE_TICKET_ALLOWED_FIELDS. The orchestrator's plan branch is
+    // WO-only (00335:170-173) and workflow update_ticket always targets
+    // a case, so plan-on-case is categorically misconfigured. Now
+    // surfaces the clearer `workflow.update_ticket_field_not_allowed`
+    // (422) at the engine layer instead of the downstream
+    // `update_entity_combined.plan_not_supported_on_case` from the RPC.
+    const { supabase, rpcCalls, slaService } = makeUpdateDeps();
     const engine = new WorkflowEngineService(
       supabase as never,
       { dispatch: jest.fn() } as never,
@@ -889,16 +887,12 @@ describe('WorkflowEngineService.executeNode (update_ticket) — B.2.A.Step9 RPC 
       caught = e;
     }
     expect((caught as { code?: string }).code).toBe(
-      'update_entity_combined.plan_not_supported_on_case',
+      'workflow.update_ticket_field_not_allowed',
     );
-    // The engine MUST have called the RPC before the error — proving
-    // the cutover went through the RPC layer rather than throwing
-    // TS-side on the plan-on-case branch.
-    expect(rpcCalls).toHaveLength(1);
-    expect(rpcCalls[0].fn).toBe('update_entity_combined');
-    expect(rpcCalls[0].args.p_patches).toEqual({
-      plan: { planned_start_at: '2026-09-01T10:00:00Z' },
-    });
+    expect((caught as { detail?: string }).detail).toMatch(/planned_start_at/);
+    // The engine MUST NOT have called the RPC — rejection happened up
+    // front at the allowlist gate.
+    expect(rpcCalls).toEqual([]);
   });
 
   it('skips the RPC entirely on an empty fields object', async () => {

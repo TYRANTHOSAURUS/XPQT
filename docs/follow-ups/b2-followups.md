@@ -358,15 +358,17 @@ migration v3 supersessions (00340 helper + 00341 single + 00342 batch):
 
 ## Workflow `update_ticket` orphan fields (Step 9, 2026-05-11)
 
-Step 9 tightened the `update_ticket` node's field allowlist to the 14
-fields the §3.0 `update_entity_combined` orchestrator accepts. The
-following 17 fields were ACCEPTED by the pre-cutover workflow engine
-and are now rejected with `workflow.update_ticket_field_not_allowed`
-(@ 422):
+Step 9 tightened the `update_ticket` node's field allowlist to the 12
+fields the §3.0 `update_entity_combined` orchestrator accepts for case-
+side targets (workflow update_ticket nodes always target the parent
+case via workflow_instances.ticket_id). The following 19 fields were
+ACCEPTED by the pre-cutover workflow engine and are now rejected with
+`workflow.update_ticket_field_not_allowed` (@ 422):
 
 - Ticket-flavor scalars: `impact`, `urgency`, `interaction_mode`, `source_channel`
 - User-driven post-resolve: `satisfaction_rating`, `satisfaction_comment`, `form_data`
 - Status-transition reasons: `close_reason`, `cancelled_reason`, `reclassified_reason`
+- WO-only plan fields (review-remediation 2026-05-11): `planned_start_at`, `planned_duration_minutes`. Orchestrator's plan branch is WO-only (00335:170-173 raises `plan_not_supported_on_case`); workflow update_ticket targets cases. Rejecting here surfaces the clearer `workflow.update_ticket_field_not_allowed` (422) instead of the downstream `update_entity_combined.plan_not_supported_on_case`.
 - FKs: `ticket_type_id`, `parent_ticket_id`, `requester_person_id`,
   `requested_for_person_id`, `location_id`, `asset_id`, `workflow_id`
 
@@ -399,19 +401,63 @@ they should be updated or the field demand pushed up to Product.
 - `ticket_type_id` — belongs to reclassify (Step 11 / §3.10), not
   update. Reclassification recomputes routing + workflow start; a raw
   update would leave the ticket in an inconsistent state.
-- `workflow_id` — structurally shouldn't be self-mutable; reject
-  permanently. A workflow changing its own workflow_definition_id mid-
-  execution would invalidate the in-flight instance's graph.
-- `parent_ticket_id` — structurally shouldn't be mutable post-create;
-  reject permanently. Re-parenting is a different operation (move the
-  case into a different domain).
+- `workflow_id` — reject permanently from THIS surface. A workflow
+  changing its own workflow_definition_id mid-execution would invalidate
+  the in-flight instance's graph. `workflow_id` IS legitimately mutated
+  elsewhere (webhook ingest sets it at create; reclassify_ticket
+  recomputes it) — those paths are scope-correct because they invalidate
+  the workflow instance atomically.
+- `parent_ticket_id` — reject permanently from THIS surface. Mutating a
+  case's parent post-create is a "merge" operation (move the case into
+  a different domain); it has its own future RPC.
+- `planned_start_at` / `planned_duration_minutes` (added 2026-05-11
+  review remediation) — reject permanently from THIS surface. The
+  orchestrator's plan branch is WO-only by spec; workflow update_ticket
+  is case-targeted by data model. If a workflow needs to set a child
+  WO's plan, the path is `create_child_tasks` (which dispatches the WO
+  with the plan as part of the dispatch payload) — not update_ticket.
 - `satisfaction_rating` / `satisfaction_comment` / `form_data` — defer
   until user-driven satisfaction workflow exists. Today these are
   applied via a direct side-write in `TicketService.update` after the
   RPC commits (plan-review I4 — see "Case-side satisfaction_rating +
   satisfaction_comment atomicity gap" entry above).
 
-The 14-field allowlist itself is in
+The 12-field allowlist itself is in
 `apps/api/src/modules/workflow/workflow-engine.service.ts` under
 `UPDATE_TICKET_ALLOWED_FIELDS`. Mirror this list when extending the
 orchestrator's branch surface.
+
+## Workflow node retry with edited config (Step 9 review, 2026-05-11)
+
+Workflow nodes mint deterministic idempotency keys via
+`buildWorkflowAssignmentIdempotencyKey(instance, node, ticket)` and
+`buildWorkflowUpdateTicketIdempotencyKey(instance, node, ticket)` —
+the key depends only on the (instance, node, ticket) tuple, not the
+node's config payload. A retry of the same node on the same instance
++ ticket therefore hits the `command_operations` cache and returns
+the cached_result.
+
+This is correct when the node retries with the SAME config (legitimate
+replay-after-transient-failure). But if an admin edits a workflow's
+`update_ticket` node config WHILE the instance is paused/waiting and
+then resumes the instance, the next call has the SAME key but a
+DIFFERENT payload — the RPC raises `command_operations.payload_mismatch`
+(409) and the workflow halts.
+
+Current behavior: workflows DO NOT support mid-run node config edits
+today (the workflow editor is design-time only; instances bind to a
+snapshot of the definition). So this is a latent concern, not a live
+bug. When the workflow editor adds mid-run edit support, the
+idempotency key shape will need a config-hash component
+(`workflow:update_ticket:<instance>:<node>:<ticket>:<config_hash>`) so
+config edits produce a fresh command_operations row.
+
+## Status-code shift on workflow.update_ticket_field_not_allowed (Step 9, 2026-05-11)
+
+The pre-Step-9 code path raised this as 400; Step 9 maps it to 422 in
+`STATUS_BY_CODE` (consistent with `validate_assignees_in_tenant.*_not_in_tenant`
+and other "syntactically valid but logically misconfigured" cases).
+Risk: a frontend handler keyed off the legacy 400 status code (rather
+than the error `code` field) regresses. The error system is code-keyed
+end-to-end so risk is small, but worth a one-line cite when reviewing
+any frontend that consumes workflow-misconfiguration errors.

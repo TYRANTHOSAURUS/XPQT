@@ -64,10 +64,14 @@ const UPDATE_TICKET_ASSIGNMENT_FIELDS = new Set<string>([
   'assigned_vendor_id',
 ]);
 const UPDATE_TICKET_SLA_FIELDS = new Set<string>(['sla_id']);
-const UPDATE_TICKET_PLAN_FIELDS = new Set<string>([
-  'planned_start_at',
-  'planned_duration_minutes',
-]);
+// Plan fields are WO-only on `update_entity_combined` (00335:170-173 rejects
+// `entity_kind='case'` + plan with `plan_not_supported_on_case`). Workflow
+// `update_ticket` nodes ALWAYS target the parent case (workflow_instances
+// link to tickets, not work_orders), so plan fields are categorically
+// misconfigured on this surface. Documented as an orphan field in
+// docs/follow-ups/b2-followups.md alongside the other 17 — surfacing as
+// `workflow.update_ticket_field_not_allowed` (422) here is clearer than
+// the orchestrator's `plan_not_supported_on_case` raise downstream.
 const UPDATE_TICKET_METADATA_FIELDS = new Set<string>([
   'title',
   'description',
@@ -76,13 +80,13 @@ const UPDATE_TICKET_METADATA_FIELDS = new Set<string>([
   'watchers',
 ]);
 
-/** The full 14-field allowlist (union of the six branch sets). */
+/** The full 12-field allowlist (union of the five branch sets — plan
+ *  is excluded because workflow update_ticket is case-only). */
 const UPDATE_TICKET_ALLOWED_FIELDS: ReadonlySet<string> = new Set<string>([
   ...UPDATE_TICKET_STATUS_FIELDS,
   ...UPDATE_TICKET_PRIORITY_FIELDS,
   ...UPDATE_TICKET_ASSIGNMENT_FIELDS,
   ...UPDATE_TICKET_SLA_FIELDS,
-  ...UPDATE_TICKET_PLAN_FIELDS,
   ...UPDATE_TICKET_METADATA_FIELDS,
 ]);
 
@@ -846,16 +850,13 @@ export class WorkflowEngineService {
       patches.sla = slaPayload;
     }
 
-    // Plan grouped (00335:164 / 375-481). WO-only — orchestrator rejects
-    // on case with `plan_not_supported_on_case` (00335:170-173). Keys
-    // forwarded verbatim; RPC fails fast on misconfiguration.
-    if (has('planned_start_at') || has('planned_duration_minutes')) {
-      const plan: Record<string, unknown> = {};
-      if (has('planned_start_at')) plan.planned_start_at = fields.planned_start_at;
-      if (has('planned_duration_minutes'))
-        plan.planned_duration_minutes = fields.planned_duration_minutes;
-      patches.plan = plan;
-    }
+    // Plan branch: unreachable here. Plan fields are NOT in
+    // `UPDATE_TICKET_ALLOWED_FIELDS` (the workflow update_ticket node always
+    // targets a case, and the orchestrator's plan branch is WO-only per
+    // 00335:170-173). Any node config carrying `planned_start_at` or
+    // `planned_duration_minutes` is rejected up front at line ~343 with
+    // `workflow.update_ticket_field_not_allowed` (422) before this builder
+    // even runs. Listed in docs/follow-ups/b2-followups.md orphan fields.
 
     // Metadata grouped (00335:165 / 483-706).
     if (
