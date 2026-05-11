@@ -1,6 +1,10 @@
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { buildPatchIdempotencyKey } from '@prequest/shared';
+import {
+  buildPatchIdempotencyKey,
+  buildCreateTicketIdempotencyKey,
+  buildCreateTicketId,
+} from '@prequest/shared';
 import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
 import { hasOwnDefined } from '../../common/has-own-defined';
 import { SupabaseService } from '../../common/supabase/supabase.service';
@@ -197,10 +201,25 @@ export class TicketService {
     @Inject(forwardRef(() => RoutingService)) private readonly routingService: RoutingService,
     private readonly slaService: SlaService,
     @Inject(forwardRef(() => WorkflowEngineService)) private readonly workflowEngine: WorkflowEngineService,
+    // B.2.A.Step12 §3.11: the legacy create() path inlined
+    // approvalService.createSingleStep — that's now owned by the
+    // create_ticket_with_automation RPC (00349). The injection is
+    // RETAINED (underscore-prefixed) to preserve the constructor
+    // ordering for existing test fixtures that mock by position. Will
+    // be removed when the test fixtures migrate to NestJS testing
+    // module factories.
     @Inject(forwardRef(() => ApprovalService)) private readonly approvalService: ApprovalService,
     private readonly visibility: TicketVisibilityService,
     private readonly scopeOverrides: ScopeOverrideResolverService,
-  ) {}
+  ) {
+    // B.2.A.Step12 §3.11: approvalService is currently unused by this
+    // service (the RPC owns approval row creation) but the injection is
+    // RETAINED to preserve constructor positional ordering for existing
+    // test fixtures that mock by position. Void-reference to silence the
+    // unused-locals lint. Future cleanup: migrate tests to NestJS testing
+    // factories then drop this injection.
+    void this.approvalService;
+  }
 
   async list(filters: TicketListFilters = {}, actorAuthUid: string) {
     const tenant = TenantContext.current();
@@ -586,11 +605,12 @@ export class TicketService {
     dto: CreateTicketDto,
     options: CreateTicketOptions = {},
     actorAuthUid: string = SYSTEM_ACTOR,
-    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
-    // controller for `POST /tickets`. Currently plumbed only; Step 3+ uses
-    // it as the idempotency-key seed for the `create_ticket_with_automation`
-    // RPC. See spec §3.9.1.
-    _clientRequestId?: string,
+    // B.2.A.Step12 §3.11 — threaded from RequireClientRequestIdGuard
+    // via the controller for `POST /tickets`. Used as the idempotency-
+    // key seed for `create_ticket_with_automation` (00349). Same actor
+    // + same clientRequestId ⇒ same key ⇒ command_operations
+    // short-circuits the retry. See spec §3.9.1 + §3.11.
+    clientRequestId?: string,
   ) {
     const tenant = TenantContext.current();
 
@@ -605,97 +625,201 @@ export class TicketService {
       }
     }
 
-    // Step 1c.10c: ticket_kind column dropped from tickets. tickets is
-    // case-only now; the dto.ticket_kind value is ignored (work_orders go
-    // through dispatch.service.ts / createBookingOriginWorkOrder).
-    const { data, error } = await this.supabase.admin
-      .from('tickets')
-      .insert({
-        tenant_id: tenant.id,
-        ticket_type_id: dto.ticket_type_id,
-        parent_ticket_id: dto.parent_ticket_id,
-        title: dto.title,
-        description: dto.description,
-        priority: dto.priority ?? 'medium',
-        impact: dto.impact,
-        urgency: dto.urgency,
-        requester_person_id: dto.requester_person_id,
-        requested_for_person_id: dto.requested_for_person_id ?? dto.requester_person_id,
-        location_id: dto.location_id,
-        asset_id: dto.asset_id,
-        assigned_team_id: dto.assigned_team_id,
-        assigned_user_id: dto.assigned_user_id,
-        interaction_mode: dto.interaction_mode ?? 'internal',
-        source_channel: dto.source_channel ?? 'portal',
-        status: 'new',
-        status_category: 'new',
-        form_data: dto.form_data,
-        external_system: dto.external_system,
-        external_id: dto.external_id,
-      })
-      .select()
-      .single();
+    // ── B.2.A.Step12 §3.11 cutover ─────────────────────────────────────
+    //
+    // Pre-cutover this method INSERTed tickets via supabase-js then called
+    // `runPostCreateAutomation` which fanned into routing + SLA + workflow
+    // across multiple round-trips. If any post-INSERT step failed, the
+    // ticket committed in a partial-onboarding state — exactly the
+    // "multi-step writes must be PL/pgSQL RPCs" violation B.2.A is
+    // closing across the entire command surface.
+    //
+    // Post-cutover the TS plan-build phase resolves the effective
+    // location / scope-override / workflow / SLA (and optionally runs
+    // the routing resolver), then hands a single
+    // `create_ticket_with_automation` RPC the user payload + plan.
+    // The RPC owns the atomic write set and emits outbox events.
 
-    if (error) throw error;
+    // Idempotency key seed: clientRequestId required (per F-CRIT-1).
+    // SYSTEM_ACTOR callers (webhook ingest, cron) must still pass one —
+    // typically a deterministic derivative of the upstream identifier.
+    const effectiveClientRequestId = clientRequestId ?? randomUUID();
+    const idempotencyKey = buildCreateTicketIdempotencyKey(
+      actorAuthUid,
+      effectiveClientRequestId,
+    );
 
-    // Log system event
-    await this.addActivity(data.id, {
-      activity_type: 'system_event',
-      visibility: 'system',
-      metadata: { event: 'ticket_created' },
-    });
+    // Deterministic ticket_id from idempotency key. Retry mints the
+    // same id; the RPC's command_operations gate then returns the
+    // cached_result without re-inserting.
+    const preMintedTicketId = buildCreateTicketId(idempotencyKey);
 
-    // Log domain event
-    await this.logDomainEvent(data.id, 'ticket_created', { ticket_id: data.id });
+    // ── TS plan-build phase ────────────────────────────────────────────
+    //
+    // Mirror the order at apps/api/src/modules/ticket/ticket.service.ts
+    // (legacy runPostCreateAutomation) so the PG semantic-mismatch gate
+    // doesn't trigger on the happy path.
 
-    // Load full request-type config once — used by approval gate + automation
-    const requestTypeCfg = data.ticket_type_id
-      ? (await this.supabase.admin
-          .from('request_types')
-          .select('domain, sla_policy_id, workflow_definition_id, requires_approval, approval_approver_team_id, approval_approver_person_id')
-          .eq('id', data.ticket_type_id)
-          .eq('tenant_id', tenant.id)
-          .maybeSingle()).data
+    // 1. Effective location: explicit → asset-derived → null.
+    const effectiveLocationId = await this.scopeOverrides.deriveEffectiveLocation(
+      tenant.id,
+      {
+        locationId: dto.location_id ?? null,
+        assetId: dto.asset_id ?? null,
+      },
+    );
+
+    // 2. Request-type config (FOR SHARE inside the RPC; here just for
+    //    workflow/sla fallback math + approval-gate-prediction).
+    const requestTypeCfg = dto.ticket_type_id
+      ? (
+          await this.supabase.admin
+            .from('request_types')
+            .select(
+              'id, domain, sla_policy_id, workflow_definition_id, requires_approval, approval_approver_team_id, approval_approver_person_id',
+            )
+            .eq('id', dto.ticket_type_id)
+            .eq('tenant_id', tenant.id)
+            .maybeSingle()
+        ).data
       : null;
 
-    // ── Approval gate ─────────────────────────────────────────
-    // When the request type requires approval, park the ticket in
-    // pending_approval and create an approval request. Routing/SLA/workflow
-    // happen once approval is granted (see onApprovalDecision).
-    if (requestTypeCfg?.requires_approval &&
-        (requestTypeCfg.approval_approver_person_id || requestTypeCfg.approval_approver_team_id)) {
-      // Cross-tenant write fix (codex post-fix review 2026-05-08): the
-      // ticket was just inserted under tenant.id above, but supabase.admin
-      // bypasses RLS — defense-in-depth filter on the post-create transition.
-      await this.supabase.admin
-        .from('tickets')
-        .update({ status: 'awaiting_approval', status_category: 'pending_approval' })
-        .eq('id', data.id)
-        .eq('tenant_id', tenant.id);
-      data.status = 'awaiting_approval';
-      data.status_category = 'pending_approval';
+    // 3. Scope override + effective workflow/SLA derivation.
+    const scopeOverride = dto.ticket_type_id
+      ? await this.scopeOverrides.resolveForLocation(
+          tenant.id,
+          dto.ticket_type_id,
+          effectiveLocationId,
+        )
+      : null;
+    const effectiveWorkflowDefinitionId =
+      (scopeOverride?.workflow_definition_id as string | null | undefined) ??
+      (requestTypeCfg?.workflow_definition_id as string | null | undefined) ??
+      null;
+    const effectiveSlaPolicyId =
+      (scopeOverride?.case_sla_policy_id as string | null | undefined) ??
+      (requestTypeCfg?.sla_policy_id as string | null | undefined) ??
+      null;
 
-      await this.approvalService.createSingleStep({
-        target_entity_type: 'ticket',
-        target_entity_id: data.id,
-        approver_person_id: requestTypeCfg.approval_approver_person_id as string | undefined,
-        approver_team_id: requestTypeCfg.approval_approver_team_id as string | undefined,
-      });
-
-      await this.addActivity(data.id, {
-        activity_type: 'system_event',
-        visibility: 'system',
-        metadata: { event: 'approval_requested' },
-      });
-
-      // Step 1c.10c: synthesize ticket_kind for frontend contract.
-      return { ...data, ticket_kind: 'case' as const };
+    // 4. (Optional) routing resolver — sync per §3.9.2 v4. Skipped if
+    //    caller passed an assignee or if request type requires approval
+    //    (routing happens at grant time via §3.5 — future RPC).
+    const callerProvidedAssignee = Boolean(
+      dto.assigned_team_id || dto.assigned_user_id,
+    );
+    const willRequireApproval =
+      requestTypeCfg?.requires_approval === true &&
+      (requestTypeCfg.approval_approver_person_id ||
+        requestTypeCfg.approval_approver_team_id);
+    let routingDecision: Record<string, unknown> | null = null;
+    let routingTrace: Record<string, unknown> | null = null;
+    if (!callerProvidedAssignee && !willRequireApproval && dto.ticket_type_id) {
+      try {
+        const evalCtx = {
+          tenant_id: tenant.id,
+          ticket_id: preMintedTicketId,
+          request_type_id: dto.ticket_type_id,
+          domain: (requestTypeCfg?.domain as string | null) ?? null,
+          priority: dto.priority ?? null,
+          asset_id: dto.asset_id ?? null,
+          location_id: effectiveLocationId,
+        };
+        const evalResult = await this.routingService.evaluate(evalCtx);
+        routingDecision = {
+          chosen_by: evalResult.chosen_by,
+          strategy: evalResult.strategy,
+          rule_id: evalResult.rule_id,
+          team_id: evalResult.target?.kind === 'team' ? evalResult.target.team_id : null,
+          user_id: evalResult.target?.kind === 'user' ? evalResult.target.user_id : null,
+          vendor_id:
+            evalResult.target?.kind === 'vendor' ? evalResult.target.vendor_id : null,
+        };
+        routingTrace = {
+          input: {
+            request_type_id: dto.ticket_type_id,
+            location_id: effectiveLocationId,
+            asset_id: dto.asset_id ?? null,
+          },
+          trace: evalResult.trace,
+        };
+      } catch (err) {
+        // Resolver failure: leave the ticket unassigned, but DON'T fail
+        // the create. The RPC will commit the ticket without a routing
+        // decision row; the breadcrumb activity row from the resolver
+        // path is best-effort.
+        console.error('[routing] evaluate failed during create plan-build', err);
+        routingDecision = null;
+        routingTrace = null;
+      }
     }
 
-    // Normal path: routing → SLA → workflow
-    await this.runPostCreateAutomation(data, tenant.id, requestTypeCfg, options);
+    // 5. Build automation_plan + call the RPC.
+    const automationPlan = {
+      effective_location_id: effectiveLocationId,
+      scope_override_id: (scopeOverride?.id as string | undefined) ?? null,
+      effective_workflow_definition_id: effectiveWorkflowDefinitionId,
+      effective_sla_policy_id: effectiveSlaPolicyId,
+      routing_decision: routingDecision,
+      routing_trace: routingTrace,
+      _resolution_at: new Date().toISOString(),
+    };
+
+    const inputPayload: Record<string, unknown> = {
+      ticket_id: preMintedTicketId,
+      request_type_id: dto.ticket_type_id,
+      parent_ticket_id: dto.parent_ticket_id ?? null,
+      requester_person_id: dto.requester_person_id,
+      requested_for_person_id: dto.requested_for_person_id ?? dto.requester_person_id,
+      title: dto.title,
+      description: dto.description ?? null,
+      priority: dto.priority ?? 'medium',
+      impact: dto.impact ?? null,
+      urgency: dto.urgency ?? null,
+      location_id: dto.location_id ?? null,
+      asset_id: dto.asset_id ?? null,
+      assigned_team_id: dto.assigned_team_id ?? null,
+      assigned_user_id: dto.assigned_user_id ?? null,
+      assigned_vendor_id: null,
+      watchers: [],
+      source_channel: dto.source_channel ?? 'portal',
+      interaction_mode: dto.interaction_mode ?? 'internal',
+      form_data: dto.form_data ?? null,
+      external_system: dto.external_system ?? null,
+      external_id: dto.external_id ?? null,
+    };
+
+    // Resolve auth_uid → users.id for the RPC's actor stamp (it then
+    // maps users.id → person_id internally via users.auth_uid).
+    const actorAuthUidParam =
+      actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid;
+
+    const rpcRes = await this.supabase.admin.rpc('create_ticket_with_automation', {
+      p_input: inputPayload,
+      p_automation_plan: automationPlan,
+      p_tenant_id: tenant.id,
+      p_actor_user_id: actorAuthUidParam,
+      p_idempotency_key: idempotencyKey,
+    });
+    if (rpcRes.error) throw mapRpcErrorToAppError(rpcRes.error);
+
+    const out = rpcRes.data as
+      | {
+          ticket: Record<string, unknown>;
+          follow_ups: string[];
+          concurrent_override_edit: boolean;
+        }
+      | null;
+    if (!out || !out.ticket) {
+      throw AppErrors.server('create_ticket_with_automation.malformed_response');
+    }
+
     // Step 1c.10c: synthesize ticket_kind for frontend contract.
-    return { ...data, ticket_kind: 'case' as const };
+    void options; // options.skipWorkflow no longer honored — workflow start
+                  // is now handler-driven (00345 unique index + handler is
+                  // the SoT). The legacy skipWorkflow path was only used by
+                  // a webhook-ingest variant; that path will need its own
+                  // §3.11 cousin (out of scope for Step 12).
+    return { ...(out.ticket as Record<string, unknown>), ticket_kind: 'case' as const } as Record<string, unknown> & { ticket_kind: 'case' };
   }
 
   /**

@@ -37,6 +37,11 @@ export class PortalSubmitService {
     const { intake, portal_trace, requested_for_person_id } =
       await this.resolvePortalSubmit(authUid, dto);
 
+    // B.2.A.Step12 §3.11 cutover: forward authUid as the actor so the
+    // create_ticket_with_automation RPC's idempotency-key shape is
+    // namespaced per actor (per buildCreateTicketIdempotencyKey).
+    // Pre-cutover this was passed undefined → SYSTEM_ACTOR, which would
+    // collide idempotency keys across users sharing a clientRequestId.
     const ticket = await this.ticketService.create(
       {
         ticket_type_id: dto.request_type_id,
@@ -53,7 +58,7 @@ export class PortalSubmitService {
         form_data: dto.form_data,
       },
       undefined,
-      undefined,
+      authUid,
       clientRequestId,
     );
 

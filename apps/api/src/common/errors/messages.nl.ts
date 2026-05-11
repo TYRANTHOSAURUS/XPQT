@@ -749,6 +749,36 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon niet herclassificeren — gebruiker niet in deze werkruimte',
   },
 
+  // ─── create_ticket_with_automation (B.2.A.Step12 §3.11) ─────────────────
+  'create_ticket_with_automation.input_invalid': {
+    title: 'Ticket niet aangemaakt',
+    detail: 'Een vereist veld ontbreekt in het verzoek.',
+  },
+  'create_ticket_with_automation.request_type_not_found': {
+    title: 'Ticket niet aangemaakt',
+    detail: 'Het verzoektype is niet gevonden of inactief.',
+  },
+  'create_ticket_with_automation.malformed_response': {
+    title: 'Ticket niet aangemaakt',
+    detail: 'Onverwachte serverrespons. Probeer opnieuw.',
+  },
+  'automation_plan.effective_location_mismatch': {
+    title: 'Ticket niet aangemaakt — locatieconflict',
+    detail: 'De vastgestelde locatie komt niet overeen met het verzoek. Probeer opnieuw.',
+  },
+  'automation_plan.semantic_mismatch': {
+    title: 'Ticket niet aangemaakt — configuratie gewijzigd',
+    detail: 'De workflow of SLA is gewijzigd terwijl het formulier open was. Vernieuw en dien opnieuw in.',
+  },
+  'automation_plan.scope_override_mismatch': {
+    title: 'Ticket niet aangemaakt — configuratie gewijzigd',
+    detail: 'De scope-uitzondering is gewijzigd terwijl het formulier open was. Vernieuw en dien opnieuw in.',
+  },
+  'automation_plan.routing_input_mismatch': {
+    title: 'Ticket niet aangemaakt — routing-context gewijzigd',
+    detail: 'De routing-context is veranderd terwijl het formulier open was. Vernieuw en dien opnieuw in.',
+  },
+
   // ─── dispatch ────────────────────────────────────────────────────────────
   'dispatch.title_required': {
     title: 'Kon niet uitsturen — titel verplicht',

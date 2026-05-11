@@ -200,3 +200,56 @@ export function buildWorkflowUpdateTicketIdempotencyKey(
 ): string {
   return `${WORKFLOW_UPDATE_TICKET_IDEMPOTENCY_KEY_PREFIX}:${workflowInstanceId}:${nodeId}:${entityId}`;
 }
+
+/**
+ * Prefix for the `create_ticket_with_automation` outer idempotency key.
+ * B.2.A.Step12 §3.11 — same actor + same clientRequestId is the
+ * unique-retry contract per F-CRIT-1 (no payload fingerprint in the
+ * key; the RPC's own payload_hash gate detects "same key, different
+ * payload" and raises payload_mismatch).
+ *
+ * Citations:
+ *   - 00349_create_ticket_with_automation_rpc.sql
+ *   - spec §3.11 (docs/follow-ups/b2-survey-and-design.md lines 2793-3034)
+ *   - apps/api/src/modules/ticket/ticket.service.ts (TicketService.create)
+ *   - apps/api/src/modules/portal/portal-submit.service.ts (PortalSubmitService.submit)
+ */
+export const CREATE_TICKET_IDEMPOTENCY_KEY_PREFIX = 'create:ticket';
+
+/**
+ * Build the outer idempotency key for `create_ticket_with_automation`.
+ * Shape:
+ *   `create:ticket:<actorAuthUid>:<clientRequestId>`
+ *
+ * Same actor + same clientRequestId ⇒ same key ⇒ `command_operations`
+ * short-circuits the second call. Cross-actor uses of the same
+ * clientRequestId mint different keys — separate idempotency scopes.
+ * That's intentional: user A double-submitting is one retry chain;
+ * user B happening to send the same clientRequestId is a coincidence,
+ * not a retry. SYSTEM_ACTOR creates (cron / webhook ingest) use the
+ * sentinel string as the actor segment.
+ */
+export function buildCreateTicketIdempotencyKey(
+  actorAuthUid: string,
+  clientRequestId: string,
+): string {
+  return `${CREATE_TICKET_IDEMPOTENCY_KEY_PREFIX}:${actorAuthUid}:${clientRequestId}`;
+}
+
+/**
+ * Stable uuidv5 namespace for deterministic `ticket_id` minting on the
+ * `create_ticket_with_automation` path. Same idempotency_key always
+ * yields the same uuid across retries + deploys. Mirrors
+ * DISPATCH_CHILD_ID_NAMESPACE — never change this value in production.
+ */
+export const CREATE_TICKET_ID_NAMESPACE = '4f6e1c92-8a3b-4d2e-9f5c-1a8b7c6d5e3f';
+
+/**
+ * Derive the deterministic `ticket_id` for a `create_ticket_with_automation`
+ * call from its outer idempotency_key. Used by TicketController +
+ * PortalSubmitService to pre-mint the id before calling the RPC, so a
+ * retry doesn't mint a fresh uuid and bypass the idempotency gate.
+ */
+export function buildCreateTicketId(idempotencyKey: string): string {
+  return uuidv5(idempotencyKey, CREATE_TICKET_ID_NAMESPACE);
+}

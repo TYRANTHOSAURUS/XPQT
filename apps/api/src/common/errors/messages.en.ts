@@ -749,6 +749,36 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't reclassify — actor not in this workspace",
   },
 
+  // ─── create_ticket_with_automation (B.2.A.Step12 §3.11) ─────────────────
+  'create_ticket_with_automation.input_invalid': {
+    title: "Couldn't create the ticket",
+    detail: 'The request payload is missing a required field.',
+  },
+  'create_ticket_with_automation.request_type_not_found': {
+    title: "Couldn't create the ticket",
+    detail: 'The request type was not found or is inactive.',
+  },
+  'create_ticket_with_automation.malformed_response': {
+    title: "Couldn't create the ticket",
+    detail: 'The server returned an unexpected response. Try again.',
+  },
+  'automation_plan.effective_location_mismatch': {
+    title: "Couldn't create the ticket — location mismatch",
+    detail: 'The resolved location does not match the request. Try again.',
+  },
+  'automation_plan.semantic_mismatch': {
+    title: "Couldn't create the ticket — configuration changed",
+    detail: 'The workflow or SLA changed while the form was open. Refresh and resubmit.',
+  },
+  'automation_plan.scope_override_mismatch': {
+    title: "Couldn't create the ticket — configuration changed",
+    detail: 'The scope override changed while the form was open. Refresh and resubmit.',
+  },
+  'automation_plan.routing_input_mismatch': {
+    title: "Couldn't create the ticket — routing input mismatch",
+    detail: 'The routing context drifted while the form was open. Refresh and resubmit.',
+  },
+
   // ─── dispatch ────────────────────────────────────────────────────────────
   'dispatch.title_required': {
     title: "Couldn't dispatch — title required",

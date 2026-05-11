@@ -41,10 +41,12 @@ apps/api/src/modules/ticket/reclassify.service.ts:      newType.sla_policy_id ? 
 apps/api/src/modules/ticket/reclassify.service.ts:      newType.workflow_definition_id
 apps/api/src/modules/ticket/reclassify.service.ts:    if (newType.sla_policy_id) {
 apps/api/src/modules/ticket/reclassify.service.ts:    if (newType.workflow_definition_id) {
+apps/api/src/modules/ticket/ticket.service.ts:              'id, domain, sla_policy_id, workflow_definition_id, requires_approval, approval_approver_team_id, approval_approver_person_id',
 apps/api/src/modules/ticket/ticket.service.ts:          .select('domain, sla_policy_id, workflow_definition_id')
-apps/api/src/modules/ticket/ticket.service.ts:          .select('domain, sla_policy_id, workflow_definition_id, requires_approval, approval_approver_team_id, approval_approver_person_id')
 apps/api/src/modules/ticket/ticket.service.ts:      (requestTypeCfg?.sla_policy_id as string | null | undefined) ??
 apps/api/src/modules/ticket/ticket.service.ts:      (requestTypeCfg?.workflow_definition_id as string | null | undefined) ??
+apps/api/src/modules/ticket/ticket.service.ts:      (scopeOverride?.case_sla_policy_id as string | null | undefined) ??
+apps/api/src/modules/ticket/ticket.service.ts:      (scopeOverride?.workflow_definition_id as string | null | undefined) ??
 apps/api/src/modules/ticket/ticket.service.ts:      scopeOverride?.case_sla_policy_id ??
 apps/api/src/modules/ticket/ticket.service.ts:      scopeOverride?.workflow_definition_id ??
 apps/api/src/modules/ticket/ticket.service.ts:      sla_id: args.sla_policy_id ?? null,

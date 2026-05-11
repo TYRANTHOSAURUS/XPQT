@@ -95,6 +95,8 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'validate_entity_in_tenant.sla_policy_not_in_tenant': 404,
   'validate_entity_in_tenant.person_not_in_tenant': 404,
   'validate_entity_in_tenant.routing_rule_not_in_tenant': 404,
+  // B.2.A.Step12 §3.11 — create RPC's request-type-not-found path.
+  'create_ticket_with_automation.request_type_not_found': 404,
 
   // ── 409 conflict ─────────────────────────────────────────────────
   // payload_mismatch: the client reused the same X-Client-Request-Id

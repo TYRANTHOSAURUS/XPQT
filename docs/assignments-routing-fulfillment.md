@@ -38,7 +38,8 @@ Keep four axes separate in your head. Mixing them is how ticketing systems turn 
 | `ResolverService` (`apps/api/src/modules/routing/resolver.service.ts`) | The fulfillment engine. Runs the rules pre-step + strategy-based resolution chain. Returns a `ResolverDecision`. |
 | `ResolverRepository` (same folder) | Thin DB layer: loads request type, asset, location chain, space group hits, domain chain, routing rules. |
 | `RoutingService` (same folder) | Façade: calls the resolver, writes `routing_decisions`. Not where logic lives. |
-| `TicketService.runPostCreateAutomation` | Auto-routes a **newly created case** when no assignee was passed in the DTO. Skips for work orders. |
+| `TicketService.create` (post-B.2.A.Step12) | Builds the `automation_plan` (effective location + scope override + workflow + SLA + optional routing) TS-side, then calls the `create_ticket_with_automation` RPC (migration 00349) which writes the ticket + routing decision + audit/event rows atomically and emits `sla.timer_recompute_required` + `workflow.start_required` outbox events on the no-approval branch. Replaces the pre-Step12 `runPostCreateAutomation` fan-out. |
+| `TicketService.runPostCreateAutomation` (legacy, post-approval only) | Retained as a private helper called by `onApprovalDecision` to run routing + SLA + workflow when a `pending_approval` ticket is granted. The §3.5 `grant_ticket_approval` RPC will subsume this path in a future B.2 step. |
 | `DispatchService` (`apps/api/src/modules/ticket/dispatch.service.ts`) | Creates a child **work order** from a parent case. Copies context, optionally runs the resolver, starts SLA timers, logs a `dispatched` activity on the parent. |
 | `SlaService` (`apps/api/src/modules/sla/...`) | Starts, pauses, restarts, and breaches SLA timers. Receives an already-resolved policy ID from its callers (`TicketService` for cases, `DispatchService.resolveChildSla` for children). |
 

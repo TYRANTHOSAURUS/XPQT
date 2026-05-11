@@ -141,6 +141,15 @@ export type KnownErrorCode =
   | 'reclassify.work_order_target'
   | 'reclassify.actor_not_resolvable'
 
+  // ─── create_ticket_with_automation codes (B.2.A.Step12 §3.11) ────────────
+  | 'create_ticket_with_automation.input_invalid'
+  | 'create_ticket_with_automation.request_type_not_found'
+  | 'create_ticket_with_automation.malformed_response'
+  | 'automation_plan.effective_location_mismatch'
+  | 'automation_plan.semantic_mismatch'
+  | 'automation_plan.scope_override_mismatch'
+  | 'automation_plan.routing_input_mismatch'
+
   // ─── dispatch codes ──────────────────────────────────────────────────────
   | 'dispatch.title_required'
   | 'dispatch.from_work_order'
@@ -779,6 +788,13 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'reclassify.terminal_state',
   'reclassify.work_order_target',
   'reclassify.actor_not_resolvable',
+  'create_ticket_with_automation.input_invalid',
+  'create_ticket_with_automation.request_type_not_found',
+  'create_ticket_with_automation.malformed_response',
+  'automation_plan.effective_location_mismatch',
+  'automation_plan.semantic_mismatch',
+  'automation_plan.scope_override_mismatch',
+  'automation_plan.routing_input_mismatch',
   'dispatch.title_required',
   'dispatch.from_work_order',
   'dispatch.parent_pending_approval',
