@@ -241,12 +241,18 @@ export class SlaTimerHandler implements OutboxEventHandler<SlaTimerRecomputePayl
       );
     }
 
-    // ── 6. Call start_sla_timers RPC (00347) — atomic INSERT + UPDATE ────
+    // ── 6. Call start_sla_timers RPC (00347 / v2 00352) — atomic INSERT + UPDATE ─
+    //
+    // codex-S12-I2: pass the path-dependent startedAt so the persisted
+    // sla_timers.started_at matches the value the handler used to compute
+    // due_at. Pre-v2 the RPC re-stamped started_at = now(), which skewed
+    // at-risk percent math (sla.service.ts:523) when the worker lagged.
     const rpcRes = await this.supabase.admin.rpc('start_sla_timers', {
       p_tenant_id: event.tenant_id,
       p_ticket_id: ticket_id,
       p_sla_policy_id: currentSlaId,
       p_timers: timers,
+      p_started_at: startedAt.toISOString(),
     });
 
     if (rpcRes.error) {

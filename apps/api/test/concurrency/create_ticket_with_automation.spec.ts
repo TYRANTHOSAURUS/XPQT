@@ -51,6 +51,20 @@
  *  12. Force workflow override — force_workflow_definition_id != request_type
  *      default → tickets.workflow_id = forced; workflow.start_required emit
  *      carries forced id; workflow_forced_by_caller breadcrumb activity row.
+ *
+ *   codex-S12-I1 (v3) review remediation:
+ *  13. Concurrent-edit narrowing — unrelated override row edit post-_resolution_at
+ *      DOES NOT mask a stale plan elsewhere. Seed override A (winning, tenant)
+ *      + B (unrelated, space_group). TS plan is stale (claims workflow=X but
+ *      A pins Y). Touch B's updated_at to T+1. Assert: RPC raises
+ *      'automation_plan.semantic_mismatch' (B's edit is unrelated, A is the
+ *      resolver winner and was NOT edited).
+ *
+ *   codex-S12-I2 (00352 v2) review remediation:
+ *  14. Persisted started_at — call start_sla_timers RPC directly with an
+ *      explicit p_started_at; assert sla_timers.started_at matches the
+ *      passed value (NOT now() at INSERT time). Defends against worker
+ *      lag skewing at-risk percent (sla.service.ts:523).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -171,6 +185,7 @@ async function seedRequestType(
         await c.query('delete from public.request_type_scope_overrides where tenant_id = $1', [
           base.tenantId,
         ]);
+        await c.query('delete from public.space_groups where tenant_id = $1', [base.tenantId]);
         await c.query('delete from public.request_types where tenant_id = $1', [base.tenantId]);
         await c.query('delete from public.users where tenant_id = $1', [base.tenantId]);
         if (withConfig) {
@@ -251,6 +266,34 @@ async function seedScopeOverride(
     [overrideId, tenantId, requestTypeId, workflowDefinitionId],
   );
   return { overrideId };
+}
+
+/**
+ * Seed an UNRELATED `request_type_scope_overrides` row scoped to a freshly-
+ * created `space_group` (different scope from the tenant-level override that
+ * the v3 / codex-S12-I1 scenario uses for the resolver winner). Used to
+ * verify the concurrent-edit gate ignores edits on unrelated rows.
+ */
+async function seedUnrelatedSpaceGroupOverride(
+  pool: Pool,
+  tenantId: string,
+  requestTypeId: string,
+  workflowDefinitionId: string,
+): Promise<{ overrideId: string; spaceGroupId: string }> {
+  const spaceGroupId = randomUUID();
+  const overrideId = randomUUID();
+  await pool.query(
+    `insert into public.space_groups (id, tenant_id, name)
+     values ($1, $2, $3)`,
+    [spaceGroupId, tenantId, `Unrelated-${spaceGroupId.slice(0, 8)}`],
+  );
+  await pool.query(
+    `insert into public.request_type_scope_overrides
+       (id, tenant_id, request_type_id, scope_kind, space_group_id, active, workflow_definition_id)
+     values ($1, $2, $3, 'space_group', $4, true, $5)`,
+    [overrideId, tenantId, requestTypeId, spaceGroupId, workflowDefinitionId],
+  );
+  return { overrideId, spaceGroupId };
 }
 
 /** Build (p_input, p_automation_plan) for a happy-path call. */
@@ -867,6 +910,162 @@ describe('B.2.A.Step12 §3.11 — create_ticket_with_automation', () => {
       expect(acts.rows).toHaveLength(1);
       expect(acts.rows[0].metadata.caller_value).toBe(forcedWorkflowId);
       expect(acts.rows[0].metadata.request_type_default).toBe(rt.workflowDefinitionId);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 13. codex-S12-I1 (00351 v3) — Concurrent-edit narrowing: unrelated
+  //     override edit must NOT mask a stale plan elsewhere.
+  // ─────────────────────────────────────────────────────────────────────
+  it('13. concurrent-edit narrowing: edit on unrelated space_group override does not mask stale plan on the (resolver-winner) tenant override', async () => {
+    const base = await seedBaseFixture(pool, 's12-c4-narrow');
+    const rt = await seedRequestType(pool, base);
+    const altWorkflowId = await seedExtraWorkflow(pool, base.tenantId, 'C4-narrow target');
+
+    // T-2: seed the resolver-winner tenant-scope override pinning Y.
+    //      Its updated_at = wall-clock now() at insert time (no trigger
+    //      bypass needed; we'll choose _resolution_at AFTER this insert
+    //      so the winner row is OLDER than the stale plan).
+    await seedScopeOverride(pool, base.tenantId, rt.requestTypeId, altWorkflowId);
+
+    // T-1: seed an UNRELATED space_group override (different scope —
+    //      space_group, not tenant). Its updated_at also = wall-clock now()
+    //      at insert.
+    const unrelated = await seedUnrelatedSpaceGroupOverride(
+      pool,
+      base.tenantId,
+      rt.requestTypeId,
+      altWorkflowId,
+    );
+
+    // Wait so wall-clock advances past both inserts before we pin t0.
+    await new Promise((res) => setTimeout(res, 50));
+
+    // T0: TS "would have" resolved at this instant. Both overrides above
+    //     have updated_at < T0 — TS should have seen them. The plan we
+    //     build below is stale on purpose (claims rt-default workflow X).
+    const t0 = new Date().toISOString();
+
+    await new Promise((res) => setTimeout(res, 50));
+
+    // T+1: admin edits the UNRELATED space_group override row.
+    //       Pre-v3 this would set v_concurrent_override_edit=true and PG
+    //       would silently use Y. Post-v3 it does NOT — the resolver
+    //       winner (tenant override) was unchanged → stale plan rejected.
+    await pool.query(
+      `update public.request_type_scope_overrides
+         set inherit_to_descendants = not inherit_to_descendants
+       where id = $1`,
+      [unrelated.overrideId],
+    );
+
+    // TS plan still claims workflow = rt default (X). PG derives Y from the
+    // tenant override (resolver winner, updated_at < T0). Mismatch + NOT
+    // a concurrent edit on the winner → must raise semantic_mismatch.
+    const stalePlan = buildInputs(base, rt, { resolutionAt: t0 });
+
+    const out = await runRpcCapture<CreateResult>(pool, 'public.create_ticket_with_automation', [
+      stalePlan.input,
+      stalePlan.plan,
+      base.tenantId,
+      null,
+      `harness:create:${randomUUID()}`,
+    ]);
+
+    expect(out.kind).toBe('error');
+    if (out.kind !== 'error') return;
+    expect(out.error.message).toMatch(/automation_plan\.semantic_mismatch/);
+
+    // Defense-in-depth: no tickets row written (RPC raised mid-transaction).
+    await withClient(pool, async (c) => {
+      const r = await c.query(
+        `select count(*)::int as n
+           from public.tickets
+          where tenant_id = $1 and id = $2`,
+        [base.tenantId, stalePlan.input.ticket_id],
+      );
+      expect(r.rows[0].n).toBe(0);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 14. codex-S12-I2 (00352 v2) — start_sla_timers honours p_started_at.
+  // ─────────────────────────────────────────────────────────────────────
+  it('14. start_sla_timers v2: persists caller p_started_at (not now() at INSERT time)', async () => {
+    const base = await seedBaseFixture(pool, 's12-sla-started-at');
+    const rt = await seedRequestType(pool, base);
+    if (!rt.slaPolicyId) throw new Error('seedRequestType must seed an SLA policy here');
+
+    // Pre-mint a ticket (start_sla_timers requires the ticket row to exist;
+    // it's enforced by step 2 of 00352).
+    const ticketId = randomUUID();
+    await pool.query(
+      `insert into public.tickets
+         (id, tenant_id, ticket_type_id, title, requester_person_id, sla_id,
+          status, status_category, priority, source_channel, interaction_mode)
+       values ($1, $2, $3, $4, $5, $6, 'new', 'new', 'medium', 'portal', 'internal')`,
+      [ticketId, base.tenantId, rt.requestTypeId, 'Started-at harness', base.personId, rt.slaPolicyId],
+    );
+
+    // Caller picks a started_at that is meaningfully in the past — the
+    // canonical "post-create" path uses ticket.created_at. The bug would
+    // re-stamp this to now() (much later in real outbox runs).
+    const callerStartedAt = new Date(Date.now() - 5 * 60_000); // 5min ago
+    const dueAt = new Date(callerStartedAt.getTime() + 60 * 60_000); // +1h
+
+    const out = await runRpcCapture<{
+      ticket_id: string;
+      sla_policy_id: string;
+      timers_inserted: number;
+    }>(pool, 'public.start_sla_timers', [
+      base.tenantId,
+      ticketId,
+      rt.slaPolicyId,
+      JSON.stringify([
+        {
+          timer_type: 'response',
+          target_minutes: 60,
+          due_at: dueAt.toISOString(),
+          business_hours_calendar_id: null,
+        },
+      ]),
+      callerStartedAt.toISOString(),
+    ]);
+
+    expect(out.kind).toBe('ok');
+    if (out.kind !== 'ok') return;
+    expect(out.value.timers_inserted).toBe(1);
+
+    // The persisted row's started_at must equal the value we passed in —
+    // NOT the wall-clock at INSERT time.
+    await withClient(pool, async (c) => {
+      const r = await c.query(
+        `select started_at, due_at
+           from public.sla_timers
+          where tenant_id = $1 and ticket_id = $2 and timer_type = 'response'`,
+        [base.tenantId, ticketId],
+      );
+      expect(r.rows).toHaveLength(1);
+      const persistedStartedAt = new Date(r.rows[0].started_at as string).getTime();
+      const expectedStartedAt = callerStartedAt.getTime();
+      // Same instant (timestamptz round-trip is exact to microseconds; allow
+      // 5ms slack for driver / postgres serialization just in case).
+      expect(Math.abs(persistedStartedAt - expectedStartedAt)).toBeLessThan(5);
+      // And the due_at we passed survived unchanged.
+      const persistedDueAt = new Date(r.rows[0].due_at as string).getTime();
+      expect(Math.abs(persistedDueAt - dueAt.getTime())).toBeLessThan(5);
+    });
+
+    // Register cleanup so the sla_timers row + ticket get dropped.
+    registerCleanup(async () => {
+      await pool.query('delete from public.sla_timers where tenant_id = $1 and ticket_id = $2', [
+        base.tenantId,
+        ticketId,
+      ]);
+      await pool.query('delete from public.tickets where tenant_id = $1 and id = $2', [
+        base.tenantId,
+        ticketId,
+      ]);
     });
   });
 });

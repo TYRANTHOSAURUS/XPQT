@@ -169,7 +169,13 @@ describe('SlaTimerHandler.handle (B.2.A.Step12 §3.9.3 — F-IMP-1)', () => {
       expect(supabase.captured.rpcCalls).toHaveLength(1);
       const call = supabase.captured.rpcCalls[0];
       expect(call.fn).toBe('start_sla_timers');
-      const args = call.args as { p_tenant_id: string; p_ticket_id: string; p_sla_policy_id: string; p_timers: Array<{ timer_type: string }> };
+      const args = call.args as {
+        p_tenant_id: string;
+        p_ticket_id: string;
+        p_sla_policy_id: string;
+        p_timers: Array<{ timer_type: string }>;
+        p_started_at: string;
+      };
       expect(args.p_tenant_id).toBe(TENANT_ID);
       expect(args.p_ticket_id).toBe(TICKET_ID);
       expect(args.p_sla_policy_id).toBe(SLA_ID);
@@ -177,6 +183,10 @@ describe('SlaTimerHandler.handle (B.2.A.Step12 §3.9.3 — F-IMP-1)', () => {
         'resolution',
         'response',
       ]);
+      // codex-S12-I2: handler must forward the path-dependent started_at
+      // from the event payload to the RPC so persisted started_at matches
+      // the value used to compute due_at.
+      expect(args.p_started_at).toBe(new Date('2026-05-11T10:00:00Z').toISOString());
     });
   });
 

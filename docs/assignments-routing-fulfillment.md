@@ -38,10 +38,12 @@ Keep four axes separate in your head. Mixing them is how ticketing systems turn 
 | `ResolverService` (`apps/api/src/modules/routing/resolver.service.ts`) | The fulfillment engine. Runs the rules pre-step + strategy-based resolution chain. Returns a `ResolverDecision`. |
 | `ResolverRepository` (same folder) | Thin DB layer: loads request type, asset, location chain, space group hits, domain chain, routing rules. |
 | `RoutingService` (same folder) | Façade: calls the resolver, writes `routing_decisions`. Not where logic lives. |
-| `TicketService.create` (post-B.2.A.Step12) | Builds the `automation_plan` (effective location + scope override + workflow + SLA + optional routing) TS-side, then calls the `create_ticket_with_automation` RPC (migration 00349) which writes the ticket + routing decision + audit/event rows atomically and emits `sla.timer_recompute_required` + `workflow.start_required` outbox events on the no-approval branch. Replaces the pre-Step12 `runPostCreateAutomation` fan-out. |
+| `TicketService.create` (post-B.2.A.Step12) | Builds the `automation_plan` (effective location + scope override + workflow + SLA + optional routing) TS-side, then calls the `create_ticket_with_automation` RPC (migration `00349`, hardened by `00350` v2 + `00351` v3) which writes the ticket + routing decision + audit/event rows atomically inside one PG tx and emits `sla.timer_recompute_required` + `workflow.start_required` outbox events on the no-approval branch. Replaces the pre-Step12 `runPostCreateAutomation` fan-out. `00350` adds `force_workflow_definition_id` for the webhook ingest override (post-cutover replacement for the legacy `skipWorkflow` flag) + resolves `p_actor_user_id` (Supabase auth uid) to the `users.id` PK before INSERTing into `domain_events.actor_user_id`. `00351` narrows the concurrent-edit detector to the SPECIFIC override row PG derived from (or the TS-named row when PG derives none) — unrelated overrides on the same request_type no longer mask a stale plan. |
 | `TicketService.runPostCreateAutomation` (legacy, post-approval only) | Retained as a private helper called by `onApprovalDecision` to run routing + SLA + workflow when a `pending_approval` ticket is granted. The §3.5 `grant_ticket_approval` RPC will subsume this path in a future B.2 step. |
+| `SlaTimerHandler` (`apps/api/src/modules/outbox/handlers/sla-timer-recompute.handler.ts`) | Drains `sla.timer_recompute_required` outbox events. Re-reads `tickets.sla_id` at fire time as source-of-truth (drops payload if stale), loads the policy + business-hours calendar, computes path-dependent `due_at` for response + resolution, then calls the `start_sla_timers` RPC (migration `00347`, v2 in `00352`). v2 accepts `p_started_at` so the persisted `sla_timers.started_at` matches the value the handler used to compute `due_at` — pre-v2 the RPC re-stamped `started_at = now()` at INSERT time, which skewed at-risk percent math (`sla.service.ts:523`) when the worker lagged. |
+| `WorkflowStartHandler` (`apps/api/src/modules/outbox/handlers/workflow-start.handler.ts`) | Drains `workflow.start_required` outbox events. Re-reads `tickets.workflow_id` at fire time; dispatches to `WorkflowEngineService.startForTicket(ticketId, tenantId, workflowDefinitionId)`. Idempotent via the partial unique index `workflow_instances_active_unique_idx` (migration `00345`). |
 | `DispatchService` (`apps/api/src/modules/ticket/dispatch.service.ts`) | Creates a child **work order** from a parent case. Copies context, optionally runs the resolver, starts SLA timers, logs a `dispatched` activity on the parent. |
-| `SlaService` (`apps/api/src/modules/sla/...`) | Starts, pauses, restarts, and breaches SLA timers. Receives an already-resolved policy ID from its callers (`TicketService` for cases, `DispatchService.resolveChildSla` for children). |
+| `SlaService` (`apps/api/src/modules/sla/...`) | Starts, pauses, restarts, and breaches SLA timers for the **work order** path (child SLA). The case-creation path no longer flows through `SlaService.startTimers` — it lands via the outbox handler above. |
 
 ---
 
@@ -82,12 +84,12 @@ Every step appends a `TraceEntry` to the decision's trace — whether it matched
 
 | Trigger | Where | Notes |
 |---|---|---|
-| Ticket create | `TicketService.runPostCreateAutomation` | Skipped if `ticket_kind = 'work_order'` or if the ticket already has an assignee in the DTO. |
-| Approval granted | `TicketService.onApprovalDecision('approved')` | Delegates to `runPostCreateAutomation`. |
+| Ticket create | `TicketService.create` → `create_ticket_with_automation` RPC | TS builds the `automation_plan` (effective location + scope override + workflow + SLA + optional routing). The RPC (00349/00350/00351) writes the ticket + routing decision row + audit/event rows in one PG tx and emits `sla.timer_recompute_required` + `workflow.start_required` to the outbox. Skipped if `ticket_kind = 'work_order'`; if the DTO supplies an assignee, routing is bypassed and no `routing_decisions` row is written. |
+| Approval granted | `TicketService.onApprovalDecision('approved')` | Delegates to the legacy `runPostCreateAutomation` for the routing/SLA/workflow fan-out today. The §3.5 `grant_ticket_approval` RPC will subsume this in a future B.2 step. |
 | Manual reassign with rerun | `TicketService.reassign({ rerun_resolver: true })` | Clears current assignment, re-evaluates, records a new `routing_decisions` row. |
 | Workflow-spawned child | `WorkflowEngineService.create_child_tasks` → `DispatchService.dispatch` | Goes through the full resolver + SLA + audit pipeline, same as manual dispatch. |
 | Manual dispatch | `DispatchService.dispatch` (called by `POST /tickets/:id/dispatch`) | Runs when the DTO doesn't supply an assignee. |
-| Inbound webhook | `WebhookIngestService.ingest` → `TicketService.create` → `runPostCreateAutomation` | Webhook auth + mapping → normal create path. Routing + SLA + workflow all fire identically to any other create source. Webhooks with `workflow_id` override start that workflow instead of the request type's via the `skipWorkflow` create option. |
+| Inbound webhook | `WebhookIngestService.ingest` → `TicketService.create` → `create_ticket_with_automation` RPC | Webhook auth + mapping → normal create path. Routing + SLA + workflow all fire identically to any other create source. Webhooks with a `workflow_id` mapping thread it through `CreateTicketOptions.forceWorkflowDefinitionId` (post-cutover replacement for the legacy `skipWorkflow` flag), which the RPC tenant-validates, applies post-gate to `tickets.workflow_id`, and threads into the `workflow.start_required` outbox payload. A `workflow_forced_by_caller` activity breadcrumb records both the caller value and the request_type default it displaced. |
 
 The resolver does **not** run on generic `PATCH /tickets/:id`. Changing priority, status, tags, watchers, cost, etc. does not re-route.
 
@@ -290,7 +292,15 @@ Workflows or background jobs that programmatically close cases must close childr
 
 ### Case SLA — from `request_types.sla_policy_id`
 
-Attached at case creation. `TicketService.runPostCreateAutomation` reads `request_types.sla_policy_id` and calls `SlaService.startTimers(caseId, tenantId, slaPolicyId)` to open `sla_timers` rows for `response` and `resolution` timers, each with their own `target_minutes`, `due_at`, `business_hours_calendar_id`. Locked on reassign per the rule below.
+Attached at case creation. Post-B.2.A.Step12 the path is:
+
+1. `TicketService.create` builds the automation plan and includes `effective_sla_policy_id` (resolved via `ScopeOverrideResolverService` then falling back to `request_types.sla_policy_id`).
+2. `create_ticket_with_automation` RPC (00349/00350/00351) writes the ticket row with `sla_id = effective_sla_policy_id` and, on the no-approval branch, emits a `sla.timer_recompute_required` outbox event with `started_at = ticket.created_at` (SLA clock = when the customer asked, not when the worker drains the event).
+3. `SlaTimerHandler` drains the event, re-reads `tickets.sla_id` at fire time as source-of-truth, loads the policy + business-hours calendar, computes `due_at` for `response` and `resolution`, then calls the `start_sla_timers` RPC (00347, v2 in 00352) with `p_started_at` set to the value it used to compute `due_at`. The RPC inserts `sla_timers` rows + UPDATEs `tickets.sla_response_due_at` / `sla_resolution_due_at` in one PG tx.
+
+Locked on reassign per the rule below.
+
+**Why an outbox handler and not a synchronous `SlaService.startTimers` call?** Atomic-write parity: the ticket INSERT and the timer fan-out used to live in two TS HTTP round-trips that could partial-commit on any mid-sequence failure. Post-Step12 the ticket write is atomic (inside the RPC) and the timer attach is a separate, idempotent, retry-safe outbox step (the RPC's `ON CONFLICT DO NOTHING` against `sla_timers_active_unique_idx` in 00346 makes replays safe).
 
 ### Child SLA — resolution order at dispatch
 
