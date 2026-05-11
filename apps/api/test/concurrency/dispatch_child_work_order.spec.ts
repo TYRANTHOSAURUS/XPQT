@@ -2,12 +2,15 @@
  * B.2.A.Step8 concurrency probe — dispatch_child_work_order (§3.4 single).
  *
  * Spec ref: docs/follow-ups/b2-survey-and-design.md §3.4 (lines 2165-2226).
- * Migration: supabase/migrations/00336_dispatch_child_work_order_rpc.sql.
+ * Migration: supabase/migrations/00338_dispatch_child_work_order_v2.sql.
  *
  * Nine scenarios, all against the live local Supabase stack:
  *   1. Single-task happy path — child work_order inserted with sla,
  *      assignment, routing trace; ticket_activities row on parent;
  *      sla_timers rows + mirror onto work_orders.sla_*_due_at.
+ *      v2 (00338) asserts: entity_kind='work_order',
+ *      work_order_id=<child_id>, case_id IS NULL on every inserted timer
+ *      (catches F-CRIT-1 silent regression).
  *   2. Idempotent replay — same key + same payload returns cached_result
  *      with no extra rows in work_orders / routing_decisions /
  *      sla_timers / ticket_activities.
@@ -22,12 +25,17 @@
  *   7. Parent kind != 'case' — work_order id passed as parent; raises
  *      'dispatch_child_work_order.parent_not_found' (the parent SELECT
  *      is on public.tickets which only holds case rows post step1c.10c;
- *      a work_order id will miss). Registered code
- *      'dispatch_child_work_order.parent_not_case' kept in the registry
- *      for forward-compat — currently unreachable from this path.
+ *      a work_order id will miss). The registered code
+ *      'dispatch_child_work_order.parent_not_case' was DROPPED in the
+ *      Step 8 self-review remediation (F-IMP-2 / plan-I2) — unreachable
+ *      dead code.
  *   8. Cross-tenant assignee — parent in TENANT_A, payload assignee
  *      from TENANT_B → validate_assignees_in_tenant raises 42501
  *      'validate_assignees_in_tenant.assigned_user_id_not_in_tenant'.
+ *      F-IMP-4 / code-I1: the helper's 3 raised codes are now
+ *      REGISTERED in `packages/shared/src/error-codes.ts` so the
+ *      mapRpcErrorToAppError path produces a clean 422 (was 500
+ *      `unknown.server_error` fall-through pre-remediation).
  *   9. Sla_id null path — payload omits sla_id; no timer rows inserted;
  *      child created, routing_decisions + parent activity both present.
  */
@@ -272,12 +280,23 @@ describe('dispatch_child_work_order — §3.4 single-child RPC', () => {
     expect(rd.rows[0].chosen_user_id).toBe(assignee.userId);
 
     const timers = await pool.query(
-      `select timer_type from public.sla_timers
+      `select timer_type, entity_kind, case_id, work_order_id, started_at
+         from public.sla_timers
          where tenant_id = $1 and ticket_id = $2
          order by timer_type`,
       [base.tenantId, payload.child_id],
     );
     expect(timers.rows.map((r) => r.timer_type)).toEqual(['resolution', 'response']);
+    // F-CRIT-1: assert polymorphic columns are populated on every row so
+    // entity-aware reads (filtering by entity_kind='work_order' AND
+    // work_order_id=X) hit dispatch-emitted timers. Mirror of
+    // 00330:259-277 (canonical sla_timers INSERT shape).
+    for (const r of timers.rows) {
+      expect(r.entity_kind).toBe('work_order');
+      expect(r.work_order_id).toBe(payload.child_id);
+      expect(r.case_id).toBeNull();
+      expect(r.started_at).not.toBeNull();
+    }
 
     const act = await pool.query(
       `select metadata->>'event' as event, metadata->>'child_id' as child_id
@@ -418,7 +437,8 @@ describe('dispatch_child_work_order — §3.4 single-child RPC', () => {
     if (result.kind !== 'error') return;
     // public.tickets only holds case rows post step1c.10c — a work_order
     // id misses the SELECT entirely. parent_not_found is the registered
-    // code that surfaces.
+    // code that surfaces. F-IMP-2 / plan-I2: parent_not_case was DROPPED
+    // from the registry (unreachable dead code).
     expect(result.error.message).toMatch(/dispatch_child_work_order\.parent_not_found/);
   });
 
@@ -436,6 +456,9 @@ describe('dispatch_child_work_order — §3.4 single-child RPC', () => {
     );
     expect(result.kind).toBe('error');
     if (result.kind !== 'error') return;
+    // F-IMP-4 / code-I1: helper's raise message shape preserved across
+    // remediation; the code is now REGISTERED so mapRpcErrorToAppError
+    // produces a clean AppError(422) instead of falling through to 500.
     expect(result.error.message).toMatch(/validate_assignees_in_tenant\.assigned_user_id_not_in_tenant/);
 
     // No partial writes.

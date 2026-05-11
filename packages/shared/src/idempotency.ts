@@ -29,6 +29,8 @@
  *   - apps/api/scripts/smoke-tickets.mjs + smoke-work-orders.mjs
  */
 
+import { v5 as uuidv5 } from 'uuid';
+
 /**
  * Prefix for every `update_entity_combined` outer idempotency key. Kept
  * narrow on purpose — a "patch" key is the orchestrator's contract; if
@@ -74,8 +76,8 @@ export function buildPatchIdempotencyKey(
  * two RPCs never collide on a shared (tenant_id, idempotency_key).
  *
  * Citations:
- *   - 00336_dispatch_child_work_order_rpc.sql (single)
- *   - 00337_dispatch_child_work_orders_batch.sql (batch)
+ *   - 00338_dispatch_child_work_order_v2.sql (single)
+ *   - 00339_dispatch_child_work_orders_batch_v2.sql (batch)
  *   - spec §3.4 (docs/follow-ups/b2-survey-and-design.md lines 2165-2234)
  */
 export const DISPATCH_IDEMPOTENCY_KEY_PREFIX = 'dispatch';
@@ -83,36 +85,67 @@ export const DISPATCH_BATCH_IDEMPOTENCY_KEY_PREFIX = 'dispatch_batch';
 
 /**
  * Build the outer idempotency key for `dispatch_child_work_order`. Shape:
- *   `dispatch:<parentId>:<actorUserId>:<clientRequestId>`
+ *   `dispatch:<parentId>:<clientRequestId>`
  *
- * `actorUserId` is the supabase auth uid (users.auth_uid), NOT users.id —
- * see 00325:89-94 + dispatch.service.ts post-Step8. SYSTEM_ACTOR callers
- * (workflow engine, cron) pass the literal sentinel `__system__` so the
- * key remains stable across retries from the same actor identity.
+ * **NO actor in the key.** F-CRIT-2 / plan-C1: actor-in-key created a
+ * double-dispatch hazard — same parent + same clientRequestId + two
+ * different actors yielded two command_operations rows + two committed
+ * children. The clientRequestId is the deduplication boundary; tying it
+ * to actor identity defeats the deduplication contract. SYSTEM_ACTOR is
+ * not special here either — the call-site supplies the same
+ * clientRequestId across retries regardless of who's running the retry.
  */
 export function buildDispatchIdempotencyKey(
   parentId: string,
-  actorUserId: string,
   clientRequestId: string,
 ): string {
-  return `${DISPATCH_IDEMPOTENCY_KEY_PREFIX}:${parentId}:${actorUserId}:${clientRequestId}`;
+  return `${DISPATCH_IDEMPOTENCY_KEY_PREFIX}:${parentId}:${clientRequestId}`;
 }
 
 /**
  * Build the outer idempotency key for `dispatch_child_work_orders_batch`.
  * Shape:
- *   `dispatch_batch:<parentId>:<actorUserId>:<clientRequestId>`
+ *   `dispatch_batch:<parentId>:<clientRequestId>`
  *
- * Identical actor/parent semantics as the single key — different prefix so
- * a single-dispatch retry against the same parent can never collide with a
- * batch-dispatch retry. Workflow-engine call sites supply a stable
- * `clientRequestId` derived from the workflow instance + node id so that
- * replay of the same node deterministically replays the batch.
+ * Same shape rules as the single key: no actor, clientRequestId is the
+ * deduplication boundary. Different prefix so a single-dispatch retry
+ * against the same parent can never collide with a batch-dispatch retry.
+ * Workflow-engine call sites supply a stable `clientRequestId` derived
+ * from the workflow instance + node id so that replay of the same node
+ * deterministically replays the batch.
  */
 export function buildDispatchBatchIdempotencyKey(
   parentId: string,
-  actorUserId: string,
   clientRequestId: string,
 ): string {
-  return `${DISPATCH_BATCH_IDEMPOTENCY_KEY_PREFIX}:${parentId}:${actorUserId}:${clientRequestId}`;
+  return `${DISPATCH_BATCH_IDEMPOTENCY_KEY_PREFIX}:${parentId}:${clientRequestId}`;
+}
+
+/**
+ * Stable uuidv5 namespace for deterministic dispatch `child_id` minting.
+ * **NEVER change this value in production** — the §3.4 RPC's
+ * retry-safety contract requires that the same idempotency_key always
+ * derive the same child_id across deploys. Regenerating the namespace
+ * makes a retry mint a fresh child_id, which would (a) bypass the
+ * command_operations idempotency gate (different row), (b) write a
+ * second work_orders row, and (c) silently break the contract.
+ *
+ * F-CRIT-3 / plan-C2: this constant was previously inlined in
+ * `apps/api/src/modules/ticket/dispatch.service.ts:25`. Moved here so a
+ * `git mv`, a refactor, or a regen of the inline constant can't change
+ * it accidentally.
+ *
+ * Value generated once for this codebase; treated as immutable.
+ */
+export const DISPATCH_CHILD_ID_NAMESPACE = 'a3f4b21e-7c5d-4e6f-9a8b-1c2d3e4f5061';
+
+/**
+ * Derive the deterministic `child_id` for a `dispatch_child_work_order`
+ * call from its outer idempotency_key. Same key → same uuid → the RPC's
+ * `INSERT into work_orders(id, ...)` is idempotent on retry. For the
+ * batch path, callers should mix in the task index before calling:
+ *   `buildDispatchChildId(`${batchKey}:${taskIndex}`)`
+ */
+export function buildDispatchChildId(idempotencyKey: string): string {
+  return uuidv5(idempotencyKey, DISPATCH_CHILD_ID_NAMESPACE);
 }

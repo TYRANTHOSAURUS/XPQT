@@ -1,7 +1,9 @@
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
-import { v5 as uuidv5 } from 'uuid';
-import { buildDispatchIdempotencyKey } from '@prequest/shared';
+import {
+  buildDispatchBatchIdempotencyKey,
+  buildDispatchChildId,
+  buildDispatchIdempotencyKey,
+} from '@prequest/shared';
 import { AppErrors } from '../../common/errors';
 import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
 import { SupabaseService } from '../../common/supabase/supabase.service';
@@ -16,13 +18,11 @@ import { SlaService } from '../sla/sla.service';
 import { TicketService, SYSTEM_ACTOR } from './ticket.service';
 import { TicketVisibilityService } from './ticket-visibility.service';
 
-/**
- * Stable namespace for deterministic child_id minting (uuidv5). The
- * value is a one-off random uuid generated for this codebase; pinning
- * it as a constant means `uuidv5(idempotencyKey, NS)` is reproducible
- * across processes + retries. RFC 4122 §4.3.
- */
-const DISPATCH_CHILD_ID_NAMESPACE = 'a3f4b21e-7c5d-4e6f-9a8b-1c2d3e4f5061';
+// F-CRIT-3 / plan-C2: `DISPATCH_CHILD_ID_NAMESPACE` lives in
+// `packages/shared/src/idempotency.ts` (single source of truth). The
+// uuidv5 derivation is consumed via `buildDispatchChildId` so a redeploy
+// that regenerates an inlined constant cannot silently break retry-safety
+// (same idempotency_key MUST always derive the same child_id).
 
 /**
  * Naming asymmetry — intentional (B.2 §0.1).
@@ -265,39 +265,30 @@ export class DispatchService {
       timers = await this.slaService.buildTimersForRpc(resolvedSlaId, tenant.id);
     }
 
-    // F-CRIT-1 parity with TicketService.update — internal callers
-    // bypassing the controller's RequireClientRequestIdGuard MUST
-    // supply a stable clientRequestId. Workflow-engine + cron paths
-    // pass one explicitly; HTTP path gets one from the guard. A
-    // randomUUID fallback for SYSTEM_ACTOR keeps tests working today
-    // (deterministic-per-call) while making the missing-key story
-    // explicit for non-system callers. F-CRIT-1 retro logged in
-    // b2-a-interim-retro-2026-05-11.md.
-    let effectiveClientRequestId = clientRequestId;
-    if (!effectiveClientRequestId) {
-      if (actorAuthUid === SYSTEM_ACTOR) {
-        // System actor without an explicit id: fresh uuid per call.
-        // Workflow-engine cutover at workflow-engine.service.ts uses
-        // the batch RPC with a derived id; the single-RPC system
-        // callers (today: none) get a per-invocation fresh id.
-        effectiveClientRequestId = randomUUID();
-      } else {
-        throw AppErrors.badRequest(
-          'command_operations.client_request_id_required',
-          'POST /tickets/:id/dispatch requires X-Client-Request-Id header per I1 (RequireClientRequestIdGuard).',
-        );
-      }
+    // F-IMP-6 / code-I4: every dispatch caller MUST supply a stable
+    // clientRequestId. Mirrors Commit B of §3.0's F-CRIT-1 — the
+    // randomUUID() fallback for SYSTEM_ACTOR was a deliberate hole that
+    // let internal callers (workflow engine, cron) drift past the
+    // idempotency contract. Workflow-engine + cron paths already pass
+    // an explicit id; HTTP path gets one from RequireClientRequestIdGuard.
+    if (!clientRequestId) {
+      throw AppErrors.badRequest(
+        'command_operations.client_request_id_required',
+        'POST /tickets/:id/dispatch requires X-Client-Request-Id per I1.',
+      );
     }
 
-    const idempotencyKey = buildDispatchIdempotencyKey(
-      parentId,
-      actorAuthUid === SYSTEM_ACTOR ? SYSTEM_ACTOR : actorAuthUid,
-      effectiveClientRequestId,
-    );
+    // F-CRIT-2 / plan-C1: idempotency key does NOT include actor. Mixing
+    // actor identity into the key creates a double-dispatch hazard —
+    // same parent + same clientRequestId + two different actors yielded
+    // two command_operations rows + two committed children. The
+    // clientRequestId is the deduplication boundary, full stop.
+    const idempotencyKey = buildDispatchIdempotencyKey(parentId, clientRequestId);
 
-    // Deterministic child_id (uuidv5 of the idempotency_key) — replay
-    // of the same key produces the same row, not a new one.
-    const childId = uuidv5(idempotencyKey, DISPATCH_CHILD_ID_NAMESPACE);
+    // Deterministic child_id derived via the shared helper (uuidv5 over
+    // the idempotency_key + pinned namespace) — replay of the same key
+    // produces the same row, not a new one.
+    const childId = buildDispatchChildId(idempotencyKey);
 
     // Payload shape per spec §3.4 (lines 2180-2197).
     const payload: Record<string, unknown> = {
@@ -393,7 +384,7 @@ export class DispatchService {
     if (!clientRequestId) {
       throw AppErrors.badRequest(
         'command_operations.client_request_id_required',
-        'dispatchBatch requires a stable clientRequestId per I1 (RequireClientRequestIdGuard).',
+        'dispatchBatch requires a stable clientRequestId per I1.',
       );
     }
     if (!Array.isArray(tasks) || tasks.length === 0) {
@@ -430,7 +421,10 @@ export class DispatchService {
       });
     }
 
-    const batchKey = `dispatch_batch:${parentId}:${actorAuthUid === SYSTEM_ACTOR ? SYSTEM_ACTOR : actorAuthUid}:${clientRequestId}`;
+    // F-CRIT-2 + F-IMP-5: use the shared batch helper, no actor in the
+    // key. Single source of truth so the §3.4 single-vs-batch keys can't
+    // drift, and the actor-in-key double-dispatch hazard stays closed.
+    const batchKey = buildDispatchBatchIdempotencyKey(parentId, clientRequestId);
 
     // Build the per-task payload array.
     const taskPayloads: Array<Record<string, unknown>> = [];
@@ -541,9 +535,9 @@ export class DispatchService {
         timers = await this.slaService.buildTimersForRpc(resolvedSlaId, tenant.id);
       }
 
-      // Per-task child_id derived from (batchKey, index). Same key + same
-      // index → same child uuid on retry.
-      const childId = uuidv5(`${batchKey}:${i}`, DISPATCH_CHILD_ID_NAMESPACE);
+      // Per-task child_id derived from (batchKey, index) via the shared
+      // helper. Same key + same index → same child uuid on retry.
+      const childId = buildDispatchChildId(`${batchKey}:${i}`);
       childIds.push(childId);
 
       taskPayloads.push({

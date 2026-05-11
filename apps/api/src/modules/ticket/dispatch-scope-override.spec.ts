@@ -212,7 +212,7 @@ describe('DispatchService.resolveChildSla — scope-override integration', () =>
       deps.slaService as never, deps.visibility as never, scopeOverrides as never,
     );
     const dto: DispatchDto = { title: 'Swap cable' };
-    await svc.dispatch(parent.id, dto, '__system__');
+    await svc.dispatch(parent.id, dto, '__system__', 'cri-scope-1');
     expect(scopeOverrides.resolve).toHaveBeenCalled();
     expect(deps.inserted[0].sla_id).toBe(UUID.slaExecutor);
   });
@@ -236,7 +236,7 @@ describe('DispatchService.resolveChildSla — scope-override integration', () =>
       deps.supabase as never, deps.ticketService as never, deps.routingService as never,
       deps.slaService as never, deps.visibility as never, scopeOverrides as never,
     );
-    await svc.dispatch(parent.id, { title: 'Onsite fix' }, '__system__');
+    await svc.dispatch(parent.id, { title: 'Onsite fix' }, '__system__', 'cri-scope-2');
     expect(scopeOverrides.resolve).toHaveBeenCalled();
     expect(deps.inserted[0].sla_id).toBe(UUID.slaExecAsset);
   });
@@ -253,7 +253,7 @@ describe('DispatchService.resolveChildSla — scope-override integration', () =>
       deps.supabase as never, deps.ticketService as never, deps.routingService as never,
       deps.slaService as never, deps.visibility as never, scopeOverrides as never,
     );
-    await svc.dispatch(parent.id, { title: 'x' }, '__system__');
+    await svc.dispatch(parent.id, { title: 'x' }, '__system__', 'cri-scope-3');
     // Override didn't set executor SLA, vendor/team defaults all null in this
     // stub — final sla_id should be null and no timers started.
     expect(deps.inserted[0].sla_id).toBeNull();
@@ -272,7 +272,7 @@ describe('DispatchService.resolveChildSla — scope-override integration', () =>
       deps.supabase as never, deps.ticketService as never, deps.routingService as never,
       deps.slaService as never, deps.visibility as never, scopeOverrides as never,
     );
-    await svc.dispatch(parent.id, { title: 'x', sla_id: UUID.dtoSla }, '__system__');
+    await svc.dispatch(parent.id, { title: 'x', sla_id: UUID.dtoSla }, '__system__', 'cri-scope-4');
     expect(scopeOverrides.resolve).not.toHaveBeenCalled();
     expect(deps.inserted[0].sla_id).toBe(UUID.dtoSla);
   });

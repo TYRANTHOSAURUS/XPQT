@@ -461,14 +461,26 @@ export type KnownErrorCode =
   | 'update_entity_combined.invalid_watcher'
   | 'update_entity_combined.invalid_plan'
 
-  // ─── B.2.A §3.4 dispatch_child_work_order RPC (00336 / 00337) ────────────
+  // ─── B.2.A §3.4 dispatch_child_work_order RPC (00338 / 00339 — v2) ───────
+  // `parent_not_case` removed in remediation pass: post step1c.10c
+  // `public.tickets` only holds case rows, so the RPC's parent SELECT
+  // already returns parent_not_found for a work_order id — the
+  // parent_not_case arm is unreachable. F-IMP-2 / plan-I2.
   | 'dispatch_child_work_order.parent_not_found'
   | 'dispatch_child_work_order.parent_not_dispatchable'
-  | 'dispatch_child_work_order.parent_not_case'
   | 'dispatch_child_work_order.invalid_payload'
   | 'dispatch_child_work_order.timers_required'
   | 'dispatch_child_work_orders_batch.empty_tasks'
   | 'dispatch_child_work_orders_batch.invalid_payload'
+
+  // ─── tenant-FK validation helper (00317) — 422 codes ─────────────────────
+  // The helper raises 42501-coded exceptions on first foreign-tenant miss.
+  // Pre-registration these fell through `mapRpcErrorToAppError` to
+  // `unknown.server_error` (500). Registered here so that any RPC defense-
+  // in-depth raise routes to a clean 422 with neutral copy. F-IMP-4 / code-I1.
+  | 'validate_assignees_in_tenant.assigned_team_id_not_in_tenant'
+  | 'validate_assignees_in_tenant.assigned_user_id_not_in_tenant'
+  | 'validate_assignees_in_tenant.assigned_vendor_id_not_in_tenant'
 
   // ─── privacy-compliance migration (Phase 7.B-1.privacy-compliance) ───────
   | 'privacy.invalid_payload'
@@ -1180,11 +1192,13 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'update_entity_combined.invalid_plan',
   'dispatch_child_work_order.parent_not_found',
   'dispatch_child_work_order.parent_not_dispatchable',
-  'dispatch_child_work_order.parent_not_case',
   'dispatch_child_work_order.invalid_payload',
   'dispatch_child_work_order.timers_required',
   'dispatch_child_work_orders_batch.empty_tasks',
   'dispatch_child_work_orders_batch.invalid_payload',
+  'validate_assignees_in_tenant.assigned_team_id_not_in_tenant',
+  'validate_assignees_in_tenant.assigned_user_id_not_in_tenant',
+  'validate_assignees_in_tenant.assigned_vendor_id_not_in_tenant',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

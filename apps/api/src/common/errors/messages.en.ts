@@ -1521,15 +1521,14 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     detail: 'Plan dates must be a valid ISO timestamp and duration must be a non-negative integer.',
   },
 
-  // B.2.A §3.4 dispatch_child_work_order RPC (00336 / 00337)
+  // B.2.A §3.4 dispatch_child_work_order RPC (00338 / 00339)
+  // parent_not_case removed (F-IMP-2 / plan-I2): post step1c.10c
+  // public.tickets only holds case rows so a work_order id misses the
+  // parent SELECT and surfaces as parent_not_found.
   'dispatch_child_work_order.parent_not_found': { title: "Couldn't find that case" },
   'dispatch_child_work_order.parent_not_dispatchable': {
     title: "Couldn't dispatch a work order",
     detail: 'This case is pending approval or already closed.',
-  },
-  'dispatch_child_work_order.parent_not_case': {
-    title: "Couldn't dispatch a work order",
-    detail: 'Work orders can only be dispatched from a parent case.',
   },
   'dispatch_child_work_order.invalid_payload': {
     title: "Couldn't dispatch a work order",
@@ -1546,6 +1545,21 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'dispatch_child_work_orders_batch.invalid_payload': {
     title: "Couldn't dispatch work orders",
     detail: 'The dispatch batch payload is malformed.',
+  },
+  // Tenant-FK validation helper (00317) raises on first foreign-tenant miss
+  // (F-IMP-4 / code-I1). Registered as 422 so the HTTP surface is clean if
+  // TS preflight regresses and the RPC's defense-in-depth raise reaches users.
+  'validate_assignees_in_tenant.assigned_team_id_not_in_tenant': {
+    title: "Couldn't update assignment",
+    detail: 'The team is not part of this tenant.',
+  },
+  'validate_assignees_in_tenant.assigned_user_id_not_in_tenant': {
+    title: "Couldn't update assignment",
+    detail: 'The user is not part of this tenant.',
+  },
+  'validate_assignees_in_tenant.assigned_vendor_id_not_in_tenant': {
+    title: "Couldn't update assignment",
+    detail: 'The vendor is not part of this tenant.',
   },
 };
 

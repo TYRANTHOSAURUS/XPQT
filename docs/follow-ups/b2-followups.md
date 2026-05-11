@@ -192,3 +192,100 @@ the orchestrator forwards whatever the mock returns into the RPC's
 mock produced. Code reviewer flagged. Fixed to mirror the real shape
 so a future drift between `SlaService.buildTimersForRpc` and the
 RPC's recordset schema would surface as a failing unit test.
+
+## §3.4 batch semantic shift (Step 8, 2026-05-11)
+
+Pre-cutover, `WorkflowEngineService.create_child_tasks`
+(`workflow-engine.service.ts:425-488`) silently swallowed per-task
+failures inside a Promise.all-with-catch pattern — half-fanouts
+shipped without an error surface. Post-cutover (00337 / 00339 batch
+RPC), failures roll back the entire batch.
+
+**Audit performed.** A grep of `workflow_definitions` in remote
+shows that workflows with `create_child_tasks` nodes are authored
+either:
+
+- through the visual editor (where the `config.tasks` array is built
+  click-by-click; the editor has no notion of "partial-fanout
+  tolerance"), or
+- via seed migrations under `supabase/migrations/` that ship the same
+  static `tasks` array — no run-time decision logic to "tolerate"
+  failure.
+
+The silent swallow was a property of the legacy code path, not a
+deliberate contract. No tenant surface was discovered authoring
+workflows under explicit partial-fanout tolerance.
+
+**Risk mitigation.** A future flag `node.config.fanout_mode:
+all_or_nothing | best_effort` can re-introduce partial-fanout if any
+tenant surface needs it. Not built yet — wait for concrete demand.
+
+**If you hit the new behavior unexpectedly:** the failure mode is N
+tasks DEFINED in a workflow, ZERO created on a partial-fail. The
+error surfaces on the workflow run as
+`dispatch_child_work_orders_batch.<reason>` or the per-task code
+(`dispatch_child_work_order.invalid_payload`,
+`validate_assignees_in_tenant.assigned_*_id_not_in_tenant`,
+`dispatch_child_work_order.timers_required`, etc.) — investigate the
+failing task's payload (assignee, sla_id, request_type).
+
+## §3.4 Step 8 self-review remediation (2026-05-11)
+
+The Step 8 plan + code reviewers surfaced 4 criticals + 8 important
+findings against `6e9102cf`. Resolved in a single follow-up commit
+with migration v2 supersessions (00338 + 00339):
+
+- **F-CRIT-1 sla_timers polymorphic columns.** 00227 added
+  `(entity_kind, case_id, work_order_id)` to `sla_timers`. The v1
+  RPCs (00336 / 00337) INSERTed without setting them — every read
+  filtering `entity_kind='work_order' AND work_order_id=X` MISSED
+  dispatch-emitted rows (silent read-side regression). 00338 / 00339
+  mirror 00330:259-277 exactly. Harness scenarios assert the columns.
+- **F-CRIT-2 actor dropped from dispatch idempotency key.** Same
+  parent + same `clientRequestId` + two different actors used to
+  yield two `command_operations` rows + two committed children
+  (double-dispatch hazard). The clientRequestId is the deduplication
+  boundary; `buildDispatchIdempotencyKey` / `buildDispatchBatchIdempotencyKey`
+  now take only `(parentId, clientRequestId)`.
+- **F-CRIT-3 `DISPATCH_CHILD_ID_NAMESPACE` moved to shared package.**
+  Previously inlined at `dispatch.service.ts:25`. A regen via
+  refactor would silently break retry-safety. Now in
+  `packages/shared/src/idempotency.ts` with `buildDispatchChildId`
+  helper; both single + batch use it.
+- **F-CRIT-4 batch all-or-nothing documented** (this section).
+- **F-IMP-2 `parent_not_case` registered code removed.** Post
+  step1c.10c `public.tickets` only holds case rows, so the RPC's
+  parent SELECT already returns `parent_not_found` for a work_order
+  id — the `parent_not_case` arm was unreachable.
+- **F-IMP-3 batch per-task FK validation verified.** Already present
+  in v1's per-task loop; harness scenario 2 (cross-tenant assignee
+  in task #2) was already asserting the all-or-nothing rollback.
+- **F-IMP-4 `validate_assignees_in_tenant.*` codes registered.** The
+  helper at 00317 raises codes that were NOT in `KNOWN_ERROR_CODES`;
+  the RPC-side defense-in-depth raise fell through to
+  `unknown.server_error` 500. Now registered with 422 status. Three
+  codes: `assigned_team_id_not_in_tenant`,
+  `assigned_user_id_not_in_tenant`, `assigned_vendor_id_not_in_tenant`.
+- **F-IMP-5 `buildDispatchBatchIdempotencyKey` now used.** The
+  helper was exported but the service built the key inline. Switched
+  to the helper for symmetry with the single path.
+- **F-IMP-6 randomUUID fallback dropped.** Mirrors §3.0 Commit B —
+  no random-uuid fallback for SYSTEM_ACTOR. Workflow-engine + cron
+  callers must pass an explicit `clientRequestId`.
+- **F-IMP-7 dead coalesce arm dropped.** `coalesce(v_priority,
+  v_parent.priority, 'medium')` — `tickets.priority` is NOT NULL
+  DEFAULT 'medium' (00011:14), the third arg is unreachable.
+
+**routing_trace embedded id validation — documented limitation
+(F-IMP-1).** The trace's schema
+(`apps/api/src/modules/routing/resolver.types.ts:87-92`) is
+`{ step, matched, reason, target: AssignmentTarget | null }`. The
+only embedded ids are per-step `target.team_id|user_id|vendor_id`
+on matched steps. The final pick lands in the
+`work_orders.assigned_*_id` columns and goes through
+`validate_assignees_in_tenant`. Intermediate-step trace targets
+(non-final picks) are audit-only — they describe what the resolver
+considered, not what it wrote. Top-level `routing_rule_id` +
+`chosen_*_id` are the authoritative tenant-scoped ids and are
+validated. The trace is stored verbatim; embedded ids are NOT
+re-validated. Documented in the migration headers.

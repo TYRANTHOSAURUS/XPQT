@@ -84,7 +84,16 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'transition_entity_status.has_open_children': 409,
   'command_operations.payload_mismatch': 409,
   'dispatch_child_work_order.parent_not_dispatchable': 409,
-  'dispatch_child_work_order.parent_not_case': 409,
+
+  // ── 422 unprocessable entity ─────────────────────────────────────
+  // Tenant-FK validation helper (00317) raises 42501 on first
+  // foreign-tenant miss. Defense-in-depth path — TS preflight already
+  // rejects cross-tenant assignees with the same shape; this entry
+  // routes the RPC-side raise to a clean 422 if the preflight regresses
+  // or a non-HTTP caller bypasses it. F-IMP-4 / code-I1.
+  'validate_assignees_in_tenant.assigned_team_id_not_in_tenant': 422,
+  'validate_assignees_in_tenant.assigned_user_id_not_in_tenant': 422,
+  'validate_assignees_in_tenant.assigned_vendor_id_not_in_tenant': 422,
 
   // ── 500 server ───────────────────────────────────────────────────
   // timers_required is a programmer error: TS plan-build always
@@ -162,6 +171,11 @@ export function mapRpcErrorToAppError(
       return AppErrors.notFoundWithCode(code, undefined, { cause: error });
     case 409:
       return AppErrors.conflict(code, { cause: error });
+    case 422:
+      // 422 unprocessable entity — used for cross-tenant FK rejections
+      // that need to differ from generic 400 validation failures. No
+      // dedicated factory yet; construct AppError directly. F-IMP-4.
+      return new AppError(code, 422, { cause: error });
     case 500:
       return AppErrors.server(code, { cause: error });
     case 400:

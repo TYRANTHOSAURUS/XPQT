@@ -2,18 +2,23 @@
  * B.2.A.Step8 concurrency probe — dispatch_child_work_orders_batch (§3.4 batch).
  *
  * Spec ref: docs/follow-ups/b2-survey-and-design.md §3.4 (lines 2228-2234).
- * Migration: supabase/migrations/00337_dispatch_child_work_orders_batch.sql.
+ * Migration: supabase/migrations/00339_dispatch_child_work_orders_batch_v2.sql.
  *
  * Five scenarios:
  *   1. Batch happy path — 3 tasks → 3 work_orders + 3 routing_decisions
  *      + 3 ticket_activities rows committed in one tx.
  *   2. All-or-nothing — task #2 has a cross-tenant assignee → the ENTIRE
- *      batch rolls back (zero work_orders inserted).
+ *      batch rolls back (zero work_orders inserted; tasks #0 and #2 that
+ *      would have succeeded on their own also commit NOTHING). F-IMP-3
+ *      proves per-task validate_assignees_in_tenant runs inside the loop,
+ *      not at the batch boundary.
  *   3. Empty tasks — empty array raises empty_tasks.
  *   4. Idempotent batch replay — same key + same tasks returns
  *      cached_result; row counts unchanged.
  *   5. Mixed sla / no-sla in one batch — only the SLA-bearing task gets
- *      timer rows; the no-sla task gets none.
+ *      timer rows; v2 (00339) asserts those rows carry
+ *      entity_kind='work_order', work_order_id=<task's child_id>, case_id
+ *      IS NULL — same F-CRIT-1 guard as the single-RPC harness.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -372,11 +377,21 @@ describe('dispatch_child_work_orders_batch — §3.4 batch RPC', () => {
     const noSlaChildId = noSlaTask.child_id as string;
 
     const slaTimers = await pool.query(
-      `select count(*) as n from public.sla_timers
+      `select timer_type, entity_kind, case_id, work_order_id, started_at
+         from public.sla_timers
          where tenant_id = $1 and ticket_id = $2`,
       [base.tenantId, slaChildId],
     );
-    expect(Number(slaTimers.rows[0].n)).toBe(2);
+    expect(slaTimers.rowCount).toBe(2);
+    // F-CRIT-1: polymorphic columns populated on every batch-emitted
+    // timer (mirror of 00330:259-277). Catches the silent read-side
+    // regression where 00337 v1 omitted these columns.
+    for (const r of slaTimers.rows) {
+      expect(r.entity_kind).toBe('work_order');
+      expect(r.work_order_id).toBe(slaChildId);
+      expect(r.case_id).toBeNull();
+      expect(r.started_at).not.toBeNull();
+    }
 
     const noSlaTimers = await pool.query(
       `select count(*) as n from public.sla_timers

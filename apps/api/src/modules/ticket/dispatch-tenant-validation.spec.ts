@@ -377,7 +377,10 @@ describe('DispatchService — Plan A.2 tenant validation', () => {
         title: 'do x',
         ticket_type_id: VALID_UUID_A,
         assigned_team_id: VALID_UUID_B };
-      await expect(svc.dispatch(PARENT_ID, dto, '__system__')).resolves.toBeTruthy();
+      // F-IMP-6: SYSTEM_ACTOR no longer gets a randomUUID() fallback —
+      // workflow engine + cron callers pass a stable id derived from the
+      // originating operation. Tests must mirror that.
+      await expect(svc.dispatch(PARENT_ID, dto, '__system__', 'cri-system-success')).resolves.toBeTruthy();
     });
   });
 });

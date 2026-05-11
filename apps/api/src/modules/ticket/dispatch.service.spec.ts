@@ -402,7 +402,7 @@ describe('DispatchService', () => {
       { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
     const dto: DispatchDto = { title: 'Install replacement glass', assigned_vendor_id: UUID.vendorX };
-    const child = await svc.dispatch(parent.id, dto, '__system__');
+    const child = await svc.dispatch(parent.id, dto, '__system__', 'cri-disp-1');
 
     expect(child.parent_ticket_id).toBe(parent.id);
     // Step 1c.4: writes go to work_orders (single-kind), so the row no longer
@@ -426,7 +426,7 @@ describe('DispatchService', () => {
       visibilityService as never,
       { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
-    await svc.dispatch(parent.id, { title: 'Investigate' }, '__system__');
+    await svc.dispatch(parent.id, { title: 'Investigate' }, '__system__', 'cri-disp-2');
     expect(routingService.evaluate).toHaveBeenCalled();
     expect(inserted[0].assigned_vendor_id).toBe(UUID.vendorX);
   });
@@ -471,9 +471,9 @@ describe('DispatchService', () => {
       visibilityService as never,
       { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
-    await svc.dispatch(parent.id, { title: 'Replace window pane', assigned_vendor_id: UUID.glazier }, '__system__');
-    await svc.dispatch(parent.id, { title: 'Buy replacement glass', assigned_vendor_id: UUID.supplier }, '__system__');
-    await svc.dispatch(parent.id, { title: 'Clean up debris', assigned_vendor_id: UUID.janitorial }, '__system__');
+    await svc.dispatch(parent.id, { title: 'Replace window pane', assigned_vendor_id: UUID.glazier }, '__system__', 'cri-bw-1');
+    await svc.dispatch(parent.id, { title: 'Buy replacement glass', assigned_vendor_id: UUID.supplier }, '__system__', 'cri-bw-2');
+    await svc.dispatch(parent.id, { title: 'Clean up debris', assigned_vendor_id: UUID.janitorial }, '__system__', 'cri-bw-3');
     expect(inserted).toHaveLength(3);
     expect(inserted.map((c) => c.assigned_vendor_id)).toEqual([UUID.glazier, UUID.supplier, UUID.janitorial]);
     expect(inserted.every((c) => c.parent_ticket_id === parent.id)).toBe(true);
@@ -495,7 +495,7 @@ describe('DispatchService', () => {
     );
     // request_types mock returns sla_policy_id: 'sla-1' — that's the parent's desk SLA.
     // Child must NOT pick it up unless explicitly passed in DTO.
-    await svc.dispatch(parent.id, { title: 'anything', assigned_vendor_id: UUID.v1 }, '__system__');
+    await svc.dispatch(parent.id, { title: 'anything', assigned_vendor_id: UUID.v1 }, '__system__', 'cri-no-sla-rt');
     expect(inserted[0].sla_id).toBeNull();
     expect(slaService.startTimers).not.toHaveBeenCalled();
   });
@@ -526,7 +526,7 @@ describe('DispatchService', () => {
       visibilityService as never,
       { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
-    await svc.dispatch(parent.id, { title: 'x', assigned_team_id: UUID.t1, sla_id: UUID.slaExplicit }, '__system__');
+    await svc.dispatch(parent.id, { title: 'x', assigned_team_id: UUID.t1, sla_id: UUID.slaExplicit }, '__system__', 'cri-explicit-sla');
     expect(inserted[0].sla_id).toBe(UUID.slaExplicit);
     expect(slaService.startTimers).toHaveBeenCalledWith(expect.any(String), 't1', UUID.slaExplicit);
   });
@@ -544,7 +544,7 @@ describe('DispatchService', () => {
       visibilityService as never,
       { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
-    await svc.dispatch(parent.id, { title: 'x', assigned_vendor_id: UUID.v1, sla_id: null }, '__system__');
+    await svc.dispatch(parent.id, { title: 'x', assigned_vendor_id: UUID.v1, sla_id: null }, '__system__', 'cri-no-sla');
     expect(inserted[0].sla_id).toBeNull();
     expect(slaService.startTimers).not.toHaveBeenCalled();
   });
@@ -562,7 +562,7 @@ describe('DispatchService', () => {
       visibilityService as never,
       { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
-    await svc.dispatch(parent.id, { title: 'x', assigned_vendor_id: UUID.v1 }, '__system__');
+    await svc.dispatch(parent.id, { title: 'x', assigned_vendor_id: UUID.v1 }, '__system__', 'cri-vendor-sla');
     expect(inserted[0].sla_id).toBe(UUID.slaVendor);
     expect(slaService.startTimers).toHaveBeenCalledWith(expect.any(String), 't1', UUID.slaVendor);
   });
@@ -585,7 +585,7 @@ describe('DispatchService', () => {
       target: { kind: 'team', team_id: UUID.t1 },
       chosen_by: 'request_type_default', rule_id: null, rule_name: null, strategy: 'fixed', trace: [],
     });
-    await svc.dispatch(parent.id, { title: 'x' }, '__system__');
+    await svc.dispatch(parent.id, { title: 'x' }, '__system__', 'cri-team-sla');
     expect(inserted[0].sla_id).toBe(UUID.slaTeam);
     expect(slaService.startTimers).toHaveBeenCalledWith(expect.any(String), 't1', UUID.slaTeam);
   });
@@ -604,7 +604,7 @@ describe('DispatchService', () => {
       visibilityService as never,
       { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
-    await svc.dispatch(parent.id, { title: 'x', assigned_team_id: UUID.t1, assigned_vendor_id: UUID.v1 }, '__system__');
+    await svc.dispatch(parent.id, { title: 'x', assigned_team_id: UUID.t1, assigned_vendor_id: UUID.v1 }, '__system__', 'cri-vendor-beats-team');
     expect(inserted[0].sla_id).toBe(UUID.slaVendor);
   });
 
@@ -622,7 +622,7 @@ describe('DispatchService', () => {
       visibilityService as never,
       { resolve: jest.fn().mockResolvedValue(null), resolveForLocation: jest.fn().mockResolvedValue(null), deriveEffectiveLocation: jest.fn().mockResolvedValue(null) } as never,
     );
-    await svc.dispatch(parent.id, { title: 'x', assigned_user_id: UUID.u1 }, '__system__');
+    await svc.dispatch(parent.id, { title: 'x', assigned_user_id: UUID.u1 }, '__system__', 'cri-user-team-sla');
     expect(inserted[0].sla_id).toBe(UUID.slaUserteam);
   });
 
@@ -641,7 +641,7 @@ describe('DispatchService', () => {
       target: { kind: 'team', team_id: UUID.t1 },
       chosen_by: 'request_type_default', rule_id: null, rule_name: null, strategy: 'fixed', trace: [],
     });
-    await svc.dispatch(parent.id, { title: 'x' }, '__system__');
+    await svc.dispatch(parent.id, { title: 'x' }, '__system__', 'cri-no-defaults');
     expect(inserted[0].sla_id).toBeNull();
     expect(slaService.startTimers).not.toHaveBeenCalled();
   });

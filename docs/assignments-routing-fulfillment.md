@@ -224,8 +224,8 @@ A **work order** is a child of a case, representing a specific unit of executor 
    - Loads `(domain)` from `request_types` for routing.
    - Runs `RoutingService.evaluate(...)` exactly once when no DTO assignee + has `ticket_type_id`. The target updates `assigned_*_id`; the trace + `chosen_by` + `rule_id` ride into the RPC payload as `routing_trace` / `routing_chosen_by` / `routing_rule_id`.
    - Resolves child SLA via `DispatchService.resolveChildSla(dto, row)` (precedence in §7) and calls `SlaService.buildTimersForRpc(slaPolicyId, tenantId)` to pre-compute business-hours-adjusted `due_at` per timer.
-   - Mints a **deterministic** `child_id` via `uuidv5(idempotencyKey, NS)` — replays produce the same row.
-   - Builds the outer idempotency key with `buildDispatchIdempotencyKey(parentId, actorAuthUid, clientRequestId)` (prefix `dispatch:`).
+   - Mints a **deterministic** `child_id` via `buildDispatchChildId(idempotencyKey)` (uuidv5 over the pinned namespace in `packages/shared/src/idempotency.ts`) — replays produce the same row.
+   - Builds the outer idempotency key with `buildDispatchIdempotencyKey(parentId, clientRequestId)` (prefix `dispatch:`). Actor is **NOT** part of the key — same parent + same clientRequestId + two actors must dedupe to one dispatch (F-CRIT-2).
 3. **One RPC call → one transaction:**
    - The RPC re-validates every FK server-side (defense-in-depth: `validate_assignees_in_tenant` + `validate_entity_in_tenant`).
    - INSERT into `public.work_orders` (using the deterministic `id`).

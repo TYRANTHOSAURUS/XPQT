@@ -1521,15 +1521,11 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     detail: 'Plandata moeten een geldige ISO-tijdstempel zijn en duur moet een niet-negatief geheel getal zijn.',
   },
 
-  // B.2.A §3.4 dispatch_child_work_order RPC (00336 / 00337)
+  // B.2.A §3.4 dispatch_child_work_order RPC (00338 / 00339)
   'dispatch_child_work_order.parent_not_found': { title: 'Case niet gevonden' },
   'dispatch_child_work_order.parent_not_dispatchable': {
     title: 'Kan geen werkorder uitdelen',
     detail: 'Deze case wacht op goedkeuring of is al afgesloten.',
-  },
-  'dispatch_child_work_order.parent_not_case': {
-    title: 'Kan geen werkorder uitdelen',
-    detail: 'Werkorders kunnen alleen vanuit een case worden uitgedeeld.',
   },
   'dispatch_child_work_order.invalid_payload': {
     title: 'Kan geen werkorder uitdelen',
@@ -1546,6 +1542,19 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'dispatch_child_work_orders_batch.invalid_payload': {
     title: 'Kan geen werkorders uitdelen',
     detail: 'De batch-payload is onjuist.',
+  },
+  // Tenant-FK validation helper (00317) — 422 codes.
+  'validate_assignees_in_tenant.assigned_team_id_not_in_tenant': {
+    title: 'Kan toewijzing niet bijwerken',
+    detail: 'Het team hoort niet bij deze tenant.',
+  },
+  'validate_assignees_in_tenant.assigned_user_id_not_in_tenant': {
+    title: 'Kan toewijzing niet bijwerken',
+    detail: 'De gebruiker hoort niet bij deze tenant.',
+  },
+  'validate_assignees_in_tenant.assigned_vendor_id_not_in_tenant': {
+    title: 'Kan toewijzing niet bijwerken',
+    detail: 'De leverancier hoort niet bij deze tenant.',
   },
 };
 
