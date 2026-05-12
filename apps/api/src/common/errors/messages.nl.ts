@@ -1739,6 +1739,17 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon de reservering niet opslaan — niet gevonden',
     detail: 'Een asset-reservering in deze bewerking hoort niet meer bij deze reservering. Vernieuw de pagina en probeer het opnieuw.',
   },
+  // B.4.A.4 step 2D-C self-review remediation (PLAN-C1 + CODE-I2).
+  // Voice mirrors the rest of the edit_booking family — "reservering" not
+  // "boeking" per the project NL convention.
+  'edit_booking.rule_missing_approvers': {
+    title: 'Kon de reservering niet opslaan',
+    detail: 'De regel voor deze ruimte vereist goedkeuring, maar er zijn geen goedkeurders ingesteld. Vraag een beheerder om goedkeurders te configureren of kies een andere ruimte.',
+  },
+  'approval.read_failed': {
+    title: 'Kon de reservering niet opslaan',
+    detail: 'We konden de goedkeuringsstatus van deze reservering niet lezen. Probeer het over een moment opnieuw.',
+  },
 };
 
 /**

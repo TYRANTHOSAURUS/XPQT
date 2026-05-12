@@ -5,7 +5,8 @@
  *   1. Geometry-only patch (same room, time tweak) — no rule outcome change,
  *      chain_config_changed=false, single slot patch.
  *   2. Location change with allow→require_approval — new chain inserted,
- *      chain_config_changed=true.
+ *      chain_config_changed=true. Asserts loadSpace called with target room
+ *      (N-CODE-2).
  *   3. Location change preserving same chain — chain_config_changed=false.
  *   4. Location change with different chain config — chain_config_changed=true.
  *   5. Deny outcome — helper still builds plan; RPC will reject (the helper
@@ -13,14 +14,32 @@
  *   6. Missing booking → throws AppError (edit_booking.not_found, 404).
  *   7. Slot belongs to a different booking → throws AppError 404 (no leak).
  *   8. Cost recompute when target room has cost_per_hour.
+ *   9. Cross-tenant slot path — slot returned for a different tenant id is
+ *      filtered to null at the tenant_id eq layer (I-CODE-5).
+ *  10. PLAN-C1 fail-fast: require_approval with approvalConfig=null → 422
+ *      `edit_booking.rule_missing_approvers`.
+ *  11. PLAN-C1 fail-fast: require_approval with required_approvers=[] → 422
+ *      `edit_booking.rule_missing_approvers`.
+ *  12. I-PLAN-3 dispatch: kind='one' / kind='scope' → 400
+ *      `edit_booking.invalid_plan_shape` (not yet implemented).
+ *  13. N-CODE-7: applied_rule_ids returned in lexicographic order.
+ *  14. I-CODE-4 — supabase mock honours the (table, eq) predicates so a
+ *      cross-tenant smuggle returns null at the .eq('tenant_id', ...) layer.
+ *  15. N-CODE-5: ruleResolver.resolve called EXACTLY ONCE (the dead OLD
+ *      call has been removed).
  */
 
 import { AppError } from '../../../common/errors';
-import { AssembleEditPlanService, type AssembleEditPlanArgs } from '../assemble-edit-plan.service';
+import {
+  AssembleEditPlanService,
+  type AssembleEditPlanArgs,
+  type AssembleEditPlanSlotPatch,
+} from '../assemble-edit-plan.service';
 import type { ResolveOutcome } from '../../room-booking-rules/rule-resolver.service';
 import type { ApprovalConfig } from '../../room-booking-rules/dto';
 
 const TENANT = 't1';
+const OTHER_TENANT = 't2';
 const BOOKING = '11111111-1111-4111-8111-111111111111';
 const SLOT = '22222222-2222-4222-8222-222222222222';
 const SPACE_OLD = '33333333-3333-4333-8333-333333333333';
@@ -60,55 +79,110 @@ interface ApprovalRow {
 }
 
 /**
- * Mock SupabaseService that routes from('<table>') to the right
- * fixture data. Each query path uses a thenable that resolves
- * differently depending on whether the call ended in `.maybeSingle()`
- * (single object) or a bare await (array of rows).
+ * Mock SupabaseService that routes from('<table>') to the right fixture.
+ *
+ * I-CODE-4 — tightened mocks: each .eq() captures (column, value) and the
+ * final .maybeSingle() returns the fixture ONLY if every captured eq passes
+ * a structural predicate. This catches "tenant_id mismatch let through"
+ * regressions that the previous mock (which ignored eq args) silently
+ * masked.
+ *
+ * Predicates used:
+ *   - bookings: id===bookingId AND tenant_id===tenantId.
+ *   - booking_slots: id===slotId AND tenant_id===tenantId.
+ *   - approvals (list): tenant_id===tenantId AND target_entity_type===
+ *     'booking' AND target_entity_id===bookingId AND status IN [live].
  */
 function makeSupabase(opts: {
   booking: BookingRow | null;
   slot: SlotRow | null;
   approvals: ApprovalRow[];
+  /** Caller's expected tenant for predicate-matching. Defaults to TENANT. */
+  expectedTenant?: string;
+  /** Caller's expected booking id. Defaults to BOOKING. */
+  expectedBookingId?: string;
+  /** Caller's expected slot id. Defaults to SLOT. */
+  expectedSlotId?: string;
 }) {
-  const admin = {
-    from: jest.fn((table: string) => {
-      if (table === 'bookings') {
-        return {
-          select: () => ({
-            eq: () => ({
-              eq: () => ({
-                maybeSingle: () => Promise.resolve({ data: opts.booking, error: null }),
-              }),
-            }),
-          }),
-        };
-      }
-      if (table === 'booking_slots') {
-        return {
-          select: () => ({
-            eq: () => ({
-              eq: () => ({
-                maybeSingle: () => Promise.resolve({ data: opts.slot, error: null }),
-              }),
-            }),
-          }),
-        };
-      }
-      if (table === 'approvals') {
-        // Thenable for `await select().eq().eq().eq()` (no maybeSingle).
-        const builder: Record<string, jest.Mock> = {
-          select: jest.fn().mockReturnThis(),
-          eq: jest.fn().mockReturnThis(),
-        };
-        (builder as unknown as PromiseLike<unknown>).then = (
-          resolve: (v: unknown) => unknown,
-        ) => Promise.resolve(resolve({ data: opts.approvals, error: null }));
-        return builder;
-      }
-      throw new Error(`unexpected table: ${table}`);
-    }),
-  };
-  return { admin } as never;
+  const expectedTenant = opts.expectedTenant ?? TENANT;
+  const expectedBookingId = opts.expectedBookingId ?? BOOKING;
+  const expectedSlotId = opts.expectedSlotId ?? SLOT;
+
+  const fromMock = jest.fn((table: string) => {
+    if (table === 'bookings') {
+      const filters: Record<string, unknown> = {};
+      const eq = jest.fn((col: string, val: unknown) => {
+        filters[col] = val;
+        return chain;
+      });
+      const chain = {
+        eq,
+        maybeSingle: () => {
+          // Tenant + id predicates must match the fixture's identity AND
+          // the test's expected values.
+          const matches =
+            opts.booking !== null &&
+            filters.tenant_id === expectedTenant &&
+            filters.id === expectedBookingId &&
+            opts.booking.tenant_id === expectedTenant &&
+            opts.booking.id === expectedBookingId;
+          return Promise.resolve({
+            data: matches ? opts.booking : null,
+            error: null,
+          });
+        },
+      };
+      return {
+        select: jest.fn(() => chain),
+        _filters: filters,
+        _eq: eq,
+      } as unknown as { select: jest.Mock };
+    }
+    if (table === 'booking_slots') {
+      const filters: Record<string, unknown> = {};
+      const eq = jest.fn((col: string, val: unknown) => {
+        filters[col] = val;
+        return chain;
+      });
+      const chain = {
+        eq,
+        maybeSingle: () => {
+          const matches =
+            opts.slot !== null &&
+            filters.tenant_id === expectedTenant &&
+            filters.id === expectedSlotId &&
+            opts.slot.tenant_id === expectedTenant &&
+            opts.slot.id === expectedSlotId;
+          return Promise.resolve({
+            data: matches ? opts.slot : null,
+            error: null,
+          });
+        },
+      };
+      return {
+        select: jest.fn(() => chain),
+        _filters: filters,
+        _eq: eq,
+      } as unknown as { select: jest.Mock };
+    }
+    if (table === 'approvals') {
+      // approvals: select → eq*3 → in → order*2 → await. Mirror the
+      // helper's exact builder shape after CODE-C2 + I-CODE-1.
+      const builder: Record<string, jest.Mock> = {
+        select: jest.fn().mockReturnThis(),
+        eq: jest.fn().mockReturnThis(),
+        in: jest.fn().mockReturnThis(),
+        order: jest.fn().mockReturnThis(),
+      };
+      (builder as unknown as PromiseLike<unknown>).then = (
+        resolve: (v: unknown) => unknown,
+      ) => Promise.resolve(resolve({ data: opts.approvals, error: null }));
+      return builder;
+    }
+    throw new Error(`unexpected table: ${table}`);
+  });
+
+  return { admin: { from: fromMock } } as never;
 }
 
 function makeBookingFlow(spaceOverrides: {
@@ -131,14 +205,15 @@ function makeBookingFlow(spaceOverrides: {
   } as never;
 }
 
-function makeRuleResolver(outcomes: { old: ResolveOutcome; new_: ResolveOutcome }) {
-  let call = 0;
+/**
+ * N-CODE-5 — single resolver call. The OLD-state resolve was dead code
+ * (the orchestrator derives `old_outcome` from chain presence, not a
+ * fresh resolve). Test mocks now expose a single `resolve` that returns
+ * the new outcome. Tests that want to assert call count read the spy.
+ */
+function makeRuleResolver(newOutcome: ResolveOutcome) {
   return {
-    resolve: jest.fn(async () => {
-      const outcome = call === 0 ? outcomes.old : outcomes.new_;
-      call += 1;
-      return outcome;
-    }),
+    resolve: jest.fn(async () => newOutcome),
   } as never;
 }
 
@@ -204,12 +279,22 @@ function baseSlot(overrides: Partial<SlotRow> = {}): SlotRow {
   };
 }
 
-function baseArgs(patchOverrides: AssembleEditPlanArgs['patch'] = {}): AssembleEditPlanArgs {
+/**
+ * Helper that builds a `kind:'slot'` patch — the only kind Step 2D-C
+ * implements. I-PLAN-3.
+ */
+function slotPatch(overrides: Omit<AssembleEditPlanSlotPatch, 'kind'> = {}): AssembleEditPlanSlotPatch {
+  return { kind: 'slot', ...overrides };
+}
+
+function baseArgs(
+  patchOverrides: Omit<AssembleEditPlanSlotPatch, 'kind'> = {},
+): AssembleEditPlanArgs {
   return {
     bookingId: BOOKING,
     tenantId: TENANT,
     slotId: SLOT,
-    patch: patchOverrides,
+    patch: slotPatch(patchOverrides),
   };
 }
 
@@ -224,10 +309,11 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
       slot: baseSlot(),
       approvals: [],
     });
+    const ruleResolver = makeRuleResolver(outcome());
     const svc = makeService({
       supabase,
       bookingFlow: makeBookingFlow(),
-      ruleResolver: makeRuleResolver({ old: outcome(), new_: outcome() }),
+      ruleResolver,
       conflict: makeConflict(),
     });
 
@@ -250,6 +336,9 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
     expect(plan.work_order_sla_patches).toEqual([]);
     expect(plan.booking.cost_amount_snapshot).toBeNull(); // no cost_per_hour
     expect(typeof plan._resolution_at).toBe('string');
+
+    // N-CODE-5 — only ONE resolve call (no dead OLD pass).
+    expect((ruleResolver as unknown as { resolve: jest.Mock }).resolve).toHaveBeenCalledTimes(1);
   });
 
   it('flips to require_approval when target room rule resolver returns require_approval (allow → require_approval)', async () => {
@@ -259,13 +348,13 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
       approvals: [], // no current chain
     });
     const newChain = approvalConfig({ type: 'person', id: APPROVER_A });
+    const bookingFlow = makeBookingFlow();
     const svc = makeService({
       supabase,
-      bookingFlow: makeBookingFlow(),
-      ruleResolver: makeRuleResolver({
-        old: outcome({ final: 'allow' }),
-        new_: outcome({ final: 'require_approval', approvalConfig: newChain }),
-      }),
+      bookingFlow,
+      ruleResolver: makeRuleResolver(
+        outcome({ final: 'require_approval', approvalConfig: newChain }),
+      ),
       conflict: makeConflict(),
     });
 
@@ -279,6 +368,11 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
       required_approvers: [{ type: 'person', id: APPROVER_A }],
       threshold: 'all',
     });
+
+    // N-CODE-2 — loadSpace called with the TARGET room id, not the old one.
+    expect((bookingFlow as unknown as { loadSpace: jest.Mock }).loadSpace).toHaveBeenCalledWith(
+      SPACE_NEW,
+    );
   });
 
   it('preserves chain when same chain config returned by resolver (chain_config_changed=false)', async () => {
@@ -300,10 +394,9 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
     const svc = makeService({
       supabase,
       bookingFlow: makeBookingFlow(),
-      ruleResolver: makeRuleResolver({
-        old: outcome({ final: 'require_approval', approvalConfig: sameChain }),
-        new_: outcome({ final: 'require_approval', approvalConfig: sameChain }),
-      }),
+      ruleResolver: makeRuleResolver(
+        outcome({ final: 'require_approval', approvalConfig: sameChain }),
+      ),
       conflict: makeConflict(),
     });
 
@@ -315,7 +408,6 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
   });
 
   it('flips chain_config_changed=true when chain members differ', async () => {
-    const oldChain = approvalConfig({ type: 'person', id: APPROVER_A });
     const newChain = approvalConfig({ type: 'person', id: APPROVER_B });
     const supabase = makeSupabase({
       booking: baseBooking(),
@@ -334,10 +426,9 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
     const svc = makeService({
       supabase,
       bookingFlow: makeBookingFlow(),
-      ruleResolver: makeRuleResolver({
-        old: outcome({ final: 'require_approval', approvalConfig: oldChain }),
-        new_: outcome({ final: 'require_approval', approvalConfig: newChain }),
-      }),
+      ruleResolver: makeRuleResolver(
+        outcome({ final: 'require_approval', approvalConfig: newChain }),
+      ),
       conflict: makeConflict(),
     });
 
@@ -358,10 +449,9 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
     const svc = makeService({
       supabase,
       bookingFlow: makeBookingFlow(),
-      ruleResolver: makeRuleResolver({
-        old: outcome({ final: 'allow' }),
-        new_: outcome({ final: 'deny', denialMessages: ['Forbidden room.'] }),
-      }),
+      ruleResolver: makeRuleResolver(
+        outcome({ final: 'deny', denialMessages: ['Forbidden room.'] }),
+      ),
       conflict: makeConflict(),
     });
 
@@ -382,7 +472,7 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
     const svc = makeService({
       supabase,
       bookingFlow: makeBookingFlow(),
-      ruleResolver: makeRuleResolver({ old: outcome(), new_: outcome() }),
+      ruleResolver: makeRuleResolver(outcome()),
       conflict: makeConflict(),
     });
 
@@ -402,7 +492,7 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
     const svc = makeService({
       supabase,
       bookingFlow: makeBookingFlow(),
-      ruleResolver: makeRuleResolver({ old: outcome(), new_: outcome() }),
+      ruleResolver: makeRuleResolver(outcome()),
       conflict: makeConflict(),
     });
 
@@ -418,7 +508,7 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
     const svc = makeService({
       supabase,
       bookingFlow: makeBookingFlow({ costPerHour: '100' }),
-      ruleResolver: makeRuleResolver({ old: outcome(), new_: outcome() }),
+      ruleResolver: makeRuleResolver(outcome()),
       conflict: makeConflict(),
     });
 
@@ -443,7 +533,7 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
     const svc = makeService({
       supabase,
       bookingFlow: makeBookingFlow(),
-      ruleResolver: makeRuleResolver({ old: outcome(), new_: outcome() }),
+      ruleResolver: makeRuleResolver(outcome()),
       conflict: makeConflict(),
     });
 
@@ -464,7 +554,7 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
     const svc = makeService({
       supabase,
       bookingFlow: makeBookingFlow({ setupBuffer: 15, teardownBuffer: 15 }),
-      ruleResolver: makeRuleResolver({ old: outcome(), new_: outcome() }),
+      ruleResolver: makeRuleResolver(outcome()),
       conflict,
     });
 
@@ -476,5 +566,145 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
         exclude_ids: [SLOT],
       }),
     );
+  });
+
+  // ── I-CODE-5 — cross-tenant slot path ─────────────────────────────────
+  it('returns 404 when the slot belongs to a different tenant (no leak)', async () => {
+    // Slot fixture is for OTHER_TENANT; the test's tenantId arg is TENANT.
+    // The mock's tenant_id===expectedTenant predicate filters the slot to
+    // null at the .eq('tenant_id', ...) layer — same shape as a real
+    // RLS-protected query.
+    const supabase = makeSupabase({
+      booking: baseBooking(),
+      slot: baseSlot({ tenant_id: OTHER_TENANT }),
+      approvals: [],
+      expectedTenant: TENANT,
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    await expect(svc.assembleEditPlan(baseArgs())).rejects.toMatchObject({
+      code: 'edit_booking.not_found',
+      status: 404,
+    });
+  });
+
+  // ── PLAN-C1 — fail-fast on require_approval-without-approvers ─────────
+  it('throws 422 rule_missing_approvers when new_outcome is require_approval with approvalConfig=null', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking(),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(
+        // Possible per rule-resolver.service.ts:514 (approval_config defaults to null).
+        outcome({ final: 'require_approval', approvalConfig: null }),
+      ),
+      conflict: makeConflict(),
+    });
+
+    await expect(svc.assembleEditPlan(baseArgs({ space_id: SPACE_NEW }))).rejects.toMatchObject({
+      code: 'edit_booking.rule_missing_approvers',
+      status: 422,
+    });
+  });
+
+  it('throws 422 rule_missing_approvers when new_outcome is require_approval with empty required_approvers', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking(),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(
+        outcome({
+          final: 'require_approval',
+          approvalConfig: { required_approvers: [], threshold: 'all' },
+        }),
+      ),
+      conflict: makeConflict(),
+    });
+
+    await expect(svc.assembleEditPlan(baseArgs({ space_id: SPACE_NEW }))).rejects.toMatchObject({
+      code: 'edit_booking.rule_missing_approvers',
+      status: 422,
+    });
+  });
+
+  // ── I-PLAN-3 — discriminated-union dispatch ────────────────────────────
+  it('throws 400 invalid_plan_shape for unimplemented kind="one"', async () => {
+    const supabase = makeSupabase({ booking: baseBooking(), slot: baseSlot(), approvals: [] });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    await expect(
+      svc.assembleEditPlan({
+        bookingId: BOOKING,
+        tenantId: TENANT,
+        slotId: SLOT,
+        patch: { kind: 'one' },
+      }),
+    ).rejects.toMatchObject({
+      code: 'edit_booking.invalid_plan_shape',
+      status: 400,
+    });
+  });
+
+  it('throws 400 invalid_plan_shape for unimplemented kind="scope"', async () => {
+    const supabase = makeSupabase({ booking: baseBooking(), slot: baseSlot(), approvals: [] });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    await expect(
+      svc.assembleEditPlan({
+        bookingId: BOOKING,
+        tenantId: TENANT,
+        slotId: SLOT,
+        patch: { kind: 'scope' },
+      }),
+    ).rejects.toMatchObject({
+      code: 'edit_booking.invalid_plan_shape',
+      status: 400,
+    });
+  });
+
+  // ── N-CODE-7 — applied_rule_ids lexicographic sort ─────────────────────
+  it('emits applied_rule_ids in lexicographic order regardless of resolver fan-out', async () => {
+    const supabase = makeSupabase({ booking: baseBooking(), slot: baseSlot(), approvals: [] });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(
+        outcome({
+          // Resolver fan-out is not lex-sorted — the orchestrator must sort.
+          matchedRules: [
+            { id: 'rule-zeta' } as never,
+            { id: 'rule-alpha' } as never,
+            { id: 'rule-mu' } as never,
+          ],
+        }),
+      ),
+      conflict: makeConflict(),
+    });
+
+    const plan = await svc.assembleEditPlan(baseArgs({ space_id: SPACE_NEW }));
+    expect(plan.booking.applied_rule_ids).toEqual(['rule-alpha', 'rule-mu', 'rule-zeta']);
   });
 });

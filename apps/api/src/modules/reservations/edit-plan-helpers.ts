@@ -21,6 +21,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { AppErrors } from '../../common/errors';
 import type { SupabaseService } from '../../common/supabase/supabase.service';
 import type { ApprovalConfig, RuleEffect } from '../room-booking-rules/dto';
 import type { ResolveOutcome } from '../room-booking-rules/rule-resolver.service';
@@ -92,9 +93,17 @@ export function canonicalApproverSort(approvers: ReadonlyArray<Approver>): Appro
  * `EditPlan.approval.chain_config_changed` (00364:21 + §3.6.5 row 6 vs
  * row 7).
  *
- * Semantics:
- *   - `null === null`           → equal (no chain at either side).
+ * Semantics (NIT N-CODE-1 — null vs [] clarification):
+ *   - `null === null`           → equal (no chain at either side; e.g.
+ *                                 allow on both old + new outcomes).
  *   - `null` vs non-null        → different (chain appearing or vanishing).
+ *                                 Also true when one side is non-null with
+ *                                 `required_approvers=[]`: a non-null
+ *                                 ApprovalConfig is structurally distinct
+ *                                 from `null`, even if its approver list
+ *                                 is empty. Empty-approvers + non-null is
+ *                                 a config-shape bug we want to surface as
+ *                                 "changed" rather than silently equal.
  *   - non-null vs non-null      → equal IFF threshold matches AND the
  *                                 canonically-sorted approver lists are
  *                                 element-wise equal on `(type, id)`.
@@ -129,15 +138,25 @@ export function chainConfigsEqual(
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * Read the most-recent approval chain attached to this booking and
+ * Read the most-recent LIVE approval chain attached to this booking and
  * project it into the `ApprovalConfig` shape so it can be compared
  * structurally against the rule-resolver outcome's chain.
  *
+ * "Live" means at least one row in `('pending', 'delegated', 'approved')`
+ * status. Per spec §3.6.5 chain-state classification (00364:48-57),
+ * `terminal_approved` (all-approved) is still considered active for
+ * reconciliation purposes — Row 4 (require_approval → allow,
+ * terminal_approved) explicitly preserves the approved chain rather than
+ * expiring it. Rows with status='expired' or 'rejected' are NOT live;
+ * including them as "current" was the CRITICAL C2 bug — after a Row 3
+ * reconciliation flips a chain to `expired`, a subsequent edit would have
+ * picked the expired chain and falsely set `old_outcome='require_approval'`
+ * when the booking is now `confirmed` with no live chain.
+ *
  * Reads `approvals` (00012:1-19) for `target_entity_type='booking' AND
- * target_entity_id=bookingId AND tenant_id=tenantId`, picks the
- * `approval_chain_id` with the largest MAX(created_at) (the newest
- * chain — older chains are kept in the audit log as `'expired'` by
- * the §3.6.5 reconciliation), and aggregates rows from THAT chain into:
+ * target_entity_id=bookingId AND tenant_id=tenantId AND status IN (live)`,
+ * picks the `approval_chain_id` with the largest MAX(created_at) (the
+ * newest chain), and aggregates rows from THAT chain into:
  *
  *   - `required_approvers` : list of `{type:'person'|'team', id}` derived
  *                            from `approver_person_id` / `approver_team_id`
@@ -149,20 +168,44 @@ export function chainConfigsEqual(
  *                            :593 + booking-flow.service.ts:1273); else
  *                            `'any'`.
  *
- * Returns `null` when no rows exist for this booking (`v_approval_state =
- * 'none'` at 00364:476-477) — i.e. the booking was created with
- * `final='allow'` and no chain was ever inserted, or the booking is brand
- * new. The caller maps `null` → `old_outcome='allow'`.
+ * Returns `null` when no LIVE rows exist for this booking (`v_approval_state
+ * = 'none'` at 00364:476-477, OR every prior chain is expired/rejected) —
+ * i.e. the booking was created with `final='allow'` and no chain was ever
+ * inserted, the booking is brand new, or every prior chain has been
+ * expired/rejected by the §3.6.5 reconciliation. The caller maps `null` →
+ * `old_outcome='allow'`.
  *
- * NOTE on rows with NULL `approval_chain_id`: legacy single-step rows
- * inserted before chain-id became canonical may have a NULL chain. We
- * treat NULL as a single implicit chain bucket and aggregate them as one
- * chain dated by their max `created_at`. New chains (post-00364) always
- * carry a chain_id, so the NULL bucket will only appear for legacy rows.
+ * NOTE on rows with NULL `approval_chain_id` (CRITICAL C3 — corrected):
+ * verified at booking-flow.service.ts:1275-1296 (`createApprovalRows`) and
+ * supabase/migrations/00309_create_booking_with_attach_plan_rpc.sql, every
+ * approval row inserted via the booking-CREATE path carries
+ * `approval_chain_id IS NULL`. Only edit-driven chains (00364) emit a
+ * non-null chain_id. So the NULL bucket is the DOMINANT case for
+ * approve-on-create bookings, not a "legacy rows" edge case. The bucket
+ * grouping still works because edit-driven chains are inserted with a
+ * larger MAX(created_at), so the newest live chain is selected correctly.
+ * A future migration should backfill chain_id on create-time inserts so
+ * the bucket key is uniformly canonical (tracked in
+ * docs/follow-ups/b4-followups.md "create-time approvals — backfill
+ * approval_chain_id").
  *
  * Tenant boundary: `tenant_id` is filtered explicitly even though the
  * SupabaseService.admin client bypasses RLS — defensive per the
  * `feedback_tenant_id_ultimate_rule` memory.
+ *
+ * Race window (CODE-I-PLAN-2 — accepted, see followups): this read happens
+ * BEFORE the RPC's row lock. An admin grant_booking_approval landing
+ * between the TS read and the RPC's FOR UPDATE could leave
+ * `chain_config_changed` stale. Decision: ACCEPT. Single-edit serialisation
+ * (the RPC's `pg_advisory_xact_lock` per booking) is the primary defense;
+ * a concurrent admin grant during edit-build is rare. Future hardening:
+ * have the RPC re-read approvals inside its row lock and recompute
+ * `chain_config_changed` from `new_chain_config` + live state.
+ *
+ * Throws (CODE-I2): `approval.read_failed` (500 server) when supabase
+ * returns an error. Previously swallowed → null, which lied about chain
+ * presence and let the caller derive `old_outcome='allow'` on a transient
+ * DB blip.
  */
 export async function loadCurrentApprovalChain(
   supabase: SupabaseService,
@@ -178,6 +221,13 @@ export async function loadCurrentApprovalChain(
     status: string;
   };
 
+  // CODE-I-CODE-1: explicit ordering (created_at DESC, then chain_id DESC)
+  // makes the bucket selection deterministic on tied created_at — without
+  // it, two chains created in the same instant would pick non-deterministically.
+  // The ordering is also content-stable (lexicographic uuid tiebreaker) so
+  // tests that pin a fixture to a specific bucket don't flake.
+  // CODE-C2: status IN (pending, delegated, approved) — exclude expired
+  // and rejected chains. See docstring "Live" definition above.
   const { data, error } = await supabase.admin
     .from('approvals')
     .select(
@@ -185,13 +235,19 @@ export async function loadCurrentApprovalChain(
     )
     .eq('tenant_id', tenantId)
     .eq('target_entity_type', 'booking')
-    .eq('target_entity_id', bookingId);
+    .eq('target_entity_id', bookingId)
+    .in('status', ['pending', 'delegated', 'approved'])
+    .order('created_at', { ascending: false })
+    .order('approval_chain_id', { ascending: false, nullsFirst: false });
 
   if (error) {
-    // Surface as null — caller treats null as `old_outcome='allow'` which
-    // is the safe default (no chain to preserve). The orchestrator owns
-    // any retry / failure semantics.
-    return null;
+    // CODE-I2: throw, never swallow. 500 server-class — DB transient
+    // failures during plan assembly are not a payload problem; the user
+    // sees "Try again in a moment" + a traceId.
+    throw AppErrors.server('approval.read_failed', {
+      detail: 'Could not read booking approvals during edit-plan assembly.',
+      cause: error,
+    });
   }
 
   const rows = (data ?? []) as Row[];

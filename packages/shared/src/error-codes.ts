@@ -759,7 +759,25 @@ export type KnownErrorCode =
   | 'edit_booking.deny_on_edit'
   | 'edit_booking.work_order_not_in_booking'
   | 'edit_booking.order_not_in_booking'
-  | 'edit_booking.asset_reservation_not_in_booking';
+  | 'edit_booking.asset_reservation_not_in_booking'
+  // B.4.A.4 step 2D-C self-review remediation (PLAN-C1).
+  // TS-side fail-fast at AssembleEditPlanService when the rule resolver's
+  // new outcome is `require_approval` but `approvalConfig` is null OR
+  // `required_approvers` is empty. Without this, the plan would shape
+  // `new_chain_config=null` + Row 2/7/8 INSERT action, hitting 00364:577-583
+  // with a misleading "edit_booking.invalid_plan_shape" 400. 422 is correct
+  // (payload valid, server config blocks the action — same shape as
+  // edit_booking.deny_on_edit). Possible when rule-resolver.service.ts:514
+  // returns approvalConfig=null for a require_approval rule, or when the
+  // rule is configured with required_approvers=[].
+  | 'edit_booking.rule_missing_approvers'
+  // B.4.A.4 step 2D-C self-review remediation (CODE-I2).
+  // TS-side throw at edit-plan-helpers.ts loadCurrentApprovalChain when the
+  // supabase admin read of `approvals` fails. Previously swallowed → null,
+  // which lied about chain presence (caller derived old_outcome='allow').
+  // 500 server-class — DB transient failures during plan assembly are not a
+  // user payload problem; surface with traceId so ops can investigate.
+  | 'approval.read_failed';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1336,6 +1354,13 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'edit_booking.work_order_not_in_booking',
   'edit_booking.order_not_in_booking',
   'edit_booking.asset_reservation_not_in_booking',
+  // B.4.A.4 step 2D-C self-review remediation (PLAN-C1 + CODE-I2).
+  // rule_missing_approvers: TS-side fail-fast for require_approval-with-no-
+  //   approvers (rule-resolver.service.ts:514 admits null approvalConfig).
+  // approval.read_failed: TS-side throw replacing the silent null return on
+  //   supabase error in loadCurrentApprovalChain.
+  'edit_booking.rule_missing_approvers',
+  'approval.read_failed',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

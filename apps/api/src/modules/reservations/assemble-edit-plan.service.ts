@@ -15,16 +15,23 @@
  *   3. loadSpace(target_space_id) — tenant-scoped via
  *      BookingFlowService.loadSpace (booking-flow.service.ts:1222 —
  *      newly exposed in this step's C1 commit).
- *   4. RuleResolverService.resolve for OLD state → old_outcome,
- *      old chain config.
+ *   4. (Removed N-CODE-5) The OLD-state resolver call was dead — the
+ *      `old_outcome` is derived from chain presence (step 8), not a
+ *      fresh resolver pass on the current geometry. Saved one DB
+ *      round-trip per edit.
  *   5. RuleResolverService.resolve for NEW state → new_outcome,
  *      new chain config + matched rule ids + policy snapshot.
+ *   5b. PLAN-C1 fail-fast: refuse 422 `edit_booking.rule_missing_approvers`
+ *       when the resolver returns require_approval but the rule has no
+ *       approvers. Without this the RPC would raise `invalid_plan_shape`
+ *       (00364:577-583, :627-632) with misleading copy.
  *   6. ConflictGuardService.snapshotBuffersForBooking for the target
  *      slot (excluding the slot being edited so back-to-back-with-self
  *      doesn't false-collapse).
  *   7. computeCostFromHours from the target room's cost_per_hour.
  *   8. loadCurrentApprovalChain → compare to new outcome's chain via
- *      chainConfigsEqual → chain_config_changed boolean.
+ *      chainConfigsEqual → chain_config_changed boolean. The "live"
+ *      chain definition (CODE-C2) excludes expired/rejected rows.
  *   9. Assemble EditPlan jsonb (00364:248-308 contract).
  *
  * Step 2D-C deliberately DEFERS:
@@ -42,7 +49,7 @@
  */
 
 import { Injectable } from '@nestjs/common';
-import { AppErrors } from '../../common/errors';
+import { AppError, AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { ConflictGuardService } from './conflict-guard.service';
 import { BookingFlowService } from './booking-flow.service';
@@ -61,10 +68,18 @@ import type {
 import type { ApprovalConfig } from '../room-booking-rules/dto';
 
 /**
- * Input shape for `assembleEditPlan`. Step 2D-C narrows the patch to
- * geometry-only fields needed by editSlot; Step 2E/2F will widen it
- * (host_person_id, recurrence_overridden, etc.) without breaking
- * existing callers because every new field is optional.
+ * Input shape for `assembleEditPlan`. I-PLAN-3 — narrowed to a
+ * discriminated union on `patch.kind` so contradictory field
+ * combinations fail at TS compile time. Step 2D-C ships only `'slot'`;
+ * Step 2E (`'one'` — single-row recurrence override) and Step 2F
+ * (`'scope'` — multi-slot recurrence fanout) are reserved.
+ *
+ * Adding a new kind:
+ *   1. Extend the union below with the new patch shape.
+ *   2. Add a switch arm in `assembleEditPlan` that dispatches to the
+ *      appropriate target-state builder.
+ *   3. Until shipped, the orchestrator's switch raises `not_yet_implemented`
+ *      so accidental callers get a clean 400 instead of a half-built plan.
  */
 export interface AssembleEditPlanArgs {
   bookingId: string;
@@ -72,19 +87,37 @@ export interface AssembleEditPlanArgs {
   /** Identity of the slot being edited. For multi-slot bookings the
    * caller picks one; Step 2F will fan out to all slots in scope. */
   slotId: string;
-  /** Patch fields. Any field omitted preserves the current slot/booking
-   * value. */
-  patch: {
-    /** Target room. When omitted, the slot's current space is reused. */
-    space_id?: string;
-    start_at?: string;
-    end_at?: string;
-    attendee_count?: number | null;
-    attendee_person_ids?: string[];
-    // Booking-level fields (deferred; Step 2E will surface them).
-    // host_person_id?: string | null;
-    // recurrence_overridden?: boolean;
-  };
+  patch: AssembleEditPlanPatch;
+}
+
+/** Discriminated union of supported edit shapes. */
+export type AssembleEditPlanPatch =
+  | AssembleEditPlanSlotPatch
+  | AssembleEditPlanOnePatch
+  | AssembleEditPlanScopePatch;
+
+/** Step 2D-C — geometry-only edit of a single slot. */
+export interface AssembleEditPlanSlotPatch {
+  kind: 'slot';
+  /** Target room. When omitted, the slot's current space is reused. */
+  space_id?: string;
+  start_at?: string;
+  end_at?: string;
+  attendee_count?: number | null;
+  attendee_person_ids?: string[];
+  // Booking-level fields (deferred; Step 2E will surface them).
+  // host_person_id?: string | null;
+  // recurrence_overridden?: boolean;
+}
+
+/** Step 2E placeholder — single-row recurrence override. Fields TBD. */
+export interface AssembleEditPlanOnePatch {
+  kind: 'one';
+}
+
+/** Step 2F placeholder — multi-slot recurrence fanout. Fields TBD. */
+export interface AssembleEditPlanScopePatch {
+  kind: 'scope';
 }
 
 /**
@@ -115,10 +148,54 @@ export class AssembleEditPlanService {
    * (00364) handles its own gates (idempotency, stale-resolution,
    * tenant-validate every FK, approval reconciliation) — this builder's
    * job is to compute the contract-shape jsonb the RPC trusts.
+   *
+   * I-PLAN-3 — dispatch on `args.patch.kind`. Today only `'slot'` is
+   * implemented; `'one'` / `'scope'` raise `not_yet_implemented` (400)
+   * so accidental callers don't slip through to a half-built plan.
    */
   async assembleEditPlan(args: AssembleEditPlanArgs): Promise<EditPlan> {
-    // Snapshot the resolution timestamp ONCE, BEFORE any rule reads, so
-    // the stale-resolution gate (00364:432-454) sees a coherent value.
+    switch (args.patch.kind) {
+      case 'slot':
+        return this.assembleSlotEditPlan(args, args.patch);
+      case 'one':
+      case 'scope':
+        // Defense-in-depth: the discriminated union keeps the TS-level
+        // gate, but a non-TS caller (or a future cast-around) could
+        // still pass an unimplemented kind. Surface as 400 rather than
+        // building a malformed plan.
+        throw new AppError(
+          'edit_booking.invalid_plan_shape',
+          400,
+          {
+            detail: `assembleEditPlan kind=${args.patch.kind} is not yet implemented (Step 2E/2F).`,
+          },
+        );
+      default: {
+        // exhaustiveness check — TS will error here if a new variant is
+        // added to the union without a switch arm.
+        const _exhaustive: never = args.patch;
+        throw new AppError('edit_booking.invalid_plan_shape', 400, {
+          detail: `assembleEditPlan: unknown patch kind ${JSON.stringify(_exhaustive)}.`,
+        });
+      }
+    }
+  }
+
+  /**
+   * Step 2D-C body — the single-slot, geometry-only edit pipeline.
+   * Mirrors the §3.3 sequence in the file header.
+   */
+  private async assembleSlotEditPlan(
+    args: AssembleEditPlanArgs,
+    patch: AssembleEditPlanSlotPatch,
+  ): Promise<EditPlan> {
+    // N-CODE-4: snapshot the resolution timestamp ONCE, BEFORE any rule
+    // reads + BEFORE the booking read. Deliberate: the RPC's stale-
+    // resolution gate (00364:432-454) compares MAX(room_booking_rules
+    // .updated_at) > _resolution_at; capturing the timestamp BEFORE we
+    // read the booking row keeps the window honest — any rule change
+    // between this line and the RPC call is detectable. Capturing it AFTER
+    // would hide rule churn that happened during the read.
     const resolutionAt = new Date().toISOString();
 
     // ── 1. Load current booking + the target slot ────────────────────
@@ -126,26 +203,21 @@ export class AssembleEditPlanService {
 
     // ── 2. Apply patch → target state ────────────────────────────────
     const target: TargetState = {
-      spaceId: args.patch.space_id ?? slot.space_id,
-      startAt: args.patch.start_at ?? slot.start_at,
-      endAt: args.patch.end_at ?? slot.end_at,
-      attendeeCount: args.patch.attendee_count ?? slot.attendee_count,
-      attendeePersonIds: args.patch.attendee_person_ids ?? slot.attendee_person_ids,
+      spaceId: patch.space_id ?? slot.space_id,
+      startAt: patch.start_at ?? slot.start_at,
+      endAt: patch.end_at ?? slot.end_at,
+      attendeeCount: patch.attendee_count ?? slot.attendee_count,
+      attendeePersonIds: patch.attendee_person_ids ?? slot.attendee_person_ids,
       requesterPersonId: booking.requester_person_id,
     };
 
     // ── 3. Load target space (validates active + reservable) ─────────
     const targetSpace = await this.bookingFlow.loadSpace(target.spaceId);
 
-    // ── 4. Resolve rules for OLD state (current slot geometry) ───────
-    const oldOutcome = await this.ruleResolver.resolve({
-      requester_person_id: booking.requester_person_id,
-      space_id: slot.space_id,
-      start_at: slot.start_at,
-      end_at: slot.end_at,
-      attendee_count: slot.attendee_count ?? null,
-      criteria: {},
-    });
+    // ── 4. (Removed N-CODE-5) The OLD-state resolver call was dead.
+    //   `old_outcome` is derived from chain presence (line below), not
+    //   from a fresh resolver pass. Keeping the call cost a DB round-trip
+    //   per edit for an unused result.
 
     // ── 5. Resolve rules for NEW state (target slot geometry) ────────
     const newOutcome = await this.ruleResolver.resolve({
@@ -156,6 +228,25 @@ export class AssembleEditPlanService {
       attendee_count: target.attendeeCount,
       criteria: {},
     });
+
+    // ── 4b. CRITICAL C1 fail-fast — require_approval with no approvers.
+    //   The rule resolver can return final='require_approval' with
+    //   approvalConfig=null (rule-resolver.service.ts:514) OR with
+    //   approvalConfig.required_approvers=[]. If we shape that into the
+    //   plan, the RPC's 7.d gate (00364:577-583, plus the empty-list
+    //   guard at :627-632) raises edit_booking.invalid_plan_shape (400)
+    //   with a misleading message. Refuse here with a curated 422 so the
+    //   operator sees an actionable copy ("ask an admin to configure
+    //   approvers, or pick a different room").
+    if (newOutcome.final === 'require_approval') {
+      const approvers = newOutcome.approvalConfig?.required_approvers ?? [];
+      if (newOutcome.approvalConfig === null || approvers.length === 0) {
+        throw new AppError('edit_booking.rule_missing_approvers', 422, {
+          detail:
+            'The rule for this room requires approval but no approvers are configured.',
+        });
+      }
+    }
 
     // ── 6. Snapshot buffers for the target slot ──────────────────────
     // exclude_ids includes the slot being edited so the slot's own
@@ -249,6 +340,16 @@ export class AssembleEditPlanService {
       })),
     };
 
+    // N-CODE-7: sort applied_rule_ids lexicographically before persisting.
+    // The rule resolver fan-out order is non-deterministic across runs
+    // (priority/specificity ties); without this, audit_events.details would
+    // show false-positive churn on every edit even when the matched-rule set
+    // didn't change. The fingerprint helper already canonicalises this set.
+    const appliedRuleIds = newOutcome.matchedRules
+      .map((r) => r.id)
+      .slice()
+      .sort();
+
     const plan: EditPlan = {
       booking: {
         location_id: target.spaceId,
@@ -256,7 +357,7 @@ export class AssembleEditPlanService {
         end_at: target.endAt,
         cost_amount_snapshot: newCostSnapshot,
         policy_snapshot: policySnapshot,
-        applied_rule_ids: newOutcome.matchedRules.map((r) => r.id),
+        applied_rule_ids: appliedRuleIds,
       },
       slot_patches: [slotPatch],
       // Step 2D-C scope: linked-row patches are empty.
@@ -312,7 +413,10 @@ export class AssembleEditPlanService {
       throw AppErrors.notFoundWithCode('edit_booking.not_found', `slot ${slotId} not found`);
     }
     if (slot.booking_id !== bookingId) {
-      // Spec §6 cross-booking guard. Same 404 to avoid existence leak.
+      // Spec §3.3 cross-booking guard (booking-edit-pipeline.md). The plan
+      // is per-booking; a slot belonging to a different booking would
+      // smuggle through if the API call's slotId ↔ bookingId pair is
+      // inconsistent. Same 404 to avoid existence leak (spec decision #6.1).
       throw AppErrors.notFoundWithCode('edit_booking.not_found', `slot ${slotId} does not belong to booking ${bookingId}`);
     }
 
@@ -327,6 +431,20 @@ export class AssembleEditPlanService {
    * Threshold defaults to 'all' (mirrors 00364:584
    * `coalesce(v_new_chain_config->>'threshold', 'all')`) so the RPC's
    * v_parallel_group derivation is deterministic.
+   *
+   * CRITICAL C1 — empty-approvers contract (corrected). The earlier
+   * docstring claimed returning null here "short-circuits" the RPC's
+   * invalid_plan_shape gate. That was WRONG: when new_outcome is
+   * 'require_approval', §3.6.5 row 2/7/8 sets v_action='insert' and the
+   * RPC's 7.d gate at 00364:577-583 RAISES on null new_chain_config.
+   * The actual contract is now: `assembleSlotEditPlan` fails-fast with
+   * `edit_booking.rule_missing_approvers` (422) BEFORE this method runs
+   * for the empty-approvers case. By the time we reach this method with
+   * `final='require_approval'`, approvers.length is guaranteed >= 1.
+   * The empty-array branch below is therefore unreachable in practice
+   * (defense-in-depth — keep it returning null so an accidental future
+   * caller bypassing the fail-fast at least gets the misleading 400 from
+   * the RPC instead of leaking through).
    */
   private shapeChainConfigForPlan(
     config: ApprovalConfig | null,
@@ -334,11 +452,8 @@ export class AssembleEditPlanService {
     if (config === null) return null;
     const approvers = config.required_approvers ?? [];
     if (approvers.length === 0) {
-      // The RPC raises edit_booking.invalid_plan_shape (00364:627-632)
-      // when an INSERT is required but required_approvers is empty.
-      // Returning null short-circuits that — the new_outcome will be
-      // 'require_approval' but no insert will happen unless the rule
-      // resolver returns at least one approver.
+      // Defense-in-depth — see C1 contract above. Reachable only if a
+      // future code path skips the fail-fast in `assembleSlotEditPlan`.
       return null;
     }
     return {

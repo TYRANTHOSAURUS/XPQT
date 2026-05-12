@@ -110,3 +110,76 @@ section "B.4.A.4 audit payload — chain_config_changed visibility".
 
 Low-priority — only matters when investigating a tenant complaint about
 unexpected approval re-trigger.
+
+## create-time approvals — backfill `approval_chain_id`
+
+Self-review on Step 2D-C surfaced (CRITICAL C3 — corrected): every
+approval row inserted via `BookingFlowService.createApprovalRows`
+(`apps/api/src/modules/reservations/booking-flow.service.ts:1275-1296`)
+and via `supabase/migrations/00309_create_booking_with_attach_plan_rpc
+.sql` (the create RPC) is written WITHOUT an `approval_chain_id`. The
+column is left NULL by default. Only edit-driven chains (00364
+`edit_booking` v4) emit a non-null chain id (`gen_random_uuid()` at
+:598).
+
+This is not a correctness bug today: `loadCurrentApprovalChain` in
+`apps/api/src/modules/reservations/edit-plan-helpers.ts` groups by
+`approval_chain_id` with a NULL bucket, and edit-driven chains are
+always newer than create-time NULLs (so the MAX(created_at) selection
+picks the right bucket). But:
+
+- The bucket key is asymmetric (NULL vs. uuid), and a future helper
+  that joins on chain_id would silently drop create-time chains.
+- Audit-event payloads that include chain_id will show `chain_id=NULL`
+  for the original create-time chain, which is hard to read.
+- A booking that has NEVER been edited has `approval_chain_id IS NULL`
+  on every approval row — comparing two such bookings by chain id is
+  meaningless.
+
+**Fix shape (deferred to Phase 8 cleanup, not Step 2D scope):**
+1. Add `chain_id uuid` parameter to `createApprovalRows`; default to
+   `gen_random_uuid()` per call.
+2. Update 00309's INSERT block to mint and pass the chain id.
+3. Add a one-shot migration that backfills `approval_chain_id` for
+   pre-existing rows by grouping rows-per-booking and assigning a fresh
+   uuid per group.
+4. Drop the NULL-bucket case in `loadCurrentApprovalChain`.
+
+Tracked here so the next person touching `loadCurrentApprovalChain`
+knows the NULL bucket is the dominant case for approve-on-create
+bookings, not a "legacy rows" edge case.
+
+## TS-vs-RPC race window — `chain_config_changed` (I-PLAN-2)
+
+Self-review on Step 2D-C raised the race window between TS-side
+`loadCurrentApprovalChain` and the RPC's row lock. Sequence:
+
+1. TS edit-plan builder reads `approvals` (current chain).
+2. Some time elapses (rule resolver runs, conflict snapshot, etc.).
+3. An admin's `grant_booking_approval` lands and flips a row.
+4. TS computes `chain_config_changed` from the now-stale read.
+5. RPC takes its row lock + applies the plan.
+
+The TS-computed `chain_config_changed` may be stale at step 5. In
+practice the impact is bounded:
+- `grant_booking_approval` sets `responded_at` + `responded_by` but does
+  not change `parallel_group` / `approver_person_id` / `approver_team_id`,
+  so the chain CONFIG (the structural shape we compare) is invariant.
+- A second admin edit landing in the window WOULD change the chain;
+  edit serialization (the RPC's `pg_advisory_xact_lock` per booking) is
+  the primary defense and prevents that.
+
+**Decision: ACCEPT the race for now.** The advisory lock + the
+chain-config-not-status semantics make the window safe in practice.
+
+**Future hardening (when worth the engineering cost):**
+- The RPC re-reads approvals INSIDE its row lock and recomputes
+  `chain_config_changed` from `new_chain_config` + live state. This
+  retires the TS-computed boolean as a contract field — the RPC becomes
+  the single source of truth for chain identity.
+- Tracked here so the next time `chain_config_changed` is mentioned in
+  a defect (e.g., audit-trail discrepancy), this is the first place to
+  look.
+
+Documented in code at `loadCurrentApprovalChain`'s docstring + this
+followup so the contract decision is auditable.

@@ -1762,6 +1762,24 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save the booking — not found",
     detail: 'An asset reservation in the edit no longer belongs to this booking. Refresh the page and try again.',
   },
+  // B.4.A.4 step 2D-C self-review remediation (PLAN-C1).
+  // rule_missing_approvers: thrown by AssembleEditPlanService when the
+  // rule resolver's outcome is require_approval but approvalConfig is null
+  // OR required_approvers is empty. Operator-actionable: an admin must
+  // configure approvers on the rule for this room, OR pick a different room.
+  'edit_booking.rule_missing_approvers': {
+    title: "Couldn't save the booking",
+    detail: 'The rule for this room requires approval but no approvers are configured. Ask an administrator to configure approvers, or pick a different room.',
+  },
+  // B.4.A.4 step 2D-C self-review remediation (CODE-I2).
+  // approval.read_failed: AssembleEditPlanService.loadCurrentApprovalChain
+  // could not read the approvals table. Generic server-class voice; the
+  // traceId attached by the filter routes ops to the underlying supabase
+  // error.
+  'approval.read_failed': {
+    title: "Couldn't save the booking",
+    detail: "We couldn't read this booking's approval state. Try again in a moment.",
+  },
 };
 
 /**

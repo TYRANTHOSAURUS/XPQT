@@ -201,12 +201,17 @@ describe('loadCurrentApprovalChain', () => {
   const BOOKING = '4d4d4d4d-4d4d-4d4d-4d4d-4d4d4d4d4d4d';
 
   function makeSupabase(rows: unknown[] | { error: { message: string } }) {
-    const select = jest.fn().mockReturnThis();
+    // The chain we expose is select → eq → eq → eq → in → order → order
+    // (mirrors the helper's exact builder shape after CODE-C2 + I-CODE-1).
+    // Each step is a jest mock returning `this`, so we can both let the
+    // chain resolve naturally AND assert each was called with the right
+    // args (I-CODE-4 — tightened mocks).
     const builder: Record<string, jest.Mock> = {
-      select,
+      select: jest.fn().mockReturnThis(),
       eq: jest.fn().mockReturnThis(),
+      in: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
     };
-    // Final await consumes the "thenable" — return data/error per the rows arg.
     (builder as unknown as PromiseLike<unknown>).then = (resolve: (v: unknown) => unknown) => {
       if ('error' in (rows as object)) {
         return Promise.resolve(resolve({ data: null, error: (rows as { error: unknown }).error }));
@@ -216,19 +221,46 @@ describe('loadCurrentApprovalChain', () => {
     const admin = {
       from: jest.fn(() => builder),
     };
-    return { admin } as never;
+    // The helper takes a SupabaseService — cast for the call site. Tests
+    // also need to introspect builder mocks; expose both via the returned
+    // object. Tests pass `sb.client` to the helper and read `sb.builder`.
+    const sb = {
+      admin,
+      builder,
+      client: { admin } as unknown as Parameters<typeof loadCurrentApprovalChain>[0],
+    };
+    return sb;
   }
 
   it('returns null when no rows', async () => {
     const sb = makeSupabase([]);
-    const result = await loadCurrentApprovalChain(sb, BOOKING, TENANT);
+    const result = await loadCurrentApprovalChain(sb.client, BOOKING, TENANT);
     expect(result).toBeNull();
   });
 
-  it('returns null on supabase error', async () => {
+  it('throws approval.read_failed on supabase error (CODE-I2)', async () => {
     const sb = makeSupabase({ error: { message: 'rls denied' } });
-    const result = await loadCurrentApprovalChain(sb, BOOKING, TENANT);
-    expect(result).toBeNull();
+    await expect(loadCurrentApprovalChain(sb.client, BOOKING, TENANT)).rejects.toMatchObject({
+      code: 'approval.read_failed',
+      status: 500,
+    });
+  });
+
+  it('filters by tenant + booking + live status (CODE-C2)', async () => {
+    const sb = makeSupabase([]);
+    await loadCurrentApprovalChain(sb.client, BOOKING, TENANT);
+    // Tenant + entity-type + entity-id eq filters in order.
+    expect(sb.builder.eq).toHaveBeenCalledWith('tenant_id', TENANT);
+    expect(sb.builder.eq).toHaveBeenCalledWith('target_entity_type', 'booking');
+    expect(sb.builder.eq).toHaveBeenCalledWith('target_entity_id', BOOKING);
+    // Status filter — only live chains.
+    expect(sb.builder.in).toHaveBeenCalledWith('status', ['pending', 'delegated', 'approved']);
+    // Deterministic ordering (I-CODE-1).
+    expect(sb.builder.order).toHaveBeenCalledWith('created_at', { ascending: false });
+    expect(sb.builder.order).toHaveBeenCalledWith('approval_chain_id', {
+      ascending: false,
+      nullsFirst: false,
+    });
   });
 
   it('aggregates a single chain with parallel_group → threshold "all"', async () => {
@@ -250,7 +282,7 @@ describe('loadCurrentApprovalChain', () => {
         status: 'pending',
       },
     ]);
-    const result = await loadCurrentApprovalChain(sb, BOOKING, TENANT);
+    const result = await loadCurrentApprovalChain(sb.client, BOOKING, TENANT);
     expect(result).not.toBeNull();
     expect(result?.threshold).toBe('all');
     expect(result?.required_approvers).toEqual(
@@ -273,12 +305,17 @@ describe('loadCurrentApprovalChain', () => {
         status: 'pending',
       },
     ]);
-    const result = await loadCurrentApprovalChain(sb, BOOKING, TENANT);
+    const result = await loadCurrentApprovalChain(sb.client, BOOKING, TENANT);
     expect(result?.threshold).toBe('any');
     expect(result?.required_approvers).toEqual([{ type: 'person', id: 'p1' }]);
   });
 
-  it('picks the newest chain when two chains exist (older one expired)', async () => {
+  it('picks the newest live chain when two pending chains exist (CODE-C2)', async () => {
+    // Real DB filters status='expired' rows out via the helper's
+    // `.in('status', [...])` clause. The mock doesn't enforce that, so
+    // the structural status-filter assertion lives in the "filters by
+    // tenant + booking + live status" test above. Here we use two LIVE
+    // chains and verify the bucket-by-MAX(created_at) selection.
     const sb = makeSupabase([
       {
         approval_chain_id: 'old-chain',
@@ -286,7 +323,7 @@ describe('loadCurrentApprovalChain', () => {
         approver_person_id: 'p_old',
         approver_team_id: null,
         created_at: '2026-05-10T09:00:00Z',
-        status: 'expired',
+        status: 'pending',
       },
       {
         approval_chain_id: 'new-chain',
@@ -297,7 +334,7 @@ describe('loadCurrentApprovalChain', () => {
         status: 'pending',
       },
     ]);
-    const result = await loadCurrentApprovalChain(sb, BOOKING, TENANT);
+    const result = await loadCurrentApprovalChain(sb.client, BOOKING, TENANT);
     expect(result?.required_approvers).toEqual([{ type: 'person', id: 'p_new' }]);
   });
 
@@ -312,7 +349,7 @@ describe('loadCurrentApprovalChain', () => {
         status: 'pending',
       },
     ]);
-    const result = await loadCurrentApprovalChain(sb, BOOKING, TENANT);
+    const result = await loadCurrentApprovalChain(sb.client, BOOKING, TENANT);
     // All rows skipped → required_approvers empty → returns null
     expect(result).toBeNull();
   });
@@ -423,5 +460,30 @@ describe('computeRuleOutcomeFingerprint', () => {
     const a = computeRuleOutcomeFingerprint(makeOutcome({ effects: ['warn', 'allow_override'] }));
     const b = computeRuleOutcomeFingerprint(makeOutcome({ effects: ['allow_override', 'warn'] }));
     expect(a).toBe(b);
+  });
+
+  // N-CODE-6 — defensive: same id under different approver types must
+  // produce different fingerprints. Without this, a chain accidentally
+  // restructured from `{type:'person', id:'a'}` to `{type:'team', id:'a'}`
+  // (e.g. a config-engine bug or a poorly-typed JSON migration) would
+  // pass the stale-resolution gate as if "nothing changed".
+  it('flips when approver type changes for the same id', () => {
+    const a = computeRuleOutcomeFingerprint(
+      makeOutcome({
+        approvalConfig: {
+          required_approvers: [{ type: 'person', id: 'a' }],
+          threshold: 'all',
+        },
+      }),
+    );
+    const b = computeRuleOutcomeFingerprint(
+      makeOutcome({
+        approvalConfig: {
+          required_approvers: [{ type: 'team', id: 'a' }],
+          threshold: 'all',
+        },
+      }),
+    );
+    expect(a).not.toBe(b);
   });
 });

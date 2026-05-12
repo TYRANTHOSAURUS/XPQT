@@ -222,6 +222,13 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // `approval_reconciliation_required` (RETIRED — approval reconciliation
   // now happens inside the RPC per §3.6.5 decision table).
   'edit_booking.deny_on_edit': 422,
+  // B.4.A.4 step 2D-C self-review remediation (PLAN-C1).
+  // rule_missing_approvers fires TS-side at AssembleEditPlanService when
+  // the resolver returns require_approval but approvalConfig is null OR
+  // required_approvers is empty. TS already constructs AppError with
+  // status=422; this entry is defense-in-depth for any future RPC raise of
+  // the same code (none today; the gate is exclusively TS-side).
+  'edit_booking.rule_missing_approvers': 422,
   // B.2.A semantic re-derivation gates — RPCs raise these when the
   // TS-side plan disagrees with the server's recomputation at write time
   // (workflow/SLA/scope-override changed, effective location resolved
@@ -244,6 +251,13 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'update_entity_sla.timers_required': 500,
   'dispatch_child_work_order.timers_required': 500,
   'command_operations.unexpected_state': 500,
+  // B.4.A.4 step 2D-C self-review remediation (CODE-I2).
+  // approval.read_failed surfaces a transient supabase failure during the
+  // edit-plan builder's `loadCurrentApprovalChain` read. Server-class:
+  // the user payload is fine, the DB blip is operational. TS already
+  // constructs AppError with status=500 via AppErrors.server; this entry
+  // is defense-in-depth for any future RPC raise of the same code.
+  'approval.read_failed': 500,
 };
 
 /**

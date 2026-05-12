@@ -1664,6 +1664,17 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't save the booking — not found",
     detail: 'An asset reservation in the edit no longer belongs to this booking. Refresh the page and try again.',
   },
+  // B.4.A.4 step 2D-C self-review remediation (PLAN-C1 + CODE-I2).
+  // Voice mirrors the rest of the edit_booking family. Same copy as the
+  // server registry so render fallbacks match.
+  'edit_booking.rule_missing_approvers': {
+    title: "Couldn't save the booking",
+    detail: 'The rule for this room requires approval but no approvers are configured. Ask an administrator to configure approvers, or pick a different room.',
+  },
+  'approval.read_failed': {
+    title: "Couldn't save the booking",
+    detail: "We couldn't read this booking's approval state. Try again in a moment.",
+  },
 };
 
 /**
