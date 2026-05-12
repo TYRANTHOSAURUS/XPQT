@@ -955,6 +955,10 @@ apps/api/src/modules/reservations/recurrence.service.ts:80:   * bundle's orders 
 apps/api/src/modules/reservations/recurrence.service.ts:86:      reservation_id: string;
 apps/api/src/modules/reservations/recurrence.service.ts:937:    // Caller signature kept as `reservation_id` for now — the
 apps/api/src/modules/reservations/recurrence.service.ts:943:          reservation_id: id,
+apps/api/src/modules/reservations/__tests__/assemble-edit-plan.service.spec.ts:718:// editOne (PATCH /reservations/:id) plan-assembly. Mirrors the kind='slot'
+apps/api/src/modules/reservations/assemble-edit-plan.service.ts:12: *     edit (PATCH /reservations/:id) for single-occurrence bookings,
+apps/api/src/modules/reservations/assemble-edit-plan.service.ts:116: * Step 2E — booking-level (`PATCH /reservations/:id`) edit.
+apps/api/src/modules/reservations/assemble-edit-plan.service.ts:242:   * (`PATCH /reservations/:id`). The caller resolves the PRIMARY slot id
 apps/api/src/modules/reservations/reservation-edit-slot.spec.ts:9:// replaces the booking-id PATCH /reservations/:id when geometry is being
 apps/api/src/modules/reservations/reservation-projection.ts:78:    id: booking.id,                                // BREAKING — was reservations.id
 apps/api/src/modules/reservations/reservation-visibility.service.ts:151:   * Apply a visibility filter to a Supabase query for reservations list.

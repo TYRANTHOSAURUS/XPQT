@@ -56,6 +56,10 @@ interface BookingRow {
   start_at: string;
   end_at: string;
   status: string;
+  /** Step 2E — null on standalone bookings; UUID when part of a series.
+   * The plan-builder reads this to decide whether to auto-set
+   * booking_patch.recurrence_overridden on kind='one' edits. */
+  recurrence_series_id: string | null;
 }
 
 interface SlotRow {
@@ -278,6 +282,7 @@ function baseBooking(overrides: Partial<BookingRow> = {}): BookingRow {
     start_at: '2026-05-12T09:00:00Z',
     end_at: '2026-05-12T10:00:00Z',
     status: 'confirmed',
+    recurrence_series_id: null,
     ...overrides,
   };
 }
@@ -658,28 +663,9 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
   });
 
   // ── I-PLAN-3 — discriminated-union dispatch ────────────────────────────
-  it('throws 400 invalid_plan_shape for unimplemented kind="one"', async () => {
-    const supabase = makeSupabase({ booking: baseBooking(), slot: baseSlot(), approvals: [] });
-    const svc = makeService({
-      supabase,
-      bookingFlow: makeBookingFlow(),
-      ruleResolver: makeRuleResolver(outcome()),
-      conflict: makeConflict(),
-    });
-
-    await expect(
-      svc.assembleEditPlan({
-        bookingId: BOOKING,
-        tenantId: TENANT,
-        slotId: SLOT,
-        patch: { kind: 'one' },
-      }),
-    ).rejects.toMatchObject({
-      code: 'edit_booking.invalid_plan_shape',
-      status: 400,
-    });
-  });
-
+  // kind='one' moved out of the not-yet-implemented bucket in Step 2E
+  // (see `describe('AssembleEditPlanService.assembleEditPlan — kind="one"', ...)`
+  // below). kind='scope' stays deferred to Step 2F.
   it('throws 400 invalid_plan_shape for unimplemented kind="scope"', async () => {
     const supabase = makeSupabase({ booking: baseBooking(), slot: baseSlot(), approvals: [] });
     const svc = makeService({
@@ -723,5 +709,253 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
 
     const plan = await svc.assembleEditPlan(baseArgs({ space_id: SPACE_NEW }));
     expect(plan.booking.applied_rule_ids).toEqual(['rule-alpha', 'rule-mu', 'rule-zeta']);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// B.4 Step 2E — `kind: 'one'` tests.
+//
+// editOne (PATCH /reservations/:id) plan-assembly. Mirrors the kind='slot'
+// coverage above but adds:
+//   - host_person_id surfaces on booking_patch when patched.
+//   - recurrence_overridden=true auto-set when booking has
+//     recurrence_series_id and any patched field would change state.
+//   - Booking-level fields don't leak into slot_patches[].
+// ─────────────────────────────────────────────────────────────────────
+
+const HOST = '88888888-8888-4888-8888-888888888888';
+const SERIES = '99999999-9999-4999-8999-9999999999aa';
+
+function oneArgs(
+  patchOverrides: Partial<Omit<import('../assemble-edit-plan.service').AssembleEditPlanOnePatch, 'kind'>> = {},
+): AssembleEditPlanArgs {
+  return {
+    bookingId: BOOKING,
+    tenantId: TENANT,
+    slotId: SLOT,
+    patch: { kind: 'one', ...patchOverrides },
+  };
+}
+
+describe('AssembleEditPlanService.assembleEditPlan — kind="one" (Step 2E)', () => {
+  it('builds a plan for a geometry-only edit (same shape as kind="slot")', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking(),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const ruleResolver = makeRuleResolver(outcome());
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver,
+      conflict: makeConflict(),
+    });
+
+    const plan = await svc.assembleEditPlan(
+      oneArgs({ start_at: '2026-05-12T11:00:00Z', end_at: '2026-05-12T12:00:00Z' }),
+    );
+
+    expect(plan.booking.location_id).toBe(SPACE_OLD);
+    expect(plan.booking.start_at).toBe('2026-05-12T11:00:00Z');
+    expect(plan.booking.end_at).toBe('2026-05-12T12:00:00Z');
+    expect(plan.slot_patches).toHaveLength(1);
+    expect(plan.slot_patches[0].slot_id).toBe(SLOT);
+    expect(plan.approval.old_outcome).toBe('allow');
+    expect(plan.approval.new_outcome).toBe('allow');
+    // No host_person_id key when patch didn't carry one — RPC's case-when
+    // at 00364:763-767 falls back to v_booking.host_person_id.
+    expect(plan.booking.host_person_id).toBeUndefined();
+    // Non-series booking — never auto-set the override flag.
+    expect(plan.booking.recurrence_overridden).toBeUndefined();
+    expect((ruleResolver as unknown as { resolve: jest.Mock }).resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('puts host_person_id on booking_patch when patched (string)', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking(),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    const plan = await svc.assembleEditPlan(oneArgs({ host_person_id: HOST }));
+
+    expect(plan.booking.host_person_id).toBe(HOST);
+    // Booking-level field doesn't leak into slot_patches — slot_patches
+    // is the geometry payload; host belongs on the booking row.
+    const slotPatch = plan.slot_patches[0] as Record<string, unknown>;
+    expect(slotPatch).not.toHaveProperty('host_person_id');
+  });
+
+  it('treats explicit null host_person_id as "clear" (vs undefined = "preserve")', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking(),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    const plan = await svc.assembleEditPlan(oneArgs({ host_person_id: null }));
+
+    // Key is PRESENT with literal null value. The RPC's
+    // `nullif(...,'')::uuid` at 00364:765 produces SQL NULL — the
+    // "clear" semantics. Key absence would mean "preserve current".
+    expect('host_person_id' in plan.booking).toBe(true);
+    expect(plan.booking.host_person_id).toBeNull();
+  });
+
+  it('auto-sets recurrence_overridden=true when booking has recurrence_series_id and any field is patched', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking({ recurrence_series_id: SERIES }),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    const plan = await svc.assembleEditPlan(oneArgs({ start_at: '2026-05-12T11:00:00Z' }));
+
+    expect(plan.booking.recurrence_overridden).toBe(true);
+  });
+
+  it('auto-sets recurrence_overridden=true on booking-level-only patches (host_person_id)', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking({ recurrence_series_id: SERIES }),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    const plan = await svc.assembleEditPlan(oneArgs({ host_person_id: HOST }));
+
+    expect(plan.booking.recurrence_overridden).toBe(true);
+  });
+
+  it('does NOT auto-set recurrence_overridden on non-series bookings', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking({ recurrence_series_id: null }),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    const plan = await svc.assembleEditPlan(oneArgs({ start_at: '2026-05-12T11:00:00Z' }));
+
+    expect(plan.booking.recurrence_overridden).toBeUndefined();
+  });
+
+  it('does NOT auto-set recurrence_overridden when the patch carries no fields (no-op)', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking({ recurrence_series_id: SERIES }),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    // Empty patch — no fields to override on. The legacy editOne path
+    // early-returned in this case (reservation.service.ts:821-827);
+    // post-cutover the controller's caller is expected to short-circuit
+    // too. The plan-builder itself just doesn't set the override flag.
+    const plan = await svc.assembleEditPlan(oneArgs());
+    expect(plan.booking.recurrence_overridden).toBeUndefined();
+  });
+
+  it('reconciles approval the same way as kind="slot" (allow → require_approval)', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking(),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const newChain = approvalConfig({ type: 'person', id: APPROVER_A });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(
+        outcome({ final: 'require_approval', approvalConfig: newChain }),
+      ),
+      conflict: makeConflict(),
+    });
+
+    const plan = await svc.assembleEditPlan(oneArgs({ space_id: SPACE_NEW }));
+
+    expect(plan.approval.old_outcome).toBe('allow');
+    expect(plan.approval.new_outcome).toBe('require_approval');
+    expect(plan.approval.chain_config_changed).toBe(true);
+  });
+
+  it('computes cost_amount_snapshot for kind="one" (same path as kind="slot")', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking(),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow({ costPerHour: '100' }),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    const plan = await svc.assembleEditPlan(
+      oneArgs({
+        space_id: SPACE_NEW,
+        start_at: '2026-05-12T11:00:00Z',
+        end_at: '2026-05-12T12:30:00Z',
+      }),
+    );
+
+    // 100 * (90 / 60) = 150.00 — same math as the kind="slot" cost test.
+    expect(plan.booking.cost_amount_snapshot).toBe('150.00');
+  });
+
+  it('PLAN-C1 fail-fast still fires on require_approval-without-approvers (kind="one")', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking(),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(
+        outcome({ final: 'require_approval', approvalConfig: null }),
+      ),
+      conflict: makeConflict(),
+    });
+
+    await expect(svc.assembleEditPlan(oneArgs({ space_id: SPACE_NEW }))).rejects.toMatchObject({
+      code: 'edit_booking.rule_missing_approvers',
+      status: 422,
+    });
   });
 });

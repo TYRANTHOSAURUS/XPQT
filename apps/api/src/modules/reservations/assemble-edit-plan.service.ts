@@ -1,11 +1,16 @@
 /**
- * B.4 step 2D-C — `AssembleEditPlanService`.
+ * B.4 step 2D-C + 2E — `AssembleEditPlanService`.
  *
  * Builds the `EditPlan` jsonb the `edit_booking` RPC consumes
  * (supabase/migrations/00364_edit_booking_rpc_v4.sql:200-308 contract;
  * spec docs/follow-ups/b4-booking-edit-pipeline.md §3.3).
  *
- * Step 2D-D (TS editSlot cutover) will be the first caller.
+ * Callers wired:
+ *   - Step 2D-D: ReservationService.editSlot (kind='slot') — drag/resize
+ *     on the desk scheduler.
+ *   - Step 2E: ReservationService.editOne (kind='one') — booking-level
+ *     edit (PATCH /reservations/:id) for single-occurrence bookings,
+ *     including booking-level fields like `host_person_id`.
  *
  * Pipeline mirrors §3.3:
  *   1. Load current booking + slots (FOR UPDATE happens inside the RPC,
@@ -105,14 +110,37 @@ export interface AssembleEditPlanSlotPatch {
   end_at?: string;
   attendee_count?: number | null;
   attendee_person_ids?: string[];
-  // Booking-level fields (deferred; Step 2E will surface them).
-  // host_person_id?: string | null;
-  // recurrence_overridden?: boolean;
 }
 
-/** Step 2E placeholder — single-row recurrence override. Fields TBD. */
+/**
+ * Step 2E — booking-level (`PATCH /reservations/:id`) edit.
+ *
+ * Caller resolves the booking's PRIMARY slot id (lowest `display_order`,
+ * ties by `created_at`) and passes it in `args.slotId`. The plan-builder
+ * applies geometry/meta to that slot the same way `'slot'` does; the
+ * additional `host_person_id` field lands on the booking-patch (00364:
+ * 647-652 validates tenant membership; :763-767 applies the new value).
+ *
+ * `recurrence_overridden` is NOT a caller-supplied field — the builder
+ * sets it automatically on the booking_patch when the booking has
+ * `recurrence_series_id IS NOT NULL` AND any patched field (geometry or
+ * booking-level) would actually change state. Mirrors the legacy editOne
+ * behavior at reservation.service.ts:817-819.
+ */
 export interface AssembleEditPlanOnePatch {
   kind: 'one';
+  /** Slot-level: target room. Defaults to the primary slot's current space. */
+  space_id?: string;
+  /** Slot-level: target window start. */
+  start_at?: string;
+  /** Slot-level: target window end. */
+  end_at?: string;
+  /** Slot-level: attendee headcount. `null` clears the override. */
+  attendee_count?: number | null;
+  /** Slot-level: attendee person ids (per-slot). */
+  attendee_person_ids?: string[];
+  /** Booking-level: host person. `null` clears the value. */
+  host_person_id?: string | null;
 }
 
 /** Step 2F placeholder — multi-slot recurrence fanout. Fields TBD. */
@@ -158,16 +186,18 @@ export class AssembleEditPlanService {
       case 'slot':
         return this.assembleSlotEditPlan(args, args.patch);
       case 'one':
+        return this.assembleOneEditPlan(args, args.patch);
       case 'scope':
         // Defense-in-depth: the discriminated union keeps the TS-level
         // gate, but a non-TS caller (or a future cast-around) could
         // still pass an unimplemented kind. Surface as 400 rather than
-        // building a malformed plan.
+        // building a malformed plan. Step 2E ships kind='one'; kind=
+        // 'scope' is Step 2F (multi-slot recurrence fanout).
         throw new AppError(
           'edit_booking.invalid_plan_shape',
           400,
           {
-            detail: `assembleEditPlan kind=${args.patch.kind} is not yet implemented (Step 2E/2F).`,
+            detail: `assembleEditPlan kind=${args.patch.kind} is not yet implemented (Step 2F).`,
           },
         );
       default: {
@@ -183,11 +213,82 @@ export class AssembleEditPlanService {
 
   /**
    * Step 2D-C body — the single-slot, geometry-only edit pipeline.
-   * Mirrors the §3.3 sequence in the file header.
+   * Mirrors the §3.3 sequence in the file header. Now a thin wrapper
+   * around `buildSingleSlotPlan` (the shared core also used by
+   * `assembleOneEditPlan` — Step 2E).
    */
   private async assembleSlotEditPlan(
     args: AssembleEditPlanArgs,
     patch: AssembleEditPlanSlotPatch,
+  ): Promise<EditPlan> {
+    return this.buildSingleSlotPlan(args, {
+      space_id: patch.space_id,
+      start_at: patch.start_at,
+      end_at: patch.end_at,
+      attendee_count: patch.attendee_count,
+      attendee_person_ids: patch.attendee_person_ids,
+      host_person_id: undefined,
+      // recurrence_overridden is NOT auto-set on slot-kind edits — the
+      // 'slot' kind targets a specific slot under drag/resize and the
+      // legacy editSlot path never set it. Only 'one'-kind edits flip
+      // the booking-level override flag (mirrors editOne legacy
+      // behavior at reservation.service.ts:817-819).
+      auto_set_recurrence_overridden: false,
+    });
+  }
+
+  /**
+   * Step 2E body — single-occurrence booking-level edit
+   * (`PATCH /reservations/:id`). The caller resolves the PRIMARY slot id
+   * (lowest `display_order`, ties by `created_at`) and passes it in
+   * `args.slotId`. From there the plan-building flow is identical to
+   * `assembleSlotEditPlan`, plus:
+   *   - `host_person_id` lands on the booking-patch (RPC validates tenant
+   *     ownership at 00364:647-652 and applies the new value at :763-767).
+   *   - `recurrence_overridden=true` is auto-set on the booking-patch
+   *     when the booking has `recurrence_series_id IS NOT NULL` AND any
+   *     patched field would actually change state. Mirrors the legacy
+   *     editOne behavior at reservation.service.ts:817-819 (pre-cutover).
+   */
+  private async assembleOneEditPlan(
+    args: AssembleEditPlanArgs,
+    patch: AssembleEditPlanOnePatch,
+  ): Promise<EditPlan> {
+    return this.buildSingleSlotPlan(args, {
+      space_id: patch.space_id,
+      start_at: patch.start_at,
+      end_at: patch.end_at,
+      attendee_count: patch.attendee_count,
+      attendee_person_ids: patch.attendee_person_ids,
+      host_person_id: patch.host_person_id,
+      auto_set_recurrence_overridden: true,
+    });
+  }
+
+  /**
+   * Shared single-slot-edit core. Both `kind:'slot'` (Step 2D-C) and
+   * `kind:'one'` (Step 2E) flow through here. The only differences:
+   *   - `kind:'one'` may patch `host_person_id` (booking-level field).
+   *   - `kind:'one'` auto-sets `recurrence_overridden=true` when the
+   *     booking is part of a series and ANY patched field would change.
+   *
+   * Citation: pre-extraction this was the body of `assembleSlotEditPlan`.
+   * The §3.3 step numbers in the comments match the spec.
+   */
+  private async buildSingleSlotPlan(
+    args: AssembleEditPlanArgs,
+    patch: {
+      space_id?: string;
+      start_at?: string;
+      end_at?: string;
+      attendee_count?: number | null;
+      attendee_person_ids?: string[];
+      /** Booking-level. `undefined` = preserve. `null` = clear. */
+      host_person_id?: string | null;
+      /** When true and the booking is part of a series and any field is
+       * patched, sets `booking_patch.recurrence_overridden = true`. */
+      auto_set_recurrence_overridden: boolean;
+    },
   ): Promise<EditPlan> {
     // N-CODE-4: snapshot the resolution timestamp ONCE, BEFORE any rule
     // reads + BEFORE the booking read. Deliberate: the RPC's stale-
@@ -321,7 +422,7 @@ export class AssembleEditPlanService {
     // ── 11. Assemble booking-level patch ─────────────────────────────
     // location_id mirrors target.spaceId (single-slot edits anchor the
     // booking at the slot's space — same convention as create-time at
-    // booking-flow.service.ts:259). For multi-slot bookings, Step 2E/2F
+    // booking-flow.service.ts:259). For multi-slot bookings, Step 2F
     // will compute MIN/MAX across all target slots.
     //
     // start_at / end_at: for single-slot, mirror the slot. Multi-slot
@@ -356,17 +457,50 @@ export class AssembleEditPlanService {
       .slice()
       .sort();
 
+    // ── 11b. Booking-level optional fields (Step 2E) ────────────────
+    // host_person_id is a present-or-absent key. undefined = preserve
+    // (omit the key from the patch — the RPC's case-when at 00364:763-767
+    // falls back to v_booking.host_person_id). null OR string = present
+    // (the RPC's nullif(...,'')::uuid coerces empty string to null).
+    const bookingPatch: EditPlan['booking'] = {
+      location_id: target.spaceId,
+      start_at: target.startAt,
+      end_at: target.endAt,
+      cost_amount_snapshot: newCostSnapshot,
+      policy_snapshot: policySnapshot,
+      applied_rule_ids: appliedRuleIds,
+    };
+    if (patch.host_person_id !== undefined) {
+      bookingPatch.host_person_id = patch.host_person_id;
+    }
+
+    // recurrence_overridden auto-set for kind='one' on a series booking
+    // when any field is patched. The "any field" predicate matches the
+    // legacy editOne check (reservation.service.ts:817-819): geometry
+    // OR slot-meta OR booking-meta. We check the input patch fields
+    // (not the target diff) because the legacy code treated a no-op
+    // patch as a real edit too (e.g. attendee_count: 5 → 5 still set
+    // the override flag pre-cutover). Subtle but worth preserving so
+    // operator behavior stays consistent across the cutover.
+    if (patch.auto_set_recurrence_overridden && booking.recurrence_series_id !== null) {
+      const anyFieldPatched =
+        patch.space_id !== undefined ||
+        patch.start_at !== undefined ||
+        patch.end_at !== undefined ||
+        patch.attendee_count !== undefined ||
+        patch.attendee_person_ids !== undefined ||
+        patch.host_person_id !== undefined;
+      if (anyFieldPatched) {
+        bookingPatch.recurrence_overridden = true;
+      }
+    }
+
     const plan: EditPlan = {
-      booking: {
-        location_id: target.spaceId,
-        start_at: target.startAt,
-        end_at: target.endAt,
-        cost_amount_snapshot: newCostSnapshot,
-        policy_snapshot: policySnapshot,
-        applied_rule_ids: appliedRuleIds,
-      },
+      booking: bookingPatch,
       slot_patches: [slotPatch],
-      // Step 2D-C scope: linked-row patches are empty.
+      // Step 2D-C scope: linked-row patches are empty. Step 2E preserves
+      // the same scope — booking-level edits don't fan out to asset /
+      // order / work-order patches; those land in Step 2F.
       asset_reservation_patches: [],
       order_patches: [],
       work_order_sla_patches: [],
@@ -393,7 +527,7 @@ export class AssembleEditPlanService {
     const [bookingRes, slotRes] = await Promise.all([
       this.supabase.admin
         .from('bookings')
-        .select('id, tenant_id, requester_person_id, location_id, start_at, end_at, status')
+        .select('id, tenant_id, requester_person_id, location_id, start_at, end_at, status, recurrence_series_id')
         .eq('id', bookingId)
         .eq('tenant_id', tenantId)
         .maybeSingle(),
@@ -483,6 +617,11 @@ interface BookingRowForPlan {
   start_at: string;
   end_at: string;
   status: string;
+  /** Non-null when this booking is part of a recurrence series. Drives
+   * the auto-set of `booking_patch.recurrence_overridden` in kind='one'
+   * edits (Step 2E — mirrors legacy editOne behavior at
+   * reservation.service.ts:817-819). */
+  recurrence_series_id: string | null;
 }
 
 interface SlotRowForPlan {
