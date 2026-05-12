@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import {
+  PLANNING_LANES_MAX,
   PLANNING_WINDOW_MAX_DAYS,
   type PlanningLaneId,
   type WorkOrderPlanningBlock,
@@ -98,7 +99,7 @@ export class WorkOrderPlanningService {
     // in this tenant) must return an empty set, not a permission error —
     // the page shell renders even when the user can see nothing yet.
     if (!ctx.user_id) {
-      return { planned: [], unscheduled: [] };
+      return { planned: [], unscheduled: [], lanes: [] };
     }
 
     // Operator-only visibility — codex review 2026-05-12 flagged that the
@@ -170,9 +171,24 @@ export class WorkOrderPlanningService {
       can_plan: this.evaluateCanPlan(row, ctx, parentTeamMap, requestTypeMap),
     });
 
+    const plannedBlocks = plannedRows.map(toBlock);
+    const unscheduledBlocks = unscheduledRows.map(toBlock);
+
+    const { lanes, truncated } = await this.deriveLanes(
+      filters,
+      tenant.id,
+      plannedBlocks,
+      unscheduledBlocks,
+      userMap,
+      teamMap,
+      vendorMap,
+    );
+
     return {
-      planned: plannedRows.map(toBlock),
-      unscheduled: unscheduledRows.map(toBlock),
+      planned: plannedBlocks,
+      unscheduled: unscheduledBlocks,
+      lanes,
+      ...(truncated ? { truncated: true as const } : {}),
     };
   }
 
@@ -399,6 +415,213 @@ export class WorkOrderPlanningService {
       ctx,
     );
   }
+
+  // ── lane derivation ────────────────────────────────────────────────
+
+  /**
+   * Server-side lane derivation. Returns the set of `PlanningLaneId`s the
+   * FE should render as rows on the grid (drop targets), and a `truncated`
+   * flag when the result was capped at `PLANNING_LANES_MAX`.
+   *
+   * Two modes:
+   *
+   *   - **team filter active.** Return the full team roster as lanes —
+   *     every `team_members.user_id` becomes a user-kind lane, plus any
+   *     vendor that holds an active `vendor_service_areas` row in the
+   *     tenant. The dispatcher needs to see idle assignees as drop
+   *     targets; the FE-derived path (from blocks alone) hid them.
+   *
+   *   - **no team filter.** Only lanes that already hold at least one
+   *     block are returned. The all-teams view scales naturally —
+   *     returning every user in every team would explode the rendered
+   *     grid.
+   *
+   * Sort order matches the existing FE `orderLanes` (planning-grid.tsx)
+   * so the FE doesn't re-sort: unassigned first, then alphabetical by
+   * label, ties broken by kind (user → team → vendor). The FE's local
+   * sort becomes a no-op for server-supplied lanes.
+   *
+   * Visibility: lane membership is operator-team identity, not block
+   * visibility — DO NOT route this through `work_orders_planning_
+   * visible_for_actor`. Lanes can include team members the actor doesn't
+   * share a visibility scope with (that's by design — they're the
+   * dispatcher's roster).
+   *
+   * Tenant: every read uses `.eq('tenant_id', tenantId)`. Missing this
+   * filter would leak cross-tenant rosters into the lane set (P0).
+   */
+  private async deriveLanes(
+    filters: PlanningFilters,
+    tenantId: string,
+    plannedBlocks: WorkOrderPlanningBlock[],
+    unscheduledBlocks: WorkOrderPlanningBlock[],
+    userMap: Map<string, string>,
+    teamMap: Map<string, string>,
+    vendorMap: Map<string, string>,
+  ): Promise<{ lanes: PlanningLaneId[]; truncated: boolean }> {
+    const byKey = new Map<string, { lane: PlanningLaneId; blockCount: number }>();
+    const upsert = (lane: PlanningLaneId, blockCountDelta: number) => {
+      const key = laneKey(lane);
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.blockCount += blockCountDelta;
+        if (!existing.lane.label && lane.label) existing.lane = lane;
+      } else {
+        byKey.set(key, { lane, blockCount: blockCountDelta });
+      }
+    };
+
+    for (const b of plannedBlocks) upsert(b.lane, 1);
+    for (const b of unscheduledBlocks) upsert(b.lane, 1);
+
+    if (filters.team_id) {
+      // Roster pull — team members + tenant vendors. Idle members (zero
+      // blocks in this window) join the lane set at blockCount=0; they
+      // sort to the bottom of the cap if it kicks in.
+      const [memberRows, vendorRows] = await Promise.all([
+        this.loadTeamRoster(filters.team_id, tenantId),
+        this.loadActiveTenantVendors(tenantId),
+      ]);
+      for (const member of memberRows) {
+        upsert(
+          {
+            kind: 'user',
+            id: member.user_id,
+            label: userMap.get(member.user_id) ?? member.fallback_label,
+          },
+          0,
+        );
+      }
+      for (const vendor of vendorRows) {
+        upsert(
+          {
+            kind: 'vendor',
+            id: vendor.id,
+            label: vendorMap.get(vendor.id) ?? vendor.name,
+          },
+          0,
+        );
+      }
+    }
+
+    void teamMap; // teamMap is unused for roster expansion (we don't lift sibling teams as lanes); kept in signature for symmetry with deriveLane.
+
+    let entries = Array.from(byKey.values());
+    let truncated = false;
+    if (entries.length > PLANNING_LANES_MAX) {
+      // Cap by most-active first (blockCount desc); within ties keep the
+      // deterministic alpha order so the cut is stable across refetches.
+      entries.sort(
+        (a, b) =>
+          b.blockCount - a.blockCount ||
+          compareLanes(a.lane, b.lane),
+      );
+      entries = entries.slice(0, PLANNING_LANES_MAX);
+      truncated = true;
+    }
+
+    const lanes = entries.map((e) => e.lane).sort(compareLanes);
+    return { lanes, truncated };
+  }
+
+  private async loadTeamRoster(
+    teamId: string,
+    tenantId: string,
+  ): Promise<Array<{ user_id: string; fallback_label: string }>> {
+    const { data, error } = await this.supabase.admin
+      .from('team_members')
+      .select(
+        'user_id, user:users!team_members_user_id_fkey(id, email, tenant_id, person:persons!users_person_id_fkey(first_name, last_name))',
+      )
+      .eq('tenant_id', tenantId)
+      .eq('team_id', teamId);
+    if (error) throw error;
+    const rows = (data ?? []) as Array<{
+      user_id: string;
+      user:
+        | {
+            id: string;
+            email: string;
+            tenant_id: string;
+            person:
+              | { first_name: string; last_name: string }
+              | { first_name: string; last_name: string }[]
+              | null;
+          }
+        | {
+            id: string;
+            email: string;
+            tenant_id: string;
+            person:
+              | { first_name: string; last_name: string }
+              | { first_name: string; last_name: string }[]
+              | null;
+          }[]
+        | null;
+    }>;
+    const out: Array<{ user_id: string; fallback_label: string }> = [];
+    for (const row of rows) {
+      const user = Array.isArray(row.user) ? row.user[0] : row.user;
+      // Defence-in-depth: the FK constraint already pins tenant_id on
+      // join, but the nested-select tenant_id check guards against an
+      // attacker that ever managed to point team_members.user_id at a
+      // cross-tenant users row. Drop the row silently rather than throw.
+      if (!user || user.tenant_id !== tenantId) continue;
+      const person = Array.isArray(user.person) ? user.person[0] : user.person;
+      const fallback = person
+        ? `${person.first_name} ${person.last_name}`.trim() || user.email
+        : user.email;
+      out.push({ user_id: row.user_id, fallback_label: fallback || row.user_id });
+    }
+    return out;
+  }
+
+  private async loadActiveTenantVendors(
+    tenantId: string,
+  ): Promise<Array<{ id: string; name: string }>> {
+    // Vendor inclusion rule (handoff §3 P1-1): "active grant in the
+    // tenant" = at least one active vendor_service_areas row. Memory
+    // `project_vendor_count_reality` says <10 vendors per tenant — fine
+    // to scan the small table once per request. We narrow to vendors
+    // first (active=true) then filter by service-area presence.
+    const { data, error } = await this.supabase.admin
+      .from('vendors')
+      .select('id, name, vendor_service_areas!inner(id, tenant_id, active)')
+      .eq('tenant_id', tenantId)
+      .eq('active', true)
+      .eq('vendor_service_areas.tenant_id', tenantId)
+      .eq('vendor_service_areas.active', true);
+    if (error) throw error;
+    const seen = new Set<string>();
+    const out: Array<{ id: string; name: string }> = [];
+    for (const row of (data ?? []) as Array<{ id: string; name: string }>) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      out.push({ id: row.id, name: row.name });
+    }
+    return out;
+  }
+}
+
+function laneKey(lane: PlanningLaneId): string {
+  return `${lane.kind}:${lane.id ?? '∅'}`;
+}
+
+const LANE_KIND_ORDER: Record<PlanningLaneId['kind'], number> = {
+  unassigned: -1,
+  user: 0,
+  team: 1,
+  vendor: 2,
+};
+
+function compareLanes(a: PlanningLaneId, b: PlanningLaneId): number {
+  const ak = LANE_KIND_ORDER[a.kind];
+  const bk = LANE_KIND_ORDER[b.kind];
+  if (ak === -1 && bk !== -1) return -1;
+  if (bk === -1 && ak !== -1) return 1;
+  const labelCmp = a.label.localeCompare(b.label);
+  if (labelCmp !== 0) return labelCmp;
+  return ak - bk;
 }
 
 function uniqueIds<T>(rows: T[], picker: (row: T) => string | null | undefined): string[] {

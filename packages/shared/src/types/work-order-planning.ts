@@ -50,7 +50,28 @@ export interface WorkOrderPlanningResponse {
   planned: WorkOrderPlanningBlock[];
   /** Blocks with `planned_start_at IS NULL` matching the same filters (status, team). */
   unscheduled: WorkOrderPlanningBlock[];
+  /**
+   * Lanes the dispatcher can drop onto. When a `team_id` filter is set,
+   * the server returns the full team roster (members + active vendor
+   * assignees) — so an idle assignee with zero blocks still appears as a
+   * drop target. With no `team_id` filter, only lanes that hold at least
+   * one block are returned to avoid all-teams explosions.
+   *
+   * Pre-sorted: unassigned first, then alphabetical by `label`, with kind
+   * (user → team → vendor) as the tiebreaker. The FE renders in this
+   * order without re-sorting.
+   */
+  lanes: PlanningLaneId[];
+  /**
+   * True when the lane derivation hit the 50-lane cap and the result is
+   * the most-active subset. Drives a one-time warning toast on the
+   * planning page so the dispatcher knows the roster is partial.
+   */
+  truncated?: boolean;
 }
+
+/** Server-side cap on the number of lanes returned in a single window. */
+export const PLANNING_LANES_MAX = 50;
 
 /**
  * Server-side cap on the visible window. Set conservatively so the planning
