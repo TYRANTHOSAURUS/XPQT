@@ -40,13 +40,15 @@ export const BookingEditEventType = {
   /**
    * Edit flipped rule resolver final → require_approval; chain inserted.
    *
-   * Note: this is the only one of the three new event types whose
-   * dead-lettering has a USER-VISIBLE consequence. Until a handler registers
-   * for this event, an edit that flips to pending_approval will commit the
-   * row but the approver notification will dead-letter as
-   * `no_handler_registered` — operators see no notification and the
-   * approval chain stalls until manually surfaced. The handler must ship
-   * before any production caller emits this event.
+   * Handler status (post-B.4.A.4): `BookingApprovalRequiredHandler` is
+   * registered as a v1 STUB (validates payload + tenant boundary, logs,
+   * returns). The dead-letter shape `no_handler_registered` is no longer
+   * the failure mode — the new failure mode is **ack-without-notification**:
+   * the handler accepts the event and the chain row sits in `pending`, but
+   * no email / in-app notification fires until B.4.A.5 ships notification
+   * dispatch. Callers triggering row 2/7/8 emits today are commits without
+   * an approver-side surface. See `docs/follow-ups/b4-followups.md` for
+   * the controller-vs-notification sequencing invariant.
    */
   ApprovalRequired:  'booking.approval_required',
 } as const;
