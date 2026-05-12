@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { WorkOrderPlanningBlock } from '@prequest/shared';
 import { cn } from '@/lib/utils';
 import { formatRelativeTime } from '@/lib/format';
@@ -8,17 +9,28 @@ import { PriorityIcon, statusConfig } from '@/components/desk/ticket-row-cells';
 interface Props {
   items: WorkOrderPlanningBlock[];
   isLoading?: boolean;
+  /** Pointer-down on a card — forwarded to the rail drag controller. */
+  onItemPointerDown?: (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => void;
+  /** Block currently being dragged out of the rail — render translucent. */
+  draggingBlockId?: string | null;
 }
 
 /**
  * Unscheduled rail — sorted by `sla_resolution_due_at` ASC so the most
- * urgent work surfaces first. Smaller variant of `<PlanningBlock>`: no
- * time positioning, just ref + title + status chip + priority +
- * deadline tag.
+ * urgent work surfaces first. Operators drag cards onto a lane to plan
+ * the WO. Smaller variant of `<PlanningBlock>`: no time positioning,
+ * just ref + title + status chip + priority + deadline tag.
  *
- * Drag-onto-lane is added in Chunk 5.
+ * Chunk 5: drag-onto-lane is wired. Each card forwards pointer-down to
+ * the page-level drag controller; on drop, the page reassigns the WO
+ * to the target lane and applies a default 90-minute duration.
  */
-export const UnscheduledRail = memo(function UnscheduledRail({ items, isLoading }: Props) {
+export const UnscheduledRail = memo(function UnscheduledRail({
+  items,
+  isLoading,
+  onItemPointerDown,
+  draggingBlockId,
+}: Props) {
   const sorted = [...items].sort((a, b) => {
     const ad = a.sla_resolution_due_at ? new Date(a.sla_resolution_due_at).getTime() : Number.POSITIVE_INFINITY;
     const bd = b.sla_resolution_due_at ? new Date(b.sla_resolution_due_at).getTime() : Number.POSITIVE_INFINITY;
@@ -45,7 +57,12 @@ export const UnscheduledRail = memo(function UnscheduledRail({ items, isLoading 
         ) : (
           <ul className="space-y-1.5">
             {sorted.map((block) => (
-              <UnscheduledItem key={block.id} block={block} />
+              <UnscheduledItem
+                key={block.id}
+                block={block}
+                onPointerDown={onItemPointerDown}
+                isDragging={draggingBlockId === block.id}
+              />
             ))}
           </ul>
         )}
@@ -54,9 +71,19 @@ export const UnscheduledRail = memo(function UnscheduledRail({ items, isLoading 
   );
 });
 
-function UnscheduledItem({ block }: { block: WorkOrderPlanningBlock }) {
+function UnscheduledItem({
+  block,
+  onPointerDown,
+  isDragging,
+}: {
+  block: WorkOrderPlanningBlock;
+  onPointerDown?: (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => void;
+  isDragging?: boolean;
+}) {
+  const navigate = useNavigate();
   const statusEntry = statusConfig[block.status_category] ?? statusConfig.new;
   const ref = formatTicketRef('work_order', block.module_number);
+  const canPlan = block.can_plan;
   const due = block.sla_resolution_due_at;
   const dueLabel = due ? formatRelativeTime(due) : null;
   const dueOverdue = due ? new Date(due).getTime() < Date.now() : false;
@@ -64,9 +91,22 @@ function UnscheduledItem({ block }: { block: WorkOrderPlanningBlock }) {
   return (
     <li>
       <div
+        role="button"
+        tabIndex={0}
+        aria-label={`${ref}: ${block.title}`}
+        onClick={() => navigate(`/desk/tickets/${block.id}`)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            navigate(`/desk/tickets/${block.id}`);
+          }
+        }}
+        onPointerDown={canPlan && onPointerDown ? (e) => onPointerDown(e, block) : undefined}
         className={cn(
-          'group relative w-full rounded-md border bg-background p-2 text-left text-xs',
-          'opacity-90',
+          'group relative w-full select-none rounded-md border bg-background p-2 text-left text-xs transition-shadow',
+          canPlan ? 'cursor-grab hover:border-border hover:shadow' : 'cursor-default opacity-70',
+          isDragging && 'opacity-50',
+          'focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50',
         )}
       >
         <span

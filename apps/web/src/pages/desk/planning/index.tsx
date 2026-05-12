@@ -45,6 +45,10 @@ const COLUMNS_PER_DAY = computeColumnsPerDay(DAY_START_HOUR, DAY_END_HOUR, CELL_
 // "30 minutes" threshold for the past-slot confirm dialog.
 const PAST_DROP_GRACE_MS = 30 * 60_000;
 
+// Default duration applied when an operator drags a block from the
+// unscheduled rail onto a lane (per spec).
+const DEFAULT_PLAN_DURATION_MIN = 90;
+
 /**
  * `/desk/planning` — Slice B planning board. Full-bleed canvas like the
  * room scheduler; does NOT wrap in `SettingsPageShell`.
@@ -169,6 +173,7 @@ export function DeskPlanningPage() {
     block: WorkOrderPlanningBlock;
     isoStart: string;
     durationMinutes: number | null;
+    assigneeOverride: AssigneeOverride | null;
   } | null>(null);
 
   // ── Drag controller (chunk 4) ─────────────────────────────────────
@@ -241,17 +246,26 @@ export function DeskPlanningPage() {
       block: WorkOrderPlanningBlock,
       isoStart: string,
       durationMinutes: number | null,
+      assigneeOverride: AssigneeOverride | null,
     ) => {
       const wasUnscheduled = block.planned_start_at == null;
       const payload: {
         planned_start_at: string;
         planned_duration_minutes?: number;
+        assigned_user_id?: string | null;
+        assigned_team_id?: string | null;
+        assigned_vendor_id?: string | null;
       } = { planned_start_at: isoStart };
       if (wasUnscheduled && durationMinutes != null) {
         payload.planned_duration_minutes = durationMinutes;
       }
+      if (assigneeOverride) {
+        payload.assigned_user_id = assigneeOverride.user_id;
+        payload.assigned_team_id = assigneeOverride.team_id;
+        payload.assigned_vendor_id = assigneeOverride.vendor_id;
+      }
 
-      patchPlanningCache((prev) => optimisticMove(prev, block.id, payload));
+      patchPlanningCache((prev) => optimisticMove(prev, block.id, payload, assigneeOverride));
 
       try {
         await mutateWorkOrder(block.id, payload);
@@ -259,13 +273,36 @@ export function DeskPlanningPage() {
         invalidatePlanning();
         toastError("Couldn't move plan", {
           error: err,
-          retry: () => commitDrop(block, isoStart, durationMinutes),
+          retry: () => commitDrop(block, isoStart, durationMinutes, assigneeOverride),
         });
         return;
       }
       invalidatePlanning();
     },
     [invalidatePlanning, mutateWorkOrder, patchPlanningCache],
+  );
+
+  // Rail (rail → lane) drag start.
+  const onRailPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => {
+      if (!block.can_plan) return;
+      const cellSpan = Math.max(1, Math.ceil(DEFAULT_PLAN_DURATION_MIN / CELL_MINUTES));
+      // Rail cards have no positional context — anchor the grab to the
+      // card centre so the cursor visually "holds" the card during the
+      // drag.
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const grabOffsetPx = rect.width / 2;
+      dragController.begin(e, {
+        blockId: block.id,
+        source: 'rail',
+        grabOffsetPx,
+        cellSpan,
+        originLaneKey: null,
+        captureEl: e.currentTarget as HTMLElement,
+        originStartCell: 0,
+      });
+    },
+    [dragController],
   );
 
   const handleDrop = useCallback(
@@ -285,13 +322,29 @@ export function DeskPlanningPage() {
       });
       const dropMs = new Date(isoStart).getTime();
       const inPast = dropMs < Date.now() - PAST_DROP_GRACE_MS;
-      const durationMinutes = block.planned_duration_minutes;
+
+      // Reassignment rule: rail-source drop or cross-lane move →
+      // override the WO's assignment to the lane the cursor landed on.
+      // Same-lane drag-move leaves the assignment alone.
+      const targetLaneId = parseLaneKey(state.targetLaneKey);
+      const originLaneId = state.originLaneKey ? parseLaneKey(state.originLaneKey) : null;
+      const assigneeOverride =
+        state.source === 'rail' || (originLaneId && !sameLane(originLaneId, targetLaneId))
+          ? assigneeForLane(targetLaneId)
+          : null;
+
+      // Duration: keep existing for lane moves; default 90 for rail drops
+      // (per spec — fresh plan from the backlog).
+      const durationMinutes =
+        state.source === 'rail'
+          ? DEFAULT_PLAN_DURATION_MIN
+          : block.planned_duration_minutes;
 
       if (inPast) {
-        setPendingPastDrop({ block, isoStart, durationMinutes });
+        setPendingPastDrop({ block, isoStart, durationMinutes, assigneeOverride });
         return;
       }
-      void commitDrop(block, isoStart, durationMinutes);
+      void commitDrop(block, isoStart, durationMinutes, assigneeOverride);
     },
     [commitDrop, data, dates],
   );
@@ -386,7 +439,14 @@ export function DeskPlanningPage() {
 
       <div className="flex min-h-0 flex-1">
         {!railCollapsed && (
-          <UnscheduledRail items={data.unscheduled} isLoading={planningQuery.isLoading} />
+          <UnscheduledRail
+            items={data.unscheduled}
+            isLoading={planningQuery.isLoading}
+            onItemPointerDown={onRailPointerDown}
+            draggingBlockId={
+              dragController.active?.source === 'rail' ? dragController.active.blockId : null
+            }
+          />
         )}
 
         <div className="min-w-0 flex-1">
@@ -426,9 +486,9 @@ export function DeskPlanningPage() {
         cancelLabel="Cancel"
         onConfirm={async () => {
           if (!pendingPastDrop) return;
-          const { block, isoStart, durationMinutes } = pendingPastDrop;
+          const { block, isoStart, durationMinutes, assigneeOverride } = pendingPastDrop;
           setPendingPastDrop(null);
-          await commitDrop(block, isoStart, durationMinutes);
+          await commitDrop(block, isoStart, durationMinutes, assigneeOverride);
         }}
       />
     </div>
@@ -441,15 +501,49 @@ function todayInTenantZone(): string {
   return toLocalDateString(new Date());
 }
 
+interface AssigneeOverride {
+  user_id: string | null;
+  team_id: string | null;
+  vendor_id: string | null;
+}
+
+function assigneeForLane(laneId: PlanningLaneId): AssigneeOverride {
+  switch (laneId.kind) {
+    case 'user':
+      return { user_id: laneId.id, team_id: null, vendor_id: null };
+    case 'team':
+      return { user_id: null, team_id: laneId.id, vendor_id: null };
+    case 'vendor':
+      return { user_id: null, team_id: null, vendor_id: laneId.id };
+    case 'unassigned':
+    default:
+      return { user_id: null, team_id: null, vendor_id: null };
+  }
+}
+
+function parseLaneKey(key: string): PlanningLaneId {
+  const idx = key.indexOf(':');
+  const kind = (idx >= 0 ? key.slice(0, idx) : key) as PlanningLaneId['kind'];
+  const rawId = idx >= 0 ? key.slice(idx + 1) : '';
+  const id = rawId === '∅' || rawId === '' ? null : rawId;
+  return { kind, id, label: '' };
+}
+
+function sameLane(a: PlanningLaneId, b: PlanningLaneId): boolean {
+  return a.kind === b.kind && (a.id ?? null) === (b.id ?? null);
+}
+
 /**
  * Optimistic update — move a block within / between lanes inside the
- * planning cache. The block's lane is kept as-is; lane changes from
- * cross-lane drag (reassignment) come in chunk 5 with the rail flow.
+ * planning cache. When an assignee override is supplied (rail-source or
+ * cross-lane drag), the block's lane is recomputed; otherwise the lane
+ * stays as-is.
  */
 function optimisticMove(
   prev: WorkOrderPlanningResponse,
   blockId: string,
   payload: { planned_start_at: string; planned_duration_minutes?: number },
+  assigneeOverride: AssigneeOverride | null,
 ): WorkOrderPlanningResponse {
   const findIn = (list: WorkOrderPlanningBlock[]) => list.findIndex((b) => b.id === blockId);
   const fromPlanned = findIn(prev.planned);
@@ -467,6 +561,7 @@ function optimisticMove(
     planned_start_at: payload.planned_start_at,
     planned_duration_minutes:
       payload.planned_duration_minutes ?? source.planned_duration_minutes,
+    lane: assigneeOverride ? laneForOverride(assigneeOverride, source.lane) : source.lane,
   };
 
   const planned = [...prev.planned];
@@ -475,4 +570,20 @@ function optimisticMove(
   if (fromUnscheduled >= 0) unscheduled.splice(fromUnscheduled, 1);
   planned.push(updated);
   return { planned, unscheduled };
+}
+
+function laneForOverride(
+  override: AssigneeOverride,
+  fallback: PlanningLaneId,
+): PlanningLaneId {
+  if (override.user_id) {
+    return { kind: 'user', id: override.user_id, label: fallback.label || 'Assignee' };
+  }
+  if (override.team_id) {
+    return { kind: 'team', id: override.team_id, label: fallback.label || 'Team' };
+  }
+  if (override.vendor_id) {
+    return { kind: 'vendor', id: override.vendor_id, label: fallback.label || 'Vendor' };
+  }
+  return { kind: 'unassigned', id: null, label: 'Unassigned' };
 }
