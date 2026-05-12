@@ -32,6 +32,13 @@
  *     A same-crid / different-body retry hits the RPC's payload_hash
  *     check (00371:268-274) and surfaces as
  *     command_operations.payload_mismatch (409 per map-rpc-error.ts).
+ *
+ * Tier B followup #6 (2026-05-12) — editScope now fans out cascades via
+ * the BATCHED sibling `emitVisitorCascadesForBundles` (one .in() lookup
+ * for N bundles). The existing cascade-call assertions assert ONE call
+ * with an items[] of the moved occurrences, not N separate calls.
+ * Plural method has its own dedicated spec at
+ * `reservation-edit-scope-cascade-batch.spec.ts`.
  */
 
 import { AppError } from '../../common/errors';
@@ -364,7 +371,7 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
     // the editOne/editSlot specs).
     const cascadeSpy = jest
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .spyOn(svc as any, 'emitVisitorCascadeForBundle')
+      .spyOn(svc as any, 'emitVisitorCascadesForBundles')
       .mockResolvedValue(undefined);
 
     const body: EditScopeDto = {
@@ -402,14 +409,23 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
       buildEditBookingIdempotencyKey(PIVOT_BOOKING_ID, CLIENT_REQUEST_ID, 'scope'),
     );
 
-    // Visitor cascade fired for the 2 occurrences whose space changed
-    // (occ-1, occ-2); occ-3 had no diff, so no emit. Default mock returns
-    // 3 occurrences — 2 moved room.
-    expect(cascadeSpy).toHaveBeenCalledTimes(2);
-    // Calls carry the per-occurrence diff (oldSpaceId/newSpaceId) for the
-    // changed-room occurrences.
-    expect(cascadeSpy.mock.calls[0][0]).toMatchObject({
+    // Tier B followup #6 (2026-05-12) — batched plural call. One
+    // invocation carries an items[] of length 2 (occ-1, occ-2 moved room;
+    // occ-3 unchanged, filtered out). Default mock returns 3 occurrences.
+    expect(cascadeSpy).toHaveBeenCalledTimes(1);
+    const cascadeItems = cascadeSpy.mock.calls[0][0] as Array<{
+      bundleId: string;
+      oldSpaceId: string | null;
+      newSpaceId: string | null;
+    }>;
+    expect(cascadeItems).toHaveLength(2);
+    expect(cascadeItems[0]).toMatchObject({
       bundleId: 'occ-1',
+      oldSpaceId: PIVOT_SPACE_ID,
+      newSpaceId: NEW_SPACE_ID,
+    });
+    expect(cascadeItems[1]).toMatchObject({
+      bundleId: 'occ-2',
       oldSpaceId: PIVOT_SPACE_ID,
       newSpaceId: NEW_SPACE_ID,
     });
@@ -436,7 +452,7 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
     });
     const cascadeSpy = jest
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .spyOn(svc as any, 'emitVisitorCascadeForBundle')
+      .spyOn(svc as any, 'emitVisitorCascadesForBundles')
       .mockResolvedValue(undefined);
 
     const result = await TenantContext.run(TENANT, async () =>
@@ -447,8 +463,9 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
         CLIENT_REQUEST_ID,
       ),
     );
-    // Visitor cascade fired for the 2 occurrences whose space changed.
-    expect(cascadeSpy).toHaveBeenCalledTimes(2);
+    // Batched: one call carrying the 2 occurrences whose space changed.
+    expect(cascadeSpy).toHaveBeenCalledTimes(1);
+    expect(cascadeSpy.mock.calls[0][0] as Array<unknown>).toHaveLength(2);
 
     // splitSeries CALLED on the commit path; returns NEW_SERIES_ID.
     expect(recurrence.splitSeries).toHaveBeenCalledWith(PIVOT_BOOKING_ID);
@@ -513,7 +530,7 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
     });
     const cascadeSpy = jest
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .spyOn(svc as any, 'emitVisitorCascadeForBundle')
+      .spyOn(svc as any, 'emitVisitorCascadesForBundles')
       .mockResolvedValue(undefined);
 
     const result = await TenantContext.run(TENANT, async () =>
@@ -655,7 +672,7 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
       bundleEventBus: makeBundleEventBus(),
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    jest.spyOn(svc as any, 'emitVisitorCascadeForBundle').mockResolvedValue(undefined);
+    jest.spyOn(svc as any, 'emitVisitorCascadesForBundles').mockResolvedValue(undefined);
 
     await TenantContext.run(TENANT, async () =>
       svc.editScope(
@@ -759,7 +776,7 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
     });
     const cascadeSpy = jest
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .spyOn(svc as any, 'emitVisitorCascadeForBundle')
+      .spyOn(svc as any, 'emitVisitorCascadesForBundles')
       .mockResolvedValue(undefined);
 
     const result = await TenantContext.run(TENANT, async () =>
@@ -869,7 +886,7 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
     });
     const cascadeSpy = jest
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .spyOn(svc as any, 'emitVisitorCascadeForBundle')
+      .spyOn(svc as any, 'emitVisitorCascadesForBundles')
       .mockResolvedValue(undefined);
 
     const result = await TenantContext.run(TENANT, async () =>
@@ -1038,7 +1055,7 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
       bundleEventBus: makeBundleEventBus(),
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    jest.spyOn(svc as any, 'emitVisitorCascadeForBundle').mockResolvedValue(undefined);
+    jest.spyOn(svc as any, 'emitVisitorCascadesForBundles').mockResolvedValue(undefined);
 
     await TenantContext.run(TENANT, async () =>
       svc.editScope(

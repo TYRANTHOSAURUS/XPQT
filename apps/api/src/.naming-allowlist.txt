@@ -1036,3 +1036,18 @@ apps/api/src/modules/reservations/reservation.service.ts:1590:        detail: "U
 apps/api/src/modules/reservations/reservation.service.ts:1586:    // .ts:1062-1064). The single-occurrence edit path is `PATCH /reservations
 apps/api/src/modules/reservations/reservation.service.ts:1521:   *     instead of `PATCH /reservations/:id`.
 apps/api/src/modules/reservations/reservation.service.ts:1470:   * Cuts over `POST /reservations/:id/edit-scope` from the legacy bare-
+
+# === Tier B followup #6 (2026-05-12) — emitVisitorCascadesForBundles ===
+# KEEP_WIRE_SHAPE — `bundle_id` is the canonical field name on the in-process
+# BundleEvent payload (BundleEventBase.bundle_id in bundle-event-bus.ts).
+# Mirrors the existing entries for `bundle-cascade.adapter.ts` higher up
+# in this file. The new dedicated spec for the batched plural method asserts
+# against this same wire field.
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:200:      bundle_id: BUNDLE_1,
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:274:    expect(events.filter((e) => e.bundle_id === BUNDLE_1)).toHaveLength(4);
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:275:    expect(events.filter((e) => e.bundle_id === BUNDLE_2)).toHaveLength(1);
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:276:    expect(events.filter((e) => e.bundle_id === BUNDLE_3)).toHaveLength(0);
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:279:    const bundle2Events = events.filter((e) => e.bundle_id === BUNDLE_2);
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:415:        if (e.bundle_id === BUNDLE_1) {
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:445:    expect(captured.some((e) => e.bundle_id === BUNDLE_2)).toBe(true);
+apps/api/src/modules/reservations/reservation.service.ts:2171:          bundle_id: args.bundleId,

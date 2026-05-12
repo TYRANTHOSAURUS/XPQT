@@ -1911,24 +1911,40 @@ export class ReservationService {
     // every row; we diff time + room and emit per occurrence whose
     // primary slot moved. Mirrors editOne's cascade block at
     // reservation.service.ts:1054-1066 but loops over N occurrences.
+    //
+    // Tier B followup #6 (2026-05-12) — batched via
+    // emitVisitorCascadesForBundles: one .in('booking_id', [...]) query
+    // instead of N sequential .eq('booking_id', _) reads. Caps the
+    // post-RPC round-trip cost at 1 regardless of series size.
     if (!dryRun && this.bundleEventBus && result.per_occurrence) {
-      for (const occ of result.per_occurrence) {
-        const movedTime =
-          occ.start_at_after !== undefined &&
-          occ.start_at_after !== occ.start_at_before;
-        const changedRoom =
-          occ.space_id_after !== undefined &&
-          occ.space_id_after !== occ.space_id_before;
-        if (movedTime || changedRoom) {
-          await this.emitVisitorCascadeForBundle({
+      const cascadeItems = result.per_occurrence
+        .filter((occ) => {
+          const movedTime =
+            occ.start_at_after !== undefined &&
+            occ.start_at_after !== occ.start_at_before;
+          const changedRoom =
+            occ.space_id_after !== undefined &&
+            occ.space_id_after !== occ.space_id_before;
+          return movedTime || changedRoom;
+        })
+        .map((occ) => {
+          const movedTime =
+            occ.start_at_after !== undefined &&
+            occ.start_at_after !== occ.start_at_before;
+          const changedRoom =
+            occ.space_id_after !== undefined &&
+            occ.space_id_after !== occ.space_id_before;
+          return {
             tenantId,
             bundleId: occ.booking_id,
             oldStartAt: movedTime ? occ.start_at_before : null,
             newStartAt: movedTime ? occ.start_at_after : null,
             oldSpaceId: changedRoom ? occ.space_id_before : null,
             newSpaceId: changedRoom ? occ.space_id_after : null,
-          });
-        }
+          };
+        });
+      if (cascadeItems.length > 0) {
+        await this.emitVisitorCascadesForBundles(cascadeItems);
       }
     }
 
@@ -1987,6 +2003,11 @@ export class ReservationService {
    * `BundleEventEmitter` (planned but not built); when that exists,
    * relax this back to `private`. Tier C followup #8 closure
    * (b4-followups.md).
+   *
+   * Retained for editOne / editSlot — they only have one bundle to emit
+   * per call, so the batching benefit of the plural sibling
+   * `emitVisitorCascadesForBundles` doesn't apply. The plural is for
+   * editScope's N-occurrence fan-out (Tier B followup #6 closure).
    */
   async emitVisitorCascadeForBundle(args: {
     tenantId: string;
@@ -2010,38 +2031,163 @@ export class ReservationService {
         return;
       }
       const visitorIds = ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
-      const now = new Date().toISOString();
-
-      for (const vid of visitorIds) {
-        if (args.newStartAt && args.newStartAt !== args.oldStartAt) {
-          this.bundleEventBus.emit({
-            kind: 'bundle.line.moved',
-            tenant_id: args.tenantId,
-            bundle_id: args.bundleId,
-            line_id: vid,
-            line_kind: 'visitor',
-            old_expected_at: args.oldStartAt,
-            new_expected_at: args.newStartAt,
-            occurred_at: now,
-          });
-        }
-        if (args.newSpaceId && args.newSpaceId !== args.oldSpaceId) {
-          this.bundleEventBus.emit({
-            kind: 'bundle.line.room_changed',
-            tenant_id: args.tenantId,
-            bundle_id: args.bundleId,
-            line_id: vid,
-            line_kind: 'visitor',
-            old_room_id: args.oldSpaceId,
-            new_room_id: args.newSpaceId,
-            occurred_at: now,
-          });
-        }
-      }
+      this.emitVisitorCascadeEvents(args, visitorIds, new Date().toISOString());
     } catch (err) {
       this.log.warn(
         `visitor cascade emit failed for booking ${args.bundleId}: ${(err as Error).message}`,
       );
+    }
+  }
+
+  /**
+   * Batched sibling of `emitVisitorCascadeForBundle` — one .in('booking_id',
+   * [...]) query for N bundles instead of N sequential single-bundle reads.
+   * For a 200-occurrence series scope edit, replaces up to 200 round-trips
+   * with one. Wire-shape identical (same per-visitor emit payloads); visitor
+   * consumers see no difference.
+   *
+   * Used by `editScope` (reservation.service.ts:~1909-1933) where the RPC
+   * returns `per_occurrence[]` (00371:1113-1125) and the TS layer fans out
+   * cascades for every row whose primary slot moved time OR changed room.
+   *
+   * Tenant-isolation: items must share a single `tenant_id`. The plural
+   * doesn't read TenantContext — each item carries its own (caller's
+   * responsibility, consistent with the singular method's contract and the
+   * Phase 8 tenant-thread-through pattern at commit e1b47cae). Mixed-tenant
+   * batches throw — there's no defensible reason for one editScope call to
+   * span tenants, and silently splitting would muddy the invariant.
+   *
+   * Error handling mirrors the singular: a failed .in() lookup logs a
+   * warning and returns (no throw); a thrown emit on a single bundle is
+   * caught per-bundle so one bad subscriber doesn't tank the rest.
+   *
+   * @internal — same rationale as `emitVisitorCascadeForBundle`. Caller
+   * lives in the same service.
+   */
+  async emitVisitorCascadesForBundles(
+    items: Array<{
+      tenantId: string;
+      bundleId: string;
+      oldStartAt: string | null;
+      newStartAt: string | null;
+      oldSpaceId: string | null;
+      newSpaceId: string | null;
+    }>,
+  ): Promise<void> {
+    if (!this.bundleEventBus) return;
+    if (items.length === 0) return;
+
+    // Single-tenant assertion. Both editOne/editSlot/editScope establish
+    // tenant from TenantContext before constructing items; mixed-tenant
+    // batches would indicate a programmer error worth surfacing loudly.
+    const tenantIds = new Set(items.map((i) => i.tenantId));
+    if (tenantIds.size !== 1) {
+      throw new Error(
+        `emitVisitorCascadesForBundles: items span ${tenantIds.size} tenants; per-call batches must be per-tenant`,
+      );
+    }
+    const tenantId = items[0].tenantId;
+    const bundleIds = items.map((i) => i.bundleId);
+
+    let data: Array<{ id: string; booking_id: string }> | null = null;
+    try {
+      const res = await this.supabase.admin
+        .from('visitors')
+        .select('id, booking_id')
+        .eq('tenant_id', tenantId)
+        .in('booking_id', bundleIds);
+      if (res.error) {
+        this.log.warn(
+          `visitor cascade batch lookup failed for ${bundleIds.length} bundles: ${res.error.message}`,
+        );
+        return;
+      }
+      data = (res.data ?? []) as Array<{ id: string; booking_id: string }>;
+    } catch (err) {
+      // Defense — supabase-js generally returns errors via `{ error }`, but
+      // network-layer throws are possible. Mirror the singular's outer catch.
+      this.log.warn(
+        `visitor cascade batch lookup threw for ${bundleIds.length} bundles: ${(err as Error).message}`,
+      );
+      return;
+    }
+
+    // Group visitor ids by booking_id so we can iterate items once and emit
+    // per-bundle without re-scanning the flat result.
+    const visitorIdsByBundle = new Map<string, string[]>();
+    for (const v of data) {
+      const list = visitorIdsByBundle.get(v.booking_id) ?? [];
+      list.push(v.id);
+      visitorIdsByBundle.set(v.booking_id, list);
+    }
+
+    const now = new Date().toISOString();
+    for (const item of items) {
+      const visitorIds = visitorIdsByBundle.get(item.bundleId) ?? [];
+      if (visitorIds.length === 0) continue;
+      try {
+        this.emitVisitorCascadeEvents(item, visitorIds, now);
+      } catch (err) {
+        // Per-bundle isolation: a thrown subscriber on one bundle's emit
+        // mustn't poison the rest. Same posture as the singular's outer
+        // try/catch — log and continue.
+        this.log.warn(
+          `visitor cascade emit failed for booking ${item.bundleId}: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Shared per-bundle emit body. Given a bundle's cascade args + the
+   * visitor ids attached to it, fires the (movedTime → bundle.line.moved)
+   * + (changedRoom → bundle.line.room_changed) emits per visitor. Called by
+   * both `emitVisitorCascadeForBundle` and `emitVisitorCascadesForBundles`
+   * so the wire shape stays byte-identical between the singular and plural
+   * paths. The args object's null/non-null contract for each axis (the
+   * singular method passes nulls for the unchanged axis; plural inherits
+   * the same convention from editScope's diff construction at
+   * reservation.service.ts:~1923-1929) is the gate that suppresses emits
+   * for the unchanged dimension.
+   */
+  private emitVisitorCascadeEvents(
+    args: {
+      tenantId: string;
+      bundleId: string;
+      oldStartAt: string | null;
+      newStartAt: string | null;
+      oldSpaceId: string | null;
+      newSpaceId: string | null;
+    },
+    visitorIds: string[],
+    occurredAt: string,
+  ): void {
+    if (!this.bundleEventBus) return;
+    for (const vid of visitorIds) {
+      if (args.newStartAt && args.newStartAt !== args.oldStartAt) {
+        this.bundleEventBus.emit({
+          kind: 'bundle.line.moved',
+          tenant_id: args.tenantId,
+          bundle_id: args.bundleId,
+          line_id: vid,
+          line_kind: 'visitor',
+          old_expected_at: args.oldStartAt,
+          new_expected_at: args.newStartAt,
+          occurred_at: occurredAt,
+        });
+      }
+      if (args.newSpaceId && args.newSpaceId !== args.oldSpaceId) {
+        this.bundleEventBus.emit({
+          kind: 'bundle.line.room_changed',
+          tenant_id: args.tenantId,
+          bundle_id: args.bundleId,
+          line_id: vid,
+          line_kind: 'visitor',
+          old_room_id: args.oldSpaceId,
+          new_room_id: args.newSpaceId,
+          occurred_at: occurredAt,
+        });
+      }
     }
   }
 }
