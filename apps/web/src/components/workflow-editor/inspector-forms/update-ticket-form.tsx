@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { UPDATE_TICKET_ALLOWED_FIELDS, UPDATE_TICKET_ALLOWED_FIELD_SET } from '@prequest/shared';
 import type { WorkflowNode } from '../types';
 import { useGraphStore } from '../graph-store';
 import {
@@ -32,12 +33,19 @@ export function UpdateTicketForm({ node, readOnly }: { node: WorkflowNode; readO
             setText(v);
             try {
               const parsed = JSON.parse(v);
-              if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-                update(node.id, { fields: parsed });
-                setError(null);
-              } else {
+              if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
                 setError('Must be an object');
+                return;
               }
+              const orphans = Object.keys(parsed).filter(
+                (k) => !UPDATE_TICKET_ALLOWED_FIELD_SET.has(k),
+              );
+              if (orphans.length > 0) {
+                setError(`Not allowed: ${orphans.join(', ')}. Workflows fail at runtime with workflow.update_ticket_field_not_allowed.`);
+                return;
+              }
+              update(node.id, { fields: parsed });
+              setError(null);
             } catch {
               setError('Invalid JSON');
             }
@@ -47,7 +55,9 @@ export function UpdateTicketForm({ node, readOnly }: { node: WorkflowNode; readO
           disabled={readOnly}
         />
         {error && <FieldError>{error}</FieldError>}
-        <FieldDescription>e.g. {'{"status": "in_progress", "priority": "high"}'}</FieldDescription>
+        <FieldDescription>
+          Allowed: {UPDATE_TICKET_ALLOWED_FIELDS.join(', ')}
+        </FieldDescription>
       </Field>
     </FieldGroup>
   );

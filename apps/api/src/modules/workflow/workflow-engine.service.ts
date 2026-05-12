@@ -2,6 +2,7 @@ import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import {
   buildWorkflowAssignmentIdempotencyKey,
   buildWorkflowUpdateTicketIdempotencyKey,
+  UPDATE_TICKET_ALLOWED_FIELD_SET,
 } from '@prequest/shared';
 import { AppError, mapRpcErrorToAppError } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
@@ -80,15 +81,11 @@ const UPDATE_TICKET_METADATA_FIELDS = new Set<string>([
   'watchers',
 ]);
 
-/** The full 12-field allowlist (union of the five branch sets — plan
- *  is excluded because workflow update_ticket is case-only). */
-const UPDATE_TICKET_ALLOWED_FIELDS: ReadonlySet<string> = new Set<string>([
-  ...UPDATE_TICKET_STATUS_FIELDS,
-  ...UPDATE_TICKET_PRIORITY_FIELDS,
-  ...UPDATE_TICKET_ASSIGNMENT_FIELDS,
-  ...UPDATE_TICKET_SLA_FIELDS,
-  ...UPDATE_TICKET_METADATA_FIELDS,
-]);
+/** The full 14-field allowlist (union of the five branch sets — plan
+ *  is excluded because workflow update_ticket is case-only). Imported
+ *  from `@prequest/shared` so the visual editor's design-time validation
+ *  uses the same source of truth as this runtime check. */
+const UPDATE_TICKET_ALLOWED_FIELDS = UPDATE_TICKET_ALLOWED_FIELD_SET;
 
 interface WorkflowNode {
   id: string;
