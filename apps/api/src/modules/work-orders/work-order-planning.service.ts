@@ -8,7 +8,11 @@ import {
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { AppErrors } from '../../common/errors';
-import { TicketVisibilityService, type VisibilityContext } from '../ticket/ticket-visibility.service';
+import {
+  TicketVisibilityService,
+  canPlanRow,
+  type VisibilityContext,
+} from '../ticket/ticket-visibility.service';
 
 /**
  * Filters accepted by the planning-board read path.
@@ -97,9 +101,15 @@ export class WorkOrderPlanningService {
       return { planned: [], unscheduled: [] };
     }
 
+    // Operator-only visibility — codex review 2026-05-12 flagged that the
+    // general predicate (`work_orders_visible_for_actor`) leaks plandate to
+    // requesters/watchers via their visibility paths. The planning surface
+    // must be operator-scoped (per project_plandate_not_for_requester).
+    // 00380's `work_orders_planning_visible_for_actor` drops the requester
+    // + watcher branches; tickets.read_all still grants admin override.
     const baseQuery = () =>
       this.supabase.admin
-        .rpc('work_orders_visible_for_actor', {
+        .rpc('work_orders_planning_visible_for_actor', {
           p_user_id: ctx.user_id,
           p_tenant_id: tenant.id,
           p_has_read_all: ctx.has_read_all,
@@ -358,14 +368,11 @@ export class WorkOrderPlanningService {
   }
 
   /**
-   * In-memory replay of `TicketVisibilityService.assertCanPlan`'s logic
-   * against the loaded `ctx` + preloaded parent-team map. Stays in lock-
-   * step with the gate's allowed-paths set — if assertCanPlan grows a new
-   * path, mirror it here.
-   *
-   * (assertCanPlan today: `has_write_all` override · WO assignee · vendor
-   * match · WO team membership · parent-case team membership · non-readonly
-   * role with domain+location match.)
+   * Per-row plandate verdict. Delegates to the shared `canPlanRow` policy
+   * in `ticket-visibility.service.ts` so this batch path and the single-
+   * row `assertCanPlan` gate cannot drift. The only work done here is
+   * projecting the raw work_order row + the preloaded parent-team /
+   * request-type maps into the policy's input shape.
    */
   private evaluateCanPlan(
     row: RawWorkOrderRow,
@@ -373,43 +380,24 @@ export class WorkOrderPlanningService {
     parentTeamMap: Map<string, string | null>,
     requestTypeMap: Map<string, { id: string; name: string; domain: string }>,
   ): boolean {
-    if (ctx.has_write_all) return true;
-    if (row.assigned_user_id && row.assigned_user_id === ctx.user_id) return true;
-    if (
-      ctx.vendor_id &&
-      row.assigned_vendor_id &&
-      row.assigned_vendor_id === ctx.vendor_id
-    ) {
-      return true;
-    }
-
-    const teamCandidates: Array<string | null> = [row.assigned_team_id];
-    if (row.parent_kind === 'case' && row.parent_ticket_id) {
-      teamCandidates.push(parentTeamMap.get(row.parent_ticket_id) ?? null);
-    }
-    for (const t of teamCandidates) {
-      if (t && ctx.team_ids.includes(t)) return true;
-    }
-
-    // Role-operator branch — mirrors `assertCanPlan` paths. Domain is read
-    // from the preloaded request_types map (same source the response uses)
-    // so a role scoped to one domain does not get can_plan=true on a WO of
-    // a different domain.
+    const parentTeam =
+      row.parent_kind === 'case' && row.parent_ticket_id
+        ? parentTeamMap.get(row.parent_ticket_id) ?? null
+        : null;
     const domain = row.ticket_type_id
       ? requestTypeMap.get(row.ticket_type_id)?.domain ?? null
       : null;
-    for (const role of ctx.role_assignments) {
-      if (role.read_only_cross_domain) continue;
-      const domainOk =
-        role.domain_scope.length === 0 ||
-        (domain != null && role.domain_scope.includes(domain));
-      const locationOk =
-        role.location_scope_closure.length === 0 ||
-        row.location_id == null ||
-        role.location_scope_closure.includes(row.location_id);
-      if (domainOk && locationOk) return true;
-    }
-    return false;
+    return canPlanRow(
+      {
+        assigned_user_id: row.assigned_user_id,
+        assigned_team_id: row.assigned_team_id,
+        assigned_vendor_id: row.assigned_vendor_id,
+        parent_assigned_team_id: parentTeam,
+        location_id: row.location_id,
+        domain,
+      },
+      ctx,
+    );
   }
 }
 

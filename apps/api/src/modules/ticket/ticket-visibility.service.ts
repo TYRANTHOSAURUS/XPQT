@@ -33,6 +33,62 @@ interface TicketForVisibility {
   parent_assigned_team_id: string | null;
 }
 
+/**
+ * Subset of a ticket / work_order row that the plandate policy consumes.
+ * Both the single-row gate (`assertCanPlan` inside `TicketVisibilityService`)
+ * and the batched planning-board read (`WorkOrderPlanningService
+ * .evaluateCanPlan`) use this shape so the policy stays in lock-step.
+ *
+ * Callers that load a different row (work_orders has its own assigned_*
+ * columns + parent_ticket_id discriminator) project into this shape
+ * before calling `canPlanRow`.
+ */
+export interface PlanRowForPolicy {
+  assigned_user_id: string | null;
+  assigned_team_id: string | null;
+  assigned_vendor_id: string | null;
+  /** When the row is a work_order with `parent_kind = 'case'`, this is
+   *  the case's `assigned_team_id`. Otherwise null. */
+  parent_assigned_team_id: string | null;
+  location_id: string | null;
+  /** From the row's `request_type.domain`. */
+  domain: string | null;
+}
+
+/**
+ * Pure policy — "can this actor plan this row?". Single source of truth
+ * for the plandate gate; both `assertCanPlan` (single-row, throws on
+ * deny) and `WorkOrderPlanningService.evaluateCanPlan` (batch, returns
+ * boolean per row) delegate here so they cannot drift.
+ *
+ * Adding a new path: edit this function. Both callers pick up the change.
+ */
+export function canPlanRow(row: PlanRowForPolicy, ctx: VisibilityContext): boolean {
+  if (ctx.has_write_all) return true;
+  if (row.assigned_user_id && row.assigned_user_id === ctx.user_id) return true;
+  if (ctx.vendor_id && row.assigned_vendor_id && row.assigned_vendor_id === ctx.vendor_id) {
+    return true;
+  }
+
+  const teamCandidates: Array<string | null> = [
+    row.assigned_team_id,
+    row.parent_assigned_team_id,
+  ];
+  if (teamCandidates.some((t) => t && ctx.team_ids.includes(t))) return true;
+
+  return ctx.role_assignments.some((role) => {
+    if (role.read_only_cross_domain) return false;
+    const domainOk =
+      role.domain_scope.length === 0 ||
+      (row.domain != null && role.domain_scope.includes(row.domain));
+    const locationOk =
+      role.location_scope_closure.length === 0 ||
+      row.location_id == null ||
+      role.location_scope_closure.includes(row.location_id);
+    return domainOk && locationOk;
+  });
+}
+
 @Injectable()
 export class TicketVisibilityService {
   constructor(private readonly supabase: SupabaseService) {}
@@ -203,26 +259,7 @@ export class TicketVisibilityService {
     const row = await this.loadTicketRow(ticketId, ctx.tenant_id);
     if (!row) throw AppErrors.forbidden('ticket.plan_forbidden', 'Ticket not accessible');
 
-    if (row.assigned_user_id === ctx.user_id) return;
-    if (ctx.vendor_id && row.assigned_vendor_id === ctx.vendor_id) return;
-
-    const teamCandidates = [row.assigned_team_id, row.parent_assigned_team_id].filter(
-      (t): t is string => !!t,
-    );
-    if (teamCandidates.some((t) => ctx.team_ids.includes(t))) return;
-
-    const writableRoleMatch = ctx.role_assignments.some((role) => {
-      if (role.read_only_cross_domain) return false;
-      const domainOk =
-        role.domain_scope.length === 0 ||
-        (row.domain != null && role.domain_scope.includes(row.domain));
-      const locationOk =
-        role.location_scope_closure.length === 0 ||
-        row.location_id == null ||
-        role.location_scope_closure.includes(row.location_id);
-      return domainOk && locationOk;
-    });
-    if (writableRoleMatch) return;
+    if (canPlanRow(row, ctx)) return;
 
     throw AppErrors.forbidden(
       'ticket.plan_forbidden',

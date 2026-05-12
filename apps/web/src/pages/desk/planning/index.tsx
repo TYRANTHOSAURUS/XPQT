@@ -564,10 +564,21 @@ export function DeskPlanningPage() {
 
         <div className="min-w-0 flex-1">
           {planningQuery.isError ? (
-            <div className="flex h-full items-center justify-center text-sm text-destructive">
-              {planningQuery.error instanceof Error
-                ? planningQuery.error.message
-                : 'Planning board failed to load'}
+            <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+              <p className="text-sm font-medium text-foreground">
+                Couldn't load the planning board
+              </p>
+              <p className="max-w-md text-xs text-muted-foreground">
+                Check your connection and try again. If this keeps happening,
+                contact support — the date filter or window may be invalid.
+              </p>
+              <button
+                type="button"
+                onClick={() => planningQuery.refetch()}
+                className="rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              >
+                Retry
+              </button>
             </div>
           ) : (
             <PlanningGrid
