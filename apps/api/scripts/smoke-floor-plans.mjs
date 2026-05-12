@@ -652,8 +652,8 @@ async function p21_availabilityHappyPath(token, floorId) {
     fail(name, `missing spaces[] in response: ${JSON.stringify(r.body).slice(0, 120)}`);
     return;
   }
-  if (!Array.isArray(r.body.heatmap)) {
-    fail(name, `missing heatmap[] in response: ${JSON.stringify(r.body).slice(0, 120)}`);
+  if (!Array.isArray(r.body.crowd_heatmap)) {
+    fail(name, `missing crowd_heatmap[] in response: ${JSON.stringify(r.body).slice(0, 120)}`);
     return;
   }
   pass(name);
@@ -679,80 +679,102 @@ async function p22_availabilityInvalidWindow(token, floorId) {
 
 async function p23_availabilityMineAfterBooking(token, floorId, roomId) {
   const name = 'P23: Availability with confirmed booking → space.state mine';
-  // Check whether the reservations table exists (might be named differently)
-  // Use the supabase admin client to insert a booking directly, or via RPC.
-  // Try inserting directly into reservations table as admin.
+  // Canonical post-00277 model: bookings + booking_slots (reservations dropped in 00280).
   const from = new Date().toISOString();
   const to = new Date(Date.now() + 60 * 60_000).toISOString();
 
-  // Look up the admin user's person/user id for the booking
-  const { data: user } = await supa().from('users').select('id').eq('auth_uid', ADMIN_AUTH_UID).maybeSingle();
-  if (!user) {
-    skip(name, 'admin user row not found in users table — skipping mine-state probe');
+  // Look up the admin user's person_id (needed for requester_person_id).
+  const { data: user } = await supa().from('users').select('id, person_id').eq('auth_uid', ADMIN_AUTH_UID).maybeSingle();
+  if (!user || !user.person_id) {
+    skip(name, 'admin user/person_id not found — skipping mine-state probe');
     return null;
   }
 
-  // Insert a confirmed reservation for this space
-  const { data: res, error: resErr } = await supa()
-    .from('reservations')
+  // Insert the booking + slot (the booking needs location_id; use the floor as the anchor).
+  const { data: booking, error: bookingErr } = await supa()
+    .from('bookings')
     .insert({
       tenant_id: TENANT_ID,
-      requester_person_id: null,
-      host_person_id: null,
-      space_id: roomId,
-      status: 'confirmed',
+      title: 'smoke-test-p23',
+      requester_person_id: user.person_id,
+      booked_by_user_id: user.id,
+      location_id: floorId,
       start_at: from,
       end_at: to,
-      attendee_count: 1,
-      title: 'smoke-test-p23',
+      status: 'confirmed',
+      source: 'api',
     })
     .select('id')
     .single();
 
-  if (resErr || !res) {
-    skip(name, `could not insert test reservation: ${resErr?.message} — skipping`);
+  if (bookingErr || !booking) {
+    skip(name, `could not insert test booking: ${bookingErr?.message} — skipping`);
+    return null;
+  }
+
+  const { error: slotErr } = await supa()
+    .from('booking_slots')
+    .insert({
+      tenant_id: TENANT_ID,
+      booking_id: booking.id,
+      slot_type: 'room',
+      space_id: roomId,
+      start_at: from,
+      end_at: to,
+      status: 'confirmed',
+    });
+
+  if (slotErr) {
+    skip(name, `could not insert booking_slot: ${slotErr.message} — skipping`);
+    // Clean up the orphan booking
+    await supa().from('bookings').delete().eq('id', booking.id);
     return null;
   }
 
   try {
     const r = await api('GET', `/api/floors/${floorId}/plan/availability?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { token });
     if (r.status !== 200) {
-      fail(name, `HTTP ${r.status}`);
-      return res.id;
+      fail(name, `HTTP ${r.status}: ${JSON.stringify(r.body).slice(0, 200)}`);
+      return booking.id;
     }
-    const space = (r.body?.spaces ?? []).find((s) => s.space_id === roomId);
+    const space = (r.body?.spaces ?? []).find((s) => s.id === roomId);
     if (!space) {
       // Floor has no polygon for this room (not published) — that's acceptable
-      skip(name, 'room has no published polygon in floor plan — state not visible in availability; acceptable');
-      return res.id;
+      skip(name, 'room has no published polygon in floor plan — state not visible; acceptable');
+      return booking.id;
     }
     if (space.state === 'mine') {
       pass(name);
     } else {
       fail(name, `expected state 'mine', got '${space.state}'`);
     }
-    return res.id;
+    return booking.id;
   } catch (e) {
     fail(name, String(e));
-    return res.id;
+    return booking.id;
   }
 }
 
-async function p24_availabilityAvailableAfterCancel(token, floorId, roomId, reservationId) {
+async function p24_availabilityAvailableAfterCancel(token, floorId, roomId, bookingId) {
   const name = 'P24: Availability after cancelling booking → space.state available';
-  if (!reservationId) {
-    skip(name, 'P23 skipped or failed — no reservation to cancel');
+  if (!bookingId) {
+    skip(name, 'P23 skipped or failed — no booking to cancel');
     return;
   }
 
-  // Cancel the reservation
-  const { error } = await supa()
-    .from('reservations')
+  // Cancel both booking and slot (slot-level status is the canonical predicate).
+  const { error: bookingErr } = await supa()
+    .from('bookings')
     .update({ status: 'cancelled' })
-    .eq('id', reservationId);
+    .eq('id', bookingId);
 
-  if (error) {
-    skip(name, `could not cancel reservation: ${error.message}`);
+  const { error: slotErr } = await supa()
+    .from('booking_slots')
+    .update({ status: 'cancelled' })
+    .eq('booking_id', bookingId);
+
+  if (bookingErr || slotErr) {
+    skip(name, `could not cancel: ${bookingErr?.message ?? slotErr?.message}`);
     return;
   }
 
@@ -763,7 +785,7 @@ async function p24_availabilityAvailableAfterCancel(token, floorId, roomId, rese
     fail(name, `HTTP ${r.status}`);
     return;
   }
-  const space = (r.body?.spaces ?? []).find((s) => s.space_id === roomId);
+  const space = (r.body?.spaces ?? []).find((s) => s.id === roomId);
   if (!space) {
     skip(name, 'room has no published polygon — state not in availability response; acceptable');
     return;
@@ -784,7 +806,7 @@ async function p25_heatmapExactly13Buckets(token, floorId) {
     fail(name, `HTTP ${r.status}`);
     return;
   }
-  const heatmap = r.body?.heatmap;
+  const heatmap = r.body?.crowd_heatmap;
   if (!Array.isArray(heatmap)) {
     fail(name, `heatmap is not an array: ${JSON.stringify(heatmap)}`);
     return;
@@ -934,8 +956,8 @@ async function main() {
   } finally {
     // Best-effort cleanup — don't let cleanup errors hide probe failures
     console.log('\n  [cleanup]');
-    // Clean up smoke-test reservations (P23/P24)
-    await supa().from('reservations').delete().eq('tenant_id', TENANT_ID).eq('title', 'smoke-test-p23');
+    // Clean up smoke-test bookings (P23/P24). booking_slots cascade-delete via FK.
+    await supa().from('bookings').delete().eq('tenant_id', TENANT_ID).eq('title', 'smoke-test-p23');
     await deleteDraft(floorId);
     await deletePublishHistory(floorId);
     await deleteFloorPlan(floorId);
