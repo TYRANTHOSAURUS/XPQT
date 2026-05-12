@@ -90,6 +90,14 @@ export function usePlanningDrag(opts: {
 
   const begin = useCallback(
     (e: React.PointerEvent, args: BeginArgs) => {
+      // A stray second pointer (two-finger touch, second mouse, programmatic
+      // re-entry) arriving while the first gesture is still active would
+      // overwrite ctxRef and corrupt the in-flight gesture's pointermove
+      // reads. Operators use one pointer at a time — silently drop the
+      // intruder, the first gesture keeps going.
+      if (ctxRef.current && ctxRef.current.pointerId !== e.pointerId) {
+        return;
+      }
       e.stopPropagation();
       e.preventDefault();
       try {
