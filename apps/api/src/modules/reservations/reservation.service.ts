@@ -552,6 +552,7 @@ export class ReservationService {
     const slotIdToExclude = (slotRow as { id: string } | null)?.id ?? null;
 
     const conflicts = await this.conflict.preCheck({
+      tenant_id: tenantId,
       space_id: r.space_id,
       effective_start_at: r.effective_start_at,
       effective_end_at: r.effective_end_at,

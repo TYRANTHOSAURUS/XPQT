@@ -432,7 +432,7 @@ export class OrderService {
           .order('display_order', { ascending: true })
           .limit(1)
           .maybeSingle(),
-        loadRequesterContext(this.supabase, args.requesterPersonId),
+        loadRequesterContext(this.supabase, args.requesterPersonId, args.tenantId),
       ]);
       if (bookingRow.error) throw bookingRow.error;
       if (slotRow.error) throw slotRow.error;
@@ -468,7 +468,7 @@ export class OrderService {
         template_id: booking.template_id,
       };
 
-      const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id);
+      const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id, args.tenantId);
 
       // Hydrate catalog_item category + fulfillment_team_id, and menu's
       // fulfillment_vendor_id, for each unique catalog_item_id / menu_id pair.
@@ -759,8 +759,8 @@ export class OrderService {
 
     const tenantId = TenantContext.current().id;
     const cleanup = new StandaloneCleanup(this.supabase, tenantId);
-    const requesterCtx = await loadRequesterContext(this.supabase, args.requester_person_id);
-    const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id);
+    const requesterCtx = await loadRequesterContext(this.supabase, args.requester_person_id, tenantId);
+    const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id, tenantId);
 
     try {
       // 1. Create the services-only booking (no booking_slots attached).

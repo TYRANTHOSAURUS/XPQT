@@ -289,6 +289,7 @@ export class BookingFlowService {
         // rooms at the same time so the frontend can render a one-click
         // rebook list.
         const conflicts = await this.conflict.preCheck({
+          tenant_id: tenantId,
           space_id: input.space_id,
           effective_start_at: this.subtractMinutes(input.start_at, buffers.setup_buffer_minutes),
           effective_end_at: this.addMinutes(input.end_at, buffers.teardown_buffer_minutes),
@@ -508,7 +509,7 @@ export class BookingFlowService {
     );
 
     if (rpcError) {
-      throw await this.mapAttachPlanRpcError(rpcError, input, bookingInput, actor);
+      throw await this.mapAttachPlanRpcError(rpcError, input, bookingInput, actor, tenantId);
     }
 
     // RPC returns the cached_result jsonb. supabase-js surfaces it directly.
@@ -637,6 +638,7 @@ export class BookingFlowService {
     input: CreateReservationInput,
     bookingInput: BookingInput,
     actor: ActorContext,
+    tenantId: string,
   ): Promise<Error> {
     const code = rpcError.code ?? '';
     const message = rpcError.message ?? '';
@@ -646,6 +648,7 @@ export class BookingFlowService {
     // picker for 3 alternative rooms at the same time).
     if (this.conflict.isExclusionViolation(rpcError as never)) {
       const conflicts = await this.conflict.preCheck({
+        tenant_id: tenantId,
         space_id: input.space_id,
         effective_start_at: this.subtractMinutes(
           input.start_at,

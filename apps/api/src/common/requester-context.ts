@@ -1,5 +1,4 @@
 import { SupabaseService } from './supabase/supabase.service';
-import { TenantContext } from './tenant-context';
 import { AppErrors } from './errors';
 
 /**
@@ -16,11 +15,18 @@ export interface RequesterContext {
   user_id: string | null;
 }
 
+/**
+ * Phase 8 follow-up #2: `tenantId` is a required positional arg so a missing
+ * or wrong tenant is a compile error, not a runtime cross-tenant leak through
+ * the admin client. Previously read ALS via `TenantContext.current().id`,
+ * which produced a split-brain when the caller's typed tenantId disagreed
+ * with the ambient ALS frame.
+ */
 export async function loadRequesterContext(
   supabase: SupabaseService,
   personId: string,
+  tenantId: string,
 ): Promise<RequesterContext> {
-  const tenantId = TenantContext.current().id;
   const [
     { data: person, error: pErr },
     { data: membership, error: mErr },
@@ -83,9 +89,9 @@ export async function loadRequesterContext(
 export async function loadPermissionMap(
   supabase: SupabaseService,
   userId: string | null,
+  tenantId: string,
 ): Promise<Record<string, boolean>> {
   if (!userId) return {};
-  const tenantId = TenantContext.current().id;
   const result: Record<string, boolean> = {};
   await Promise.all(
     PERMS.map(async (perm) => {

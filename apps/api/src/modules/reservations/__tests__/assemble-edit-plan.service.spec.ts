@@ -371,11 +371,7 @@ describe('AssembleEditPlanService.assembleEditPlan', () => {
   // Codex remediation 2026-05-12: tests call svc.assembleEditPlan(args)
   // directly with no ALS context. The makeService Proxy auto-wraps every
   // call in TenantContext.run({ id: args.tenantId, ... }), simulating
-  // what TenantMiddleware does in production. The hard-assert at the
-  // service entry point (asserting TenantContext.current()?.id ===
-  // args.tenantId) therefore passes for the happy-path tests below.
-  // Tests that intentionally exercise the assertion firing use
-  // makeServiceRaw + TenantContext.run with a deliberately-wrong tenant.
+  // what TenantMiddleware does in production.
 
   it('builds a plan for a geometry-only patch (same room, no rule change)', async () => {
     const supabase = makeSupabase({

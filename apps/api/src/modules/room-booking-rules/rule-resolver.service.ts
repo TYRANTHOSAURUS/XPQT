@@ -126,9 +126,9 @@ export class RuleResolverService {
     // requester's user_id, so they happen inside loadRequester's branch.
     const [allRules, { requester, permissions }, spaces] = await Promise.all([
       this.fetchAllRules(tenantId),
-      loadRequesterContext(this.supabase, requesterPersonId).then(async (r) => ({
+      loadRequesterContext(this.supabase, requesterPersonId, tenantId).then(async (r) => ({
         requester: r,
-        permissions: await loadPermissionMap(this.supabase, r.user_id),
+        permissions: await loadPermissionMap(this.supabase, r.user_id, tenantId),
       })),
       this.loadSpacesWithAncestors(spaceIds, tenantId),
     ]);
@@ -309,8 +309,8 @@ export class RuleResolverService {
     scenario: BookingScenario,
     tenantId: string,
   ): Promise<EvaluationContext> {
-    const requester = await loadRequesterContext(this.supabase, scenario.requester_person_id);
-    const permissions = await loadPermissionMap(this.supabase, requester.user_id);
+    const requester = await loadRequesterContext(this.supabase, scenario.requester_person_id, tenantId);
+    const permissions = await loadPermissionMap(this.supabase, requester.user_id, tenantId);
     const spaceMap = await this.loadSpacesWithAncestors([scenario.space_id], tenantId);
     const space = spaceMap.get(scenario.space_id);
     if (!space) throw AppErrors.notFoundWithCode('room_rule.space_not_found', `Space ${scenario.space_id} not found`);

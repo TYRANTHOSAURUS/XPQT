@@ -239,8 +239,8 @@ export class BundleService {
 
     const booking = await this.loadBooking(args.booking_id);
     const lines = await this.hydrateLines(args.services, booking);
-    const requesterCtx = await loadRequesterContext(this.supabase, args.requester_person_id);
-    const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id);
+    const requesterCtx = await loadRequesterContext(this.supabase, args.requester_person_id, tenantId);
+    const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id, tenantId);
 
     const cleanup = new Cleanup(this.supabase, tenantId);
     try {
@@ -681,8 +681,8 @@ export class BundleService {
       lineIdByServiceType.set(serviceType, set);
     }
 
-    const requesterCtx = await loadRequesterContext(this.supabase, args.requester_person_id);
-    const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id);
+    const requesterCtx = await loadRequesterContext(this.supabase, args.requester_person_id, args.tenant_id);
+    const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id, args.tenant_id);
 
     // ── 4. Group lines by service_type (one order per group) ───────────────
     const linesByServiceType = new Map<string, HydratedLine[]>();
