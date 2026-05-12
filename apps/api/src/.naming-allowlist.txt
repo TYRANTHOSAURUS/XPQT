@@ -965,9 +965,10 @@ apps/api/src/modules/reservations/reservation-visibility.service.ts:151:   * App
 apps/api/src/modules/reservations/reservation-visibility.service.ts:6: * Three-tier visibility for reservations (mirrors the ticket pattern but
 apps/api/src/modules/reservations/reservation.controller.ts:235:   * Unified desk-scheduler load — returns rooms + reservations in ONE
 apps/api/src/modules/reservations/reservation.controller.ts:29:@Controller('reservations')
-apps/api/src/modules/reservations/reservation.controller.ts:304:   * `PATCH /reservations/:bookingId/slots/:slotId` — edit ONE slot's
-apps/api/src/modules/reservations/reservation.controller.ts:308:   * `PATCH /reservations/:id` would do).
-apps/api/src/modules/reservations/reservation.controller.ts:310:   * The booking-level `PATCH /reservations/:id` (`editOne`) STAYS for
+apps/api/src/modules/reservations/reservation.controller.ts:325:   * `PATCH /reservations/:bookingId/slots/:slotId` — edit ONE slot's
+apps/api/src/modules/reservations/reservation.controller.ts:329:   * `PATCH /reservations/:id` would do).
+apps/api/src/modules/reservations/reservation.controller.ts:332:   * `PATCH /reservations/:id` (`editOne`) now handles BOTH geometry AND
+apps/api/src/modules/reservations/reservation.controller.ts:339:   *   - `useEditBooking`     → booking-level edits (PATCH /reservations/:id)
 apps/api/src/modules/reservations/reservation.controller.ts:402:   * reservation_id + requester_person_id + expiry). Public — no Bearer
 apps/api/src/modules/reservations/reservation.controller.ts:417:   * `POST /reservations/:id/services` — attach (or append) service lines
 apps/api/src/modules/reservations/reservation.controller.ts:458:   * `GET /reservations/:id/bundle-detail` — returns the booking's services

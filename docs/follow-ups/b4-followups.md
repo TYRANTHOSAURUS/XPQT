@@ -191,3 +191,16 @@ chain-config-not-status semantics make the window safe in practice.
 
 Documented in code at `loadCurrentApprovalChain`'s docstring + this
 followup so the contract decision is auditable.
+
+## Idempotency key cross-operation collision — accepted contract, hardening followup
+
+Code review on Step 2E flagged that `buildEditBookingIdempotencyKey(bookingId, clientRequestId)` at `packages/shared/src/idempotency.ts:350-355` has no operation discriminator. If a frontend reuses a `clientRequestId` across an `editOne` and an `editSlot` call to the same booking (deliberately or via a buggy retry handler), the second call short-circuits on `command_operations` and returns the first call's cached result.
+
+Decision: ACCEPT for now. The docstring at idempotency.ts:346-348 explicitly punts cross-operation deduplication to the controller: "different operations should mint different clientRequestIds client-side." React Query's `useMutation` mints a fresh UUID per call in the current frontend (verified at `apps/web/src/api/room-booking/mutations.ts`), so in practice this is unreachable.
+
+Hardening (when worth the engineering cost):
+- Add an `operation` discriminator to `buildEditBookingIdempotencyKey` (e.g., `'edit_one' | 'edit_slot' | 'edit_scope'`). editOne, editSlot, editScope each pass their own kind.
+- Update the docstring + all 3 call sites.
+- Migration impact: `command_operations.idempotency_key` is a free-form text column; in-flight retries with the old key shape would still find their cached result, but new calls would mint new key shapes. Safe.
+
+Tracked here so the next time a cross-mutation collision surfaces in a bug report, the fix is unambiguous.

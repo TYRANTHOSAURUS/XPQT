@@ -1049,7 +1049,14 @@ export class BookingFlowService {
       end_at?: string;
       attendee_count?: number;
       attendee_person_ids?: string[];
-      host_person_id?: string;
+      // Self-review I-1 (2026-05-12): widened to `string | null` to
+      // match UpdateReservationDto + editOne. The body below uses
+      // `!== undefined`, so an explicit null lands as `null` on
+      // `bookingPatch.host_person_id` and clears the column. Mirrors
+      // editOne's clear semantics through edit_booking RPC; editScope
+      // routes through a direct UPDATE (multi-row recurrence fanout
+      // still on the legacy path until Step 2F).
+      host_person_id?: string | null;
     },
   ): Promise<{ scope: RecurrenceScope; new_series_id?: string; updated: number }> {
     if (scope === 'this') {

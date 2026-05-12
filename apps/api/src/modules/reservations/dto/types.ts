@@ -360,25 +360,6 @@ export interface ActorContext {
    * the controller. The middleware always sets it on real HTTP requests.
    */
   client_request_id?: string;
-  /**
-   * Whether the value above came from the client (`X-Client-Request-Id`
-   * header validated as UUID) or was server-defaulted by the middleware
-   * (header missing or malformed). Mirrors `req.clientRequestIdSource`
-   * from `apps/api/src/common/middleware/client-request-id.middleware.ts`.
-   *
-   * Used by editOne→editSlot delegation logging (B.4 step 2D-D self-
-   * review I-CODE-3): editOne is not yet a producer route (Step 2E
-   * cutover pending), so when its geometry path forwards
-   * `actor.client_request_id` into editSlot a `server_default` value
-   * silently breaks cross-retry idempotency on the delegated edit_booking
-   * RPC. Logging occurrences lets ops measure how often the unguarded
-   * editOne path is actually hit without a client header before flipping
-   * the controller guard in Step 2E.
-   *
-   * Optional for the same reason as `client_request_id` — non-HTTP
-   * callers don't go through the middleware.
-   */
-  client_request_id_source?: 'client' | 'server_default';
 }
 
 export type RecurrenceScope = 'this' | 'this_and_following' | 'series';

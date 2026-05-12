@@ -328,10 +328,16 @@ export class ReservationController {
    * actually moves that slot, not the primary (which the legacy
    * `PATCH /reservations/:id` would do).
    *
-   * The booking-level `PATCH /reservations/:id` (`editOne`) STAYS for
-   * non-geometry edits (host_person_id, attendee_count). Frontend uses:
-   *   - `useEditBooking`     → booking-level fields
-   *   - `useEditBookingSlot` → drag/resize/move (slot geometry)
+   * Post-B.4 Step 2E (2026-05-12): the booking-level
+   * `PATCH /reservations/:id` (`editOne`) now handles BOTH geometry AND
+   * meta through the unified `edit_booking` RPC (00364). The split is
+   * no longer "slot endpoint = geometry, booking endpoint = non-
+   * geometry"; it's "slot endpoint = drag/resize/move a specific slot
+   * row, booking endpoint = anything tied to the booking as a whole
+   * (single-occurrence resave, host clear, recurrence override flip)."
+   * Frontend uses:
+   *   - `useEditBooking`     → booking-level edits (PATCH /reservations/:id)
+   *   - `useEditBookingSlot` → drag/resize/move a specific slot
    *
    * URL contract (codex 2026-05-04 #16): `slot.booking_id` MUST equal
    * `bookingId` in the URL — enforced inside the service so the
@@ -772,13 +778,6 @@ export class ReservationController {
       is_service_desk: !!bookOnBehalfRes.data,
       has_override_rules: !!overrideRes.data,
       client_request_id: (req as { clientRequestId?: string }).clientRequestId,
-      // self-review I-CODE-3 (B.4 step 2D-D) — thread the source so
-      // editOne's geometry-path delegation can log when it's running
-      // with a server-defaulted UUID (cross-retry idempotency soft-
-      // break). Step 2E will guard PATCH /:id and this field becomes
-      // unconditionally 'client' on real requests.
-      client_request_id_source: (req as { clientRequestIdSource?: 'client' | 'server_default' })
-        .clientRequestIdSource,
     };
   }
 }

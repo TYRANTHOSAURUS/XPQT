@@ -644,7 +644,15 @@ export class ReservationService {
       end_at?: string;
       attendee_count?: number;
       attendee_person_ids?: string[];
-      host_person_id?: string;
+      // Self-review I-1 (2026-05-12): widened from `string` to
+      // `string | null` so the public API can clear the booking-level
+      // host. The assembler distinguishes `undefined` (preserve) from
+      // `null` (clear) at assemble-edit-plan.service.ts:473-475 — but
+      // the previous narrower type forced frontend callers to cast
+      // around it. The RPC's `nullif(...,'')::uuid` at 00364:765 turns
+      // an explicit null into SQL NULL, the "clear" semantics. UpdateReservationDto
+      // at dto/dtos.ts:59 mirrors this widening.
+      host_person_id?: string | null;
     },
     // B.4 step 2E — editOne is now a producer route. The controller
     // (reservation.controller.ts:291-323 post-cutover) is gated by
@@ -753,7 +761,12 @@ export class ReservationService {
     // BEFORE the meta UPDATEs fire. Both columns FK to persons(id)
     // which is tenant-owned, but the FK doesn't enforce a composite
     // (id, tenant_id) check.
-    if (patch.host_person_id !== undefined) {
+    // Self-review I-1 (2026-05-12): skip the tenant-owned check on
+    // explicit `null` (host clear) — there's no person to validate.
+    // The RPC's `nullif(...,'')::uuid` at 00364:765 converts JSON null
+    // to SQL NULL and stores it directly. Without this guard,
+    // assertTenantOwned would .eq('id', null) which is a query bug.
+    if (patch.host_person_id !== undefined && patch.host_person_id !== null) {
       await assertTenantOwned(
         this.supabase,
         'persons',
@@ -822,16 +835,17 @@ export class ReservationService {
     // error codes than the RPC's defense-in-depth raises.
     //
     // Citation discipline: every line cited below was Read this session.
-    //   - editSlot template:               reservation.service.ts:1117-1308
-    //   - editSlot B.4.A.5 gate:           reservation.service.ts:1209-1224
-    //   - editSlot idempotency-key build:  reservation.service.ts:1226
-    //   - editSlot RPC call:               reservation.service.ts:1228-1234
-    //   - editSlot error map:              reservation.service.ts:1235-1256
-    //   - editSlot visitor cascade:        reservation.service.ts:1265-1306
-    //   - assembleEditPlan kind='one':     assemble-edit-plan.service.ts:227-256
-    //   - RPC booking-patch shape:         00364:340-355
-    //   - RPC host_person_id apply:        00364:763-767
-    //   - RPC recurrence_overridden apply: 00364:768-773
+    // Self-review NIT-5 (2026-05-12): refreshed to match actual lines.
+    //   - editSlot B.4.A.5 gate (comment block start): reservation.service.ts:1189
+    //   - editSlot B.4.A.5 gate (predicate):           reservation.service.ts:1227-1230
+    //   - editSlot idempotency-key build:              reservation.service.ts:1244
+    //   - editSlot RPC call:                           reservation.service.ts:1246-1252
+    //   - editSlot visitor cascade (block start):      reservation.service.ts:1283
+    //   - assembleEditPlan kind='one' (wrapper):       assemble-edit-plan.service.ts:253-266
+    //   - assembleEditPlan kind='one' (shared core):   assemble-edit-plan.service.ts:278-512
+    //   - RPC booking-patch shape:                     00364:340-355
+    //   - RPC host_person_id apply:                    00364:763-767
+    //   - RPC recurrence_overridden apply:             00364:768-773
 
     if (!this.assembleEditPlan) {
       // Defense-in-depth — DI wiring in the parent module provides the
@@ -844,26 +858,51 @@ export class ReservationService {
     }
 
     // Early-return no-op preserves the legacy editOne contract at
-    // reservation.service.ts:821-827 (pre-cutover): a patch with no
-    // keys or every key equal to the current row was treated as a
-    // no-op, returning the booking unchanged. Without this we'd
-    // unnecessarily hit the RPC + idempotency gate for empty patches.
-    if (
-      patch.space_id === undefined &&
-      patch.start_at === undefined &&
-      patch.end_at === undefined &&
-      patch.attendee_count === undefined &&
-      patch.attendee_person_ids === undefined &&
-      patch.host_person_id === undefined
-    ) {
+    // git show f5f01511^:reservation.service.ts:793-826 (pre-cutover):
+    // a patch with no actual change was returned as `r` unchanged.
+    //
+    // Self-review C-1 (2026-05-12): the parity is ASYMMETRIC.
+    //
+    //   - GEOMETRY (space_id, start_at, end_at): VALUE-compare against
+    //     `r`'s current primary-slot projection. `r` was loaded via
+    //     findByIdOrThrow above which embeds the PRIMARY slot (display
+    //     _order asc, created_at asc — reservation.service.ts:170-184),
+    //     so `r.start_at`, `r.end_at`, `r.space_id` are the primary
+    //     slot's geometry. Frontend resaves (operator opens the form,
+    //     hits Save without changes) send the current values back as
+    //     defined keys; a key-only check would treat that as a real
+    //     edit, fire the RPC, write an audit row, and (on a series
+    //     booking) detach via recurrence_overridden=true.
+    //   - META (attendee_count, attendee_person_ids, host_person_id):
+    //     KEY-compare (any defined key counts as an edit). Legacy
+    //     editOne built slotMetaPatch/bookingMetaPatch on key
+    //     definedness alone and short-circuited only when ALL three
+    //     buckets were empty — the meta path didn't value-compare.
+    //
+    // Same predicate lives in the assembler's auto-set block at
+    // assemble-edit-plan.service.ts:477-498 for the recurrence_overridden
+    // flag — both layers must agree on what "no real edit" means.
+    const hasGeometryChange =
+      (patch.space_id !== undefined && patch.space_id !== r.space_id) ||
+      (patch.start_at !== undefined && patch.start_at !== r.start_at) ||
+      (patch.end_at !== undefined && patch.end_at !== r.end_at);
+    const hasMetaKey =
+      patch.attendee_count !== undefined ||
+      patch.attendee_person_ids !== undefined ||
+      patch.host_person_id !== undefined;
+    if (!hasGeometryChange && !hasMetaKey) {
       return r;
     }
 
     // Resolve the booking's PRIMARY slot id (lowest display_order, ties
-    // by created_at). Definition matches the RPC's internal ordering at
-    // assemble-edit-plan.service.ts:393-433. Single read, no caching
-    // (the C2 lazy resolver is no longer needed — only one path remains
-    // through the RPC).
+    // by created_at ascending). Self-review NIT-4 (2026-05-12): the
+    // earlier citation pointed at assemble-edit-plan.service.ts:393-433
+    // which is the approval-assembly block — wrong. The actual primary-
+    // slot ordering definition is the read pattern below (used elsewhere
+    // by findByIdOrThrow at reservation.service.ts:178-179 and by the
+    // RPC's MIN/MAX/mirror logic at 00364), not a single shared helper.
+    // Single read, no caching (the C2 lazy resolver is no longer needed —
+    // only one path remains through the RPC).
     const { data: primarySlotRow, error: primarySlotErr } = await this.supabase.admin
       .from('booking_slots')
       .select('id')

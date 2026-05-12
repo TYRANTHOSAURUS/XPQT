@@ -351,7 +351,20 @@ function makeService(opts: {
       bookingId: string;
       tenantId: string;
       slotId: string;
-      patch: { kind: 'slot'; space_id?: string; start_at?: string; end_at?: string };
+      // Self-review NIT-3 (2026-05-12): widened to admit kind='one'
+      // because editOne now passes kind='one' through the assembler
+      // (Step 2E cutover, reservation.service.ts:892-905). The mock
+      // ignores the discriminant — both kinds emit the same allow→allow
+      // plan shape in this spec.
+      patch: {
+        kind: 'slot' | 'one';
+        space_id?: string;
+        start_at?: string;
+        end_at?: string;
+        attendee_count?: number | null;
+        attendee_person_ids?: string[];
+        host_person_id?: string | null;
+      };
     }) => ({
       booking: {
         location_id: args.patch.space_id ?? SPACE_OLD,
@@ -537,11 +550,39 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
   it('does not emit when no field actually changed', async () => {
     const { svc, captured, unsubscribe } = makeService({});
     try {
-      // Patch the same value back — the editOne early-returns at
-      // reservation.service.ts:653-655 because no patch keys are populated.
+      // Self-review C-1 (2026-05-12): patching the same value back
+      // (`{ start_at: baseSlot.start_at }`) value-compares equal to
+      // `r.start_at` in the editOne no-op block at
+      // reservation.service.ts:846-880 (post-C-1) and early-returns
+      // `r` without ever calling the assembler or RPC. Pre-C-1 this
+      // patch slipped through (key-only check), the RPC fired, and
+      // the cascade diff caught no change because targetSlotPre vs
+      // post-RPC primary projections were identical. Both paths
+      // produce zero events, but C-1 spares us the wasted RPC trip.
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
         () => svc.editOne(BOOKING_ID, ACTOR, { start_at: baseSlot.start_at }, CLIENT_REQUEST_ID),
+      );
+      expect(captured).toHaveLength(0);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  // Self-review I-3 (2026-05-12): tighter assertion on the genuinely-
+  // empty patch path. `{}` exercises the editOne no-op block at
+  // reservation.service.ts:846-880 (hasGeometryChange=false AND
+  // hasMetaKey=false → return r). No other test in this file hits the
+  // empty-patch branch — the closest, above, is "same-value start_at"
+  // which post-C-1 ALSO short-circuits, but goes through the
+  // value-compare arm. This test pins the key-absent arm so a future
+  // refactor that conflates the two arms is caught.
+  it('returns the booking unchanged on a literally empty patch (no assembler, no RPC, no emit)', async () => {
+    const { svc, captured, unsubscribe } = makeService({});
+    try {
+      await TenantContext.run(
+        { id: TENANT, slug: 'test', tier: 'standard' },
+        () => svc.editOne(BOOKING_ID, ACTOR, {}, CLIENT_REQUEST_ID),
       );
       expect(captured).toHaveLength(0);
     } finally {

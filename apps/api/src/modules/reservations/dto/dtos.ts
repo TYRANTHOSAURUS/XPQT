@@ -56,7 +56,13 @@ export interface UpdateReservationDto {
   end_at?: string;
   attendee_count?: number;
   attendee_person_ids?: string[];
-  host_person_id?: string;
+  // Self-review I-1 (2026-05-12): widened to `string | null` so frontend
+  // callers can explicitly clear the booking-level host. `undefined` =
+  // preserve (key absent from PATCH body); `null` = clear (key present,
+  // value JSON null). The assembler honors the same distinction at
+  // assemble-edit-plan.service.ts:473-475 and the RPC's nullif coercion
+  // at 00364:765 turns the JSON null into SQL NULL.
+  host_person_id?: string | null;
 }
 
 export interface CancelReservationDto {

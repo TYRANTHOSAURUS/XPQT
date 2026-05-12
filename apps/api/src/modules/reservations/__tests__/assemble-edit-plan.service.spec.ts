@@ -958,4 +958,127 @@ describe('AssembleEditPlanService.assembleEditPlan — kind="one" (Step 2E)', ()
       status: 422,
     });
   });
+
+  // ─── Self-review C-1 (2026-05-12) — asymmetric value/key parity ───
+  //
+  // Pre-cutover editOne (git show f5f01511^:reservation.service.ts:793-826)
+  // value-compared geometry keys (`patch.start_at && patch.start_at !== r.start_at`)
+  // and key-compared meta keys (`patch.attendee_count !== undefined → slotMetaPatch.attendee_count = ...`).
+  // The Step 2E v1 cutover used a key-only predicate for BOTH, which would
+  // flip recurrence_overridden=true on a same-value geometry resave of a
+  // series booking — detaching the booking from the series silently.
+  //
+  // These tests pin the asymmetric parity at the assembler layer
+  // (assemble-edit-plan.service.ts:477-512). The editOne entry-point
+  // no-op (reservation.service.ts:846-880) is a separate gate; tests for
+  // that live in reservation-edit-slot.spec.ts.
+  it('C-1: same-value geometry on a series booking does NOT auto-set recurrence_overridden', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking({ recurrence_series_id: SERIES }),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    // baseSlot().start_at === '2026-05-12T09:00:00Z'. Patching the same
+    // value back is a frontend resave-with-no-change. Pre-C-1 this flipped
+    // recurrence_overridden. Post-C-1 it must not.
+    const plan = await svc.assembleEditPlan(
+      oneArgs({ start_at: '2026-05-12T09:00:00Z' }),
+    );
+    expect(plan.booking.recurrence_overridden).toBeUndefined();
+  });
+
+  it('C-1: same-value space_id + same-value end_at on a series booking does NOT auto-set recurrence_overridden', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking({ recurrence_series_id: SERIES }),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    // All three geometry keys present, all matching current slot values.
+    // The classic "operator opens form, saves with no changes" shape.
+    const plan = await svc.assembleEditPlan(
+      oneArgs({
+        space_id: SPACE_OLD, // baseSlot().space_id
+        start_at: '2026-05-12T09:00:00Z',
+        end_at: '2026-05-12T10:00:00Z',
+      }),
+    );
+    expect(plan.booking.recurrence_overridden).toBeUndefined();
+  });
+
+  it('C-1: a meta-key present (attendee_count) on a series booking AUTO-SETS recurrence_overridden even when the value matches current state', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking({ recurrence_series_id: SERIES }),
+      slot: baseSlot({ attendee_count: 4 }),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    // attendee_count=4 IS the slot's current value, but the parity rule
+    // for meta is KEY-COMPARE (legacy editOne treated `attendee_count: X → X`
+    // as a real edit too — slotMetaPatch was built off key definedness,
+    // not value diff). This test pins that asymmetry deliberately so a
+    // future "make it symmetric" refactor is caught here.
+    const plan = await svc.assembleEditPlan(oneArgs({ attendee_count: 4 }));
+    expect(plan.booking.recurrence_overridden).toBe(true);
+  });
+
+  it('C-1: a meta-key present (host_person_id) on a series booking AUTO-SETS recurrence_overridden', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking({ recurrence_series_id: SERIES }),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    const plan = await svc.assembleEditPlan(oneArgs({ host_person_id: HOST }));
+    expect(plan.booking.recurrence_overridden).toBe(true);
+  });
+
+  // ─── Self-review I-1 (2026-05-12) — explicit-null host clear ───
+  it('I-1: host_person_id=null surfaces as JSON null on booking_patch (clear semantics)', async () => {
+    const supabase = makeSupabase({
+      booking: baseBooking(),
+      slot: baseSlot(),
+      approvals: [],
+    });
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    const plan = await svc.assembleEditPlan(oneArgs({ host_person_id: null }));
+
+    // RPC's nullif(...,'')::uuid at 00364:765 converts JSON null to SQL
+    // NULL → clears the column. Key absence would mean "preserve" via
+    // the case-when at 00364:763-767. This is the path the public DTO's
+    // `string | null` widening (dto/dtos.ts:53-67) is meant to support.
+    expect('host_person_id' in plan.booking).toBe(true);
+    expect(plan.booking.host_person_id).toBeNull();
+  });
 });

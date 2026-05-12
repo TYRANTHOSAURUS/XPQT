@@ -474,23 +474,39 @@ export class AssembleEditPlanService {
       bookingPatch.host_person_id = patch.host_person_id;
     }
 
-    // recurrence_overridden auto-set for kind='one' on a series booking
-    // when any field is patched. The "any field" predicate matches the
-    // legacy editOne check (reservation.service.ts:817-819): geometry
-    // OR slot-meta OR booking-meta. We check the input patch fields
-    // (not the target diff) because the legacy code treated a no-op
-    // patch as a real edit too (e.g. attendee_count: 5 → 5 still set
-    // the override flag pre-cutover). Subtle but worth preserving so
-    // operator behavior stays consistent across the cutover.
+    // recurrence_overridden auto-set for kind='one' on a series booking.
+    // Self-review C-1 (2026-05-12): the predicate is ASYMMETRIC, matching
+    // the pre-cutover legacy editOne semantics at
+    // git show f5f01511^:reservation.service.ts:793-819:
+    //
+    //   - GEOMETRY (space_id, start_at, end_at): VALUE-compare against
+    //     the current primary-slot state. Re-saving the same start_at
+    //     a frontend already shows is NOT an edit and must not flip
+    //     the override flag (resave is the dominant 'no change' op).
+    //   - META (attendee_count, attendee_person_ids, host_person_id):
+    //     KEY-compare (any defined key counts as an edit). Legacy
+    //     editOne treated `attendee_count: 5 → 5` as a real edit (it
+    //     went into slotMetaPatch unconditionally on defined-ness, and
+    //     the override flag fired off `slotMetaPatch.length > 0`).
+    //
+    // The earlier (Step 2E v1) key-only predicate broke geometry parity:
+    // a frontend resave like `{ start_at: r.start_at }` would (a) skip
+    // the editOne entry-point no-op short-circuit (which was also
+    // key-only at the time), (b) reach this branch, (c) auto-flip
+    // recurrence_overridden, and (d) detach the booking from the
+    // series for future scope-wide edits. Asymmetric value/key parity
+    // matches legacy exactly. See docs/follow-ups/b4-followups.md and
+    // the editOne entry-point no-op block at reservation.service.ts:846.
     if (patch.auto_set_recurrence_overridden && booking.recurrence_series_id !== null) {
-      const anyFieldPatched =
-        patch.space_id !== undefined ||
-        patch.start_at !== undefined ||
-        patch.end_at !== undefined ||
+      const hasGeometryChange =
+        (patch.space_id !== undefined && patch.space_id !== slot.space_id) ||
+        (patch.start_at !== undefined && patch.start_at !== slot.start_at) ||
+        (patch.end_at !== undefined && patch.end_at !== slot.end_at);
+      const hasMetaKey =
         patch.attendee_count !== undefined ||
         patch.attendee_person_ids !== undefined ||
         patch.host_person_id !== undefined;
-      if (anyFieldPatched) {
+      if (hasGeometryChange || hasMetaKey) {
         bookingPatch.recurrence_overridden = true;
       }
     }

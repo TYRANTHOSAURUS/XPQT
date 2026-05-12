@@ -1368,4 +1368,118 @@ describe('ReservationService.editOne — patch flows through edit_booking RPC (C
     // Plan-builder also wasn't called.
     expect(assemble.assembleEditPlan).not.toHaveBeenCalled();
   });
+
+  // Self-review C-1 (2026-05-12) — asymmetric value/key parity at the
+  // editOne entry-point no-op (reservation.service.ts:846-880). Geometry
+  // value-compares against `r` (the primary-slot projection from
+  // findByIdOrThrow); meta key-compares (any defined key counts as an
+  // edit). These two tests pin the rule at the service layer; the
+  // assembler-side parity for recurrence_overridden lives in
+  // __tests__/assemble-edit-plan.service.spec.ts under the same C-1
+  // banner.
+  it('C-1: editOne with same-value start_at + no other fields short-circuits (no RPC, no assembler call)', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlanC2();
+    const svc = new ReservationService(
+      supabase as never,
+      conflict as never,
+      visibility as never,
+      undefined, undefined, undefined, undefined,
+      assemble as never,
+    );
+
+    // makeSlotEmbed().start_at === '2026-05-01T09:00:00Z' — the current
+    // primary slot's value. The "frontend operator opens the form and
+    // saves with no changes" patch shape. Pre-C-1 (Step 2E v1) this
+    // slipped past the key-only no-op check, fired the RPC, and would
+    // detach a series booking via recurrence_overridden=true.
+    await TenantContext.run(TENANT, () =>
+      svc.editOne(
+        BOOKING_ID,
+        makeActor(),
+        { start_at: '2026-05-01T09:00:00Z' },
+        CLIENT_REQUEST_ID,
+      ),
+    );
+
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
+    expect(assemble.assembleEditPlan).not.toHaveBeenCalled();
+  });
+
+  it('C-1: editOne with same-value start_at + a new attendee_count DOES call the RPC (meta path is key-compare)', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlanC2();
+    const svc = new ReservationService(
+      supabase as never,
+      conflict as never,
+      visibility as never,
+      undefined, undefined, undefined, undefined,
+      assemble as never,
+    );
+
+    // start_at matches current → hasGeometryChange=false. But
+    // attendee_count is a defined meta key → hasMetaKey=true. Combined
+    // predicate `!hasGeometryChange && !hasMetaKey` is false → the
+    // no-op short-circuit does NOT fire; the RPC runs. This pins the
+    // asymmetric parity: meta KEY-compare even when paired with same-
+    // value geometry.
+    await TenantContext.run(TENANT, () =>
+      svc.editOne(
+        BOOKING_ID,
+        makeActor(),
+        {
+          start_at: '2026-05-01T09:00:00Z', // same-value geometry
+          attendee_count: 8,                // new meta value
+        },
+        CLIENT_REQUEST_ID,
+      ),
+    );
+
+    const rpcCalls = supabase.calls.rpc.filter((c) => c.fn === 'edit_booking');
+    expect(rpcCalls).toHaveLength(1);
+    expect(assemble.assembleEditPlan).toHaveBeenCalledTimes(1);
+  });
+
+  // Self-review I-1 (2026-05-12) — host_person_id null clears the booking
+  // host. The DTO widened to `string | null` at dto/dtos.ts:53-67; the
+  // editOne signature mirrors. The assembler emits a literal null on
+  // booking_patch which the RPC's `nullif(...,'')::uuid` at 00364:765
+  // converts to SQL NULL.
+  it('I-1: editOne with host_person_id=null calls the RPC and propagates null on booking_patch', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlanC2();
+    const svc = new ReservationService(
+      supabase as never,
+      conflict as never,
+      visibility as never,
+      undefined, undefined, undefined, undefined,
+      assemble as never,
+    );
+
+    await TenantContext.run(TENANT, () =>
+      svc.editOne(
+        BOOKING_ID,
+        makeActor(),
+        { host_person_id: null },
+        CLIENT_REQUEST_ID,
+      ),
+    );
+
+    const rpcCalls = supabase.calls.rpc.filter((c) => c.fn === 'edit_booking');
+    expect(rpcCalls).toHaveLength(1);
+    const plan = (rpcCalls[0].args as Record<string, unknown>).p_plan as EditPlan;
+    expect('host_person_id' in plan.booking).toBe(true);
+    expect(plan.booking.host_person_id).toBeNull();
+    // No assertTenantOwned call should have been issued — null means
+    // "clear", there's no person id to validate. (We don't have a
+    // persons mock here, so the supabase mock would surface as null →
+    // reference.not_in_tenant if the preflight ran. The fact that the
+    // RPC fired through proves the preflight was skipped.)
+  });
 });
