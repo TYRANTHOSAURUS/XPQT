@@ -254,6 +254,13 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   //   than a generic 500 retry-loop.
   'edit_booking_scope.too_many_occurrences': 422,
   'edit_booking_scope.mixed_series': 422,
+  // B.4 Step 2F.2 — TS-side defensive raises (assembleScopeEditPlan).
+  // 422 for caller-fixable problems (operator picks a different path /
+  // refetches scope); 500 for internal-consistency bugs (controller
+  // computed effectiveSeriesId then drifted; data corruption).
+  'edit_booking_scope.time_shift_not_supported': 422,
+  'edit_booking_scope.not_recurring': 422,
+  'edit_booking_scope.empty_scope': 422,
   // B.2.A semantic re-derivation gates — RPCs raise these when the
   // TS-side plan disagrees with the server's recomputation at write time
   // (workflow/SLA/scope-override changed, effective location resolved
@@ -283,6 +290,14 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // constructs AppError with status=500 via AppErrors.server; this entry
   // is defense-in-depth for any future RPC raise of the same code.
   'approval.read_failed': 500,
+  // B.4 Step 2F.2 — assembleScopeEditPlan defense-in-depth 500s.
+  // series_mismatch: pivot booking's recurrence_series_id != caller's
+  // effectiveSeriesId. Internal consistency bug; should never happen post
+  // controller computes effectiveSeriesId from pivot. primary_slot_not_found:
+  // an in-scope booking has zero slot rows — data corruption (every booking
+  // must have ≥1 slot per 00043 invariant).
+  'edit_booking_scope.series_mismatch': 500,
+  'edit_booking_scope.primary_slot_not_found': 500,
   // B.4 step 2D-D — controller-vs-notification gate. The TS layer in
   // ReservationService.editSlot pre-flight-rejects any edit whose plan
   // would emit `booking.approval_required` (rows 2/7/8 of §3.6.5) until

@@ -808,7 +808,34 @@ export type KnownErrorCode =
   | 'edit_booking_scope.invalid_plans'
   | 'edit_booking_scope.too_many_occurrences'
   | 'edit_booking_scope.booking_not_found'
-  | 'edit_booking_scope.mixed_series';
+  | 'edit_booking_scope.mixed_series'
+  // B.4 Step 2F.2 — assembleScopeEditPlan (TS plan-builder) defensive
+  // codes. Surface BEFORE the RPC sees the payload so the operator gets
+  // an actionable copy instead of the RPC's "invalid_plans" / generic 500.
+  // - time_shift_not_supported (422): patch carries start_at/end_at
+  //   (smuggled via non-TS caller — the typed union forbids them).
+  //   Series time-shift requires recurrence_rule mutation, not slot
+  //   UPDATE; would corrupt the projection. Caller picks per-occurrence
+  //   edit + iterates if a true time-shift is intended.
+  // - not_recurring (422): the pivot booking has no recurrence_series_id.
+  //   Caller routed a non-recurring booking through the scope path —
+  //   surface inline so operator picks the single-occurrence edit.
+  // - series_mismatch (500): the pivot booking's recurrence_series_id
+  //   does not equal the caller-supplied effectiveSeriesId. INTERNAL
+  //   consistency bug (controller computed effectiveSeriesId from pivot
+  //   then drifted) — 500 routes to ops; should never happen in the
+  //   happy path.
+  // - empty_scope (422): the effectiveSeriesId resolved to zero live
+  //   bookings. Possible if the series was wiped between the controller's
+  //   split and the assembler's read; caller refetches the scope picker.
+  // - primary_slot_not_found (500): one of the in-scope bookings has no
+  //   booking_slots row. Data corruption — every booking must have at
+  //   least one slot (00043 invariant). 500 surfaces to ops.
+  | 'edit_booking_scope.time_shift_not_supported'
+  | 'edit_booking_scope.not_recurring'
+  | 'edit_booking_scope.series_mismatch'
+  | 'edit_booking_scope.empty_scope'
+  | 'edit_booking_scope.primary_slot_not_found';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1401,6 +1428,13 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'edit_booking_scope.too_many_occurrences',
   'edit_booking_scope.booking_not_found',
   'edit_booking_scope.mixed_series',
+  // B.4 Step 2F.2 — assembleScopeEditPlan defensive codes. See KnownErrorCode
+  // union for per-code rationale.
+  'edit_booking_scope.time_shift_not_supported',
+  'edit_booking_scope.not_recurring',
+  'edit_booking_scope.series_mismatch',
+  'edit_booking_scope.empty_scope',
+  'edit_booking_scope.primary_slot_not_found',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

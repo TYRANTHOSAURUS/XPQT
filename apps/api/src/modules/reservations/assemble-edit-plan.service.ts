@@ -143,9 +143,56 @@ export interface AssembleEditPlanOnePatch {
   host_person_id?: string | null;
 }
 
-/** Step 2F placeholder — multi-slot recurrence fanout. Fields TBD. */
+/**
+ * Step 2F.2 — multi-occurrence recurrence scope edit.
+ *
+ * Used by `assembleScopeEditPlan` (separate entry point, different return
+ * shape from `assembleEditPlan` because scope edits produce N plans, not 1).
+ *
+ * The caller has already resolved `effectiveSeriesId`:
+ *   - scope = 'series' → use the pivot booking's current recurrence_series_id
+ *   - scope = 'this_and_following' → call RecurrenceService.splitSeries(pivot)
+ *     to mint a new series_id at the pivot and forward → use that new id.
+ * Series splitting happens at the controller layer (Step 2F.3), NOT inside
+ * the plan-builder. Rationale: plan-builder must be pure for dry-run
+ * support; splitSeries commits side effects (writes a new series row +
+ * UPDATEs the forward occurrences' recurrence_series_id).
+ *
+ * NOT supported on scope edits: `start_at` / `end_at` (series time-shift
+ * requires recurrence_rule mutation, not slot UPDATE). Step 2F.2 rejects
+ * them with `edit_booking_scope.time_shift_not_supported` at the runtime
+ * gate inside assembleScopeEditPlan (the type doesn't admit them, but a
+ * non-TS caller smuggling via JSON is the threat the runtime guard
+ * defends against — defense-in-depth; the controller-layer rejection in
+ * Step 2F.3 is the primary site).
+ */
 export interface AssembleEditPlanScopePatch {
   kind: 'scope';
+  /** Slot-level: target room (applied to PRIMARY slot of each occurrence). */
+  space_id?: string;
+  /** Slot-level: attendee headcount per occurrence's primary slot. */
+  attendee_count?: number | null;
+  /** Slot-level: attendee person ids per occurrence's primary slot. */
+  attendee_person_ids?: string[];
+  /** Booking-level: host_person_id. Applied to every booking in scope.
+   * `null` = clear; `string` = set; `undefined` = preserve. */
+  host_person_id?: string | null;
+}
+
+/**
+ * Step 2F.2 — return shape from `assembleScopeEditPlan`.
+ *
+ * `rpc_plans` maps directly to the `edit_booking_scope` RPC's
+ * `p_plans` jsonb argument (00371:65): `[{booking_id, plan}, ...]`.
+ *
+ * `series_id` equals the caller's `effectiveSeriesId` and matches the
+ * RPC's same-series gate (00371:334-347). The plan-builder verifies the
+ * pivot booking's recurrence_series_id equals this value — defense-in-
+ * depth before the RPC's loop.
+ */
+export interface AssembleScopeEditPlanResult {
+  series_id: string;
+  rpc_plans: Array<{ booking_id: string; plan: EditPlan }>;
 }
 
 /**
@@ -188,16 +235,20 @@ export class AssembleEditPlanService {
       case 'one':
         return this.assembleOneEditPlan(args, args.patch);
       case 'scope':
-        // Defense-in-depth: the discriminated union keeps the TS-level
-        // gate, but a non-TS caller (or a future cast-around) could
-        // still pass an unimplemented kind. Surface as 400 rather than
-        // building a malformed plan. Step 2E ships kind='one'; kind=
-        // 'scope' is Step 2F (multi-slot recurrence fanout).
+        // Scope edits produce N per-occurrence plans, not 1 — they have
+        // a different return shape (`AssembleScopeEditPlanResult`) and
+        // a different entry point (`assembleScopeEditPlan`). The generic
+        // `assembleEditPlan` returns a single `EditPlan`; routing kind=
+        // 'scope' here would either lie about the shape or force a
+        // union return type that callers (editSlot, editOne) don't
+        // want. Surface as 400 so a caller using the wrong entry point
+        // gets a clean error instead of a malformed plan. Step 2F.3's
+        // controller calls `assembleScopeEditPlan` directly.
         throw new AppError(
           'edit_booking.invalid_plan_shape',
           400,
           {
-            detail: `assembleEditPlan kind=${args.patch.kind} is not yet implemented (Step 2F).`,
+            detail: `assembleEditPlan kind=scope: use assembleScopeEditPlan() instead (different return shape — N per-occurrence plans).`,
           },
         );
       default: {
@@ -263,6 +314,242 @@ export class AssembleEditPlanService {
       host_person_id: patch.host_person_id,
       auto_set_recurrence_overridden: true,
     });
+  }
+
+  /**
+   * Step 2F.2 — multi-occurrence recurrence scope edit assembly.
+   *
+   * Builds N per-occurrence EditPlans for the `edit_booking_scope` RPC
+   * (00371). The caller has already resolved `effectiveSeriesId`:
+   *   - scope='series' → pivot booking's current recurrence_series_id
+   *   - scope='this_and_following' → new_series_id from
+   *     RecurrenceService.splitSeries (the controller is responsible
+   *     for the split; the plan-builder stays pure so dry-run support
+   *     doesn't accidentally commit a series fork).
+   *
+   * The returned `rpc_plans` array maps directly to the RPC's `p_plans`
+   * jsonb argument: `[{booking_id, plan}, ...]`. Each `plan` flows
+   * through `buildSingleSlotPlan` with the primary slot resolved per
+   * booking (lowest `display_order`, ties by `created_at` — same
+   * convention as editOne). `auto_set_recurrence_overridden: false`
+   * because the RPC at 00371:219 REJECTS scope plans that include
+   * `recurrence_overridden` in the booking patch — scope edits are
+   * series-wide; per-occurrence override would corrupt the projection
+   * semantics.
+   *
+   * Pre-flight B.4.A.5 gate at TS layer: after building all plans, scan
+   * for any plan where `new_outcome === 'require_approval' AND
+   * (old_outcome !== 'require_approval' OR chain_config_changed === true)`.
+   * If found, raise `booking.edit_requires_notification_dispatch` 422
+   * with the offending booking_id in detail. Same predicate as editOne
+   * (reservation.service.ts:1000-1003) and editSlot (:1358-1361).
+   * Mirrors the §3.6.5 row 2/7/8 emit-site refusal — until B.4.A.5
+   * ships notification dispatch, ANY occurrence that would emit
+   * `booking.approval_required` blocks the whole scope edit.
+   *
+   * Perf budget: N × (6-8 DB round-trips). For typical 12-52 weekly
+   * series, ~70-400 round-trips at ~5ms each on remote Supabase. The
+   * 200-occurrence cap (mirrors 00371:194) keeps the worst case bounded.
+   * Step 2F.4 smoke probes will quantify actual latency; resolver-outcome
+   * hoist (compute new chain once, broadcast to all occurrences) is a
+   * deferred optimisation tracked in docs/follow-ups/b4-followups.md if
+   * smoke shows unacceptable p95.
+   */
+  async assembleScopeEditPlan(args: {
+    bookingId: string; // pivot booking (tenant context + series verification)
+    tenantId: string;
+    effectiveSeriesId: string;
+    patch: AssembleEditPlanScopePatch;
+  }): Promise<AssembleScopeEditPlanResult> {
+    // ── A. Runtime gate on start_at/end_at ────────────────────────────
+    // Belt-and-suspenders: the typed union doesn't admit these keys
+    // (AssembleEditPlanScopePatch is space_id + attendee_* +
+    // host_person_id only), but a non-TS caller smuggling via JSON
+    // could still set them. Refuse before any DB I/O so the operator
+    // sees an actionable copy. The controller (Step 2F.3) is the
+    // primary rejection site; this guard catches everything else.
+    const smuggled = args.patch as unknown as {
+      start_at?: unknown;
+      end_at?: unknown;
+    };
+    if (smuggled.start_at !== undefined || smuggled.end_at !== undefined) {
+      throw new AppError(
+        'edit_booking_scope.time_shift_not_supported',
+        422,
+        {
+          detail:
+            'Series time-shift requires recurrence_rule edit; not supported on scope edits. Pick a single occurrence to change the start or end time.',
+        },
+      );
+    }
+
+    // ── B. Load pivot booking (tenant-scoped) ─────────────────────────
+    const pivotRes = await this.supabase.admin
+      .from('bookings')
+      .select('id, tenant_id, recurrence_series_id')
+      .eq('id', args.bookingId)
+      .eq('tenant_id', args.tenantId)
+      .maybeSingle();
+    const pivot = (pivotRes.data ?? null) as
+      | { id: string; tenant_id: string; recurrence_series_id: string | null }
+      | null;
+    if (!pivot) {
+      // Mirror single-edit shape — don't leak cross-tenant existence.
+      throw AppErrors.notFoundWithCode(
+        'edit_booking.not_found',
+        `booking ${args.bookingId} not found`,
+      );
+    }
+    if (pivot.recurrence_series_id === null) {
+      throw new AppError('edit_booking_scope.not_recurring', 422, {
+        detail: `Booking ${args.bookingId} is not part of a recurring series.`,
+      });
+    }
+
+    // ── C. Defense-in-depth: pivot's series must match the caller's
+    //   resolved effectiveSeriesId. If the controller split-then-passed
+    //   the new series id but the pivot's row didn't move, that's an
+    //   internal consistency bug. The RPC will independently raise
+    //   `mixed_series` if any in-scope row's series_id differs from
+    //   the others — this TS guard fails earlier with a clearer code.
+    if (pivot.recurrence_series_id !== args.effectiveSeriesId) {
+      throw new AppError('edit_booking_scope.series_mismatch', 500, {
+        detail: `pivot booking ${args.bookingId} recurrence_series_id=${pivot.recurrence_series_id} does not equal caller-supplied effectiveSeriesId=${args.effectiveSeriesId}`,
+      });
+    }
+
+    // ── D. Select in-scope bookings (deterministic id-sorted) ────────
+    // status<>'cancelled' mirrors the RPC's cancelled-state guard
+    // (00371:458-462) — a cancelled occurrence in the series would
+    // raise booking.cancelled_cannot_edit at the per-occurrence loop;
+    // filtering here keeps the dry-run path clean.
+    const scopeRes = await this.supabase.admin
+      .from('bookings')
+      .select('id')
+      .eq('tenant_id', args.tenantId)
+      .eq('recurrence_series_id', args.effectiveSeriesId)
+      .neq('status', 'cancelled')
+      .order('id', { ascending: true });
+    if (scopeRes.error) {
+      throw AppErrors.server('edit_booking.not_found', {
+        detail: `scope-row read failed: ${scopeRes.error.message}`,
+        cause: scopeRes.error,
+      });
+    }
+    const scopeRows = (scopeRes.data ?? []) as Array<{ id: string }>;
+    if (scopeRows.length === 0) {
+      throw new AppError('edit_booking_scope.empty_scope', 422, {
+        detail: `series ${args.effectiveSeriesId} resolved to 0 live bookings (all cancelled or wiped between split and read).`,
+      });
+    }
+    if (scopeRows.length > 200) {
+      // TS-layer defense before the RPC's identical cap at 00371:194.
+      // Surfacing here saves a server round-trip + gives a cleaner stack
+      // trace for the operator-actionable message.
+      throw new AppError('edit_booking_scope.too_many_occurrences', 422, {
+        detail: `series ${args.effectiveSeriesId} has ${scopeRows.length} live occurrences; the per-edit cap is 200.`,
+      });
+    }
+
+    // ── E. Per-occurrence plan-build ─────────────────────────────────
+    // Each occurrence flows through `buildSingleSlotPlan` with its own
+    // primary slot. RuleResolver + ConflictGuard + loadSpace ARE called
+    // per-occurrence (not hoisted) because each occurrence may have a
+    // different time window (per-occurrence cost recompute) and may
+    // match a different rule subset (start_at + end_at are inputs to
+    // the resolver). The hoist optimisation is a deferred follow-up
+    // pending Step 2F.4 smoke probes.
+    const rpc_plans: Array<{ booking_id: string; plan: EditPlan }> = [];
+    for (const row of scopeRows) {
+      const bookingId = row.id;
+
+      // Resolve the primary slot id (lowest display_order, ties by
+      // created_at). Mirrors the convention editOne uses (the
+      // primary-slot resolution helper at the controller layer).
+      const primaryRes = await this.supabase.admin
+        .from('booking_slots')
+        .select('id')
+        .eq('tenant_id', args.tenantId)
+        .eq('booking_id', bookingId)
+        .order('display_order', { ascending: true })
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      const primary = (primaryRes.data ?? null) as { id: string } | null;
+      if (!primary) {
+        // Every booking must have ≥1 slot (00043 invariant). If we
+        // find a booking with zero slots, the data is corrupt — 500.
+        throw new AppError(
+          'edit_booking_scope.primary_slot_not_found',
+          500,
+          { detail: `booking ${bookingId} has no primary slot in tenant ${args.tenantId}` },
+        );
+      }
+
+      const plan = await this.buildSingleSlotPlan(
+        {
+          bookingId,
+          tenantId: args.tenantId,
+          slotId: primary.id,
+          // The dispatcher discriminator isn't read by the core; this
+          // narrowing is structurally compatible. The core treats
+          // every call as single-slot.
+          patch: { kind: 'slot' } as AssembleEditPlanSlotPatch,
+        },
+        {
+          space_id: args.patch.space_id,
+          // Time-shift smuggle already rejected at gate A; pass
+          // undefined so buildSingleSlotPlan preserves the slot's
+          // current start_at/end_at (the RPC's start_at/end_at keys
+          // on the booking patch will mirror the slot's current
+          // window — no projection drift).
+          start_at: undefined,
+          end_at: undefined,
+          attendee_count: args.patch.attendee_count,
+          attendee_person_ids: args.patch.attendee_person_ids,
+          host_person_id: args.patch.host_person_id,
+          // 00371:219 REJECTS scope plans that set recurrence_overridden.
+          // Must be false here — series edits never flip the override
+          // flag (the flag is a per-occurrence concept).
+          auto_set_recurrence_overridden: false,
+        },
+      );
+      rpc_plans.push({ booking_id: bookingId, plan });
+    }
+
+    // ── F. Pre-flight B.4.A.5 gate at TS layer ────────────────────────
+    // Same predicate as editOne (reservation.service.ts:1000-1003) and
+    // editSlot (:1358-1361). If ANY occurrence would emit
+    // `booking.approval_required` (row 2/7/8 of §3.6.5), refuse the
+    // whole scope edit. Without notification dispatch, the chain rows
+    // would commit without any approver being notified — a silent
+    // stall worse than a clean 422.
+    //
+    // We surface the FIRST offending occurrence in the detail so the
+    // operator can identify which occurrence flipped (typically a
+    // room change on a single occurrence in the middle of the series
+    // hits an approval rule). The remaining offenders, if any, are
+    // not enumerated — the operator will see them after fixing the
+    // first one (the gate fires again on retry).
+    for (const { booking_id, plan } of rpc_plans) {
+      const wouldEmitApprovalRequired =
+        plan.approval.new_outcome === 'require_approval' &&
+        (plan.approval.old_outcome !== 'require_approval' ||
+          plan.approval.chain_config_changed === true);
+      if (wouldEmitApprovalRequired) {
+        throw new AppError(
+          'booking.edit_requires_notification_dispatch',
+          422,
+          {
+            detail:
+              `Occurrence ${booking_id} would change approval requirements. ` +
+              `Ask the rooms admin to remove approval from this room, or pick a different room.`,
+          },
+        );
+      }
+    }
+
+    return { series_id: args.effectiveSeriesId, rpc_plans };
   }
 
   /**

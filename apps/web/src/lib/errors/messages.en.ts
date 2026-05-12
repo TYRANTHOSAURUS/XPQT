@@ -1705,6 +1705,29 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't save the series edit",
     detail: 'The selected occurrences are not all part of the same series. Refresh the page and pick the scope again.',
   },
+  // B.4 Step 2F.2 — assembleScopeEditPlan defensive codes. Surfaces match
+  // the api-side messages (single source of truth at api/messages.en.ts;
+  // web mirror so the renderer can resolve before any network round-trip).
+  'edit_booking_scope.time_shift_not_supported': {
+    title: "Couldn't save the series edit",
+    detail: 'Series time-shift edits are not supported. Pick a single occurrence to change the start or end time.',
+  },
+  'edit_booking_scope.not_recurring': {
+    title: "Couldn't save the series edit",
+    detail: 'This booking is not part of a recurring series. Use the single-occurrence edit instead.',
+  },
+  'edit_booking_scope.series_mismatch': {
+    title: "Couldn't save the series edit",
+    detail: 'Something went wrong matching this edit to the series. Refresh the page and try again.',
+  },
+  'edit_booking_scope.empty_scope': {
+    title: "Couldn't save the series edit",
+    detail: 'No occurrences were found in this series. Refresh the page and pick the scope again.',
+  },
+  'edit_booking_scope.primary_slot_not_found': {
+    title: "Couldn't save the series edit",
+    detail: 'One of the occurrences is in an inconsistent state. Contact support if this persists.',
+  },
 };
 
 /**

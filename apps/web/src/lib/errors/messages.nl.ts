@@ -1675,6 +1675,28 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon de reeks-wijziging niet opslaan',
     detail: 'De geselecteerde reserveringen horen niet allemaal bij dezelfde serie. Vernieuw de pagina en kies de scope opnieuw.',
   },
+  // B.4 Step 2F.2 — assembleScopeEditPlan defensive codes. NL voice:
+  // "reservering" family.
+  'edit_booking_scope.time_shift_not_supported': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'Het verschuiven van een hele reeks wordt niet ondersteund. Kies één reservering om de begin- of eindtijd aan te passen.',
+  },
+  'edit_booking_scope.not_recurring': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'Deze reservering hoort niet bij een terugkerende reeks. Gebruik de bewerking voor één reservering.',
+  },
+  'edit_booking_scope.series_mismatch': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'Er ging iets mis bij het koppelen van deze wijziging aan de reeks. Vernieuw de pagina en probeer het opnieuw.',
+  },
+  'edit_booking_scope.empty_scope': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'Er zijn geen reserveringen meer in deze reeks. Vernieuw de pagina en kies de scope opnieuw.',
+  },
+  'edit_booking_scope.primary_slot_not_found': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'Eén van de reserveringen in deze reeks staat in een inconsistente staat. Neem contact op met support als dit blijft gebeuren.',
+  },
 };
 
 /**
