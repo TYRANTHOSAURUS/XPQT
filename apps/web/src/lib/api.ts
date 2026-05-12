@@ -189,5 +189,9 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
   if (etagOut) etagOut(res.headers.get('ETag'));
 
   if (res.status === 204) return undefined as T;
-  return res.json();
+  // Nest returns 200 with an empty body when a handler returns null/undefined.
+  // res.json() throws on empty body; read text first.
+  const text = await res.text();
+  if (!text) return null as T;
+  return JSON.parse(text) as T;
 }
