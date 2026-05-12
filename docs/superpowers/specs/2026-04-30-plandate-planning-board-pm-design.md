@@ -1,8 +1,25 @@
 # Plandate, Planning Board, and Preventive Maintenance — design
 
-**Status:** Slice A shipped on `main`. Slice B (planning board) and Slice C (preventive maintenance) designed; not started. This doc is the source of truth for sequencing and open questions.
+**Status:** Slice A + **Slice B shipped on `main` (2026-05-12)**. Slice C (preventive maintenance) designed; not started. This doc is the source of truth for sequencing and open questions.
 
-**Last updated:** 2026-04-30
+**Last updated:** 2026-05-12
+
+## Slice B — shipped journal
+
+| Commit | What |
+|---|---|
+| `9c5fb5e2` | docs: lock decisions post-full-review |
+| `4a6f48b9` | chunk 0 — `apps/web/src/lib/scheduler-time.ts` DST-correct helpers + 19 tests |
+| `b691953d` | chunk 1 — backend `GET /work-orders/planning` + migration 00374 |
+| `6aa2823c` | chunk 2 — page scaffold + read |
+| `f552e3fd` | chunk 3 — `<PlanningBlock>` + click-through |
+| `a9c22989` | chunk 4 — drag-to-move + past-slot confirm dialog |
+| `956d8718` | chunk 5 — unscheduled rail + drag-onto-lane |
+| `7afd875a` | chunk 6 — smoke gate + doc sync |
+| `a67c7a1c` | fix: full-review remediation (parent_ticket_id rename, requestId per gesture, ticketKeys.lists() invalidation) |
+| `5a689110` | fix: codex remediation (migration 00377 — vendor predicate dormant + planned-window indexes; lane seed from unscheduled blocks; smoke probe strengthened) |
+
+**Tests at ship:** API 1826 pass · Web 208 pass · Smoke 57/57. **Migrations on remote:** 00374 + 00377. **Codex verdict:** hold → ship after the three fixes above landed.
 
 ---
 
