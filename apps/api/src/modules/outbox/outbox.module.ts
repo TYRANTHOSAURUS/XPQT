@@ -9,6 +9,12 @@ import { RoutingEvaluationHandler } from './handlers/routing-evaluation.handler'
 import { SetupWorkOrderHandler } from './handlers/setup-work-order.handler';
 import { SlaTimerHandler } from './handlers/sla-timer-recompute.handler';
 import { SlaTimerRepointHandler } from './handlers/sla-timer-repoint.handler';
+import {
+  WorkflowSpawnWakeCore,
+  WorkflowSpawnWakeOnBookingCancelledHandler,
+  WorkflowSpawnWakeOnBookingCreatedHandler,
+  WorkflowSpawnWakeOnBookingStatusChangedHandler,
+} from './handlers/workflow-spawn-wake.handler';
 import { WorkflowStartHandler } from './handlers/workflow-start.handler';
 import { OutboxHandlerRegistry } from './outbox-handler.registry';
 import { OutboxService } from './outbox.service';
@@ -57,6 +63,18 @@ import { OutboxWorker } from './outbox.worker';
  *     notification dispatch lands in B.4.A.5. Required pre-cutover per
  *     event-types.ts:40-51 — without it, edit-driven approval flips
  *     stall silently. B.4.A.4.
+ *   - WorkflowSpawnWakeOnBookingCreated/Cancelled/StatusChangedHandler —
+ *     three thin shells around WorkflowSpawnWakeCore (Universal Workflow
+ *     Architecture Phase 1.A; spec
+ *     docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md
+ *     §3.5 LOCKED Tier 2 wake). Drain booking.created/cancelled/status_changed
+ *     events emitted by 00372/00373 + Phase 2's transition_booking_status
+ *     RPC; atomically claim matching rows in workflow_instance_links and
+ *     resume the parent workflow_instance via WorkflowEngineService.resume().
+ *     The three-class split is required by the registry pattern (one
+ *     @OutboxHandler per class — registry throws on duplicate metadata
+ *     key). All three delegate to the shared WorkflowSpawnWakeCore so
+ *     state + dependencies aren't duplicated.
  *
  * Schema/RLS dependencies (DbModule + SupabaseModule are @Global, so no
  * explicit imports needed):
@@ -95,6 +113,12 @@ import { OutboxWorker } from './outbox.worker';
     WorkflowStartHandler,
     RoutingEvaluationHandler,
     BookingApprovalRequiredHandler,
+    // Universal Workflow Architecture Phase 1.A — Tier 2 wake mechanism.
+    // Core does the work; per-event shells own the @OutboxHandler decoration.
+    WorkflowSpawnWakeCore,
+    WorkflowSpawnWakeOnBookingCreatedHandler,
+    WorkflowSpawnWakeOnBookingCancelledHandler,
+    WorkflowSpawnWakeOnBookingStatusChangedHandler,
   ],
   exports: [OutboxService, OutboxHandlerRegistry],
 })

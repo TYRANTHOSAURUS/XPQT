@@ -1020,3 +1020,13 @@ apps/api/src/modules/outbox/handlers/booking-approval-required.handler.ts:2:impo
 apps/api/src/modules/outbox/handlers/booking-approval-required.handler.ts:15: * Event type literal: apps/api/src/modules/reservations/event-types.ts:51
 apps/api/src/modules/outbox/handlers/booking-approval-required.handler.ts:129:    //       apps/api/src/modules/reservations/event-types.ts:40-51.
 apps/api/src/modules/outbox/handlers/__tests__/booking-approval-required.handler.spec.ts:12: * Event literal: apps/api/src/modules/reservations/event-types.ts:51
+
+# === Universal Workflow Architecture Phase 1.A — workflow-spawn-wake handler ===
+# Same KEEP_LIVE_IMPORT rationale as the booking-approval-required handler
+# above. `BookingLifecycleEventType` (and its `Created`/`Cancelled`/
+# `StatusChanged` literals) lives in apps/api/src/modules/reservations/event-types.ts
+# alongside the existing `BookingEditEventType` SoT. The path will move
+# when the `reservations/` directory is renamed to `bookings/` per
+# docs/follow-ups/phase-8-naming-audit.md.
+apps/api/src/modules/outbox/handlers/workflow-spawn-wake.handler.ts:8:} from '../../reservations/event-types';
+apps/api/src/modules/outbox/handlers/__tests__/workflow-spawn-wake.handler.spec.ts:9:import { BookingLifecycleEventType } from '../../../reservations/event-types';
