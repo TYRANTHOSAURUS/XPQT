@@ -343,6 +343,19 @@ export const PERMISSION_CATALOG = {
       },
     },
   },
+  floor_plans: {
+    label: 'Floor plans',
+    icon: 'layout',
+    description: 'Interactive floor-plan designer for spaces.',
+    actions: {
+      admin: {
+        label: 'Administer floor plans',
+        description:
+          'Manage floor plans: open the designer, edit drafts, publish, delete.',
+        danger: true,
+      },
+    },
+  },
   reports: {
     label: 'Reports',
     icon: 'bar-chart-3',
