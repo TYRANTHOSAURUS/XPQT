@@ -84,6 +84,7 @@ const KioskConfirmationPage = lazyNamed(() => import('@/pages/kiosk/confirmation
 // Desk
 const InboxPage = lazyNamed(() => import('@/pages/desk/inbox'), 'InboxPage');
 const DeskSchedulerPage = lazyNamed(() => import('@/pages/desk/scheduler'), 'DeskSchedulerPage');
+const DeskPlanningPage = lazyNamed(() => import('@/pages/desk/planning'), 'DeskPlanningPage');
 const DeskBookingsPage = lazyNamed(() => import('@/pages/desk/bookings'), 'DeskBookingsPage');
 const BookingDetailPage = lazyNamed(() => import('@/components/booking-detail/booking-detail-page'), 'BookingDetailPage');
 const TicketsPage = lazyNamed(() => import('@/pages/desk/tickets'), 'TicketsPage');
@@ -272,6 +273,7 @@ export function App() {
                   <Route index element={<Navigate to="/desk/inbox" replace />} />
                   <Route path="inbox" element={<InboxPage />} />
                   <Route path="scheduler" element={<DeskSchedulerPage />} />
+                  <Route path="planning" element={<DeskPlanningPage />} />
                   <Route path="bookings" element={<DeskBookingsPage />} />
                   <Route path="bookings/:id" element={<BookingDetailPage />} />
                   <Route path="tickets" element={<TicketsPage />} />

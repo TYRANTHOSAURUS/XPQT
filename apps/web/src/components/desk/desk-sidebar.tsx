@@ -133,6 +133,7 @@ const railGroups: NavGroup<RailItemPermission, RailNavItem>[] = [
       { id: "tickets", title: "Tickets", icon: TicketIcon, path: "/desk/tickets", permission: "agent", hasPanel: true },
       { id: "bookings", title: "Bookings", icon: CalendarClockIcon, path: "/desk/bookings", permission: "agent", hasPanel: true },
       { id: "scheduler", title: "Scheduler", icon: Columns3Icon, path: "/desk/scheduler", permission: "agent", hasPanel: true },
+      { id: "planning", title: "Planning", icon: CalendarRangeIcon, path: "/desk/planning", permission: "agent" },
       { id: "visitors", title: "Visitors", icon: UserPlusIcon, path: "/desk/visitors", permission: "agent", countSlot: "visitors", hasPanel: true },
     ],
   },
