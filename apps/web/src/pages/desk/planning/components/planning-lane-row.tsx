@@ -136,12 +136,23 @@ export const PlanningLaneRow = memo(function PlanningLaneRow({
           const leftPct = (startCell / totalColumns) * 100;
           const widthPct = (cellSpan / totalColumns) * 100;
 
+          // End ISO from the committed start + duration. The deadline
+          // overlay inside the block uses [start, end] to position the
+          // red rule; we compute end here rather than inside the block
+          // so the lane row stays the single source of truth for time
+          // → cell math.
+          const blockEndMs =
+            new Date(block.planned_start_at).getTime() + duration * 60_000;
+          const endIso = new Date(blockEndMs).toISOString();
+
           return (
             <PlanningBlock
               key={block.id}
               block={block}
               leftPct={leftPct}
               widthPct={widthPct}
+              startIso={block.planned_start_at}
+              endIso={endIso}
             />
           );
         })}
