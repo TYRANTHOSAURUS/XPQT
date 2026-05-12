@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
-  AlertTriangle, CalendarClock, CalendarDays, CheckCircle2, Inbox, Plus, Search, Users as UsersIcon, X,
+  AlertTriangle, CalendarClock, CalendarDays, CheckCircle2, Inbox, Map as MapIcon, MoreHorizontal, Plus, Search, Users as UsersIcon, X,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -9,6 +9,12 @@ import { Input } from '@/components/ui/input';
 import {
   ToggleGroup, ToggleGroupItem,
 } from '@/components/ui/toggle-group';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { useOperatorReservations } from '@/api/room-booking';
 import type { OperatorReservationItem, ReservationStatus } from '@/api/room-booking';
 import { useAuth } from '@/providers/auth-provider';
@@ -16,6 +22,7 @@ import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { BookingDetailPanel } from '@/components/booking-detail/booking-detail-panel';
 import { BookingComposerModal } from '@/components/booking-composer-v2/booking-composer-modal';
+import { BookingFloorDialog } from './components/booking-floor-dialog';
 import { LateChangesWidget } from '@/components/desk/late-changes-widget';
 import { cn } from '@/lib/utils';
 
@@ -152,6 +159,10 @@ export function DeskBookingsPage() {
 
   const { person } = useAuth();
   const [composerOpen, setComposerOpen] = useState(false);
+
+  // E.2 — "View on floor" state
+  const [floorDialogBooking, setFloorDialogBooking] = useState<OperatorReservationItem | null>(null);
+  const [floorDialogOpen, setFloorDialogOpen] = useState(false);
 
   const list = (
     <div className="absolute inset-0 flex flex-col overflow-hidden">
@@ -290,6 +301,10 @@ export function DeskBookingsPage() {
                       item={r}
                       selected={selectedId === r.id}
                       onSelect={() => openDetail(r.id)}
+                      onViewOnFloor={() => {
+                        setFloorDialogBooking(r);
+                        setFloorDialogOpen(true);
+                      }}
                     />
                   ))}
                 </div>
@@ -338,6 +353,16 @@ export function DeskBookingsPage() {
         )}
       </Group>
       {composerModal}
+
+      {/* E.2 — View on floor dialog */}
+      <BookingFloorDialog
+        booking={floorDialogBooking}
+        open={floorDialogOpen}
+        onOpenChange={(o) => {
+          setFloorDialogOpen(o);
+          if (!o) setFloorDialogBooking(null);
+        }}
+      />
     </>
   );
 }
@@ -346,10 +371,12 @@ function BookingRow({
   item,
   selected,
   onSelect,
+  onViewOnFloor,
 }: {
   item: OperatorReservationItem;
   selected: boolean;
   onSelect: () => void;
+  onViewOnFloor: () => void;
 }) {
   const start = new Date(item.start_at);
   const end = new Date(item.end_at);
@@ -360,74 +387,79 @@ function BookingRow({
   const isCancelled = item.status === 'cancelled' || item.status === 'released';
 
   return (
-    <button
-      type="button"
-      onClick={onSelect}
+    <div
       data-selected={selected ? 'true' : undefined}
       className={cn(
-        'group/row flex w-full items-stretch gap-3 px-3 py-2.5 text-left transition-colors',
+        'group/row flex w-full items-stretch gap-3 px-3 py-2.5 transition-colors',
         'hover:bg-accent/30',
         selected && 'bg-primary/5',
         (isPast || isCancelled) && !selected && 'opacity-70',
       )}
       style={{ transitionDuration: '120ms', transitionTimingFunction: 'var(--ease-snap)' }}
     >
-      {/* Time slab */}
-      <div className="flex w-20 shrink-0 flex-col text-right tabular-nums">
-        <span className="text-[14px] font-semibold leading-tight">{startLabel}</span>
-        <span className="text-[11px] text-muted-foreground leading-tight">{endLabel}</span>
-      </div>
+      {/* Clickable area covers all but the trailing actions. */}
+      <button
+        type="button"
+        onClick={onSelect}
+        className="flex min-w-0 flex-1 items-stretch gap-3 text-left"
+      >
+        {/* Time slab */}
+        <div className="flex w-20 shrink-0 flex-col text-right tabular-nums">
+          <span className="text-[14px] font-semibold leading-tight">{startLabel}</span>
+          <span className="text-[11px] text-muted-foreground leading-tight">{endLabel}</span>
+        </div>
 
-      <span aria-hidden className="self-stretch w-px bg-border/60" />
+        <span aria-hidden className="self-stretch w-px bg-border/60" />
 
-      {/* Room + requester */}
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              'truncate text-[14px] font-medium',
-              isCancelled && 'line-through decoration-muted-foreground/60',
+        {/* Room + requester */}
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                'truncate text-[14px] font-medium',
+                isCancelled && 'line-through decoration-muted-foreground/60',
+              )}
+            >
+              {item.space_name ?? 'Unknown room'}
+            </span>
+            {item.recurrence_series_id && (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                series
+              </span>
             )}
-          >
-            {item.space_name ?? 'Unknown room'}
-          </span>
-          {item.recurrence_series_id && (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-              series
-            </span>
-          )}
-          {/* Post-canonicalisation (2026-05-02): the per-row "services"
-              chip used to gate on `item.booking_bundle_id`, which under
-              the new projection is ALWAYS equal to `item.id` and so the
-              chip would render on every row. Without a per-row
-              "has-services" signal on the operator list response we
-              can't tell from this layer alone — the chip is omitted
-              until the backend list grows a discriminator. The
-              `?scope=bundles` toggle still narrows the LIST to bookings
-              with attached services (server-side via has_bundle=true). */}
+            {/* Post-canonicalisation (2026-05-02): the per-row "services"
+                chip used to gate on `item.booking_bundle_id`, which under
+                the new projection is ALWAYS equal to `item.id` and so the
+                chip would render on every row. Without a per-row
+                "has-services" signal on the operator list response we
+                can't tell from this layer alone — the chip is omitted
+                until the backend list grows a discriminator. The
+                `?scope=bundles` toggle still narrows the LIST to bookings
+                with attached services (server-side via has_bundle=true). */}
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
+            {/* Reference chip retired post-canonicalisation (2026-05-02) —
+                `bookings` table has no per-booking monotonic counter. The
+                meta line still surfaces the requester / time / status. */}
+            <span className="truncate">{requesterName}</span>
+            {typeof item.attendee_count === 'number' && item.attendee_count > 0 && (
+              <span className="inline-flex items-center gap-1 tabular-nums">
+                <UsersIcon className="size-3" />
+                {item.attendee_count}
+              </span>
+            )}
+            {item.checked_in_at && (
+              <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
+                <CheckCircle2 className="size-3" />
+                checked in
+              </span>
+            )}
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
-          {/* Reference chip retired post-canonicalisation (2026-05-02) —
-              `bookings` table has no per-booking monotonic counter. The
-              meta line still surfaces the requester / time / status. */}
-          <span className="truncate">{requesterName}</span>
-          {typeof item.attendee_count === 'number' && item.attendee_count > 0 && (
-            <span className="inline-flex items-center gap-1 tabular-nums">
-              <UsersIcon className="size-3" />
-              {item.attendee_count}
-            </span>
-          )}
-          {item.checked_in_at && (
-            <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
-              <CheckCircle2 className="size-3" />
-              checked in
-            </span>
-          )}
-        </div>
-      </div>
+      </button>
 
-      {/* Trailing meta */}
-      <div className="flex shrink-0 items-center gap-3">
+      {/* Trailing meta + context menu */}
+      <div className="flex shrink-0 items-center gap-2">
         <StatusPill status={item.status} />
         <time
           dateTime={item.created_at}
@@ -436,8 +468,30 @@ function BookingRow({
         >
           {formatRelativeTime(item.created_at)}
         </time>
+
+        {/* E.2 — row context menu. base-ui MenuTrigger renders its own
+            <button> — no asChild support. Style it directly. */}
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md p-0 opacity-0 transition-opacity group-hover/row:opacity-100 hover:bg-accent"
+            aria-label="Row actions"
+          >
+            <MoreHorizontal className="size-3.5" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              onClick={(e) => {
+                e.stopPropagation();
+                onViewOnFloor();
+              }}
+            >
+              <MapIcon className="mr-2 size-3.5" />
+              View on floor
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
-    </button>
+    </div>
   );
 }
 
