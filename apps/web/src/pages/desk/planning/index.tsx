@@ -30,6 +30,7 @@ import { PlanningToolbar } from './components/planning-toolbar';
 import { PlanningGrid, type PlanningLane, type PendingBlockDrag } from './components/planning-grid';
 import { UnscheduledRail } from './components/unscheduled-rail';
 import { usePlanningDrag, type PlanningDragState } from './hooks/use-planning-drag';
+import { runOptimisticWithRollback } from './lib/commit-with-rollback';
 
 const RAIL_STORAGE_KEY = 'desk-planning-rail-collapsed';
 
@@ -165,16 +166,6 @@ export function DeskPlanningPage() {
     [qc],
   );
 
-  const patchPlanningCache = useCallback(
-    (mutator: (prev: WorkOrderPlanningResponse) => WorkOrderPlanningResponse) => {
-      qc.setQueryData<WorkOrderPlanningResponse>(
-        workOrderPlanningKeys.window(filters),
-        (prev) => (prev ? mutator(prev) : prev),
-      );
-    },
-    [qc, filters],
-  );
-
   const invalidatePlanning = useCallback(() => {
     qc.invalidateQueries({ queryKey: workOrderPlanningKeys.windows() });
   }, [qc]);
@@ -292,22 +283,29 @@ export function DeskPlanningPage() {
         payload.assigned_vendor_id = assigneeOverride.vendor_id;
       }
 
-      patchPlanningCache((prev) => optimisticMove(prev, block.id, payload, assigneeOverride));
+      // Capture the key + snapshot once at the start of the gesture. If
+      // the operator changes the status/team filter while the PATCH is in
+      // flight, the page re-renders against a new `filters` object — and
+      // re-reading the key at error time would point at the WRONG cache
+      // slot, leaving the optimistic patch un-reverted.
+      const planningKey = workOrderPlanningKeys.window(filters);
 
-      try {
-        await mutateWorkOrder(block.id, payload, xCid);
-      } catch (err) {
-        invalidatePlanning();
-        toastError("Couldn't move plan", {
-          error: err,
-          // Reuse xCid so the retry is idempotent on the server.
-          retry: () => commitDrop(block, isoStart, durationMinutes, assigneeOverride, xCid),
-        });
-        return;
-      }
-      invalidatePlanning();
+      await runOptimisticWithRollback<WorkOrderPlanningResponse>({
+        qc,
+        key: planningKey,
+        mutator: (prev) => optimisticMove(prev, block.id, payload, assigneeOverride),
+        mutationFn: () => mutateWorkOrder(block.id, payload, xCid),
+        onError: (err) => {
+          toastError("Couldn't move plan", {
+            error: err,
+            // Reuse xCid so the retry is idempotent on the server.
+            retry: () => commitDrop(block, isoStart, durationMinutes, assigneeOverride, xCid),
+          });
+        },
+        onSettled: invalidatePlanning,
+      });
     },
-    [invalidatePlanning, mutateWorkOrder, patchPlanningCache],
+    [filters, invalidatePlanning, mutateWorkOrder, qc],
   );
 
   // Block resize-handle drag start. Anchors at the current block's start
@@ -381,32 +379,33 @@ export function DeskPlanningPage() {
       requestId?: string,
     ) => {
       const xCid = requestId ?? crypto.randomUUID();
-      // Optimistic update — replace the block's duration in the cached
-      // planned[] response. Lane / start unchanged.
-      patchPlanningCache((prev) => {
-        const idx = prev.planned.findIndex((b) => b.id === block.id);
-        if (idx < 0) return prev;
-        const next = [...prev.planned];
-        next[idx] = { ...next[idx], planned_duration_minutes: newDurationMinutes };
-        return { ...prev, planned: next };
+      // Same key-capture discipline as commitDrop — filters can shift
+      // mid-flight; reading the key at error time would miss the slot we
+      // patched.
+      const planningKey = workOrderPlanningKeys.window(filters);
+
+      await runOptimisticWithRollback<WorkOrderPlanningResponse>({
+        qc,
+        key: planningKey,
+        mutator: (prev) => {
+          const idx = prev.planned.findIndex((b) => b.id === block.id);
+          if (idx < 0) return prev;
+          const next = [...prev.planned];
+          next[idx] = { ...next[idx], planned_duration_minutes: newDurationMinutes };
+          return { ...prev, planned: next };
+        },
+        mutationFn: () =>
+          mutateWorkOrder(block.id, { planned_duration_minutes: newDurationMinutes }, xCid),
+        onError: (err) => {
+          toastError("Couldn't resize plan", {
+            error: err,
+            retry: () => commitResize(block, newDurationMinutes, xCid),
+          });
+        },
+        onSettled: invalidatePlanning,
       });
-      try {
-        await mutateWorkOrder(
-          block.id,
-          { planned_duration_minutes: newDurationMinutes },
-          xCid,
-        );
-      } catch (err) {
-        invalidatePlanning();
-        toastError("Couldn't resize plan", {
-          error: err,
-          retry: () => commitResize(block, newDurationMinutes, xCid),
-        });
-        return;
-      }
-      invalidatePlanning();
     },
-    [invalidatePlanning, mutateWorkOrder, patchPlanningCache],
+    [filters, invalidatePlanning, mutateWorkOrder, qc],
   );
 
   const handleDrop = useCallback(
