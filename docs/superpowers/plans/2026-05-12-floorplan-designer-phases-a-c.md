@@ -4,11 +4,13 @@
 
 **Goal:** Ship the admin-facing floor plan designer (Figma-style authoring tool + draft/publish flow) on top of the existing `floor_plans` (00127) and `spaces.floor_plan_polygon` (00120) primitives. Output: admins can upload a floor image, trace polygons over rooms/desks/parking, save drafts, and atomically publish. Data lands in the canonical schema so the booking surface (Plan 2, Phases D–F) can consume it next.
 
-**Architecture:** Three layers. (1) **Schema** — one new column on `spaces`, one new table `floor_plan_drafts`, one PL/pgSQL RPC for atomic publish, one column on `floor_plans` for labels, plus permission-catalog rows. All five migrations land in Phase A. (2) **Backend** — new NestJS `floor-plan` module with one service, one controller, four endpoints (GET/PATCH/DELETE drafts + POST publish), all writes routed through the `publish_floor_plan_draft` RPC per CLAUDE.md's "multi-step writes go through one PL/pgSQL function" rule. (3) **Frontend** — `<FloorPlanCanvas>` SVG renderer (used in `view` mode by the booking plan, in `edit` mode here), wrapped by `<FloorPlanDesigner>` which adds tool dock, left-rail spaces tree, and right-rail inspector. Tools are independent files implementing a common `Tool` interface; the canvas dispatches pointer events to the active tool.
+**Architecture:** Three layers. (1) **Schema** — six migrations: one column + CHECK on `spaces`, one `floor_plan_drafts` table, one labels column on both `floor_plans` and drafts, one PL/pgSQL publish RPC (atomic), one `floor_plan_publish_history` snapshot table (for rollback), one Storage bucket with full RLS. (2) **Backend** — new NestJS `floor-plan` module with one service, two controllers (per-floor + admin index), four endpoints (GET/PATCH/DELETE drafts + POST publish), `If-Match: updated_at` optimistic locking on PATCH, all multi-table writes routed through the `publish_floor_plan_draft` RPC per CLAUDE.md. (3) **Frontend** — `<FloorPlanCanvas>` SVG renderer (used in `view` mode by Plan 2, in `edit` mode here), wrapped by `<FloorPlanDesigner>` which adds tool dock, left-rail spaces tree, and right-rail inspector. Tools implement a common `Tool` interface; canvas dispatches pointer events to the active tool.
 
-**Tech Stack:** NestJS, TypeScript, Supabase Postgres + Storage + RLS, React 19, Vite, Tailwind v4, shadcn/ui (Field primitives mandatory), TanStack Query v5, Framer Motion, vitest + Testing Library.
+**Tech Stack:** NestJS, TypeScript, Supabase Postgres + Storage + RLS, React 19, Vite, Tailwind v4, shadcn/ui (Field primitives + ToggleGroup + Table mandatory), TanStack Query v5, Framer Motion, vitest + Testing Library, Lucide icons.
 
 **Spec:** `docs/superpowers/specs/2026-05-12-floorplan-designer-and-map-booking-design.md` (commit `4d6b120a`). Read it end-to-end before starting.
+
+**Plan-review remediation:** This plan integrates fixes from the adversarial plan review (full-review skill, 2026-05-12) — single `floor_plans.admin` permission key, no permission_catalog SQL table, correct `audit_events` schema, designer page without `SettingsPageShell`, polygon shape CHECK constraint, optimistic locking, publish history, take-over deferred. See "Plan-review delta" at end.
 
 ---
 
@@ -16,15 +18,15 @@
 
 - [ ] **Step 0: Read the spec end-to-end**
 
-Open `/Users/x/Desktop/XPQT/.claude/worktrees/floorplanner/docs/superpowers/specs/2026-05-12-floorplan-designer-and-map-booking-design.md`. The spec is the contract; this plan is the execution path. The numbered sections referenced below all live there.
+Open `/Users/x/Desktop/XPQT/.claude/worktrees/floorplanner/docs/superpowers/specs/2026-05-12-floorplan-designer-and-map-booking-design.md`. The spec is the contract; this plan is the execution path.
 
 - [ ] **Step 0b: Confirm baseline builds**
 
-Run from the worktree root:
 ```bash
 pnpm install
 pnpm --filter @prequest/api build
 pnpm --filter @prequest/web build
+pnpm --filter @prequest/shared test
 ```
 All must succeed. If anything fails, fix the baseline before starting Phase A.
 
@@ -33,58 +35,93 @@ All must succeed. If anything fails, fix the baseline before starting Phase A.
 ```bash
 ls supabase/migrations/ | tail -1
 ```
-Expected: `00366_workflow_events_add_node_failed.sql`. If a newer migration has landed, bump every migration number in this plan by the delta (+1 or more) and update cross-references in the spec.
+Expected: `00366_workflow_events_add_node_failed.sql`. If newer migrations have landed, bump every migration number in this plan by the delta and update cross-references.
 
-- [ ] **Step 0d: Existing files to read (do not edit yet)**
+- [ ] **Step 0d: Verify the actual schema of dependencies before writing migrations**
+
+```bash
+PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -c "\d public.audit_events"
+PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -c "\d public.spaces"
+PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -c "\d public.floor_plans"
+```
+Confirm: `audit_events` columns are `event_type / details / actor_user_id / entity_type / entity_id / tenant_id / created_at`. `spaces.floor_plan_polygon` exists as jsonb (from 00120) with no CHECK. If any column has been renamed since this plan was written, adjust the RPC migration before applying.
+
+- [ ] **Step 0e: Existing files to read (do not edit yet)**
 
 For orientation:
-- `supabase/migrations/00120_spaces_room_booking_columns.sql` — where `floor_plan_polygon` was added
+- `supabase/migrations/00019_events_audit.sql` — actual audit_events schema
+- `supabase/migrations/00120_spaces_room_booking_columns.sql` — `floor_plan_polygon` added
 - `supabase/migrations/00127_floor_plans.sql` — existing `floor_plans` table
-- `packages/shared/src/permission-catalog.ts` — permission registry (typed)
-- `apps/api/src/modules/space/space.module.ts` — sibling module for shape reference
-- `apps/web/src/components/ui/settings-page.tsx` — `SettingsPageShell` etc.
-- `apps/web/src/components/ui/field.tsx` — shadcn Field primitives (mandatory for forms)
-- `apps/web/src/lib/toast.ts` — toast helpers (mandatory wrapper)
-- `apps/api/scripts/smoke-work-orders.mjs` — pattern for the new `smoke:floor-plans` script
+- `packages/shared/src/permissions.ts` — TS permission catalog SoT (no SQL table)
+- `apps/api/src/common/errors/app-error.ts` — `AppErrors.*` factories
+- `apps/api/src/common/permission-catalog.spec.ts` — TS catalog CI gate
+- `apps/api/src/modules/space/space.module.ts` — sibling module shape
+- `apps/web/src/components/ui/settings-page.tsx` — `SettingsPageShell` (props: `children`, `className`, `width`) and `SettingsPageHeader` (props: `title`, `description`, `backTo`, `actions`)
+- `apps/web/src/components/ui/field.tsx` — shadcn Field primitives
+- `apps/web/src/components/ui/toggle-group.tsx` — for segmented controls
+- `apps/web/src/components/ui/table.tsx` — for the index table
+- `apps/web/src/components/ui/settings-row.tsx` — for stat blocks
+- `apps/web/src/lib/toast.ts` — toast wrappers
+- `apps/web/src/lib/use-page-query.ts` — required for primary page queries
+- `apps/api/scripts/smoke-work-orders.mjs` — smoke gate template
 
 ---
 
 # Phase A — Schema + Draft API
 
-Goal: five migrations land on remote, TS permission catalog updates, new `floor-plan` API module ships with draft CRUD endpoints + tests + smoke gate. No frontend work in this phase. End state: API can store + fetch a floor plan draft, but nothing publishes yet.
+Goal: six migrations land on remote, TS permission catalog updates, new `floor-plan` API module ships with draft CRUD endpoints + publish endpoint + tests + smoke gate. No frontend work. End state: API can store, fetch, and publish a floor plan draft. Optimistic locking enforced on PATCH. Audit + publish-history rows written on publish.
 
-### Task A.1: Migration 00367 — `spaces.floor_plan_render_hint`
+### Task A.1: Migration 00367 — `render_hint` column + polygon shape CHECK
 
 **Files:**
 - Create: `supabase/migrations/00367_spaces_floor_plan_render_hint.sql`
+
+Background: `spaces.floor_plan_polygon` was added in 00120 as plain `jsonb` with no shape constraint. The spec mandates `{"points":[{x,y}, …]}`. No data exists yet (feature not used). Enforce the shape now to prevent the fallback-reader leak the plan review caught.
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
 -- 00367_spaces_floor_plan_render_hint.sql
--- Optional per-polygon rendering override. Default lets the renderer decide
--- based on polygon area. 'seat' forces seat-circle rendering. 'parking' forces
--- the parking-slot glyph. Spec §3.2.
+-- Adds render hint + canonicalizes polygon shape. Spec §3.2 + §3.4.
 
 alter table public.spaces
   add column if not exists floor_plan_render_hint text not null default 'default'
     check (floor_plan_render_hint in ('default', 'seat', 'parking'));
 
+-- Normalize any pre-existing rows: wrap bare arrays in {points:[…]}.
+update public.spaces
+   set floor_plan_polygon = jsonb_build_object('points', floor_plan_polygon)
+ where floor_plan_polygon is not null
+   and jsonb_typeof(floor_plan_polygon) = 'array';
+
+alter table public.spaces
+  add constraint floor_plan_polygon_shape
+    check (
+      floor_plan_polygon is null
+      or (
+        jsonb_typeof(floor_plan_polygon) = 'object'
+        and floor_plan_polygon ? 'points'
+        and jsonb_typeof(floor_plan_polygon->'points') = 'array'
+        and jsonb_array_length(floor_plan_polygon->'points') >= 3
+      )
+    );
+
 notify pgrst, 'reload schema';
 ```
 
-- [ ] **Step 2: Apply locally**
+- [ ] **Step 2: Apply locally + verify**
 
 ```bash
 pnpm db:reset
+PGPASSWORD="$SUPABASE_DB_PASS_LOCAL" psql "$DATABASE_URL_LOCAL" -c "\d public.spaces" | grep floor_plan
 ```
-Expected: clean reset, no errors. `psql` query `\d public.spaces` shows the new column.
+Expected: both `floor_plan_polygon` and `floor_plan_render_hint` columns visible, plus the CHECK constraint listed.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add supabase/migrations/00367_spaces_floor_plan_render_hint.sql
-git commit -m "feat(floor-plan): 00367 add floor_plan_render_hint to spaces"
+git commit -m "feat(floor-plan): 00367 render_hint + polygon shape CHECK on spaces"
 ```
 
 ### Task A.2: Migration 00368 — `floor_plan_drafts` table
@@ -111,7 +148,8 @@ create table if not exists public.floor_plan_drafts (
   created_by uuid references public.users(id),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (floor_space_id)
+  unique (floor_space_id),
+  check (jsonb_typeof(polygons) = 'array')
 );
 
 alter table public.floor_plan_drafts enable row level security;
@@ -131,12 +169,13 @@ create trigger set_floor_plan_drafts_updated_at
 notify pgrst, 'reload schema';
 ```
 
-- [ ] **Step 2: Apply locally + verify RLS**
+- [ ] **Step 2: Apply + verify RLS**
 
 ```bash
 pnpm db:reset
+PGPASSWORD="$SUPABASE_DB_PASS_LOCAL" psql "$DATABASE_URL_LOCAL" -c "select policyname from pg_policies where tablename = 'floor_plan_drafts';"
 ```
-Then in psql confirm: `select policyname from pg_policies where tablename = 'floor_plan_drafts';` returns `tenant_isolation`.
+Expected: `tenant_isolation`.
 
 - [ ] **Step 3: Commit**
 
@@ -145,114 +184,7 @@ git add supabase/migrations/00368_floor_plan_drafts.sql
 git commit -m "feat(floor-plan): 00368 floor_plan_drafts table with RLS"
 ```
 
-### Task A.3: Migration 00369 — `publish_floor_plan_draft` RPC
-
-**Files:**
-- Create: `supabase/migrations/00369_publish_floor_plan_draft_rpc.sql`
-
-- [ ] **Step 1: Write the migration**
-
-Copy the full RPC body from spec §6.2 (the entire `create or replace function …` block) into this file. Wrap it with the standard NOTIFY at the bottom:
-
-```sql
--- 00369_publish_floor_plan_draft_rpc.sql
--- Atomic publish flow per CLAUDE.md: any multi-table write with cross-table
--- invariants goes through one PL/pgSQL function. Spec §6.2.
-
-create or replace function public.publish_floor_plan_draft(p_draft_id uuid)
-returns void
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_draft public.floor_plan_drafts%rowtype;
-  v_tenant_id uuid;
-  v_floor_id uuid;
-  v_polygon jsonb;
-  v_space_ids uuid[];
-begin
-  select * into v_draft from public.floor_plan_drafts where id = p_draft_id;
-  if v_draft.id is null then
-    raise exception 'floor_plan_drafts.not_found' using errcode = 'P0002';
-  end if;
-
-  v_tenant_id := v_draft.tenant_id;
-  v_floor_id  := v_draft.floor_space_id;
-
-  if v_tenant_id <> public.current_tenant_id() then
-    raise exception 'floor_plan_drafts.cross_tenant' using errcode = '42501';
-  end if;
-
-  insert into public.floor_plans (tenant_id, space_id, image_url, width_px, height_px, labels)
-  values (v_tenant_id, v_floor_id, v_draft.image_url, v_draft.width_px, v_draft.height_px,
-          coalesce(v_draft.labels, '[]'::jsonb))
-  on conflict (space_id) do update
-    set image_url  = excluded.image_url,
-        width_px   = excluded.width_px,
-        height_px  = excluded.height_px,
-        labels     = excluded.labels,
-        updated_at = now();
-
-  select coalesce(array_agg((p->>'space_id')::uuid), '{}'::uuid[])
-    into v_space_ids
-    from jsonb_array_elements(v_draft.polygons) p;
-
-  update public.spaces
-     set floor_plan_polygon = null,
-         floor_plan_render_hint = 'default'
-   where tenant_id = v_tenant_id
-     and parent_id = v_floor_id
-     and floor_plan_polygon is not null
-     and id <> all(v_space_ids);
-
-  for v_polygon in select jsonb_array_elements(v_draft.polygons) loop
-    update public.spaces
-       set floor_plan_polygon     = v_polygon->'points',
-           floor_plan_render_hint = coalesce(v_polygon->>'render_hint', 'default')
-     where id = (v_polygon->>'space_id')::uuid
-       and tenant_id = v_tenant_id
-       and parent_id = v_floor_id;
-  end loop;
-
-  insert into public.audit_events (tenant_id, kind, payload, created_by)
-  values (v_tenant_id, 'floor_plan.published',
-          jsonb_build_object('floor_space_id', v_floor_id, 'draft_id', p_draft_id),
-          v_draft.created_by);
-
-  delete from public.floor_plan_drafts where id = p_draft_id;
-end;
-$$;
-
-revoke all on function public.publish_floor_plan_draft(uuid) from public;
-grant execute on function public.publish_floor_plan_draft(uuid) to authenticated;
-
-notify pgrst, 'reload schema';
-```
-
-Note: this depends on `floor_plans.labels` (added in A.4 next). Migrations are applied in order, so the RPC won't run until A.4 lands — but in our order, A.3 ships before A.4 and the RPC body references `labels` which doesn't yet exist. **Reorder:** create A.4's labels migration as 00369 and the RPC as 00370. Reflect this in step 2.
-
-- [ ] **Step 2: Renumber if needed**
-
-Before committing, verify the labels migration (next task A.4) is numbered earlier than the RPC. Final numbering after this reorder:
-- 00367: render_hint (A.1) ✔
-- 00368: floor_plan_drafts (A.2) ✔
-- 00369: labels (A.4 → renamed 00369)
-- 00370: publish RPC (this task → renamed 00370)
-- 00371: permissions (A.5 → still 00371)
-
-Rename this file to `00370_publish_floor_plan_draft_rpc.sql`.
-
-- [ ] **Step 3: Commit (after A.4 file lands as 00369)**
-
-Defer the commit of this RPC migration until after Task A.4 commits. See Task A.4 for the labels migration, then come back and commit this one with:
-
-```bash
-git add supabase/migrations/00370_publish_floor_plan_draft_rpc.sql
-git commit -m "feat(floor-plan): 00370 publish_floor_plan_draft RPC"
-```
-
-### Task A.4: Migration 00369 — `labels` jsonb on `floor_plans` + `floor_plan_drafts`
+### Task A.3: Migration 00369 — `labels` jsonb on `floor_plans` + drafts
 
 **Files:**
 - Create: `supabase/migrations/00369_floor_plans_and_drafts_labels.sql`
@@ -265,171 +197,374 @@ git commit -m "feat(floor-plan): 00370 publish_floor_plan_draft RPC"
 -- Shape: [{ "text": "Lounge", "x": 690, "y": 250, "size": 11 }]. Spec §5.6.
 
 alter table public.floor_plans
-  add column if not exists labels jsonb not null default '[]'::jsonb;
+  add column if not exists labels jsonb not null default '[]'::jsonb,
+  add constraint floor_plans_labels_is_array
+    check (jsonb_typeof(labels) = 'array');
 
 alter table public.floor_plan_drafts
-  add column if not exists labels jsonb not null default '[]'::jsonb;
+  add column if not exists labels jsonb not null default '[]'::jsonb,
+  add constraint floor_plan_drafts_labels_is_array
+    check (jsonb_typeof(labels) = 'array');
 
 notify pgrst, 'reload schema';
 ```
 
-- [ ] **Step 2: Apply locally**
+- [ ] **Step 2: Apply + commit**
 
 ```bash
 pnpm db:reset
-```
-Expected: all four migrations (00367–00369) apply cleanly. RPC migration (00370) is not yet committed; it lands next.
-
-- [ ] **Step 3: Commit**
-
-```bash
 git add supabase/migrations/00369_floor_plans_and_drafts_labels.sql
-git commit -m "feat(floor-plan): 00369 add labels jsonb to floor_plans and drafts"
+git commit -m "feat(floor-plan): 00369 labels jsonb on floor_plans + drafts"
 ```
 
-- [ ] **Step 4: Commit the RPC migration from A.3**
-
-Now that `floor_plans.labels` exists, commit the RPC migration that references it (renamed to 00370 in A.3, step 2):
-
-```bash
-pnpm db:reset
-git add supabase/migrations/00370_publish_floor_plan_draft_rpc.sql
-git commit -m "feat(floor-plan): 00370 publish_floor_plan_draft RPC"
-```
-
-### Task A.5: Migration 00371 — permission catalog rows
+### Task A.4: Migration 00370 — `publish_floor_plan_draft` RPC
 
 **Files:**
-- Create: `supabase/migrations/00371_floor_plans_permissions_catalog.sql`
+- Create: `supabase/migrations/00370_publish_floor_plan_draft_rpc.sql`
+
+The RPC uses the **actual** `audit_events` schema: `(tenant_id, event_type, entity_type, entity_id, actor_user_id, details, created_at)`. NOT the `(kind, payload, created_by)` shape from the original plan. It also writes a snapshot row to `floor_plan_publish_history` (added in A.5) BEFORE wiping orphan polygons, so admins can restore.
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
--- 00371_floor_plans_permissions_catalog.sql
--- Register new permission keys in the catalog table. The TS source of truth
--- (packages/shared/src/permission-catalog.ts) is updated in the same PR via A.6.
+-- 00370_publish_floor_plan_draft_rpc.sql
+-- Atomic publish flow per CLAUDE.md ("multi-step writes via PL/pgSQL").
+-- Writes a snapshot to floor_plan_publish_history first (for rollback), then
+-- updates floor_plans + spaces.floor_plan_polygon, then deletes the draft.
+-- Spec §6.2.
 
-insert into public.permission_catalog (key, description, category, created_at)
-values
-  ('floor_plans.author',  'Open the floor plan designer and edit drafts', 'floor_plans', now()),
-  ('floor_plans.publish', 'Publish a floor plan draft',                    'floor_plans', now()),
-  ('floor_plans.delete',  'Delete a published floor plan',                  'floor_plans', now())
-on conflict (key) do nothing;
+create or replace function public.publish_floor_plan_draft(p_draft_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_draft public.floor_plan_drafts%rowtype;
+  v_tenant_id uuid;
+  v_floor_id uuid;
+  v_polygon jsonb;
+  v_space_ids uuid[];
+  v_history_id uuid;
+  v_prev_image text;
+  v_prev_w int;
+  v_prev_h int;
+  v_prev_labels jsonb;
+  v_prev_polygons jsonb;
+begin
+  select * into v_draft from public.floor_plan_drafts where id = p_draft_id;
+  if v_draft.id is null then
+    raise exception 'floor_plan.draft.not_found' using errcode = 'P0002';
+  end if;
+
+  v_tenant_id := v_draft.tenant_id;
+  v_floor_id  := v_draft.floor_space_id;
+
+  if v_tenant_id <> public.current_tenant_id() then
+    raise exception 'floor_plan.draft.cross_tenant' using errcode = '42501';
+  end if;
+
+  -- 1. Snapshot the current published state (for rollback)
+  select image_url, width_px, height_px, labels
+    into v_prev_image, v_prev_w, v_prev_h, v_prev_labels
+    from public.floor_plans
+   where space_id = v_floor_id;
+
+  select coalesce(
+           jsonb_agg(jsonb_build_object(
+             'space_id', s.id,
+             'points',   s.floor_plan_polygon->'points',
+             'render_hint', s.floor_plan_render_hint
+           )),
+           '[]'::jsonb
+         )
+    into v_prev_polygons
+    from public.spaces s
+   where s.tenant_id = v_tenant_id
+     and s.parent_id = v_floor_id
+     and s.floor_plan_polygon is not null;
+
+  insert into public.floor_plan_publish_history
+    (tenant_id, floor_space_id, image_url, width_px, height_px, labels, polygons, published_by, published_at)
+  values
+    (v_tenant_id, v_floor_id, v_prev_image, v_prev_w, v_prev_h,
+     coalesce(v_prev_labels, '[]'::jsonb), v_prev_polygons, v_draft.created_by, now())
+  returning id into v_history_id;
+
+  -- 2. Upsert canonical floor_plans row
+  insert into public.floor_plans (tenant_id, space_id, image_url, width_px, height_px, labels)
+  values (v_tenant_id, v_floor_id, v_draft.image_url, v_draft.width_px, v_draft.height_px,
+          coalesce(v_draft.labels, '[]'::jsonb))
+  on conflict (space_id) do update
+    set image_url  = excluded.image_url,
+        width_px   = excluded.width_px,
+        height_px  = excluded.height_px,
+        labels     = excluded.labels,
+        updated_at = now();
+
+  -- 3. Collect space_ids referenced in the draft
+  select coalesce(array_agg((p->>'space_id')::uuid), '{}'::uuid[])
+    into v_space_ids
+    from jsonb_array_elements(v_draft.polygons) p;
+
+  -- 4. Detach orphans (spaces previously had a polygon on this floor but aren't in the new draft)
+  update public.spaces
+     set floor_plan_polygon = null,
+         floor_plan_render_hint = 'default'
+   where tenant_id = v_tenant_id
+     and parent_id = v_floor_id
+     and floor_plan_polygon is not null
+     and id <> all(v_space_ids);
+
+  -- 5. Apply new polygons. Re-wrap into {points:[…]} shape per CHECK constraint.
+  for v_polygon in select jsonb_array_elements(v_draft.polygons) loop
+    update public.spaces
+       set floor_plan_polygon = jsonb_build_object('points', v_polygon->'points'),
+           floor_plan_render_hint = coalesce(v_polygon->>'render_hint', 'default')
+     where id = (v_polygon->>'space_id')::uuid
+       and tenant_id = v_tenant_id
+       and parent_id = v_floor_id;
+  end loop;
+
+  -- 6. Audit (correct audit_events shape per 00019)
+  insert into public.audit_events
+    (tenant_id, event_type, entity_type, entity_id, actor_user_id, details)
+  values
+    (v_tenant_id, 'floor_plan.published', 'floor_plan', v_floor_id, v_draft.created_by,
+     jsonb_build_object(
+       'draft_id', p_draft_id,
+       'history_id', v_history_id,
+       'polygon_count', jsonb_array_length(v_draft.polygons)
+     ));
+
+  -- 7. Delete the draft
+  delete from public.floor_plan_drafts where id = p_draft_id;
+
+  return jsonb_build_object('history_id', v_history_id);
+end;
+$$;
+
+revoke all on function public.publish_floor_plan_draft(uuid) from public;
+grant execute on function public.publish_floor_plan_draft(uuid) to authenticated;
 
 notify pgrst, 'reload schema';
 ```
 
-If `permission_catalog` table doesn't carry `category` or `description` columns, drop those values to match the existing schema. Run `\d public.permission_catalog` in psql to confirm before writing the INSERT.
+Note: this RPC depends on `floor_plan_publish_history` which lands in A.5. The migration applies cleanly without the table because PL/pgSQL bodies are parsed lazily, but the *first call* of the function will fail until A.5 applies. Implementer must apply A.5 before any smoke test invokes publish.
 
-- [ ] **Step 2: Apply locally + verify**
+- [ ] **Step 2: Apply + commit**
 
 ```bash
 pnpm db:reset
-```
-Then:
-```bash
-psql "$DATABASE_URL_LOCAL" -c "select key from public.permission_catalog where key like 'floor_plans.%' order by key;"
-```
-Expected: three rows: `floor_plans.author`, `floor_plans.delete`, `floor_plans.publish`.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add supabase/migrations/00371_floor_plans_permissions_catalog.sql
-git commit -m "feat(floor-plan): 00371 register floor_plans.* permissions"
+git add supabase/migrations/00370_publish_floor_plan_draft_rpc.sql
+git commit -m "feat(floor-plan): 00370 publish_floor_plan_draft RPC (atomic + audited + snapshotted)"
 ```
 
-### Task A.6: TS permission catalog source of truth
+### Task A.5: Migration 00371 — `floor_plan_publish_history` table
 
 **Files:**
-- Modify: `packages/shared/src/permission-catalog.ts`
-- Modify: `packages/shared/src/permission-role-defaults.ts`
+- Create: `supabase/migrations/00371_floor_plan_publish_history.sql`
 
-- [ ] **Step 1: Find current shape**
+- [ ] **Step 1: Write the migration**
+
+```sql
+-- 00371_floor_plan_publish_history.sql
+-- One snapshot per publish. Enables "Restore previous publish" admin action.
+-- Retention: app-level prunes to last N=5 per floor (UI surfaces all of them).
+
+create table if not exists public.floor_plan_publish_history (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references public.tenants(id),
+  floor_space_id uuid not null references public.spaces(id),
+  image_url text,
+  width_px int,
+  height_px int,
+  labels jsonb not null default '[]'::jsonb,
+  polygons jsonb not null default '[]'::jsonb,
+  published_by uuid references public.users(id),
+  published_at timestamptz not null default now()
+);
+
+alter table public.floor_plan_publish_history enable row level security;
+
+drop policy if exists "tenant_isolation" on public.floor_plan_publish_history;
+create policy "tenant_isolation" on public.floor_plan_publish_history
+  using (tenant_id = public.current_tenant_id());
+
+create index if not exists idx_floor_plan_publish_history_floor
+  on public.floor_plan_publish_history (floor_space_id, published_at desc);
+
+notify pgrst, 'reload schema';
+```
+
+- [ ] **Step 2: Apply + commit**
 
 ```bash
-grep -n "rooms.admin" packages/shared/src/permission-catalog.ts
-grep -n "Workplace Admin" packages/shared/src/permission-role-defaults.ts
+pnpm db:reset
+git add supabase/migrations/00371_floor_plan_publish_history.sql
+git commit -m "feat(floor-plan): 00371 publish history table for rollback"
 ```
-Copy the pattern used by `rooms.admin` (an existing module-scoped key). The catalog file should already have a typed array or record of all keys.
 
-- [ ] **Step 2: Add the three keys**
+### Task A.6: Migration 00372 — Storage bucket + full RLS
 
-In `permission-catalog.ts`, add three entries matching the existing pattern. Example assuming a `const PERMISSIONS = { ... } as const` shape:
+**Files:**
+- Create: `supabase/migrations/00372_floor_plans_storage_bucket.sql`
+
+The original plan had only an INSERT policy and made the bucket fully public. This is wrong: admins must be able to replace (UPDATE) or remove (DELETE) their own uploads, and public reads on a tenant-prefixed path leak cross-tenant URLs. Make the bucket private; read is allowed via signed URLs or authenticated session.
+
+- [ ] **Step 1: Write the migration**
+
+```sql
+-- 00372_floor_plans_storage_bucket.sql
+-- Private bucket, tenant-prefixed paths, RLS-enforced on every action.
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('floor-plans', 'floor-plans', false, 10485760,
+        array['image/png','image/jpeg','image/webp','image/svg+xml']::text[])
+on conflict (id) do update
+  set public = excluded.public,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "floor_plans_tenant_insert" on storage.objects;
+create policy "floor_plans_tenant_insert"
+  on storage.objects
+  for insert
+  to authenticated
+  with check (
+    bucket_id = 'floor-plans'
+    and (storage.foldername(name))[1] = public.current_tenant_id()::text
+  );
+
+drop policy if exists "floor_plans_tenant_update" on storage.objects;
+create policy "floor_plans_tenant_update"
+  on storage.objects
+  for update
+  to authenticated
+  using (
+    bucket_id = 'floor-plans'
+    and (storage.foldername(name))[1] = public.current_tenant_id()::text
+  );
+
+drop policy if exists "floor_plans_tenant_delete" on storage.objects;
+create policy "floor_plans_tenant_delete"
+  on storage.objects
+  for delete
+  to authenticated
+  using (
+    bucket_id = 'floor-plans'
+    and (storage.foldername(name))[1] = public.current_tenant_id()::text
+  );
+
+drop policy if exists "floor_plans_tenant_select" on storage.objects;
+create policy "floor_plans_tenant_select"
+  on storage.objects
+  for select
+  to authenticated
+  using (
+    bucket_id = 'floor-plans'
+    and (storage.foldername(name))[1] = public.current_tenant_id()::text
+  );
+```
+
+Note: bucket is **private**. Frontend uses `supabaseClient.storage.from('floor-plans').createSignedUrl(path, 3600)` to get a temporary view URL after upload (one-hour TTL is plenty for the designer + booking session).
+
+- [ ] **Step 2: Apply + commit**
+
+```bash
+pnpm db:reset
+git add supabase/migrations/00372_floor_plans_storage_bucket.sql
+git commit -m "feat(floor-plan): 00372 private storage bucket + tenant-scoped RLS (insert/update/delete/select)"
+```
+
+### Task A.7: TS permission catalog — single `floor_plans.admin` key
+
+**Files:**
+- Modify: `packages/shared/src/permissions.ts`
+- Modify: `packages/shared/src/permission-role-defaults.ts` (if it exists; otherwise the file the role-defaults SoT actually lives in — search `grep -n "rooms.admin" packages/shared/src`)
+
+Drop the original three-key split. Use one key matching the existing `rooms.admin` / `criteria_sets.admin` shape. There is **no `permission_catalog` SQL table** in this schema — TS is the only SoT, enforced by the existing `permission-catalog.spec.ts` CI gate.
+
+- [ ] **Step 1: Add `floor_plans.admin` to the TS catalog**
+
+In `packages/shared/src/permissions.ts`, find the existing `rooms.admin` entry. Add a sibling:
 
 ```ts
-'floor_plans.author':  { description: 'Open the floor plan designer and edit drafts', category: 'floor_plans' },
-'floor_plans.publish': { description: 'Publish a floor plan draft',                   category: 'floor_plans' },
-'floor_plans.delete':  { description: 'Delete a published floor plan',                category: 'floor_plans' },
+'floor_plans.admin': {
+  description: 'Manage floor plans: open the designer, edit drafts, publish, delete.',
+  category: 'floor_plans',
+},
 ```
 
-Mirror in `permission-role-defaults.ts`:
-- Workplace Admin role: add `'floor_plans.author'`, `'floor_plans.publish'`, `'floor_plans.delete'`
-- Locations Admin role (if present): add `'floor_plans.author'`, `'floor_plans.publish'` only
+If the file uses a different shape (e.g. flat tuple list), mirror what's there.
 
-- [ ] **Step 3: Run the 8-test CI gate**
+- [ ] **Step 2: Add to role defaults**
+
+Wherever `rooms.admin` is granted to default roles (likely `Workplace Admin` and any `Locations Admin`), add `floor_plans.admin` next to it.
+
+- [ ] **Step 3: Run the catalog CI gate**
 
 ```bash
 pnpm --filter @prequest/shared test
+pnpm --filter @prequest/api test permission-catalog
 ```
-Expected: all permission catalog enforcement tests pass. Specifically the orphan-key test must show no orphans.
+All green. Orphan-key test must report zero orphans.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add packages/shared/src/permission-catalog.ts packages/shared/src/permission-role-defaults.ts
-git commit -m "feat(floor-plan): register floor_plans.* in TS permission catalog"
+git add packages/shared/src/permissions.ts packages/shared/src/permission-role-defaults.ts
+git commit -m "feat(floor-plan): register floor_plans.admin in TS permission catalog"
 ```
 
-### Task A.7: Push migrations to remote
+### Task A.8: Push migrations to remote
 
 **Files:** none
 
-- [ ] **Step 1: Push migrations to remote (standing auth for this workstream)**
-
-Per CLAUDE.md, prefer `pnpm db:push`. Fallback to psql against the remote connection string if the CLI auth is broken (per memory `supabase_remote_push`). Try first:
+- [ ] **Step 1: Push (preferred)**
 
 ```bash
 pnpm db:push
 ```
 
-If that fails, fall back:
-```bash
-PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -v ON_ERROR_STOP=1 -f supabase/migrations/00367_spaces_floor_plan_render_hint.sql
-PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -v ON_ERROR_STOP=1 -f supabase/migrations/00368_floor_plan_drafts.sql
-PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -v ON_ERROR_STOP=1 -f supabase/migrations/00369_floor_plans_and_drafts_labels.sql
-PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -v ON_ERROR_STOP=1 -f supabase/migrations/00370_publish_floor_plan_draft_rpc.sql
-PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -v ON_ERROR_STOP=1 -f supabase/migrations/00371_floor_plans_permissions_catalog.sql
-PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -c "notify pgrst, 'reload schema';"
-```
-
-- [ ] **Step 2: Verify on remote**
+- [ ] **Step 2: Fallback if `db:push` fails (per memory `supabase_remote_push`)**
 
 ```bash
-PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -c "select key from public.permission_catalog where key like 'floor_plans.%' order by key;"
+for f in supabase/migrations/0036{7,8,9}_*.sql supabase/migrations/0037{0,1,2}_*.sql; do
+  PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" \
+    -v ON_ERROR_STOP=1 -f "$f"
+done
+PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" \
+  -c "notify pgrst, 'reload schema';"
 ```
-Expected: three rows.
+
+- [ ] **Step 3: Verify on remote**
 
 ```bash
-PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -c "select proname from pg_proc where proname = 'publish_floor_plan_draft';"
+PGPASSWORD="$SUPABASE_DB_PASS" psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -c "
+  select tablename from pg_tables where tablename in ('floor_plan_drafts','floor_plan_publish_history');
+  select proname from pg_proc where proname = 'publish_floor_plan_draft';
+  select column_name from information_schema.columns where table_name = 'spaces' and column_name = 'floor_plan_render_hint';
+"
 ```
-Expected: one row.
+Expected: 2 tables, 1 function, 1 column.
 
-- [ ] **Step 3: Save the new memory entry**
+- [ ] **Step 4: Save the new memory entry**
 
-Add to auto-memory a new file `feedback_db_push_floor_plan.md` mirroring the existing `feedback_db_push_booking_modal` entry. Note the workstream name and date. Add a line to `MEMORY.md`.
+Create `~/.claude/projects/-Users-x-Desktop-XPQT/memory/feedback_db_push_floor_plan.md` mirroring `feedback_db_push_booking_modal`. Add a line to `MEMORY.md`.
 
-### Task A.8: Backend module skeleton
+### Task A.9: Backend module + draft CRUD + publish + optimistic locking
 
 **Files:**
 - Create: `apps/api/src/modules/floor-plan/floor-plan.module.ts`
 - Create: `apps/api/src/modules/floor-plan/floor-plan.controller.ts`
+- Create: `apps/api/src/modules/floor-plan/floor-plan-admin.controller.ts`
 - Create: `apps/api/src/modules/floor-plan/floor-plan.service.ts`
 - Create: `apps/api/src/modules/floor-plan/floor-plan-draft.service.ts`
-- Create: `apps/api/src/modules/floor-plan/dto/get-draft.dto.ts`
-- Create: `apps/api/src/modules/floor-plan/dto/update-draft.dto.ts`
 - Create: `apps/api/src/modules/floor-plan/dto/polygon.dto.ts`
-- Modify: `apps/api/src/app.module.ts` (register FloorPlanModule)
+- Create: `apps/api/src/modules/floor-plan/dto/update-draft.dto.ts`
+- Create: `apps/api/src/modules/floor-plan/dto/get-draft.dto.ts`
+- Modify: `apps/api/src/app.module.ts`
 
 - [ ] **Step 1: Module file**
 
@@ -437,6 +572,7 @@ Add to auto-memory a new file `feedback_db_push_floor_plan.md` mirroring the exi
 // apps/api/src/modules/floor-plan/floor-plan.module.ts
 import { Module } from '@nestjs/common';
 import { FloorPlanController } from './floor-plan.controller';
+import { FloorPlanAdminController } from './floor-plan-admin.controller';
 import { FloorPlanService } from './floor-plan.service';
 import { FloorPlanDraftService } from './floor-plan-draft.service';
 import { SupabaseModule } from '../supabase/supabase.module';
@@ -444,16 +580,14 @@ import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [SupabaseModule, AuthModule],
-  controllers: [FloorPlanController],
+  controllers: [FloorPlanController, FloorPlanAdminController],
   providers: [FloorPlanService, FloorPlanDraftService],
   exports: [FloorPlanService],
 })
 export class FloorPlanModule {}
 ```
 
-If the codebase uses different imports for Supabase/Auth, mirror the imports in a sibling module like `apps/api/src/modules/space/space.module.ts`.
-
-- [ ] **Step 2: DTOs**
+- [ ] **Step 2: DTOs (Zod)**
 
 ```ts
 // apps/api/src/modules/floor-plan/dto/polygon.dto.ts
@@ -491,6 +625,18 @@ export const UpdateDraftSchema = z.object({
   height_px: z.number().int().positive().max(8192).nullable().optional(),
   polygons: z.array(PolygonSchema).max(2000).optional(),
   labels: z.array(LabelSchema).max(200).optional(),
+}).superRefine((val, ctx) => {
+  // duplicate space_id rejection
+  if (val.polygons) {
+    const seen = new Set<string>();
+    for (const p of val.polygons) {
+      if (seen.has(p.space_id)) {
+        ctx.addIssue({ code: 'custom', path: ['polygons'], message: `Duplicate space_id: ${p.space_id}` });
+        return;
+      }
+      seen.add(p.space_id);
+    }
+  }
 });
 
 export type UpdateDraftDto = z.infer<typeof UpdateDraftSchema>;
@@ -513,28 +659,30 @@ export type DraftResponse = {
 };
 ```
 
-- [ ] **Step 3: Draft service**
+- [ ] **Step 3: Draft service (with optimistic locking + tenant filters)**
 
 ```ts
 // apps/api/src/modules/floor-plan/floor-plan-draft.service.ts
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { AppErrors, throwZodError } from '../../common/errors/app-error';
-import { UpdateDraftSchema, UpdateDraftDto } from './dto/update-draft.dto';
+import { UpdateDraftSchema } from './dto/update-draft.dto';
 import type { DraftResponse } from './dto/get-draft.dto';
+import type { TenantContext } from '../tenant/tenant-context'; // adjust to actual import
 
 @Injectable()
 export class FloorPlanDraftService {
   constructor(private readonly supabase: SupabaseService) {}
 
-  async getOrCreate(floorSpaceId: string, userId: string): Promise<DraftResponse> {
+  async getOrCreate(floorSpaceId: string, userId: string, tenantId: string): Promise<DraftResponse> {
     const client = this.supabase.client();
+
     const { data: existing } = await client
       .from('floor_plan_drafts')
       .select('*')
       .eq('floor_space_id', floorSpaceId)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
-
     if (existing) return existing as DraftResponse;
 
     // Seed from published state
@@ -542,23 +690,26 @@ export class FloorPlanDraftService {
       .from('floor_plans')
       .select('image_url, width_px, height_px, labels')
       .eq('space_id', floorSpaceId)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
 
     const { data: spaces } = await client
       .from('spaces')
       .select('id, floor_plan_polygon, floor_plan_render_hint')
       .eq('parent_id', floorSpaceId)
+      .eq('tenant_id', tenantId)
       .not('floor_plan_polygon', 'is', null);
 
     const seedPolygons = (spaces ?? []).map((s) => ({
       space_id: s.id,
-      points: (s.floor_plan_polygon as { points?: unknown[] })?.points ?? s.floor_plan_polygon,
+      points: (s.floor_plan_polygon as { points: unknown[] }).points,
       render_hint: s.floor_plan_render_hint ?? 'default',
     }));
 
     const { data: created, error } = await client
       .from('floor_plan_drafts')
       .insert({
+        tenant_id: tenantId,
         floor_space_id: floorSpaceId,
         image_url: floor?.image_url ?? null,
         width_px: floor?.width_px ?? null,
@@ -574,15 +725,54 @@ export class FloorPlanDraftService {
     return created as DraftResponse;
   }
 
-  async update(floorSpaceId: string, body: unknown): Promise<DraftResponse> {
+  /** Optimistic locking: caller passes ifMatch=updated_at from their last GET. */
+  async update(
+    floorSpaceId: string,
+    tenantId: string,
+    ifMatch: string | undefined,
+    body: unknown,
+  ): Promise<DraftResponse> {
     const parsed = UpdateDraftSchema.safeParse(body);
     if (!parsed.success) throwZodError(parsed.error);
 
     const client = this.supabase.client();
+
+    // Validate every polygon's space_id is in this floor's children (this tenant)
+    if (parsed.data.polygons && parsed.data.polygons.length > 0) {
+      const ids = parsed.data.polygons.map((p) => p.space_id);
+      const { data: spaces } = await client
+        .from('spaces')
+        .select('id, parent_id')
+        .in('id', ids)
+        .eq('tenant_id', tenantId);
+      const valid = new Set((spaces ?? []).filter((s) => s.parent_id === floorSpaceId).map((s) => s.id));
+      const invalid = ids.filter((id) => !valid.has(id));
+      if (invalid.length > 0) {
+        throw AppErrors.validationFailed('floor_plan.draft.invalid_polygons', { spaceIds: invalid });
+      }
+    }
+
+    // Optimistic lock: read current updated_at, compare to caller's If-Match.
+    if (ifMatch) {
+      const { data: current } = await client
+        .from('floor_plan_drafts')
+        .select('updated_at')
+        .eq('floor_space_id', floorSpaceId)
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+      if (!current) throw AppErrors.notFoundWithCode('floor_plan.draft.not_found');
+      if (current.updated_at !== ifMatch) {
+        throw AppErrors.conflict('floor_plan.draft.stale_update', {
+          serverVersion: current.updated_at,
+        });
+      }
+    }
+
     const { data, error } = await client
       .from('floor_plan_drafts')
-      .update({ ...parsed.data, updated_at: new Date().toISOString() })
+      .update({ ...parsed.data })
       .eq('floor_space_id', floorSpaceId)
+      .eq('tenant_id', tenantId)
       .select('*')
       .single();
 
@@ -591,32 +781,21 @@ export class FloorPlanDraftService {
     return data as DraftResponse;
   }
 
-  async takeOver(floorSpaceId: string, userId: string): Promise<DraftResponse> {
-    const client = this.supabase.client();
-    const { data, error } = await client
-      .from('floor_plan_drafts')
-      .update({ created_by: userId, updated_at: new Date().toISOString() })
-      .eq('floor_space_id', floorSpaceId)
-      .select('*')
-      .single();
-    if (error || !data) throw AppErrors.server('floor_plan.draft.takeover_failed');
-    return data as DraftResponse;
-  }
-
-  async discard(floorSpaceId: string): Promise<void> {
+  async discard(floorSpaceId: string, tenantId: string): Promise<void> {
     const client = this.supabase.client();
     const { error } = await client
       .from('floor_plan_drafts')
       .delete()
-      .eq('floor_space_id', floorSpaceId);
+      .eq('floor_space_id', floorSpaceId)
+      .eq('tenant_id', tenantId);
     if (error) throw AppErrors.server('floor_plan.draft.discard_failed');
   }
 }
 ```
 
-If `throwZodError` / `AppErrors.notFoundWithCode` / `AppErrors.server` don't exist with those exact names, match the existing pattern from `apps/api/src/common/errors/app-error.ts`.
+If `AppErrors.conflict` doesn't exist, mirror an existing pattern (e.g. `AppErrors.validation`). The 409 status mapping must be wired in the global error filter — verify it is.
 
-- [ ] **Step 4: FloorPlanService (read side + publish wrapper)**
+- [ ] **Step 4: Plan service (read + publish)**
 
 ```ts
 // apps/api/src/modules/floor-plan/floor-plan.service.ts
@@ -628,48 +807,89 @@ import { AppErrors } from '../../common/errors/app-error';
 export class FloorPlanService {
   constructor(private readonly supabase: SupabaseService) {}
 
-  async getPublished(floorSpaceId: string) {
+  async getPublished(floorSpaceId: string, tenantId: string) {
     const client = this.supabase.client();
     const { data: floor } = await client
       .from('floor_plans')
       .select('*')
       .eq('space_id', floorSpaceId)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
-
     if (!floor) return null;
 
     const { data: spaces } = await client
       .from('spaces')
       .select('id, name, type, capacity, amenities, floor_plan_polygon, floor_plan_render_hint')
       .eq('parent_id', floorSpaceId)
+      .eq('tenant_id', tenantId)
       .not('floor_plan_polygon', 'is', null);
 
     return { floor, spaces: spaces ?? [] };
   }
 
-  async publish(floorSpaceId: string, userId: string): Promise<void> {
+  async publish(floorSpaceId: string, tenantId: string) {
     const client = this.supabase.client();
     const { data: draft } = await client
       .from('floor_plan_drafts')
       .select('id')
       .eq('floor_space_id', floorSpaceId)
+      .eq('tenant_id', tenantId)
       .maybeSingle();
     if (!draft) throw AppErrors.notFoundWithCode('floor_plan.draft.not_found');
-    const { error } = await client.rpc('publish_floor_plan_draft', { p_draft_id: draft.id });
+
+    const { data, error } = await client.rpc('publish_floor_plan_draft', { p_draft_id: draft.id });
     if (error) throw AppErrors.server('floor_plan.publish_failed');
+    return data as { history_id: string };
+  }
+
+  /** Direct query — no RPC needed (plan review I11). */
+  async listForAdmin(tenantId: string) {
+    const client = this.supabase.client();
+    const { data, error } = await client
+      .from('spaces')
+      .select(`
+        id, name,
+        parent:parent_id (id, name),
+        floor_plans (space_id, updated_at)
+      `)
+      .eq('type', 'floor')
+      .eq('tenant_id', tenantId)
+      .order('name');
+    if (error) throw AppErrors.server('floor_plan.list_failed');
+    return (data ?? []).map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      building_name: row.parent?.name ?? '—',
+      has_plan: Array.isArray(row.floor_plans) ? row.floor_plans.length > 0 : !!row.floor_plans,
+      last_published_at: (Array.isArray(row.floor_plans) ? row.floor_plans[0]?.updated_at : row.floor_plans?.updated_at) ?? null,
+    }));
+  }
+
+  async listPublishHistory(floorSpaceId: string, tenantId: string) {
+    const client = this.supabase.client();
+    const { data } = await client
+      .from('floor_plan_publish_history')
+      .select('id, published_at, published_by, image_url, width_px, height_px, polygons, labels')
+      .eq('floor_space_id', floorSpaceId)
+      .eq('tenant_id', tenantId)
+      .order('published_at', { ascending: false })
+      .limit(20);
+    return data ?? [];
   }
 }
 ```
 
-- [ ] **Step 5: Controller**
+- [ ] **Step 5: Per-floor controller (single `floor_plans.admin` permission)**
 
 ```ts
 // apps/api/src/modules/floor-plan/floor-plan.controller.ts
-import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import { PermissionGuard, RequirePermission } from '../auth/permission.guard';
 import { FloorPlanService } from './floor-plan.service';
 import { FloorPlanDraftService } from './floor-plan-draft.service';
+
+type ReqUser = { user: { id: string; tenant_id: string } };
 
 @UseGuards(AuthGuard)
 @Controller('floors/:floorSpaceId/plan')
@@ -680,208 +900,197 @@ export class FloorPlanController {
   ) {}
 
   @Get()
-  async getPublished(@Param('floorSpaceId') id: string) {
-    return this.plan.getPublished(id);
+  async getPublished(@Param('floorSpaceId') id: string, @Req() req: ReqUser) {
+    return this.plan.getPublished(id, req.user.tenant_id);
   }
 
   @UseGuards(PermissionGuard)
-  @RequirePermission('floor_plans.author')
+  @RequirePermission('floor_plans.admin')
   @Get('draft')
-  async getDraft(@Param('floorSpaceId') id: string, @Req() req: { user: { id: string } }) {
-    return this.draft.getOrCreate(id, req.user.id);
+  async getDraft(@Param('floorSpaceId') id: string, @Req() req: ReqUser) {
+    return this.draft.getOrCreate(id, req.user.id, req.user.tenant_id);
   }
 
   @UseGuards(PermissionGuard)
-  @RequirePermission('floor_plans.author')
+  @RequirePermission('floor_plans.admin')
   @Patch('draft')
-  async updateDraft(@Param('floorSpaceId') id: string, @Body() body: unknown) {
-    return this.draft.update(id, body);
+  async updateDraft(
+    @Param('floorSpaceId') id: string,
+    @Headers('if-match') ifMatch: string | undefined,
+    @Body() body: unknown,
+    @Req() req: ReqUser,
+  ) {
+    return this.draft.update(id, req.user.tenant_id, ifMatch, body);
   }
 
   @UseGuards(PermissionGuard)
-  @RequirePermission('floor_plans.author')
-  @Post('draft/take-over')
-  async takeOver(@Param('floorSpaceId') id: string, @Req() req: { user: { id: string } }) {
-    return this.draft.takeOver(id, req.user.id);
-  }
-
-  @UseGuards(PermissionGuard)
-  @RequirePermission('floor_plans.author')
+  @RequirePermission('floor_plans.admin')
   @Delete('draft')
-  async discardDraft(@Param('floorSpaceId') id: string) {
-    await this.draft.discard(id);
+  async discardDraft(@Param('floorSpaceId') id: string, @Req() req: ReqUser) {
+    await this.draft.discard(id, req.user.tenant_id);
     return { ok: true };
   }
 
   @UseGuards(PermissionGuard)
-  @RequirePermission('floor_plans.publish')
+  @RequirePermission('floor_plans.admin')
   @Post('draft/publish')
-  async publish(@Param('floorSpaceId') id: string, @Req() req: { user: { id: string } }) {
-    await this.plan.publish(id, req.user.id);
-    return { ok: true };
+  async publish(@Param('floorSpaceId') id: string, @Req() req: ReqUser) {
+    return this.plan.publish(id, req.user.tenant_id);
+  }
+
+  @UseGuards(PermissionGuard)
+  @RequirePermission('floor_plans.admin')
+  @Get('history')
+  async history(@Param('floorSpaceId') id: string, @Req() req: ReqUser) {
+    return this.plan.listPublishHistory(id, req.user.tenant_id);
   }
 }
 ```
 
-If `PermissionGuard` / `RequirePermission` decorator names differ, match the existing pattern from a controller that already gates by permission (search: `grep -rn "RequirePermission" apps/api/src`).
+- [ ] **Step 6: Admin index controller (separate path to avoid collision)**
 
-- [ ] **Step 6: Register module**
+```ts
+// apps/api/src/modules/floor-plan/floor-plan-admin.controller.ts
+import { Controller, Get, Req, UseGuards } from '@nestjs/common';
+import { AuthGuard } from '../auth/auth.guard';
+import { PermissionGuard, RequirePermission } from '../auth/permission.guard';
+import { FloorPlanService } from './floor-plan.service';
 
-In `apps/api/src/app.module.ts`, add `FloorPlanModule` to the `imports` array.
+type ReqUser = { user: { id: string; tenant_id: string } };
 
-- [ ] **Step 7: Build + smoke**
+@UseGuards(AuthGuard)
+@Controller('admin/floor-plans-index')
+export class FloorPlanAdminController {
+  constructor(private readonly plan: FloorPlanService) {}
+
+  @UseGuards(PermissionGuard)
+  @RequirePermission('floor_plans.admin')
+  @Get()
+  async indexForAdmin(@Req() req: ReqUser) {
+    return this.plan.listForAdmin(req.user.tenant_id);
+  }
+}
+```
+
+- [ ] **Step 7: Register module**
+
+Add `FloorPlanModule` to `imports` in `apps/api/src/app.module.ts`.
+
+- [ ] **Step 8: Build + commit**
 
 ```bash
 pnpm --filter @prequest/api build
 ```
-Expected: clean build.
-
-- [ ] **Step 8: Commit**
+Clean. Then:
 
 ```bash
 git add apps/api/src/modules/floor-plan apps/api/src/app.module.ts
-git commit -m "feat(floor-plan): backend module skeleton + draft CRUD + publish endpoint"
+git commit -m "feat(floor-plan): backend module + draft CRUD + publish + If-Match locking + history list"
 ```
 
-### Task A.9: Cross-tenant + RLS spec tests
+### Task A.10: Cross-tenant + RLS spec tests
 
 **Files:**
-- Create: `apps/api/src/modules/floor-plan/floor-plan.service.spec.ts`
 - Create: `apps/api/src/modules/floor-plan/floor-plan-draft.service.spec.ts`
-- Modify: `apps/api/src/modules/cross-tenant-fk-leak-writes.spec.ts`
+- Create: `apps/api/src/modules/floor-plan/publish.spec.ts`
+- Modify: `apps/api/src/modules/cross-tenant-fk-leak-writes.spec.ts` (add floor_plan_drafts, floor_plan_publish_history)
 
-- [ ] **Step 1: Service spec — happy path**
+- [ ] **Step 1: Draft service spec**
 
-```ts
-// apps/api/src/modules/floor-plan/floor-plan-draft.service.spec.ts
-import { describe, it, expect, beforeEach } from 'vitest';
-import { FloorPlanDraftService } from './floor-plan-draft.service';
-import { createTestSupabase, seedTenant, seedFloor } from '../../test-utils/supabase-test-helpers';
+Cover: create-on-first-get, idempotent get, update with valid polygon, reject polygon with `space_id` from another floor, reject polygon with `space_id` from another tenant, reject duplicate `space_id`, 409 on stale `If-Match`, 200 on missing `If-Match` (no precondition), discard deletes the row.
 
-describe('FloorPlanDraftService', () => {
-  let supabase: ReturnType<typeof createTestSupabase>;
-  let service: FloorPlanDraftService;
-  let tenantId: string;
-  let floorId: string;
-  let userId: string;
+Reuse existing test helpers (search `grep -rn "createTestSupabase" apps/api/src | head -5`). If none exist, write a thin helper in `apps/api/src/test-utils/supabase-test-helpers.ts` that creates a Supabase admin client bound to a unique tenant per test.
 
-  beforeEach(async () => {
-    supabase = createTestSupabase();
-    service = new FloorPlanDraftService(supabase);
-    ({ tenantId, userId } = await seedTenant(supabase));
-    floorId = await seedFloor(supabase, tenantId);
-  });
+- [ ] **Step 2: Publish RPC spec**
 
-  it('creates a draft on first call', async () => {
-    const draft = await service.getOrCreate(floorId, userId);
-    expect(draft.floor_space_id).toBe(floorId);
-    expect(draft.polygons).toEqual([]);
-  });
+Cover: publish writes audit_events row with `event_type='floor_plan.published'` + `entity_type='floor_plan'` + `entity_id=floorSpaceId`, publish writes a history row with the prior state, publish wipes orphan polygons, publish updates published polygons to canonical `{points:[…]}` shape, publish deletes the draft, publish twice → second call 404 (draft gone), publish from wrong tenant → 42501 error, publish with polygon referencing a space deleted between draft and publish → RPC ignores it silently (document this as known limitation, no smoke probe rejects it — covered by I4 probe 14 below).
 
-  it('returns the existing draft on subsequent calls', async () => {
-    const a = await service.getOrCreate(floorId, userId);
-    const b = await service.getOrCreate(floorId, userId);
-    expect(b.id).toBe(a.id);
-  });
+- [ ] **Step 3: Cross-tenant harness**
 
-  it('updates polygons', async () => {
-    await service.getOrCreate(floorId, userId);
-    const updated = await service.update(floorId, {
-      polygons: [{ space_id: floorId, points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }] }],
-    });
-    expect(updated.polygons).toHaveLength(1);
-  });
+Add `floor_plan_drafts` and `floor_plan_publish_history` to whichever list the harness iterates over. Confirm the generated tests pass.
 
-  it('rejects polygon with <3 points (zod)', async () => {
-    await service.getOrCreate(floorId, userId);
-    await expect(
-      service.update(floorId, { polygons: [{ space_id: floorId, points: [{ x: 0, y: 0 }] }] }),
-    ).rejects.toThrow();
-  });
-});
-```
-
-Replace the test-helper imports with whatever pattern this repo uses (search: `grep -rn "createTestSupabase\|test-utils" apps/api/src | head -10`). If no shared helpers exist, build a minimal one in this file.
-
-- [ ] **Step 2: Cross-tenant test**
-
-Add a test to `apps/api/src/modules/cross-tenant-fk-leak-writes.spec.ts` (or its sibling for reads) that:
-1. Creates draft as tenant A.
-2. Attempts to read/update/delete it as tenant B (sets a different `current_tenant_id`).
-3. Expects 0 rows / RLS denial.
-
-If the file already has a generated test loop over tables, add `floor_plan_drafts` to the list.
-
-- [ ] **Step 3: Run tests**
+- [ ] **Step 4: Run + commit**
 
 ```bash
 pnpm --filter @prequest/api test floor-plan
 pnpm --filter @prequest/api test cross-tenant
 ```
-Expected: all pass.
-
-- [ ] **Step 4: Commit**
+All green.
 
 ```bash
-git add apps/api/src/modules/floor-plan/*.spec.ts apps/api/src/modules/cross-tenant-fk-leak-writes.spec.ts
-git commit -m "test(floor-plan): draft service + cross-tenant RLS coverage"
+git add apps/api/src/modules/floor-plan apps/api/src/modules/cross-tenant-fk-leak-writes.spec.ts
+git commit -m "test(floor-plan): draft service + publish RPC + cross-tenant coverage"
 ```
 
-### Task A.10: smoke:floor-plans script
+### Task A.11: smoke:floor-plans script
 
 **Files:**
 - Create: `apps/api/scripts/smoke-floor-plans.mjs`
-- Modify: `package.json` (root) — add `"smoke:floor-plans": "node apps/api/scripts/smoke-floor-plans.mjs"`
+- Modify: `package.json` (root) — `"smoke:floor-plans": "node apps/api/scripts/smoke-floor-plans.mjs"`
+- Modify: `CLAUDE.md` — add smoke gate section
 
-- [ ] **Step 1: Read the existing smoke pattern**
+- [ ] **Step 1: Read the work-orders smoke**
 
 ```bash
-cat apps/api/scripts/smoke-work-orders.mjs | head -80
+cat apps/api/scripts/smoke-work-orders.mjs
 ```
-Note how it: mints an Admin JWT, hits the live API, asserts shape + exits non-zero on regression.
+Match its style: mint Admin JWT, hit live API, exit non-zero on regression.
 
-- [ ] **Step 2: Write the smoke script**
+- [ ] **Step 2: Write the script with 17 probes**
 
-Mirror the work-orders pattern. Probes for floor-plans:
-1. `GET /api/floors/:fakeFloor/plan` → expect 404 (not found) on a non-existent floor.
-2. `POST /api/floors/:realFloor/plan/draft` via `GET` (creates draft) → 200 with draft.
-3. `PATCH /api/floors/:realFloor/plan/draft` with one polygon → 200, polygon stored.
-4. `POST /api/floors/:realFloor/plan/draft/publish` → 200, then `GET /api/floors/:realFloor/plan` → returns the polygon in `spaces[0].floor_plan_polygon`.
-5. Validation probe: PATCH with polygon containing 1 point → 422.
-6. Validation probe: PATCH with empty space_id → 422.
-7. Cross-tenant probe: use tenant B token to read tenant A's draft → 404 (RLS hides it).
-8. Permission probe: user without `floor_plans.publish` calls publish → 403.
+Required probes (number → behavior):
+1. `GET /api/floors/<fake-uuid>/plan` → 404 / null.
+2. `GET /api/floors/<real-floor>/plan/draft` → 200 (creates draft).
+3. `PATCH /api/floors/<real-floor>/plan/draft` with valid polygon → 200.
+4. `POST /api/floors/<real-floor>/plan/draft/publish` → 200 with `{history_id}`.
+5. `GET /api/floors/<real-floor>/plan` → 200, includes polygon in canonical `{points:[…]}` shape.
+6. `GET /api/floors/<real-floor>/plan/history` → 200 with one row.
+7. Validation: PATCH polygon with 1 point → 422.
+8. Validation: PATCH polygon with empty `space_id` → 422.
+9. Cross-tenant: tenant B reads tenant A's draft → 404 / RLS hides.
+10. Permission: user without `floor_plans.admin` calls PATCH → 403.
+11. PATCH polygon with `space_id` from another tenant → 422 (preflight catches).
+12. PATCH polygon with `space_id` not a child of this floor → 422.
+13. PATCH with duplicate `space_id` → 422 (DTO superRefine).
+14. Publish when one polygon's `space_id` was just hard-deleted → 200, polygon silently dropped (document, do not error).
+15. Publish twice in quick succession → first 200, second 404.
+16. Concurrent PATCH: client A reads (updated_at=T0), client B PATCHes (now T1), client A PATCHes with `If-Match: T0` → 409.
+17. PATCH with polygon points outside image bounds (negative x or > width_px) → 422 (add a `superRefine` that requires image_url+width_px+height_px to be set before polygons land, then bound-checks points).
 
 Exit 0 on all-pass, exit 1 on any regression.
 
-- [ ] **Step 3: Add script to root package.json**
+- [ ] **Step 3: Add CLAUDE.md section**
 
-- [ ] **Step 4: Run it**
+Append under the existing "Smoke gate" section a new paragraph for `pnpm smoke:floor-plans` mirroring the work-orders language.
+
+- [ ] **Step 4: Run + commit**
 
 ```bash
-# In another terminal: pnpm dev:api
+# terminal 1
+pnpm dev:api
+# terminal 2
 pnpm smoke:floor-plans
 ```
-Expected: exit 0, all probes pass.
-
-- [ ] **Step 5: Commit + document**
-
-Add a section to `CLAUDE.md` ("Smoke gate") describing `smoke:floor-plans` mirroring the existing work-orders smoke gate language. Then:
+Exit 0.
 
 ```bash
 git add apps/api/scripts/smoke-floor-plans.mjs package.json CLAUDE.md
-git commit -m "test(floor-plan): smoke harness with 8 probes (mandatory before claim-done)"
+git commit -m "test(floor-plan): smoke harness with 17 probes (gate before claim-done)"
 ```
 
-**Phase A done.** Backend draft CRUD + publish RPC works end-to-end against the real DB. No frontend yet. Tests + smoke green.
+**Phase A done.** Backend draft CRUD + publish RPC works end-to-end against the real DB. No frontend yet. 17 smoke probes green. Cross-tenant harness covers two new tables.
 
 ---
 
 # Phase B — Designer Canvas
 
-Goal: ship the admin-facing designer at `/admin/floor-plans/:floorSpaceId`. End state: admin can upload an image, draw polygons with all 7 tools, autosave to the draft, see issues in the left rail. Publishing still hits a TODO endpoint — the publish dialog is wired in Phase C.
+Goal: ship the admin-facing designer at `/admin/floor-plans/:floorSpaceId`. End state: admin can upload an image, draw polygons with all 5 in-scope tools (select, draw-polygon, draw-rectangle, stamp-seat, image-upload), autosave to the draft (with optimistic locking → conflict prompt on 409), see issues in the left rail. Publishing button exists; the diff dialog is wired in Phase C.
 
-### Task B.1: React Query keys + hooks
+Take-over flow is deferred to Plan 2 / followups per plan review I12. Two admins on the same draft: last save wins unless the second admin loaded after the first's autosave (in which case 409 surfaces).
+
+Before starting frontend tasks: per memory `feedback_frontend_skill_not_antd_agent`, frontend work invokes `Skill('frontend-design:frontend-design')` for design polish. The implementation specifics in the tasks below are non-negotiable (shadcn primitives, autosave shape, optimistic locking); the frontend-design skill is for finish polish (motion, spacing, copy).
+
+### Task B.1: React Query keys + hooks (usePageQuery + If-Match)
 
 **Files:**
 - Create: `apps/web/src/api/floor-plans/keys.ts`
@@ -925,9 +1134,20 @@ export type PublishedFloorPlan = {
     type: string;
     capacity: number | null;
     amenities: string[];
-    floor_plan_polygon: { points: Point[] } | Point[];
+    floor_plan_polygon: { points: Point[] };  // canonical shape — no fallback
     floor_plan_render_hint: RenderHint;
   }>;
+};
+
+export type PublishHistoryEntry = {
+  id: string;
+  published_at: string;
+  published_by: string | null;
+  image_url: string | null;
+  width_px: number | null;
+  height_px: number | null;
+  polygons: Polygon[];
+  labels: Label[];
 };
 ```
 
@@ -937,25 +1157,24 @@ export type PublishedFloorPlan = {
 // apps/web/src/api/floor-plans/keys.ts
 export const floorPlanKeys = {
   all: ['floor-plans'] as const,
-  floor: (floorSpaceId: string) =>
-    [...floorPlanKeys.all, 'floor', floorSpaceId] as const,
-  floorDraft: (floorSpaceId: string) =>
-    [...floorPlanKeys.floor(floorSpaceId), 'draft'] as const,
-  floorPublished: (floorSpaceId: string) =>
-    [...floorPlanKeys.floor(floorSpaceId), 'published'] as const,
+  adminIndex: () => [...floorPlanKeys.all, 'admin-index'] as const,
+  floor: (floorSpaceId: string) => [...floorPlanKeys.all, 'floor', floorSpaceId] as const,
+  floorDraft: (floorSpaceId: string) => [...floorPlanKeys.floor(floorSpaceId), 'draft'] as const,
+  floorPublished: (floorSpaceId: string) => [...floorPlanKeys.floor(floorSpaceId), 'published'] as const,
+  floorHistory: (floorSpaceId: string) => [...floorPlanKeys.floor(floorSpaceId), 'history'] as const,
 };
 ```
 
-- [ ] **Step 3: Hooks**
+- [ ] **Step 3: Hooks (with `usePageQuery` for primary fetches and If-Match on PATCH)**
 
 ```ts
 // apps/web/src/api/floor-plans/hooks.ts
-import { useMutation, useQuery, useQueryClient, queryOptions } from '@tanstack/react-query';
+import { useMutation, useQueryClient, queryOptions } from '@tanstack/react-query';
 import { apiFetch } from '../../lib/api-fetch';
 import { withErrorHandling, handleMutationError } from '../../lib/errors';
-import { floorPlanKeys } from './keys';
-import type { DraftResponse, PublishedFloorPlan } from './types';
 import { usePageQuery } from '../../lib/use-page-query';
+import { floorPlanKeys } from './keys';
+import type { DraftResponse, PublishedFloorPlan, PublishHistoryEntry } from './types';
 
 export function floorPlanPublishedOptions(floorSpaceId: string) {
   return queryOptions({
@@ -970,65 +1189,53 @@ export function useFloorPlanPublished(floorSpaceId: string) {
 }
 
 export function useFloorPlanDraft(floorSpaceId: string) {
-  return useQuery({
+  return usePageQuery(queryOptions({
     queryKey: floorPlanKeys.floorDraft(floorSpaceId),
     queryFn: async () => apiFetch<DraftResponse>(`/api/floors/${floorSpaceId}/plan/draft`),
     staleTime: 0,
-  });
+  }));
 }
 
+export function useFloorPlanHistory(floorSpaceId: string) {
+  return useQueryClient ? null : null; // placeholder, replaced below
+}
+
+/** Update draft with optimistic locking. Pass the last seen updated_at as `ifMatch`. */
 export function useUpdateDraft(floorSpaceId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (patch: Partial<DraftResponse>) =>
+    mutationFn: async ({ patch, ifMatch }: { patch: Partial<DraftResponse>; ifMatch: string }) =>
       apiFetch<DraftResponse>(`/api/floors/${floorSpaceId}/plan/draft`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
+        headers: { 'If-Match': ifMatch },
       }),
-    ...withErrorHandling({ actionTitle: "Couldn't save floor plan changes" }),
-    onMutate: async (patch) => {
+    onMutate: async ({ patch }) => {
       await qc.cancelQueries({ queryKey: floorPlanKeys.floorDraft(floorSpaceId) });
       const previous = qc.getQueryData<DraftResponse>(floorPlanKeys.floorDraft(floorSpaceId));
       if (previous) {
         qc.setQueryData<DraftResponse>(floorPlanKeys.floorDraft(floorSpaceId), {
-          ...previous,
-          ...patch,
+          ...previous, ...patch,
         });
       }
       return { previous };
     },
-    onError: (error, _patch, ctx) => {
-      if (ctx?.previous) {
-        qc.setQueryData(floorPlanKeys.floorDraft(floorSpaceId), ctx.previous);
-      }
+    onSuccess: (data) => {
+      // Sync server's authoritative updated_at into cache
+      qc.setQueryData<DraftResponse>(floorPlanKeys.floorDraft(floorSpaceId), data);
+    },
+    onError: (error, _vars, ctx) => {
+      if (ctx?.previous) qc.setQueryData(floorPlanKeys.floorDraft(floorSpaceId), ctx.previous);
       handleMutationError(error, { actionTitle: "Couldn't save floor plan changes" });
     },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: floorPlanKeys.floorDraft(floorSpaceId) });
-    },
-  });
-}
-
-export function useTakeOverDraft(floorSpaceId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async () =>
-      apiFetch<DraftResponse>(`/api/floors/${floorSpaceId}/plan/draft/take-over`, {
-        method: 'POST',
-      }),
-    onSuccess: (data) => qc.setQueryData(floorPlanKeys.floorDraft(floorSpaceId), data),
-    ...withErrorHandling({ actionTitle: "Couldn't take over the draft" }),
   });
 }
 
 export function useDiscardDraft(floorSpaceId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async () =>
-      apiFetch(`/api/floors/${floorSpaceId}/plan/draft`, { method: 'DELETE' }),
-    onSuccess: () => {
-      qc.removeQueries({ queryKey: floorPlanKeys.floorDraft(floorSpaceId) });
-    },
+    mutationFn: async () => apiFetch(`/api/floors/${floorSpaceId}/plan/draft`, { method: 'DELETE' }),
+    onSuccess: () => qc.removeQueries({ queryKey: floorPlanKeys.floorDraft(floorSpaceId) }),
     ...withErrorHandling({ actionTitle: "Couldn't discard the draft" }),
   });
 }
@@ -1037,7 +1244,7 @@ export function usePublishDraft(floorSpaceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async () =>
-      apiFetch(`/api/floors/${floorSpaceId}/plan/draft/publish`, { method: 'POST' }),
+      apiFetch<{ history_id: string }>(`/api/floors/${floorSpaceId}/plan/draft/publish`, { method: 'POST' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: floorPlanKeys.floor(floorSpaceId) });
     },
@@ -1046,11 +1253,13 @@ export function usePublishDraft(floorSpaceId: string) {
 }
 ```
 
+If `useFloorPlanHistory` is needed it's a plain `useQuery` — wire it in C.2 when we add the "Restore previous publish" UI. Leave out for now.
+
 - [ ] **Step 4: Commit**
 
 ```bash
 git add apps/web/src/api/floor-plans
-git commit -m "feat(floor-plan): React Query keys + hooks for plan/draft"
+git commit -m "feat(floor-plan): React Query hooks (usePageQuery + If-Match optimistic locking)"
 ```
 
 ### Task B.2: `<FloorPlanCanvas>` view-only renderer
@@ -1062,7 +1271,7 @@ git commit -m "feat(floor-plan): React Query keys + hooks for plan/draft"
 - Create: `apps/web/src/components/floor-plan/lib/availability-state.ts`
 - Create: `apps/web/src/components/floor-plan/__tests__/polygon-geometry.test.ts`
 
-- [ ] **Step 1: Geometry helpers + test**
+- [ ] **Step 1: Geometry + test**
 
 ```ts
 // apps/web/src/components/floor-plan/lib/polygon-geometry.ts
@@ -1071,20 +1280,16 @@ import type { Point } from '../../../api/floor-plans/types';
 export function polygonArea(points: Point[]): number {
   let area = 0;
   for (let i = 0; i < points.length; i++) {
-    const a = points[i];
-    const b = points[(i + 1) % points.length];
+    const a = points[i], b = points[(i + 1) % points.length];
     area += a.x * b.y - b.x * a.y;
   }
   return Math.abs(area / 2);
 }
 
 export function polygonCentroid(points: Point[]): Point {
-  let x = 0;
-  let y = 0;
-  let twiceArea = 0;
+  let x = 0, y = 0, twiceArea = 0;
   for (let i = 0; i < points.length; i++) {
-    const a = points[i];
-    const b = points[(i + 1) % points.length];
+    const a = points[i], b = points[(i + 1) % points.length];
     const cross = a.x * b.y - b.x * a.y;
     twiceArea += cross;
     x += (a.x + b.x) * cross;
@@ -1108,43 +1313,32 @@ import { polygonArea, polygonCentroid, polygonToSvgPath } from '../lib/polygon-g
 
 describe('polygon geometry', () => {
   const square = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
-
-  it('computes square area', () => expect(polygonArea(square)).toBe(100));
-
-  it('computes square centroid', () => {
+  it('area of 10x10 square is 100', () => expect(polygonArea(square)).toBe(100));
+  it('centroid of square is (5,5)', () => {
     const c = polygonCentroid(square);
-    expect(c.x).toBeCloseTo(5);
-    expect(c.y).toBeCloseTo(5);
+    expect(c.x).toBeCloseTo(5); expect(c.y).toBeCloseTo(5);
   });
-
-  it('serializes to svg path', () =>
-    expect(polygonToSvgPath(square)).toBe('M 0 0 L 10 0 L 10 10 L 0 10 Z'));
+  it('svg path closes', () => expect(polygonToSvgPath(square)).toBe('M 0 0 L 10 0 L 10 10 L 0 10 Z'));
 });
 ```
 
-- [ ] **Step 2: Availability state machine**
+- [ ] **Step 2: Availability state palette**
 
 ```ts
 // apps/web/src/components/floor-plan/lib/availability-state.ts
-export type AvailabilityState =
-  | 'available'
-  | 'partial'
-  | 'booked'
-  | 'mine'
-  | 'pending'
-  | 'not_bookable';
+export type AvailabilityState = 'available' | 'partial' | 'booked' | 'mine' | 'pending' | 'not_bookable';
 
 export const STATE_PALETTE: Record<AvailabilityState, { outline: string; fill: string; dot: string }> = {
-  available:    { outline: '#86efac', fill: '#f0fdf4', dot: '#22c55e' },
-  partial:      { outline: '#fcd34d', fill: 'url(#partial-stripes)', dot: '#84cc16' },
-  booked:       { outline: '#fca5a5', fill: '#fef2f2', dot: '#ef4444' },
-  mine:         { outline: '#60a5fa', fill: '#eff6ff', dot: '#3b82f6' },
-  pending:      { outline: '#fcd34d', fill: '#fffbeb', dot: '#f59e0b' },
-  not_bookable: { outline: '#d6d3d1', fill: '#fafaf9', dot: '#d6d3d1' },
+  available:    { outline: '#86efac', fill: '#f0fdf4',                  dot: '#22c55e' },
+  partial:      { outline: '#fcd34d', fill: 'url(#partial-stripes)',     dot: '#84cc16' },
+  booked:       { outline: '#fca5a5', fill: '#fef2f2',                  dot: '#ef4444' },
+  mine:         { outline: '#60a5fa', fill: '#eff6ff',                  dot: '#3b82f6' },
+  pending:      { outline: '#fcd34d', fill: '#fffbeb',                  dot: '#f59e0b' },
+  not_bookable: { outline: '#d6d3d1', fill: '#fafaf9',                  dot: '#d6d3d1' },
 };
 ```
 
-- [ ] **Step 3: PolygonShape component**
+- [ ] **Step 3: PolygonShape (canonical points only — no fallback)**
 
 ```tsx
 // apps/web/src/components/floor-plan/polygon-shape.tsx
@@ -1182,11 +1376,8 @@ export function PolygonShape({ spaceId, points, renderHint, name, capacity, stat
         style={{ cursor: 'pointer' }}
       >
         <circle
-          cx={centroid.x}
-          cy={centroid.y}
-          r={11}
-          fill={palette.fill}
-          stroke={palette.outline}
+          cx={centroid.x} cy={centroid.y} r={11}
+          fill={palette.fill} stroke={palette.outline}
           strokeWidth={selected ? 2 : 1.4}
         />
         <circle cx={centroid.x} cy={centroid.y} r={3.5} fill={palette.dot} />
@@ -1205,15 +1396,11 @@ export function PolygonShape({ spaceId, points, renderHint, name, capacity, stat
     >
       <path
         d={polygonToSvgPath(points)}
-        fill={palette.fill}
-        stroke={palette.outline}
+        fill={palette.fill} stroke={palette.outline}
         strokeWidth={selected ? 2 : 1.5}
-        rx={3}
       />
       <circle cx={points[0].x + 16} cy={points[0].y + 16} r={5} fill={palette.dot} />
-      <text x={centroid.x} y={centroid.y} textAnchor="middle" fontSize={13} fontWeight={500} fill="#1c1917">
-        {name}
-      </text>
+      <text x={centroid.x} y={centroid.y} textAnchor="middle" fontSize={13} fontWeight={500} fill="#1c1917">{name}</text>
     </g>
   );
 }
@@ -1257,57 +1444,38 @@ export function FloorPlanCanvas({ plan, states, selectedSpaceId, onSpaceClick }:
           <line x1="0" y1="0" x2="0" y2="8" stroke="#fca5a5" strokeWidth="3.5" />
         </pattern>
       </defs>
-      <image
-        href={plan.floor.image_url}
-        x="0"
-        y="0"
-        width={plan.floor.width_px}
-        height={plan.floor.height_px}
-        decoding="async"
-      />
-      {plan.spaces.map((s) => {
-        const points = Array.isArray(s.floor_plan_polygon)
-          ? s.floor_plan_polygon
-          : s.floor_plan_polygon.points;
-        return (
-          <PolygonShape
-            key={s.id}
-            spaceId={s.id}
-            points={points}
-            renderHint={s.floor_plan_render_hint}
-            name={s.name}
-            capacity={s.capacity}
-            state={stateMap.get(s.id) ?? 'not_bookable'}
-            selected={selectedSpaceId === s.id}
-            onClick={onSpaceClick}
-          />
-        );
-      })}
+      <image href={plan.floor.image_url} x="0" y="0" width={plan.floor.width_px} height={plan.floor.height_px} decoding="async" />
+      {plan.spaces.map((s) => (
+        <PolygonShape
+          key={s.id}
+          spaceId={s.id}
+          points={s.floor_plan_polygon.points}
+          renderHint={s.floor_plan_render_hint}
+          name={s.name}
+          capacity={s.capacity}
+          state={stateMap.get(s.id) ?? 'not_bookable'}
+          selected={selectedSpaceId === s.id}
+          onClick={onSpaceClick}
+        />
+      ))}
     </svg>
   );
 }
 ```
 
-- [ ] **Step 5: Run tests + build**
+- [ ] **Step 5: Run + commit**
 
 ```bash
 pnpm --filter @prequest/web test polygon-geometry
 pnpm --filter @prequest/web build
-```
-Expected: tests pass, build green.
-
-- [ ] **Step 6: Commit**
-
-```bash
 git add apps/web/src/components/floor-plan
-git commit -m "feat(floor-plan): FloorPlanCanvas + PolygonShape (view mode) + geometry tests"
+git commit -m "feat(floor-plan): FloorPlanCanvas + PolygonShape view-mode renderer (canonical shape only)"
 ```
 
 ### Task B.3: `<ZoomPanLayer>` with scroll/pinch/drag
 
 **Files:**
 - Create: `apps/web/src/components/floor-plan/zoom-pan-layer.tsx`
-- Create: `apps/web/src/components/floor-plan/__tests__/zoom-pan-layer.test.tsx`
 
 - [ ] **Step 1: Component**
 
@@ -1326,16 +1494,16 @@ export function ZoomPanLayer({ children, minScale = 0.25, maxScale = 8 }: Props)
     e.preventDefault();
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const cursorX = e.clientX - rect.left;
-    const cursorY = e.clientY - rect.top;
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
     const delta = -e.deltaY * 0.0012;
     setTransform((prev) => {
       const next = Math.min(maxScale, Math.max(minScale, prev.scale * (1 + delta)));
       const ratio = next / prev.scale;
       return {
         scale: next,
-        tx: cursorX - (cursorX - prev.tx) * ratio,
-        ty: cursorY - (cursorY - prev.ty) * ratio,
+        tx: cx - (cx - prev.tx) * ratio,
+        ty: cy - (cy - prev.ty) * ratio,
       };
     });
   }, [minScale, maxScale]);
@@ -1373,32 +1541,16 @@ export function ZoomPanLayer({ children, minScale = 0.25, maxScale = 8 }: Props)
 }
 ```
 
-For pinch on touch screens, the basic implementation above uses Pointer Events which handles single-finger pan. If multi-touch pinch becomes needed, swap to `use-gesture` library (add as dep in a follow-up task).
+Multi-touch pinch lands in Plan 2 with `use-gesture` if mobile QA finds gaps. Pointer Events handle single-touch pan natively.
 
-- [ ] **Step 2: Smoke test**
-
-```tsx
-// apps/web/src/components/floor-plan/__tests__/zoom-pan-layer.test.tsx
-import { render } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
-import { ZoomPanLayer } from '../zoom-pan-layer';
-
-describe('ZoomPanLayer', () => {
-  it('renders children', () => {
-    const { getByTestId } = render(<ZoomPanLayer><div data-testid="child" /></ZoomPanLayer>);
-    expect(getByTestId('child')).toBeTruthy();
-  });
-});
-```
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
-git add apps/web/src/components/floor-plan/zoom-pan-layer.tsx apps/web/src/components/floor-plan/__tests__/zoom-pan-layer.test.tsx
-git commit -m "feat(floor-plan): ZoomPanLayer with scroll-to-cursor + drag-to-pan"
+git add apps/web/src/components/floor-plan/zoom-pan-layer.tsx
+git commit -m "feat(floor-plan): ZoomPanLayer (scroll-to-cursor zoom + drag-to-pan)"
 ```
 
-### Task B.4: `<FloorPlanDesigner>` shell + draft state hook
+### Task B.4: Designer shell + state hook + autosave with 409 handling
 
 **Files:**
 - Create: `apps/web/src/components/floor-plan-designer/floor-plan-designer.tsx`
@@ -1411,10 +1563,11 @@ git commit -m "feat(floor-plan): ZoomPanLayer with scroll-to-cursor + drag-to-pa
 // apps/web/src/components/floor-plan-designer/types.ts
 import type { Polygon, Label } from '../../api/floor-plans/types';
 
-export type ToolKind = 'select' | 'draw-polygon' | 'draw-rectangle' | 'stamp-seat' | 'parking' | 'label' | 'image-upload';
+export type ToolKind = 'select' | 'draw-polygon' | 'draw-rectangle' | 'stamp-seat' | 'image-upload';
 
 export type DesignerState = {
   draftId: string;
+  updatedAt: string;           // server version for If-Match
   imageUrl: string | null;
   widthPx: number | null;
   heightPx: number | null;
@@ -1422,11 +1575,11 @@ export type DesignerState = {
   labels: Label[];
   selectedPolygonIndex: number | null;
   activeTool: ToolKind;
-  inProgressPolygon: Polygon | null; // when drawing
+  inProgressPolygon: Polygon | null;
 };
 ```
 
-- [ ] **Step 2: useDesignerState hook**
+- [ ] **Step 2: State hook (autosave with optimistic lock; 409 → reload prompt)**
 
 ```ts
 // apps/web/src/components/floor-plan-designer/use-designer-state.ts
@@ -1434,6 +1587,7 @@ import { useReducer, useEffect, useRef } from 'react';
 import type { DesignerState, ToolKind } from './types';
 import type { DraftResponse, Polygon, Label } from '../../api/floor-plans/types';
 import { useUpdateDraft } from '../../api/floor-plans/hooks';
+import { toast } from '../../lib/toast';
 
 type Action =
   | { type: 'hydrate'; draft: DraftResponse }
@@ -1445,13 +1599,15 @@ type Action =
   | { type: 'set-image'; imageUrl: string; widthPx: number; heightPx: number }
   | { type: 'start-drawing'; polygon: Polygon }
   | { type: 'commit-drawing' }
-  | { type: 'cancel-drawing' };
+  | { type: 'cancel-drawing' }
+  | { type: 'server-sync'; updatedAt: string };
 
 function reducer(state: DesignerState, action: Action): DesignerState {
   switch (action.type) {
     case 'hydrate':
       return {
         draftId: action.draft.id,
+        updatedAt: action.draft.updated_at,
         imageUrl: action.draft.image_url,
         widthPx: action.draft.width_px,
         heightPx: action.draft.height_px,
@@ -1479,11 +1635,13 @@ function reducer(state: DesignerState, action: Action): DesignerState {
       ? { ...state, polygons: [...state.polygons, state.inProgressPolygon], inProgressPolygon: null }
       : state;
     case 'cancel-drawing': return { ...state, inProgressPolygon: null };
+    case 'server-sync':    return { ...state, updatedAt: action.updatedAt };
   }
 }
 
 const INITIAL: DesignerState = {
   draftId: '',
+  updatedAt: '',
   imageUrl: null,
   widthPx: null,
   heightPx: null,
@@ -1505,22 +1663,42 @@ export function useDesignerState(floorSpaceId: string, draft: DraftResponse | un
   }, [draft, state.draftId]);
 
   useEffect(() => {
-    if (!state.draftId) return;
-    const snapshot = JSON.stringify({ polygons: state.polygons, labels: state.labels, imageUrl: state.imageUrl, widthPx: state.widthPx, heightPx: state.heightPx });
+    if (!state.draftId || !state.updatedAt) return;
+    const snapshot = JSON.stringify({
+      polygons: state.polygons,
+      labels: state.labels,
+      imageUrl: state.imageUrl,
+      widthPx: state.widthPx,
+      heightPx: state.heightPx,
+    });
     if (snapshot === lastSyncedRef.current) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
+    debounceRef.current = setTimeout(async () => {
       lastSyncedRef.current = snapshot;
-      updateDraft.mutate({
-        polygons: state.polygons,
-        labels: state.labels,
-        image_url: state.imageUrl,
-        width_px: state.widthPx,
-        height_px: state.heightPx,
-      });
+      try {
+        const data = await updateDraft.mutateAsync({
+          patch: {
+            polygons: state.polygons,
+            labels: state.labels,
+            image_url: state.imageUrl,
+            width_px: state.widthPx,
+            height_px: state.heightPx,
+          },
+          ifMatch: state.updatedAt,
+        });
+        dispatch({ type: 'server-sync', updatedAt: data.updated_at });
+      } catch (err: any) {
+        if (err?.code === 'floor_plan.draft.stale_update' || err?.status === 409) {
+          toast.warning('Another change happened', {
+            description: 'This draft was modified elsewhere. Reload to see the latest.',
+            action: { label: 'Reload', onClick: () => window.location.reload() },
+          });
+        }
+        // other errors handled by mutation's onError
+      }
     }, 500);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [state.polygons, state.labels, state.imageUrl, state.widthPx, state.heightPx, state.draftId, updateDraft]);
+  }, [state.polygons, state.labels, state.imageUrl, state.widthPx, state.heightPx, state.draftId, state.updatedAt, updateDraft]);
 
   return { state, dispatch, isSaving: updateDraft.isPending } as const;
 }
@@ -1530,56 +1708,99 @@ export function useDesignerState(floorSpaceId: string, draft: DraftResponse | un
 
 ```tsx
 // apps/web/src/components/floor-plan-designer/floor-plan-designer.tsx
+import { useEffect } from 'react';
+import { Link } from 'react-router-dom';
+import { ChevronLeft } from 'lucide-react';
 import { useFloorPlanDraft } from '../../api/floor-plans/hooks';
 import { useDesignerState } from './use-designer-state';
-import { SpacesTree } from './spaces-tree';        // TASK B.5
-import { ToolDock } from './tool-dock';            // TASK B.6
-import { PolygonInspector } from './polygon-inspector'; // TASK B.7
-import { DesignerCanvas } from './designer-canvas';     // TASK B.8
+import { SpacesTree } from './spaces-tree';
+import { ToolDock } from './tool-dock';
+import { PolygonInspector } from './polygon-inspector';
+import { DesignerCanvas } from './designer-canvas';
+import { PublishDialog } from './publish-dialog';
+import { Button } from '../ui/button';
+import { useState } from 'react';
+import type { ToolKind } from './types';
 
-type Props = { floorSpaceId: string };
+type Props = { floorSpaceId: string; floorName: string; backTo: string };
 
-export function FloorPlanDesigner({ floorSpaceId }: Props) {
+export function FloorPlanDesigner({ floorSpaceId, floorName, backTo }: Props) {
   const draft = useFloorPlanDraft(floorSpaceId);
   const { state, dispatch, isSaving } = useDesignerState(floorSpaceId, draft.data);
+  const [publishOpen, setPublishOpen] = useState(false);
 
-  if (draft.isLoading) return <div className="text-sm text-muted-foreground p-6">Loading…</div>;
-  if (!draft.data) return <div className="text-sm text-muted-foreground p-6">No draft.</div>;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const tools: Record<string, ToolKind> = { v: 'select', p: 'draw-polygon', r: 'draw-rectangle', s: 'stamp-seat', i: 'image-upload' };
+      const tool = tools[e.key.toLowerCase()];
+      if (tool) { dispatch({ type: 'set-tool', tool }); return; }
+      if (e.key === 'Enter' && state.inProgressPolygon && state.inProgressPolygon.points.length >= 3) dispatch({ type: 'commit-drawing' });
+      if (e.key === 'Escape') dispatch({ type: 'cancel-drawing' });
+      if ((e.key === 'Backspace' || e.key === 'Delete') && state.selectedPolygonIndex !== null) dispatch({ type: 'remove-polygon', index: state.selectedPolygonIndex });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [dispatch, state.inProgressPolygon, state.selectedPolygonIndex]);
+
+  if (draft.isLoading) return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
+  if (!draft.data) return <div className="p-6 text-sm text-muted-foreground">No draft.</div>;
 
   return (
-    <div className="grid grid-cols-[240px_1fr_244px] h-[calc(100vh-48px)] gap-0 bg-muted/30">
-      <SpacesTree floorSpaceId={floorSpaceId} state={state} dispatch={dispatch} />
-      <div className="relative flex flex-col">
-        <ToolDock activeTool={state.activeTool} dispatch={dispatch} isSaving={isSaving} />
-        <DesignerCanvas state={state} dispatch={dispatch} />
+    <div className="flex h-screen w-screen flex-col bg-background">
+      {/* custom topbar — designer is shell-exempt per CLAUDE.md */}
+      <header className="flex h-12 items-center justify-between border-b border-border px-3">
+        <div className="flex items-center gap-3">
+          <Link to={backTo} className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+            <ChevronLeft className="h-4 w-4" />
+            Floor plans
+          </Link>
+          <span className="text-sm text-muted-foreground">·</span>
+          <span className="text-sm font-medium">{floorName}</span>
+          <span className="text-xs text-muted-foreground flex items-center gap-1">
+            <span className={`inline-block h-2 w-2 rounded-full ${isSaving ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+            {isSaving ? 'saving…' : 'saved'}
+          </span>
+        </div>
+        <div className="flex gap-2">
+          <Button onClick={() => setPublishOpen(true)} size="sm">Publish</Button>
+        </div>
+      </header>
+
+      <div className="grid grid-cols-[240px_1fr_244px] flex-1 overflow-hidden">
+        <SpacesTree floorSpaceId={floorSpaceId} state={state} dispatch={dispatch} />
+        <div className="relative flex flex-col">
+          <ToolDock activeTool={state.activeTool} dispatch={dispatch} />
+          <DesignerCanvas state={state} dispatch={dispatch} />
+        </div>
+        <PolygonInspector floorSpaceId={floorSpaceId} state={state} dispatch={dispatch} />
       </div>
-      <PolygonInspector floorSpaceId={floorSpaceId} state={state} dispatch={dispatch} />
+
+      <PublishDialog
+        open={publishOpen}
+        onOpenChange={setPublishOpen}
+        floorSpaceId={floorSpaceId}
+        draft={draft.data}
+      />
     </div>
   );
 }
 ```
 
-This shell imports four sub-components written in subsequent tasks. Until those tasks land, stub each one as a placeholder div so this file compiles in isolation:
-
-```tsx
-// Temporary stubs in floor-plan-designer.tsx until B.5–B.8 land:
-// const SpacesTree = () => <div className="bg-background border-r" />;
-// const ToolDock = () => <div className="bg-background border-b h-12" />;
-// const PolygonInspector = () => <div className="bg-background border-l" />;
-// const DesignerCanvas = () => <div className="bg-background flex-1" />;
-```
+The four sub-components (`SpacesTree`, `ToolDock`, `PolygonInspector`, `DesignerCanvas`, `PublishDialog`) are stubbed as empty divs until their respective tasks land. Stub them inline temporarily so this file compiles.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add apps/web/src/components/floor-plan-designer
-git commit -m "feat(floor-plan): FloorPlanDesigner shell + useDesignerState reducer + autosave"
+git commit -m "feat(floor-plan): designer shell + state hook + 409-aware autosave + keyboard (V/P/R/S/I/Enter/Esc/Delete)"
 ```
 
 ### Task B.5: `<SpacesTree>` left rail
 
 **Files:**
 - Create: `apps/web/src/components/floor-plan-designer/spaces-tree.tsx`
+- Modify (or create): GET `/api/spaces/:id/children` endpoint (see step 2)
 
 - [ ] **Step 1: Component**
 
@@ -1589,13 +1810,9 @@ import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../../lib/api-fetch';
 import type { DesignerState } from './types';
 
-type Props = {
-  floorSpaceId: string;
-  state: DesignerState;
-  dispatch: React.Dispatch<any>;
-};
-
 type ChildSpace = { id: string; name: string; type: string; capacity: number | null };
+
+type Props = { floorSpaceId: string; state: DesignerState; dispatch: React.Dispatch<any> };
 
 export function SpacesTree({ floorSpaceId, state, dispatch }: Props) {
   const children = useQuery({
@@ -1603,31 +1820,26 @@ export function SpacesTree({ floorSpaceId, state, dispatch }: Props) {
     queryFn: () => apiFetch<ChildSpace[]>(`/api/spaces/${floorSpaceId}/children`),
     staleTime: 60_000,
   });
-
-  const drawnIds = new Set(state.polygons.map((p) => p.space_id));
+  const drawnIds = new Set(state.polygons.map((p) => p.space_id).filter(Boolean));
 
   return (
-    <div className="bg-background border-r border-border p-4 overflow-y-auto">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-3">
-        Spaces on this floor
-      </div>
+    <div className="border-r border-border bg-background p-4 overflow-y-auto">
+      <div className="text-xs uppercase tracking-wide text-muted-foreground mb-3">Spaces on this floor</div>
       {(children.data ?? []).map((s) => {
         const isDrawn = drawnIds.has(s.id);
-        const polygonIndex = state.polygons.findIndex((p) => p.space_id === s.id);
-        const isSelected = polygonIndex === state.selectedPolygonIndex;
+        const idx = state.polygons.findIndex((p) => p.space_id === s.id);
+        const selected = idx >= 0 && idx === state.selectedPolygonIndex;
         return (
           <button
             key={s.id}
-            onClick={() => dispatch({ type: 'select-polygon', index: polygonIndex >= 0 ? polygonIndex : null })}
-            className={`flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm ${isSelected ? 'bg-muted' : 'hover:bg-muted/50'}`}
+            onClick={() => dispatch({ type: 'select-polygon', index: idx >= 0 ? idx : null })}
+            className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm ${selected ? 'bg-muted' : 'hover:bg-muted/50'}`}
           >
             <span className="flex items-center gap-2">
               <span className={`inline-block h-2 w-2 rounded-full ${isDrawn ? 'bg-emerald-400' : 'bg-muted-foreground/30'}`} />
               <span className={isDrawn ? 'text-foreground' : 'text-muted-foreground'}>{s.name}</span>
             </span>
-            {s.capacity !== null && (
-              <span className="tabular-nums text-xs text-muted-foreground">{s.capacity}</span>
-            )}
+            {s.capacity !== null && <span className="tabular-nums text-xs text-muted-foreground">{s.capacity}</span>}
           </button>
         );
       })}
@@ -1636,27 +1848,27 @@ export function SpacesTree({ floorSpaceId, state, dispatch }: Props) {
 }
 ```
 
-If `/api/spaces/:id/children` doesn't exist yet, either add it as a thin endpoint on `SpaceController` (5 lines) or use an existing endpoint that lists child spaces. Spec assumes the simple route.
+- [ ] **Step 2: Add `/spaces/:id/children` if missing**
 
-- [ ] **Step 2: Add the `/spaces/:id/children` endpoint if missing**
-
-In `apps/api/src/modules/space/space.controller.ts`:
-
-```ts
-@Get(':id/children')
-async listChildren(@Param('id') id: string) {
-  return this.space.listChildren(id);
-}
+```bash
+grep -rn ":id/children" apps/api/src/modules/space
 ```
 
-In `space.service.ts`:
-
+If absent, add to `SpaceController`:
 ```ts
-async listChildren(parentId: string) {
+@Get(':id/children')
+async children(@Param('id') id: string, @Req() req: ReqUser) {
+  return this.space.listChildren(id, req.user.tenant_id);
+}
+```
+And to `SpaceService`:
+```ts
+async listChildren(parentId: string, tenantId: string) {
   const { data } = await this.supabase.client()
     .from('spaces')
-    .select('id, name, type, capacity, parent_id, tenant_id')
+    .select('id, name, type, capacity')
     .eq('parent_id', parentId)
+    .eq('tenant_id', tenantId)
     .order('name');
   return data ?? [];
 }
@@ -1666,10 +1878,10 @@ async listChildren(parentId: string) {
 
 ```bash
 git add apps/web/src/components/floor-plan-designer/spaces-tree.tsx apps/api/src/modules/space
-git commit -m "feat(floor-plan): SpacesTree left rail + GET /spaces/:id/children"
+git commit -m "feat(floor-plan): SpacesTree + GET /spaces/:id/children"
 ```
 
-### Task B.6: `<ToolDock>`
+### Task B.6: `<ToolDock>` with Lucide icons
 
 **Files:**
 - Create: `apps/web/src/components/floor-plan-designer/tool-dock.tsx`
@@ -1678,95 +1890,67 @@ git commit -m "feat(floor-plan): SpacesTree left rail + GET /spaces/:id/children
 
 ```tsx
 // apps/web/src/components/floor-plan-designer/tool-dock.tsx
+import { MousePointer2, Pentagon, Square, Circle, Image as ImageIcon, type LucideIcon } from 'lucide-react';
 import type { ToolKind } from './types';
 
-const TOOLS: { kind: ToolKind; label: string; shortcut: string; glyph: string }[] = [
-  { kind: 'select',         label: 'Select',        shortcut: 'V', glyph: '⌖' },
-  { kind: 'draw-polygon',   label: 'Draw polygon',  shortcut: 'P', glyph: '▱' },
-  { kind: 'draw-rectangle', label: 'Rectangle',     shortcut: 'R', glyph: '▭' },
-  { kind: 'stamp-seat',     label: 'Stamp seat',    shortcut: 'S', glyph: '●' },
-  { kind: 'parking',        label: 'Parking slot',  shortcut: 'K', glyph: 'P' },
-  { kind: 'label',          label: 'Label',         shortcut: 'T', glyph: 'T' },
-  { kind: 'image-upload',   label: 'Image',         shortcut: 'I', glyph: '⎙' },
+const TOOLS: { kind: ToolKind; label: string; shortcut: string; Icon: LucideIcon }[] = [
+  { kind: 'select',         label: 'Select',       shortcut: 'V', Icon: MousePointer2 },
+  { kind: 'draw-polygon',   label: 'Draw polygon', shortcut: 'P', Icon: Pentagon },
+  { kind: 'draw-rectangle', label: 'Rectangle',    shortcut: 'R', Icon: Square },
+  { kind: 'stamp-seat',     label: 'Stamp seat',   shortcut: 'S', Icon: Circle },
+  { kind: 'image-upload',   label: 'Image',        shortcut: 'I', Icon: ImageIcon },
 ];
 
-type Props = {
-  activeTool: ToolKind;
-  dispatch: React.Dispatch<any>;
-  isSaving: boolean;
-};
+type Props = { activeTool: ToolKind; dispatch: React.Dispatch<any> };
 
-export function ToolDock({ activeTool, dispatch, isSaving }: Props) {
+export function ToolDock({ activeTool, dispatch }: Props) {
   return (
-    <div className="flex items-center justify-between border-b border-border bg-background px-3 py-2">
-      <div className="flex gap-1">
-        {TOOLS.map((t) => (
-          <button
-            key={t.kind}
-            title={`${t.label} (${t.shortcut})`}
-            onClick={() => dispatch({ type: 'set-tool', tool: t.kind })}
-            className={`h-9 w-9 rounded-md text-sm ${activeTool === t.kind ? 'bg-foreground text-background' : 'hover:bg-muted'}`}
-          >
-            {t.glyph}
-          </button>
-        ))}
-      </div>
-      <div className="text-xs text-muted-foreground flex items-center gap-2">
-        <span className={`inline-block h-2 w-2 rounded-full ${isSaving ? 'bg-amber-400' : 'bg-emerald-400'}`} />
-        {isSaving ? 'saving…' : 'saved'}
-      </div>
+    <div className="flex items-center gap-1 border-b border-border bg-background px-3 py-2">
+      {TOOLS.map((t) => (
+        <button
+          key={t.kind}
+          title={`${t.label} (${t.shortcut})`}
+          aria-label={t.label}
+          onClick={() => dispatch({ type: 'set-tool', tool: t.kind })}
+          className={`flex h-9 w-9 items-center justify-center rounded-md ${activeTool === t.kind ? 'bg-foreground text-background' : 'hover:bg-muted'}`}
+        >
+          <t.Icon className="h-4 w-4" />
+        </button>
+      ))}
     </div>
   );
 }
 ```
 
-Replace glyph characters with proper Lucide icons (`MousePointer`, `Pentagon`, `Square`, `Circle`, `CarFront`, `Type`, `Image`) before shipping — keep this skeleton minimal for now.
+Parking + label tools are out of scope for v1 — listed in followups. Save status moved to the topbar in B.4 step 3, no longer in the dock.
 
-- [ ] **Step 2: Keyboard shortcuts**
-
-In `floor-plan-designer.tsx`, add a `useEffect` listening on `window` for `keydown`:
-
-```tsx
-useEffect(() => {
-  const onKey = (e: KeyboardEvent) => {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-    const map: Record<string, ToolKind> = { v: 'select', p: 'draw-polygon', r: 'draw-rectangle', s: 'stamp-seat', k: 'parking', t: 'label', i: 'image-upload' };
-    const tool = map[e.key.toLowerCase()];
-    if (tool) dispatch({ type: 'set-tool', tool });
-  };
-  window.addEventListener('keydown', onKey);
-  return () => window.removeEventListener('keydown', onKey);
-}, [dispatch]);
-```
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
-git add apps/web/src/components/floor-plan-designer/tool-dock.tsx apps/web/src/components/floor-plan-designer/floor-plan-designer.tsx
-git commit -m "feat(floor-plan): ToolDock with keyboard shortcuts + save status"
+git add apps/web/src/components/floor-plan-designer/tool-dock.tsx
+git commit -m "feat(floor-plan): ToolDock with Lucide icons (5 tools v1)"
 ```
 
-### Task B.7: `<PolygonInspector>`
+### Task B.7: `<PolygonInspector>` with ToggleGroup + SettingsRow
 
 **Files:**
 - Create: `apps/web/src/components/floor-plan-designer/polygon-inspector.tsx`
 
-- [ ] **Step 1: Component using shadcn Field primitives**
+- [ ] **Step 1: Component**
 
 ```tsx
 // apps/web/src/components/floor-plan-designer/polygon-inspector.tsx
-import { Field, FieldGroup, FieldLabel, FieldDescription, FieldSeparator } from '../ui/field';
-import { Button } from '../ui/button';
-import type { DesignerState } from './types';
-import { polygonArea } from '../floor-plan/lib/polygon-geometry';
-import { ConfirmDialog } from '../confirm-dialog';
 import { useState } from 'react';
+import { Field, FieldGroup, FieldLabel } from '../ui/field';
+import { ToggleGroup, ToggleGroupItem } from '../ui/toggle-group';
+import { SettingsRow, SettingsRowValue } from '../ui/settings-row';
+import { Button } from '../ui/button';
+import { ConfirmDialog } from '../confirm-dialog';
+import { polygonArea } from '../floor-plan/lib/polygon-geometry';
+import type { DesignerState } from './types';
+import type { RenderHint } from '../../api/floor-plans/types';
 
-type Props = {
-  floorSpaceId: string;
-  state: DesignerState;
-  dispatch: React.Dispatch<any>;
-};
+type Props = { floorSpaceId: string; state: DesignerState; dispatch: React.Dispatch<any> };
 
 export function PolygonInspector({ state, dispatch }: Props) {
   const idx = state.selectedPolygonIndex;
@@ -1775,46 +1959,56 @@ export function PolygonInspector({ state, dispatch }: Props) {
 
   if (polygon === null) {
     return (
-      <div className="bg-background border-l border-border p-4">
+      <div className="border-l border-border bg-background p-4">
         <div className="text-xs uppercase tracking-wide text-muted-foreground">Selection</div>
         <p className="mt-3 text-sm text-muted-foreground">Click a polygon to edit its properties.</p>
       </div>
     );
   }
 
+  const hint: RenderHint = polygon.render_hint ?? 'default';
+
   return (
-    <div className="bg-background border-l border-border p-4 overflow-y-auto">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">Selected polygon</div>
-      <FieldGroup className="mt-4">
+    <div className="border-l border-border bg-background overflow-y-auto">
+      <div className="p-4 pb-2">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">Selected polygon</div>
+      </div>
+
+      <FieldGroup className="p-4 pt-2">
         <Field>
           <FieldLabel htmlFor="render-hint">Render as</FieldLabel>
-          <div className="flex gap-1">
-            {(['default', 'seat', 'parking'] as const).map((h) => (
-              <button
-                key={h}
-                id={`render-hint-${h}`}
-                onClick={() => dispatch({ type: 'update-polygon', index: idx!, patch: { render_hint: h } })}
-                className={`px-3 py-1.5 text-xs rounded-md ${polygon.render_hint === h || (h === 'default' && !polygon.render_hint) ? 'bg-foreground text-background' : 'bg-muted hover:bg-muted/70'}`}
-              >
-                {h}
-              </button>
-            ))}
-          </div>
-        </Field>
-        <FieldSeparator />
-        <Field>
-          <FieldLabel>Shape</FieldLabel>
-          <div className="text-sm space-y-1">
-            <div className="flex justify-between"><span>Vertices</span><span className="tabular-nums text-muted-foreground">{polygon.points.length}</span></div>
-            <div className="flex justify-between"><span>Area</span><span className="tabular-nums text-muted-foreground">{polygonArea(polygon.points).toFixed(0)} px²</span></div>
-          </div>
+          <ToggleGroup
+            id="render-hint"
+            type="single"
+            value={hint}
+            onValueChange={(v: string) => v && dispatch({ type: 'update-polygon', index: idx!, patch: { render_hint: v as RenderHint } })}
+            variant="outline"
+          >
+            <ToggleGroupItem value="default">Default</ToggleGroupItem>
+            <ToggleGroupItem value="seat">Seat</ToggleGroupItem>
+            <ToggleGroupItem value="parking">Parking</ToggleGroupItem>
+          </ToggleGroup>
         </Field>
       </FieldGroup>
-      <FieldSeparator />
-      <Button variant="ghost" className="mt-4 text-destructive" onClick={() => setConfirmOpen(true)}>
-        Detach from floor plan
-      </Button>
-      <FieldDescription className="mt-1">Polygon only — space record stays.</FieldDescription>
+
+      <div className="border-t border-border" />
+
+      <SettingsRow label="Vertices">
+        <SettingsRowValue className="tabular-nums">{polygon.points.length}</SettingsRowValue>
+      </SettingsRow>
+      <SettingsRow label="Area">
+        <SettingsRowValue className="tabular-nums">{polygonArea(polygon.points).toFixed(0)} px²</SettingsRowValue>
+      </SettingsRow>
+
+      <div className="border-t border-border" />
+
+      <div className="p-4">
+        <Button variant="ghost" className="text-destructive" onClick={() => setConfirmOpen(true)}>
+          Detach from floor plan
+        </Button>
+        <p className="mt-1 text-xs text-muted-foreground">Polygon only — space record stays.</p>
+      </div>
+
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
@@ -1829,19 +2023,20 @@ export function PolygonInspector({ state, dispatch }: Props) {
 }
 ```
 
-If shadcn `Field` exports don't include `FieldSeparator` exactly, match the actual filename. Search: `grep "export" apps/web/src/components/ui/field.tsx`.
+If `<ToggleGroup>` isn't yet installed: `npx shadcn@latest add toggle-group`.
 
 - [ ] **Step 2: Commit**
 
 ```bash
 git add apps/web/src/components/floor-plan-designer/polygon-inspector.tsx
-git commit -m "feat(floor-plan): PolygonInspector right rail using shadcn Field primitives"
+git commit -m "feat(floor-plan): PolygonInspector with ToggleGroup (render hint) + SettingsRow (stats)"
 ```
 
-### Task B.8: `<DesignerCanvas>` with tool dispatch
+### Task B.8: `<DesignerCanvas>` + tools
 
 **Files:**
 - Create: `apps/web/src/components/floor-plan-designer/designer-canvas.tsx`
+- Create: `apps/web/src/components/floor-plan-designer/tools/tool.ts`
 - Create: `apps/web/src/components/floor-plan-designer/tools/select-tool.ts`
 - Create: `apps/web/src/components/floor-plan-designer/tools/draw-polygon-tool.ts`
 - Create: `apps/web/src/components/floor-plan-designer/tools/draw-rectangle-tool.ts`
@@ -1864,7 +2059,6 @@ export interface Tool {
   onPointerDown?(ctx: ToolContext): void;
   onPointerMove?(ctx: ToolContext): void;
   onPointerUp?(ctx: ToolContext): void;
-  onKeyDown?(ctx: ToolContext & { key: string }): void;
 }
 ```
 
@@ -1874,8 +2068,7 @@ export interface Tool {
 // apps/web/src/components/floor-plan-designer/tools/select-tool.ts
 import type { Tool } from './tool';
 export const selectTool: Tool = {
-  onPointerDown({ state, dispatch, worldX, worldY }) {
-    // hit-test handled by individual polygon onClick; this tool only deselects on canvas click
+  onPointerDown({ dispatch }) {
     dispatch({ type: 'select-polygon', index: null });
   },
 };
@@ -1884,24 +2077,13 @@ export const selectTool: Tool = {
 ```ts
 // apps/web/src/components/floor-plan-designer/tools/draw-polygon-tool.ts
 import type { Tool } from './tool';
-import type { Polygon } from '../../../api/floor-plans/types';
-
 export const drawPolygonTool: Tool = {
   onPointerDown({ state, dispatch, worldX, worldY }) {
     const inProgress = state.inProgressPolygon;
     if (!inProgress) {
-      const fresh: Polygon = { space_id: '', points: [{ x: worldX, y: worldY }] };
-      dispatch({ type: 'start-drawing', polygon: fresh });
+      dispatch({ type: 'start-drawing', polygon: { space_id: '', points: [{ x: worldX, y: worldY }] } });
     } else {
-      const points = [...inProgress.points, { x: worldX, y: worldY }];
-      dispatch({ type: 'start-drawing', polygon: { ...inProgress, points } });
-    }
-  },
-  onKeyDown({ state, dispatch, key }) {
-    if (key === 'Enter' && state.inProgressPolygon && state.inProgressPolygon.points.length >= 3) {
-      dispatch({ type: 'commit-drawing' });
-    } else if (key === 'Escape') {
-      dispatch({ type: 'cancel-drawing' });
+      dispatch({ type: 'start-drawing', polygon: { ...inProgress, points: [...inProgress.points, { x: worldX, y: worldY }] } });
     }
   },
 };
@@ -1910,20 +2092,14 @@ export const drawPolygonTool: Tool = {
 ```ts
 // apps/web/src/components/floor-plan-designer/tools/draw-rectangle-tool.ts
 import type { Tool } from './tool';
-
 export const drawRectangleTool: Tool = {
-  onPointerDown({ state, dispatch, worldX, worldY }) {
+  onPointerDown({ dispatch, worldX, worldY }) {
     dispatch({ type: 'start-drawing', polygon: { space_id: '', points: [{ x: worldX, y: worldY }] } });
   },
   onPointerMove({ state, dispatch, worldX, worldY }) {
     const start = state.inProgressPolygon?.points[0];
     if (!start) return;
-    const rect = [
-      start,
-      { x: worldX, y: start.y },
-      { x: worldX, y: worldY },
-      { x: start.x, y: worldY },
-    ];
+    const rect = [start, { x: worldX, y: start.y }, { x: worldX, y: worldY }, { x: start.x, y: worldY }];
     dispatch({ type: 'start-drawing', polygon: { space_id: '', points: rect } });
   },
   onPointerUp({ dispatch }) {
@@ -1935,14 +2111,13 @@ export const drawRectangleTool: Tool = {
 ```ts
 // apps/web/src/components/floor-plan-designer/tools/stamp-seat-tool.ts
 import type { Tool } from './tool';
-
 export const stampSeatTool: Tool = {
-  onPointerDown({ state, dispatch, worldX, worldY }) {
+  onPointerDown({ dispatch, worldX, worldY }) {
     const w = 60, h = 40;
     dispatch({
       type: 'add-polygon',
       polygon: {
-        space_id: '', // designer will resolve next unlinked desk or auto-create one; see Task B.11
+        space_id: '', // inspector picker links the space (B.9)
         points: [
           { x: worldX - w / 2, y: worldY - h / 2 },
           { x: worldX + w / 2, y: worldY - h / 2 },
@@ -1960,10 +2135,11 @@ export const stampSeatTool: Tool = {
 
 ```tsx
 // apps/web/src/components/floor-plan-designer/designer-canvas.tsx
-import { useRef, useState } from 'react';
+import { useRef } from 'react';
 import { ZoomPanLayer } from '../floor-plan/zoom-pan-layer';
 import { PolygonShape } from '../floor-plan/polygon-shape';
 import { polygonToSvgPath } from '../floor-plan/lib/polygon-geometry';
+import { snap } from './lib/snapping';
 import type { DesignerState, ToolKind } from './types';
 import { selectTool } from './tools/select-tool';
 import { drawPolygonTool } from './tools/draw-polygon-tool';
@@ -1976,9 +2152,7 @@ const TOOL_MAP: Record<ToolKind, Tool> = {
   'draw-polygon':   drawPolygonTool,
   'draw-rectangle': drawRectangleTool,
   'stamp-seat':     stampSeatTool,
-  'parking':        stampSeatTool, // placeholder; parking variant lands in task B.11
-  'label':          selectTool,    // placeholder
-  'image-upload':   selectTool,    // image triggered separately
+  'image-upload':   selectTool, // upload triggered from B.10 button, not pointer
 };
 
 type Props = { state: DesignerState; dispatch: React.Dispatch<any> };
@@ -1989,12 +2163,12 @@ export function DesignerCanvas({ state, dispatch }: Props) {
   const toWorld = (e: React.PointerEvent<SVGSVGElement>) => {
     const svg = svgRef.current!;
     const pt = svg.createSVGPoint();
-    pt.x = e.clientX;
-    pt.y = e.clientY;
+    pt.x = e.clientX; pt.y = e.clientY;
     const ctm = svg.getScreenCTM();
     if (!ctm) return { worldX: 0, worldY: 0 };
     const inv = pt.matrixTransform(ctm.inverse());
-    return { worldX: inv.x, worldY: inv.y };
+    const snapped = snap({ x: inv.x, y: inv.y }, state.polygons);
+    return { worldX: snapped.x, worldY: snapped.y };
   };
 
   const tool = TOOL_MAP[state.activeTool];
@@ -2011,13 +2185,7 @@ export function DesignerCanvas({ state, dispatch }: Props) {
           onPointerUp={(e) => tool.onPointerUp?.({ state, dispatch, ...toWorld(e) })}
         >
           {state.imageUrl && (
-            <image
-              href={state.imageUrl}
-              x="0" y="0"
-              width={state.widthPx ?? 1000}
-              height={state.heightPx ?? 1000}
-              opacity={0.35}
-            />
+            <image href={state.imageUrl} x="0" y="0" width={state.widthPx ?? 1000} height={state.heightPx ?? 1000} opacity={0.35} />
           )}
           {state.polygons.map((poly, i) => (
             <PolygonShape
@@ -2025,7 +2193,7 @@ export function DesignerCanvas({ state, dispatch }: Props) {
               spaceId={poly.space_id || `pending-${i}`}
               points={poly.points}
               renderHint={poly.render_hint ?? 'default'}
-              name={`Polygon ${i + 1}`}
+              name={poly.space_id ? '' : `Polygon ${i + 1}`}
               capacity={null}
               state="available"
               selected={i === state.selectedPolygonIndex}
@@ -2035,10 +2203,7 @@ export function DesignerCanvas({ state, dispatch }: Props) {
           {state.inProgressPolygon && (
             <path
               d={polygonToSvgPath(state.inProgressPolygon.points)}
-              fill="rgba(245, 158, 11, 0.1)"
-              stroke="#f59e0b"
-              strokeWidth={1.5}
-              strokeDasharray="4 3"
+              fill="rgba(245, 158, 11, 0.1)" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="4 3"
             />
           )}
         </svg>
@@ -2048,45 +2213,41 @@ export function DesignerCanvas({ state, dispatch }: Props) {
 }
 ```
 
-- [ ] **Step 4: Wire keyboard for in-progress drawing**
-
-In `floor-plan-designer.tsx`, extend the `keydown` handler to also call the active tool's `onKeyDown` for Enter/Escape.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add apps/web/src/components/floor-plan-designer
-git commit -m "feat(floor-plan): DesignerCanvas with tool dispatcher + 4 tools (select, polygon, rect, stamp)"
+git commit -m "feat(floor-plan): DesignerCanvas + 4 tools (select/polygon/rect/stamp) with snapping"
 ```
 
-### Task B.9: Link polygons to spaces (combobox in inspector)
+### Task B.9: Link polygons to space rows
 
 **Files:**
 - Modify: `apps/web/src/components/floor-plan-designer/polygon-inspector.tsx`
-- Reuse: `apps/web/src/components/space-select.tsx`
+- Reuse: `apps/web/src/components/space-select.tsx` (or `<SpaceCombobox>` — search `grep -rn "space-select\|SpaceCombobox" apps/web/src | head -5`)
 
 - [ ] **Step 1: Add space picker to inspector**
 
-In `polygon-inspector.tsx`, render a `<SpaceSelect>` (reuse the existing component) inside a `<Field>` block above the render-hint group. The combobox should query for child spaces of the current floor that are not yet assigned to a polygon (frontend filter using `state.polygons.map(p => p.space_id)`).
+In `polygon-inspector.tsx`, render a `<SpaceSelect>` (or analogous combobox) above the render-hint group, filtered to: children of the open floor, tenant-scoped, not yet linked to another polygon in this draft. On change, dispatch `{ type: 'update-polygon', index: idx!, patch: { space_id: nextId } }`.
 
-If `<SpaceSelect>` doesn't support filtering by parent_id, add a `parentId` prop to it (small change to the existing component).
+If the existing combobox doesn't accept a `parentId` prop, add one (small change).
 
-- [ ] **Step 2: When the stamp-seat tool runs and no unlinked desk exists**
+- [ ] **Step 2: Inline create-desk affordance**
 
-In `stamp-seat-tool.ts`, the polygon is added with `space_id: ''`. After dispatch, if there's no unlinked desk on the floor, the inspector shows an inline "Create desk for this polygon?" affordance that POSTs to `/api/spaces` with `type='desk'`, `parent_id=<floorSpaceId>`, `name='Desk <next>'`. Wire this in `polygon-inspector.tsx`.
+If user just stamped a seat and there's no unlinked desk on this floor, the picker shows a "Create new desk and link" button. On click: POST `/api/spaces` with `{ type: 'desk', parent_id: <floorSpaceId>, name: 'Desk <next-sequence>', tenant_id: <currentTenant> }`. On success, dispatch update with the new space_id.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add apps/web/src/components/floor-plan-designer/polygon-inspector.tsx apps/web/src/components/space-select.tsx
-git commit -m "feat(floor-plan): polygon → space linking with inline create-desk affordance"
+git add apps/web/src/components/floor-plan-designer/polygon-inspector.tsx
+git commit -m "feat(floor-plan): polygon → space picker + inline create-desk affordance"
 ```
 
-### Task B.10: Image upload via Supabase Storage
+### Task B.10: Image upload via private Supabase Storage + signed URL
 
 **Files:**
 - Create: `apps/web/src/components/floor-plan-designer/use-image-upload.ts`
-- Modify: `apps/web/src/components/floor-plan-designer/floor-plan-designer.tsx`
+- Modify: `apps/web/src/components/floor-plan-designer/floor-plan-designer.tsx` (hidden input + open-on-tool-select)
 
 - [ ] **Step 1: Hook**
 
@@ -2097,8 +2258,9 @@ import { supabaseClient } from '../../lib/supabase';
 import { toastError } from '../../lib/toast';
 
 const BUCKET = 'floor-plans';
-const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_BYTES = 10 * 1024 * 1024;
 const MAX_EDGE = 4096;
+const SIGNED_URL_TTL_SECONDS = 3600;
 
 export function useImageUpload(tenantId: string, floorSpaceId: string) {
   const [uploading, setUploading] = useState(false);
@@ -2110,7 +2272,6 @@ export function useImageUpload(tenantId: string, floorSpaceId: string) {
     }
     setUploading(true);
     try {
-      // measure
       const bitmap = await createImageBitmap(file);
       const widthPx = bitmap.width;
       const heightPx = bitmap.height;
@@ -2118,12 +2279,14 @@ export function useImageUpload(tenantId: string, floorSpaceId: string) {
         toastError("Image too large", { description: `Long edge must be <= ${MAX_EDGE}px.` });
         return null;
       }
+      const ext = file.name.split('.').pop() ?? 'png';
       const sha = await fileSha256(file);
-      const path = `${tenantId}/${floorSpaceId}/${sha}.${file.name.split('.').pop()}`;
-      const { error } = await supabaseClient.storage.from(BUCKET).upload(path, file, { upsert: false });
-      if (error && error.message !== 'The resource already exists') throw error;
-      const { data: pub } = supabaseClient.storage.from(BUCKET).getPublicUrl(path);
-      return { url: pub.publicUrl, widthPx, heightPx };
+      const path = `${tenantId}/${floorSpaceId}/${sha}.${ext}`;
+      const { error: upErr } = await supabaseClient.storage.from(BUCKET).upload(path, file, { upsert: true });
+      if (upErr) throw upErr;
+      const { data: signed, error: signErr } = await supabaseClient.storage.from(BUCKET).createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
+      if (signErr || !signed) throw signErr ?? new Error('No signed URL');
+      return { url: signed.signedUrl, widthPx, heightPx };
     } catch (err) {
       toastError("Couldn't upload image", { error: err });
       return null;
@@ -2142,95 +2305,53 @@ async function fileSha256(file: File): Promise<string> {
 }
 ```
 
-- [ ] **Step 2: Trigger from designer**
+Note: signed URLs expire in 1h. For the designer that's fine (session is shorter). For the booking surface (Plan 2), regenerate signed URLs server-side as part of the GET plan response.
 
-In `floor-plan-designer.tsx`, when `state.activeTool === 'image-upload'`, render a hidden `<input type="file">` and trigger it on tool selection. On upload success, dispatch `{ type: 'set-image', imageUrl, widthPx, heightPx }`.
+- [ ] **Step 2: Trigger from tool**
 
-Show a banner if there are already polygons: `"Image replaced. Polygons may need to be remapped."`
+In `floor-plan-designer.tsx`, mount a hidden `<input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" />` ref. When `state.activeTool === 'image-upload'`, click the input. On change, call `upload()`, then dispatch `{ type: 'set-image', imageUrl, widthPx, heightPx }`. Show a banner if `state.polygons.length > 0`: "Image replaced. Verify polygon positions before publishing."
 
-- [ ] **Step 3: Storage bucket migration**
-
-Create `supabase/migrations/00372_floor_plans_storage_bucket.sql`:
-
-```sql
--- 00372_floor_plans_storage_bucket.sql
--- Public bucket for floor plan background images. Tenant-prefixed paths.
-
-insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values ('floor-plans', 'floor-plans', true, 10485760,
-  array['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml']::text[])
-on conflict (id) do nothing;
-
--- RLS policy: authenticated users can write only under their tenant prefix
-create policy "floor_plans_tenant_write"
-  on storage.objects
-  for insert
-  to authenticated
-  with check (
-    bucket_id = 'floor-plans'
-    and (storage.foldername(name))[1] = public.current_tenant_id()::text
-  );
-
-create policy "floor_plans_public_read"
-  on storage.objects
-  for select
-  to public
-  using (bucket_id = 'floor-plans');
-```
-
-Push this migration too (same procedure as A.7).
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add apps/web/src/components/floor-plan-designer apps/web/src/lib/supabase.ts supabase/migrations/00372_floor_plans_storage_bucket.sql
-git commit -m "feat(floor-plan): image upload via Supabase Storage + tenant-scoped bucket"
+git add apps/web/src/components/floor-plan-designer apps/web/src/lib/supabase.ts
+git commit -m "feat(floor-plan): image upload via private bucket + signed URL (1h TTL)"
 ```
 
-### Task B.11: Snapping + grid
+### Task B.11: Snapping (vertex + grid)
 
 **Files:**
-- Modify: `apps/web/src/components/floor-plan-designer/designer-canvas.tsx`
 - Create: `apps/web/src/components/floor-plan-designer/lib/snapping.ts`
+- (Already wired in B.8 via `snap(...)` call.)
 
-- [ ] **Step 1: Snapping helper**
+- [ ] **Step 1: Snap helper**
 
 ```ts
 // apps/web/src/components/floor-plan-designer/lib/snapping.ts
 import type { Point, Polygon } from '../../../api/floor-plans/types';
 
 const GRID = 10;
-const SNAP_TO_GRID_PX = 4;
-const SNAP_TO_VERTEX_PX = 8;
+const SNAP_GRID = 4;
+const SNAP_VERTEX = 8;
 
 export function snap(point: Point, polygons: Polygon[]): Point {
-  // try snap to existing vertex
   for (const poly of polygons) {
     for (const v of poly.points) {
-      if (Math.hypot(v.x - point.x, v.y - point.y) <= SNAP_TO_VERTEX_PX) {
-        return { x: v.x, y: v.y };
-      }
+      if (Math.hypot(v.x - point.x, v.y - point.y) <= SNAP_VERTEX) return { x: v.x, y: v.y };
     }
   }
-  // then snap to grid
   const gx = Math.round(point.x / GRID) * GRID;
   const gy = Math.round(point.y / GRID) * GRID;
-  if (Math.abs(gx - point.x) <= SNAP_TO_GRID_PX && Math.abs(gy - point.y) <= SNAP_TO_GRID_PX) {
-    return { x: gx, y: gy };
-  }
+  if (Math.abs(gx - point.x) <= SNAP_GRID && Math.abs(gy - point.y) <= SNAP_GRID) return { x: gx, y: gy };
   return point;
 }
 ```
 
-- [ ] **Step 2: Apply in canvas**
-
-In `designer-canvas.tsx`, before dispatching tool events, call `snap({ x: worldX, y: worldY }, state.polygons)` and pass the snapped coords instead.
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
-git add apps/web/src/components/floor-plan-designer
-git commit -m "feat(floor-plan): snap-to-vertex (8px) + snap-to-grid (4px) for all drawing tools"
+git add apps/web/src/components/floor-plan-designer/lib/snapping.ts
+git commit -m "feat(floor-plan): snap-to-vertex (8px) + snap-to-grid (4px)"
 ```
 
 ### Task B.12: Undo / redo
@@ -2238,50 +2359,56 @@ git commit -m "feat(floor-plan): snap-to-vertex (8px) + snap-to-grid (4px) for a
 **Files:**
 - Modify: `apps/web/src/components/floor-plan-designer/use-designer-state.ts`
 
-- [ ] **Step 1: Wrap reducer with history stack**
+- [ ] **Step 1: Add history**
 
-Refactor `useDesignerState` to maintain `history: DesignerState[]` (capped at 50) and `historyIndex: number`. Add actions `'undo'` and `'redo'` that move the index without re-firing autosave for snapshots already on disk. Wire `Cmd/Ctrl-Z` and `Cmd/Ctrl-Shift-Z` in the global keydown handler.
+Wrap the reducer with a history stack. State becomes:
+```ts
+type HistoryEntry = { polygons: Polygon[]; labels: Label[]; imageUrl: string | null; widthPx: number | null; heightPx: number | null };
+type DesignerStateWithHistory = DesignerState & { history: HistoryEntry[]; historyIndex: number };
+```
+On every mutating action that's not `'hydrate'`/`'set-tool'`/`'select-polygon'`/`'start-drawing'`/`'server-sync'`, push the prior payload to history (truncate forward branch if doing-and-then-undoing). Cap at 50.
+
+Add actions `{ type: 'undo' }` and `{ type: 'redo' }` that restore from history without triggering autosave debounce (autosave still fires from the undone/redone resulting state).
+
+Wire `Cmd/Ctrl+Z` and `Cmd/Ctrl+Shift+Z` in the global `keydown` handler in `floor-plan-designer.tsx`.
 
 - [ ] **Step 2: Commit**
 
 ```bash
 git add apps/web/src/components/floor-plan-designer
-git commit -m "feat(floor-plan): undo/redo via in-memory history stack (50 deep)"
+git commit -m "feat(floor-plan): undo/redo via 50-deep history stack"
 ```
 
-### Task B.13: Take-over chip
-
-**Files:**
-- Modify: `apps/web/src/components/floor-plan-designer/floor-plan-designer.tsx`
-
-- [ ] **Step 1: Detect foreign authorship**
-
-When the draft loads, if `draft.created_by !== currentUserId` and `Date.now() - new Date(draft.updated_at).getTime() > 60_000` (untouched for 1 minute), render a chip at the top of the canvas: `"<name> started this draft <relative-time> ago"` with buttons `View read-only` (disables all tools) and `Take over` (calls `useTakeOverDraft`).
-
-- [ ] **Step 2: Commit**
-
-```bash
-git add apps/web/src/components/floor-plan-designer/floor-plan-designer.tsx
-git commit -m "feat(floor-plan): take-over chip for drafts owned by another admin"
-```
-
-### Task B.14: `/admin/floor-plans` index + designer routes
+### Task B.13: `/admin/floor-plans` routes (index + designer)
 
 **Files:**
 - Create: `apps/web/src/pages/admin/floor-plans-index.tsx`
 - Create: `apps/web/src/pages/admin/floor-plan-designer.tsx`
-- Modify: `apps/web/src/App.tsx` (add routes, both wrapped in `<RouteErrorBoundary>`)
+- Modify: `apps/web/src/App.tsx` (both routes wrapped in `<RouteErrorBoundary>`)
 
-- [ ] **Step 1: Index page**
+The index page uses `SettingsPageShell` (matches /admin/webhooks shape). The designer page does **not** use the shell — it claims the full viewport like the workflow editor.
+
+- [ ] **Step 1: Index page (shadcn Table + empty state)**
 
 ```tsx
 // apps/web/src/pages/admin/floor-plans-index.tsx
-import { SettingsPageShell, SettingsPageHeader } from '../../components/ui/settings-page';
-import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
+import { Map as MapIcon } from 'lucide-react';
+import { SettingsPageShell, SettingsPageHeader } from '../../components/ui/settings-page';
+import { Button } from '../../components/ui/button';
+import {
+  Table, TableHeader, TableRow, TableHead, TableBody, TableCell,
+} from '../../components/ui/table';
 import { apiFetch } from '../../lib/api-fetch';
 
-type FloorRow = { id: string; name: string; building_name: string; has_plan: boolean; last_published_at: string | null };
+type FloorRow = {
+  id: string;
+  name: string;
+  building_name: string;
+  has_plan: boolean;
+  last_published_at: string | null;
+};
 
 export function FloorPlansIndex() {
   const floors = useQuery({
@@ -2294,172 +2421,141 @@ export function FloorPlansIndex() {
     <SettingsPageShell width="default">
       <SettingsPageHeader
         title="Floor plans"
-        description="Upload floor images and trace bookable spaces. Published plans appear on the booking surfaces."
+        description="Upload floor images and trace bookable spaces. Published plans appear on the portal and desk scheduler."
+        actions={
+          <Button asChild variant="outline">
+            <Link to="/admin/locations">Manage buildings & floors →</Link>
+          </Button>
+        }
       />
-      {floors.isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
-      <table className="w-full text-sm mt-6">
-        <thead>
-          <tr className="text-xs uppercase text-muted-foreground border-b">
-            <th className="text-left py-2 px-3">Building</th>
-            <th className="text-left py-2 px-3">Floor</th>
-            <th className="text-left py-2 px-3">Status</th>
-            <th className="text-left py-2 px-3">Last published</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(floors.data ?? []).map((f) => (
-            <tr key={f.id} className="border-b hover:bg-muted/30">
-              <td className="py-2 px-3">{f.building_name}</td>
-              <td className="py-2 px-3">
-                <Link to={`/admin/floor-plans/${f.id}`} className="hover:underline">{f.name}</Link>
-              </td>
-              <td className="py-2 px-3">{f.has_plan ? 'Published' : 'No plan'}</td>
-              <td className="py-2 px-3 tabular-nums text-muted-foreground">
-                {f.last_published_at ? new Date(f.last_published_at).toLocaleDateString() : '—'}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+
+      {floors.isLoading && <div className="text-sm text-muted-foreground py-8">Loading…</div>}
+
+      {floors.data && floors.data.length === 0 && (
+        <div className="flex flex-col items-center gap-3 py-16">
+          <MapIcon className="h-8 w-8 text-muted-foreground" />
+          <h3 className="text-base font-medium">No floors yet</h3>
+          <p className="text-sm text-muted-foreground max-w-sm text-center">
+            Floors are created on the locations page. Once a floor exists, you can trace a plan for it here.
+          </p>
+          <Button asChild>
+            <Link to="/admin/locations">Go to Locations</Link>
+          </Button>
+        </div>
+      )}
+
+      {floors.data && floors.data.length > 0 && (
+        <Table className="mt-6">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Building</TableHead>
+              <TableHead>Floor</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Last published</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {floors.data.map((f) => (
+              <TableRow key={f.id}>
+                <TableCell>{f.building_name}</TableCell>
+                <TableCell>
+                  <Link to={`/admin/floor-plans/${f.id}`} className="hover:underline">{f.name}</Link>
+                </TableCell>
+                <TableCell>
+                  <span className={`inline-flex items-center gap-1.5 text-xs ${f.has_plan ? 'text-emerald-700' : 'text-muted-foreground'}`}>
+                    <span className={`inline-block h-2 w-2 rounded-full ${f.has_plan ? 'bg-emerald-400' : 'bg-muted-foreground/40'}`} />
+                    {f.has_plan ? 'Published' : 'No plan'}
+                  </span>
+                </TableCell>
+                <TableCell className="tabular-nums text-muted-foreground">
+                  {f.last_published_at ? new Date(f.last_published_at).toLocaleDateString() : '—'}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
     </SettingsPageShell>
   );
 }
 ```
 
-- [ ] **Step 2: Designer page**
+- [ ] **Step 2: Designer page (shell-exempt)**
 
 ```tsx
 // apps/web/src/pages/admin/floor-plan-designer.tsx
 import { useParams } from 'react-router-dom';
-import { SettingsPageShell, SettingsPageHeader } from '../../components/ui/settings-page';
+import { useQuery } from '@tanstack/react-query';
 import { FloorPlanDesigner } from '../../components/floor-plan-designer/floor-plan-designer';
+import { apiFetch } from '../../lib/api-fetch';
 
 export function FloorPlanDesignerPage() {
   const { floorSpaceId } = useParams<{ floorSpaceId: string }>();
+  const floor = useQuery({
+    queryKey: ['spaces', 'one', floorSpaceId],
+    queryFn: () => apiFetch<{ id: string; name: string }>(`/api/spaces/${floorSpaceId}`),
+    enabled: !!floorSpaceId,
+  });
+
   if (!floorSpaceId) return null;
   return (
-    <SettingsPageShell width="full" backTo="/admin/floor-plans">
-      <SettingsPageHeader title="Floor plan editor" description="Trace polygons over the uploaded image." />
-      <FloorPlanDesigner floorSpaceId={floorSpaceId} />
-    </SettingsPageShell>
+    <FloorPlanDesigner
+      floorSpaceId={floorSpaceId}
+      floorName={floor.data?.name ?? 'Floor'}
+      backTo="/admin/floor-plans"
+    />
   );
 }
 ```
 
-- [ ] **Step 3: Backend index endpoint (separate controller — path collision)**
+If `GET /api/spaces/:id` doesn't exist, add a thin endpoint on `SpaceController` returning `{ id, name, tenant_id }` filtered by `tenant_id`.
 
-The existing `FloorPlanController` is decorated with `@Controller('floors/:floorSpaceId/plan')`, so an endpoint at `/admin/floor-plans-index` cannot live in that controller (it would resolve to `/floors/:id/plan/admin/floor-plans-index`). Add a sibling controller in the same module:
+- [ ] **Step 3: Routes (both wrapped per CLAUDE.md)**
 
-```ts
-// apps/api/src/modules/floor-plan/floor-plan-admin.controller.ts
-import { Controller, Get, UseGuards } from '@nestjs/common';
-import { AuthGuard } from '../auth/auth.guard';
-import { PermissionGuard, RequirePermission } from '../auth/permission.guard';
-import { FloorPlanService } from './floor-plan.service';
-
-@UseGuards(AuthGuard)
-@Controller('admin/floor-plans-index')
-export class FloorPlanAdminController {
-  constructor(private readonly plan: FloorPlanService) {}
-
-  @UseGuards(PermissionGuard)
-  @RequirePermission('floor_plans.author')
-  @Get()
-  async indexForAdmin() {
-    return this.plan.listForAdmin();
-  }
-}
-```
-
-Register both controllers in `floor-plan.module.ts`:
-
-```ts
-controllers: [FloorPlanController, FloorPlanAdminController],
-```
-
-```ts
-// apps/api/src/modules/floor-plan/floor-plan.service.ts (add method)
-async listForAdmin() {
-  const client = this.supabase.client();
-  const { data } = await client.rpc('admin_floor_plans_index'); // see migration below
-  return data ?? [];
-}
-```
-
-Migration `supabase/migrations/00373_admin_floor_plans_index_rpc.sql`:
-
-```sql
-create or replace function public.admin_floor_plans_index()
-returns table (
-  id uuid,
-  name text,
-  building_name text,
-  has_plan boolean,
-  last_published_at timestamptz
-)
-language sql
-security invoker
-set search_path = public
-as $$
-  select f.id,
-         f.name,
-         coalesce(b.name, '—') as building_name,
-         fp.space_id is not null as has_plan,
-         fp.updated_at as last_published_at
-    from public.spaces f
-    left join public.spaces b on b.id = f.parent_id and b.type = 'building'
-    left join public.floor_plans fp on fp.space_id = f.id
-   where f.type = 'floor'
-     and f.tenant_id = public.current_tenant_id()
-   order by b.name, f.name;
-$$;
-```
-
-- [ ] **Step 4: Add to App.tsx (both routes wrapped in RouteErrorBoundary per CLAUDE.md)**
-
+In `apps/web/src/App.tsx`:
 ```tsx
 <Route path="/admin/floor-plans" element={<RouteErrorBoundary><FloorPlansIndex /></RouteErrorBoundary>} />
 <Route path="/admin/floor-plans/:floorSpaceId" element={<RouteErrorBoundary><FloorPlanDesignerPage /></RouteErrorBoundary>} />
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add apps/web/src/pages/admin apps/web/src/App.tsx apps/api/src/modules/floor-plan supabase/migrations/00373_admin_floor_plans_index_rpc.sql
-git commit -m "feat(floor-plan): /admin/floor-plans routes + index RPC"
+git add apps/web/src/pages/admin apps/web/src/App.tsx apps/api/src/modules/space
+git commit -m "feat(floor-plan): admin routes — index (shell) + designer (shell-exempt)"
 ```
 
-### Task B.15: Add to admin sidebar
+### Task B.14: Admin sidebar entry
 
 **Files:**
-- Modify: `apps/web/src/components/admin/sidebar.tsx` (or wherever the admin nav lives — find via `grep -rn "admin/locations" apps/web/src`)
+- Modify: `apps/web/src/components/app-sidebar.tsx` (or whichever file lists admin nav — search `grep -n "admin/locations" apps/web/src/components/app-sidebar.tsx`)
 
-- [ ] **Step 1: Add a "Floor plans" entry**
+- [ ] **Step 1: Add "Floor plans" near "Locations"**
 
-Place it near "Locations" / "Spaces". Use a relevant Lucide icon (`Map` or `LayoutGrid`).
+Use the `Map` Lucide icon. Visible only to users with `floor_plans.admin`. Mirror the existing visibility-gating pattern (search for `useHasPermission` or similar).
 
 - [ ] **Step 2: Commit**
 
 ```bash
-git add apps/web/src/components/admin/sidebar.tsx
+git add apps/web/src/components/app-sidebar.tsx
 git commit -m "feat(floor-plan): admin sidebar entry"
 ```
 
-**Phase B done.** Designer is functional: admin can open `/admin/floor-plans`, click into a floor, upload an image, trace polygons with all tools, see autosave indicator, undo/redo, take over another admin's draft. Publish button exists but routes to a stub.
+**Phase B done.** Designer is functional. Admin can open `/admin/floor-plans`, click a floor, upload an image, trace polygons, see autosave + 409 reload prompt, undo/redo, link spaces. Publish button exists; dialog wired in C.2.
 
 ---
 
 # Phase C — Publish Flow
 
-Goal: complete the publish path. End state: admin clicks Publish → diff dialog → confirm → polygon state written to `spaces.floor_plan_polygon` atomically → audit event created → draft deleted. After this phase, downstream code (Plan 2) can read from the canonical schema.
+Goal: complete the publish path. End state: admin clicks Publish → diff dialog (red-flags large removals) → confirm → atomic write → audit + history rows created. Restore-from-history available in C.4 polish.
 
-### Task C.1: Publish diff computation
+### Task C.1: Publish diff helper
 
 **Files:**
 - Create: `apps/web/src/components/floor-plan-designer/lib/diff.ts`
 - Create: `apps/web/src/components/floor-plan-designer/__tests__/diff.test.ts`
 
-- [ ] **Step 1: Diff function + test**
+- [ ] **Step 1: Diff fn + test**
 
 ```ts
 // apps/web/src/components/floor-plan-designer/lib/diff.ts
@@ -2479,24 +2575,24 @@ export function computePublishDiff(
 ): PublishDiff {
   const publishedPolygons: Polygon[] = (published?.spaces ?? []).map((s) => ({
     space_id: s.id,
-    points: Array.isArray(s.floor_plan_polygon) ? s.floor_plan_polygon : s.floor_plan_polygon.points,
+    points: s.floor_plan_polygon.points,
     render_hint: s.floor_plan_render_hint,
   }));
-  const draftMap = new Map(draftPolygons.map((p) => [p.space_id, p]));
+  const draftMap = new Map(draftPolygons.filter((p) => p.space_id).map((p) => [p.space_id, p]));
   const publishedMap = new Map(publishedPolygons.map((p) => [p.space_id, p]));
 
   const added: Polygon[] = [];
   const modified: PublishDiff['modified'] = [];
   for (const [id, draft] of draftMap) {
     const before = publishedMap.get(id);
-    if (!before) {
-      added.push(draft);
-    } else if (JSON.stringify(before.points) !== JSON.stringify(draft.points) ||
-               before.render_hint !== draft.render_hint) {
+    if (!before) { added.push(draft); continue; }
+    if (
+      JSON.stringify(before.points) !== JSON.stringify(draft.points) ||
+      before.render_hint !== draft.render_hint
+    ) {
       modified.push({ space_id: id, before, after: draft });
     }
   }
-
   const removed: PublishDiff['removed'] = [];
   for (const [id] of publishedMap) {
     if (!draftMap.has(id)) {
@@ -2504,11 +2600,8 @@ export function computePublishDiff(
       removed.push({ space_id: id, name: sp?.name ?? '(unknown)' });
     }
   }
-
   return {
-    added,
-    removed,
-    modified,
+    added, removed, modified,
     imageChanged: draftImageUrl !== (published?.floor.image_url ?? null),
   };
 }
@@ -2521,40 +2614,44 @@ import { computePublishDiff } from '../lib/diff';
 
 describe('computePublishDiff', () => {
   it('detects added polygons', () => {
-    const draft = [{ space_id: 'a', points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }] }];
-    const diff = computePublishDiff(draft, null, null);
-    expect(diff.added).toHaveLength(1);
-    expect(diff.removed).toHaveLength(0);
+    const d = computePublishDiff(
+      [{ space_id: 'a', points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }] }],
+      null, null,
+    );
+    expect(d.added).toHaveLength(1);
+    expect(d.removed).toHaveLength(0);
   });
-  // ... add cases for removed, modified, imageChanged
+  it('ignores polygons without a space_id', () => {
+    const d = computePublishDiff(
+      [{ space_id: '', points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }] }],
+      null, null,
+    );
+    expect(d.added).toHaveLength(0);
+  });
+  // add cases: removed, modified, imageChanged, no-op
 });
 ```
 
-- [ ] **Step 2: Run tests**
-
-```bash
-pnpm --filter @prequest/web test diff
-```
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
 git add apps/web/src/components/floor-plan-designer/lib/diff.ts apps/web/src/components/floor-plan-designer/__tests__/diff.test.ts
-git commit -m "feat(floor-plan): compute publish diff (added/removed/modified/imageChanged) + tests"
+git commit -m "feat(floor-plan): computePublishDiff + tests (ignores unlinked polygons)"
 ```
 
-### Task C.2: `<PublishDialog>` with diff preview
+### Task C.2: `<PublishDialog>` with diff + large-removal red flag
 
 **Files:**
 - Create: `apps/web/src/components/floor-plan-designer/publish-dialog.tsx`
-- Modify: `apps/web/src/components/floor-plan-designer/floor-plan-designer.tsx` (wire button)
 
 - [ ] **Step 1: Dialog**
 
 ```tsx
 // apps/web/src/components/floor-plan-designer/publish-dialog.tsx
+import { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../ui/dialog';
 import { Button } from '../ui/button';
+import { Input } from '../ui/input';
 import { useFloorPlanPublished, usePublishDraft } from '../../api/floor-plans/hooks';
 import { computePublishDiff } from './lib/diff';
 import { toastUpdated } from '../../lib/toast';
@@ -2562,16 +2659,25 @@ import type { DraftResponse } from '../../api/floor-plans/types';
 
 type Props = { open: boolean; onOpenChange: (open: boolean) => void; floorSpaceId: string; draft: DraftResponse };
 
+const LARGE_REMOVAL_THRESHOLD = 5;
+
 export function PublishDialog({ open, onOpenChange, floorSpaceId, draft }: Props) {
   const published = useFloorPlanPublished(floorSpaceId);
   const publish = usePublishDraft(floorSpaceId);
   const diff = computePublishDiff(draft.polygons, draft.image_url, published.data ?? null);
+  const isLargeRemoval = diff.removed.length >= LARGE_REMOVAL_THRESHOLD;
+  const [typedConfirm, setTypedConfirm] = useState('');
+  const requiredConfirm = `remove ${diff.removed.length}`;
+  const canPublish = !isLargeRemoval || typedConfirm === requiredConfirm;
 
   const handlePublish = async () => {
     await publish.mutateAsync();
     toastUpdated('Floor plan');
     onOpenChange(false);
   };
+
+  const noChanges =
+    !diff.imageChanged && diff.added.length === 0 && diff.modified.length === 0 && diff.removed.length === 0;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -2580,37 +2686,48 @@ export function PublishDialog({ open, onOpenChange, floorSpaceId, draft }: Props
           <DialogTitle>Publish floor plan</DialogTitle>
         </DialogHeader>
         <div className="space-y-3 text-sm">
+          {noChanges && <p className="text-muted-foreground">No changes to publish.</p>}
           {diff.imageChanged && <p className="text-amber-700">Background image changed.</p>}
           {diff.added.length > 0 && (
-            <p>
-              <strong className="text-emerald-700">{diff.added.length}</strong> polygon(s) added.
-            </p>
+            <p><strong className="text-emerald-700">{diff.added.length}</strong> polygon(s) added.</p>
           )}
           {diff.modified.length > 0 && (
-            <p>
-              <strong className="text-blue-700">{diff.modified.length}</strong> polygon(s) modified.
-            </p>
+            <p><strong className="text-blue-700">{diff.modified.length}</strong> polygon(s) modified.</p>
           )}
           {diff.removed.length > 0 && (
             <div>
               <p>
-                <strong className="text-red-700">{diff.removed.length}</strong> polygon(s) removed:
+                <strong className={isLargeRemoval ? 'text-red-700' : 'text-amber-700'}>{diff.removed.length}</strong> polygon(s) removed
+                {isLargeRemoval && ' — large removal'}:
               </p>
               <ul className="ml-4 list-disc text-muted-foreground">
-                {diff.removed.map((r) => <li key={r.space_id}>{r.name}</li>)}
+                {diff.removed.slice(0, 10).map((r) => <li key={r.space_id}>{r.name}</li>)}
+                {diff.removed.length > 10 && <li>… and {diff.removed.length - 10} more</li>}
               </ul>
-              <p className="text-xs text-muted-foreground mt-2">
-                Removing a polygon does not cancel existing bookings. They'll still appear in list views.
+              <p className="mt-2 text-xs text-muted-foreground">
+                Removing a polygon doesn't cancel existing bookings; they remain in list views. A snapshot is saved — you can restore it from the publish history.
               </p>
+              {isLargeRemoval && (
+                <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-3">
+                  <p className="text-xs text-red-900">
+                    To confirm, type <code className="font-mono">{requiredConfirm}</code> below:
+                  </p>
+                  <Input
+                    value={typedConfirm}
+                    onChange={(e) => setTypedConfirm(e.target.value)}
+                    placeholder={requiredConfirm}
+                    className="mt-2"
+                  />
+                </div>
+              )}
             </div>
-          )}
-          {diff.added.length === 0 && diff.modified.length === 0 && diff.removed.length === 0 && !diff.imageChanged && (
-            <p className="text-muted-foreground">No changes to publish.</p>
           )}
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handlePublish} disabled={publish.isPending}>Publish</Button>
+          <Button onClick={handlePublish} disabled={publish.isPending || noChanges || !canPublish}>
+            Publish
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -2618,77 +2735,206 @@ export function PublishDialog({ open, onOpenChange, floorSpaceId, draft }: Props
 }
 ```
 
-- [ ] **Step 2: Wire from designer top bar**
-
-Add a Publish button to the `<ToolDock>` or a top bar in `<FloorPlanDesigner>`, opening the dialog.
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
-git add apps/web/src/components/floor-plan-designer
-git commit -m "feat(floor-plan): PublishDialog with diff preview + wired publish action"
+git add apps/web/src/components/floor-plan-designer/publish-dialog.tsx
+git commit -m "feat(floor-plan): PublishDialog with diff + typed-confirm for large removals (>=5)"
 ```
 
-### Task C.3: Backend publish — extra safety + smoke probe
+### Task C.3: Publish history list + restore action
 
 **Files:**
-- Modify: `apps/api/src/modules/floor-plan/floor-plan.service.ts`
-- Modify: `apps/api/scripts/smoke-floor-plans.mjs`
+- Modify: `apps/web/src/components/floor-plan-designer/floor-plan-designer.tsx` (add "History" button → dialog)
+- Create: `apps/web/src/components/floor-plan-designer/history-dialog.tsx`
+- Modify: `apps/api/src/modules/floor-plan/floor-plan.controller.ts` (POST restore)
+- Create: `supabase/migrations/00373_restore_floor_plan_publish_history_rpc.sql`
 
-- [ ] **Step 1: Add per-space tenant + parent_id checks before publish**
+- [ ] **Step 1: Restore RPC**
 
-Before calling the RPC, do a server-side pre-flight: for each polygon in the draft, confirm `space.tenant_id === draftTenantId` AND `space.parent_id === floor_space_id`. Reject with `validation.failed` carrying the offending space_id.
+```sql
+-- 00373_restore_floor_plan_publish_history_rpc.sql
+-- Restore a previous publish snapshot. Atomic. Creates its own history row
+-- of the current state before applying the snapshot.
+
+create or replace function public.restore_floor_plan_publish(p_history_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_h public.floor_plan_publish_history%rowtype;
+  v_tenant_id uuid;
+  v_floor_id uuid;
+  v_polygon jsonb;
+  v_space_ids uuid[];
+  v_current_polygons jsonb;
+  v_current_floor public.floor_plans%rowtype;
+  v_new_history uuid;
+begin
+  select * into v_h from public.floor_plan_publish_history where id = p_history_id;
+  if v_h.id is null then raise exception 'floor_plan.history.not_found'; end if;
+  if v_h.tenant_id <> public.current_tenant_id() then raise exception 'floor_plan.history.cross_tenant'; end if;
+
+  v_tenant_id := v_h.tenant_id;
+  v_floor_id  := v_h.floor_space_id;
+
+  -- snapshot current state first
+  select * into v_current_floor from public.floor_plans where space_id = v_floor_id;
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'space_id', s.id,
+    'points',   s.floor_plan_polygon->'points',
+    'render_hint', s.floor_plan_render_hint
+  )), '[]'::jsonb)
+    into v_current_polygons
+    from public.spaces s
+   where s.tenant_id = v_tenant_id and s.parent_id = v_floor_id and s.floor_plan_polygon is not null;
+
+  insert into public.floor_plan_publish_history
+    (tenant_id, floor_space_id, image_url, width_px, height_px, labels, polygons, published_by, published_at)
+  values
+    (v_tenant_id, v_floor_id,
+     v_current_floor.image_url, v_current_floor.width_px, v_current_floor.height_px,
+     coalesce(v_current_floor.labels, '[]'::jsonb), v_current_polygons,
+     null, now())
+  returning id into v_new_history;
+
+  -- apply snapshot
+  insert into public.floor_plans (tenant_id, space_id, image_url, width_px, height_px, labels)
+  values (v_tenant_id, v_floor_id, v_h.image_url, v_h.width_px, v_h.height_px, v_h.labels)
+  on conflict (space_id) do update
+    set image_url = excluded.image_url,
+        width_px = excluded.width_px,
+        height_px = excluded.height_px,
+        labels = excluded.labels,
+        updated_at = now();
+
+  select coalesce(array_agg((p->>'space_id')::uuid), '{}'::uuid[])
+    into v_space_ids
+    from jsonb_array_elements(v_h.polygons) p;
+
+  update public.spaces
+     set floor_plan_polygon = null, floor_plan_render_hint = 'default'
+   where tenant_id = v_tenant_id and parent_id = v_floor_id
+     and floor_plan_polygon is not null and id <> all(v_space_ids);
+
+  for v_polygon in select jsonb_array_elements(v_h.polygons) loop
+    update public.spaces
+       set floor_plan_polygon = jsonb_build_object('points', v_polygon->'points'),
+           floor_plan_render_hint = coalesce(v_polygon->>'render_hint', 'default')
+     where id = (v_polygon->>'space_id')::uuid
+       and tenant_id = v_tenant_id and parent_id = v_floor_id;
+  end loop;
+
+  insert into public.audit_events
+    (tenant_id, event_type, entity_type, entity_id, actor_user_id, details)
+  values
+    (v_tenant_id, 'floor_plan.restored', 'floor_plan', v_floor_id, null,
+     jsonb_build_object('source_history_id', p_history_id, 'new_history_id', v_new_history));
+end;
+$$;
+
+revoke all on function public.restore_floor_plan_publish(uuid) from public;
+grant execute on function public.restore_floor_plan_publish(uuid) to authenticated;
+
+notify pgrst, 'reload schema';
+```
+
+- [ ] **Step 2: Controller endpoint**
 
 ```ts
-// inside FloorPlanService.publish
-async publish(floorSpaceId: string, userId: string): Promise<void> {
-  const client = this.supabase.client();
-  const { data: draft } = await client
-    .from('floor_plan_drafts')
-    .select('id, tenant_id, polygons')
-    .eq('floor_space_id', floorSpaceId)
-    .maybeSingle();
-  if (!draft) throw AppErrors.notFoundWithCode('floor_plan.draft.not_found');
-
-  const polygons = draft.polygons as Array<{ space_id: string }>;
-  if (polygons.length > 0) {
-    const ids = polygons.map((p) => p.space_id);
-    const { data: spaces } = await client
-      .from('spaces')
-      .select('id, parent_id, tenant_id')
-      .in('id', ids);
-    const bad = (spaces ?? []).filter((s) => s.parent_id !== floorSpaceId || s.tenant_id !== draft.tenant_id);
-    if (bad.length > 0) {
-      throw AppErrors.validationFailed('floor_plan.publish.invalid_polygons', { spaceIds: bad.map((b) => b.id) });
-    }
-  }
-
-  const { error } = await client.rpc('publish_floor_plan_draft', { p_draft_id: draft.id });
-  if (error) throw AppErrors.server('floor_plan.publish_failed');
+// apps/api/src/modules/floor-plan/floor-plan.controller.ts (add)
+@UseGuards(PermissionGuard)
+@RequirePermission('floor_plans.admin')
+@Post('history/:historyId/restore')
+async restore(@Param('historyId') historyId: string, @Req() req: ReqUser) {
+  return this.plan.restorePublish(historyId, req.user.tenant_id);
 }
 ```
 
-- [ ] **Step 2: Add smoke probes for publish edge cases**
-
-Extend `apps/api/scripts/smoke-floor-plans.mjs` (8 → 12 probes):
-- Probe 9: PATCH polygon with `space_id` from another tenant → 422.
-- Probe 10: PATCH polygon with `space_id` not in this floor's children → 422.
-- Probe 11: Publish empty draft (no polygons) → 200, then GET plan → spaces[] empty.
-- Probe 12: Publish twice in quick succession → second call 404 (draft gone after first publish).
-
-- [ ] **Step 3: Run smoke + commit**
-
-```bash
-pnpm smoke:floor-plans
-```
-Expected: all 12 probes pass.
-
-```bash
-git add apps/api/src/modules/floor-plan apps/api/scripts/smoke-floor-plans.mjs
-git commit -m "feat(floor-plan): publish preflight validation + extended smoke probes (12 total)"
+```ts
+// apps/api/src/modules/floor-plan/floor-plan.service.ts (add)
+async restorePublish(historyId: string, tenantId: string) {
+  const client = this.supabase.client();
+  // RPC will throw if cross-tenant
+  const { error } = await client.rpc('restore_floor_plan_publish', { p_history_id: historyId });
+  if (error) throw AppErrors.server('floor_plan.restore_failed');
+  return { ok: true };
+}
 ```
 
-### Task C.4: Audit event end-to-end test
+- [ ] **Step 3: History dialog (frontend)**
+
+```tsx
+// apps/web/src/components/floor-plan-designer/history-dialog.tsx
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
+import { Button } from '../ui/button';
+import { apiFetch } from '../../lib/api-fetch';
+import { floorPlanKeys } from '../../api/floor-plans/keys';
+import { toastUpdated } from '../../lib/toast';
+import { withErrorHandling } from '../../lib/errors';
+import type { PublishHistoryEntry } from '../../api/floor-plans/types';
+
+type Props = { open: boolean; onOpenChange: (open: boolean) => void; floorSpaceId: string };
+
+export function HistoryDialog({ open, onOpenChange, floorSpaceId }: Props) {
+  const qc = useQueryClient();
+  const history = useQuery({
+    queryKey: floorPlanKeys.floorHistory(floorSpaceId),
+    queryFn: () => apiFetch<PublishHistoryEntry[]>(`/api/floors/${floorSpaceId}/plan/history`),
+    enabled: open,
+  });
+  const restore = useMutation({
+    mutationFn: (historyId: string) =>
+      apiFetch(`/api/floors/${floorSpaceId}/plan/history/${historyId}/restore`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: floorPlanKeys.floor(floorSpaceId) });
+      toastUpdated('Floor plan restored');
+      onOpenChange(false);
+    },
+    ...withErrorHandling({ actionTitle: "Couldn't restore the floor plan" }),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Publish history</DialogTitle></DialogHeader>
+        {history.isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
+        <ul className="divide-y">
+          {(history.data ?? []).map((h) => (
+            <li key={h.id} className="flex items-center justify-between py-2 text-sm">
+              <span className="tabular-nums">{new Date(h.published_at).toLocaleString()} · {h.polygons.length} polygons</span>
+              <Button size="sm" variant="outline" onClick={() => restore.mutate(h.id)} disabled={restore.isPending}>
+                Restore
+              </Button>
+            </li>
+          ))}
+          {history.data && history.data.length === 0 && (
+            <li className="py-4 text-sm text-muted-foreground">No history yet.</li>
+          )}
+        </ul>
+      </DialogContent>
+    </Dialog>
+  );
+}
+```
+
+- [ ] **Step 4: Wire History button in designer topbar**
+
+In `floor-plan-designer.tsx`, add a "History" button next to Publish that opens `<HistoryDialog>`.
+
+- [ ] **Step 5: Apply migration + commit**
+
+```bash
+pnpm db:reset
+pnpm db:push  # or psql fallback
+git add supabase/migrations/00373_restore_floor_plan_publish_history_rpc.sql apps/api/src/modules/floor-plan apps/web/src/components/floor-plan-designer
+git commit -m "feat(floor-plan): publish history list + restore RPC + history dialog"
+```
+
+### Task C.4: Audit + publish_history E2E test
 
 **Files:**
 - Create: `apps/api/src/modules/floor-plan/publish-audit.spec.ts`
@@ -2714,52 +2960,68 @@ describe('publish_floor_plan_draft RPC', () => {
     roomId = await seedRoom(supabase, tenantId, floorId);
   });
 
-  it('writes audit event with diff payload', async () => {
-    // create draft
+  it('writes audit_events with correct schema + history row + canonical polygon shape', async () => {
     const { data: draft } = await supabase
       .from('floor_plan_drafts')
       .insert({
         tenant_id: tenantId,
         floor_space_id: floorId,
         image_url: 'https://example.com/plan.png',
-        width_px: 1000,
-        height_px: 800,
+        width_px: 1000, height_px: 800,
         polygons: [{ space_id: roomId, points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }] }],
         created_by: userId,
       })
-      .select('id')
-      .single();
+      .select('id').single();
 
-    // publish
-    await supabase.rpc('publish_floor_plan_draft', { p_draft_id: draft!.id });
+    const { data: result } = await supabase.rpc('publish_floor_plan_draft', { p_draft_id: draft!.id });
+    expect((result as any).history_id).toBeTruthy();
 
-    // verify
+    // audit row with correct columns
     const { data: audit } = await supabase
       .from('audit_events')
       .select('*')
-      .eq('kind', 'floor_plan.published')
-      .eq('tenant_id', tenantId)
+      .eq('event_type', 'floor_plan.published')
+      .eq('entity_type', 'floor_plan')
+      .eq('entity_id', floorId)
       .single();
     expect(audit).toBeTruthy();
-    expect(audit!.payload.floor_space_id).toBe(floorId);
+    expect(audit!.details.polygon_count).toBe(1);
+    expect(audit!.actor_user_id).toBe(userId);
 
+    // canonical polygon shape
     const { data: room } = await supabase.from('spaces').select('floor_plan_polygon').eq('id', roomId).single();
-    expect(room!.floor_plan_polygon).toBeTruthy();
+    expect(room!.floor_plan_polygon).toEqual({ points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }] });
 
-    const { data: leftoverDraft } = await supabase.from('floor_plan_drafts').select('id').eq('id', draft!.id);
-    expect(leftoverDraft).toEqual([]);
+    // history row exists
+    const { data: hist } = await supabase
+      .from('floor_plan_publish_history')
+      .select('*')
+      .eq('floor_space_id', floorId)
+      .single();
+    expect(hist).toBeTruthy();
+
+    // draft gone
+    const { data: leftover } = await supabase.from('floor_plan_drafts').select('id').eq('id', draft!.id);
+    expect(leftover).toEqual([]);
+  });
+
+  it('rejects cross-tenant publish', async () => {
+    // tenant B tries to publish tenant A's draft
+    // assuming createTestSupabase respects current_tenant_id from a config
+    // …
   });
 });
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 2: Run + commit**
 
 ```bash
+pnpm --filter @prequest/api test publish-audit
 git add apps/api/src/modules/floor-plan/publish-audit.spec.ts
-git commit -m "test(floor-plan): publish RPC end-to-end with audit event check"
+git commit -m "test(floor-plan): publish RPC end-to-end (correct audit schema + history + canonical shape)"
 ```
 
-### Task C.5: Final smoke + self-review
+### Task C.5: Final smoke + spec coverage + push
 
 - [ ] **Step 1: Full build**
 
@@ -2767,66 +3029,137 @@ git commit -m "test(floor-plan): publish RPC end-to-end with audit event check"
 pnpm --filter @prequest/api build
 pnpm --filter @prequest/web build
 pnpm --filter @prequest/shared test
+pnpm --filter @prequest/api test
+pnpm --filter @prequest/web test
 ```
 All green.
 
 - [ ] **Step 2: Smoke gate**
 
-With `pnpm dev:api` running:
 ```bash
+# terminal 1: pnpm dev:api
 pnpm smoke:floor-plans
 pnpm smoke:work-orders
 ```
-Both must exit 0.
+Both exit 0. The 17-probe floor-plan smoke is mandatory pre-claim.
 
-- [ ] **Step 3: Manual happy path in the browser**
+- [ ] **Step 3: Manual happy path**
 
-`pnpm dev` (both). Log in as a tenant admin with `floor_plans.author` + `floor_plans.publish`. Navigate to `/admin/floor-plans`, click into a floor, upload an image, trace 2 rooms + stamp 6 desks, hit Publish, confirm the dialog shows the expected diff, hit Publish, see toast. Refresh — published state shows.
+`pnpm dev` (both). As an admin with `floor_plans.admin`:
+1. Open `/admin/floor-plans` — see the index.
+2. Click a floor — see the designer.
+3. Upload an image — see it as background.
+4. Trace 2 rooms with Draw Polygon.
+5. Stamp 6 seats; link 3 to existing desk rows via inspector picker.
+6. Hit Publish — see diff dialog with 5 added.
+7. Confirm — see toast.
+8. Refresh — published state shows.
+9. Hit History — see one entry.
+10. Delete 3 polygons in the designer, hit Publish — diff dialog shows 3 removed (NOT >= 5, no typed confirm yet).
+11. Delete 2 more, hit Publish — diff shows 5 removed, typed confirm appears.
+12. Type `remove 5` — Publish enables.
+13. Restore from history — original polygons return.
 
 - [ ] **Step 4: Spec coverage scan**
 
-Open the spec and confirm every Phase A–C requirement has a task:
-- §3.1 floor_plans exists ✔ (pre-existing)
-- §3.2 render_hint ✔ A.1
-- §3.3 floor_plan_drafts table ✔ A.2 + labels in A.4
-- §3.4 one polygon model adaptive ✔ B.2 (PolygonShape adaptive)
-- §3.5 parent_id enforcement ✔ C.3
-- §3.6 realtime — Plan 2 (booking surface)
-- §4 renderer view mode ✔ B.2 (used by Plan 2)
-- §5 designer ✔ B.4–B.14
-- §6.1 module ✔ A.8
-- §6.2 RPC ✔ A.3
-- §6.3 REST endpoints — Phase A.8 has GET/PATCH/DELETE; availability is Plan 2
-- §7.1 admin routes ✔ B.14
+Open the spec and confirm every Phase A–C requirement maps to a task:
+- §3.1–§3.4 schema ✔ A.1–A.5 + canonical polygon shape via 00367 CHECK
+- §3.5 parent_id enforcement ✔ A.9 service-level pre-flight + RPC tenant filter
+- §3.6 realtime — Plan 2 (not in this plan)
+- §4 renderer view mode ✔ B.2
+- §5 designer ✔ B.3–B.13
+- §6.1 module ✔ A.9
+- §6.2 RPC ✔ A.4 (correct audit schema)
+- §6.3 REST endpoints ✔ A.9 (GET/PATCH/DELETE drafts, POST publish, GET history, POST restore)
+- §7.1 admin routes ✔ B.13
 - §7.2–7.4 — Plan 2
-- §8 permissions ✔ A.5/A.6
-- §9 edge cases — design + tests cover; runtime checks in C.3
-- §10 testing — A.9, A.10, B.1, B.2, B.11, C.1, C.4
-- §11 perf — manual perf check in C.5 step 5
-- §12 GDPR — audit event in C.4; storage prefix in B.10
-- §13 migrations ✔ A.1, A.2, A.3 (renamed 00370), A.4 (renamed 00369), A.5, B.10 (00372), B.14 (00373)
+- §8 permission `floor_plans.admin` ✔ A.7
+- §9 edge cases ✔ A.9 preflight, A.10 cross-tenant, A.11 probes, C.2 diff red-flag, history+restore in C.3
+- §10 testing ✔ A.10, A.11, B.2, C.1, C.4
+- §11 perf — manual in step 5 below
+- §12 GDPR ✔ audit in A.4 + history snapshots in A.5
+- §13 migrations ✔ 00367–00373 (7 total)
 
 - [ ] **Step 5: Performance sanity**
 
-In dev tools, load a floor with 200 polygons (use a seed fixture or quickly stamp 200 seats in the designer). Confirm pan/zoom maintains > 50fps. If it drops, file a follow-up task to switch the polygon layer to Konva — don't block Plan 2.
+Seed a floor with 500 polygons (script via the smoke harness or stamp them manually). Confirm pan/zoom maintains ≥ 30fps. Below that target → file a followup to switch the polygon layer to Konva; do not block Plan 1.
 
-- [ ] **Step 6: Final commit + push**
+- [ ] **Step 6: Push + PR**
 
 ```bash
 git push origin worktree-floorplanner
+gh pr create --title "feat: floor plan designer (Plan 1 — Phases A-C)" --body "$(cat <<'EOF'
+## Summary
+- Adds floor plan designer at /admin/floor-plans with trace-mode authoring (draw polygon, rectangle, stamp seat, image upload).
+- Atomic draft + publish flow via publish_floor_plan_draft RPC; publish history snapshots enable rollback.
+- Single floor_plans.admin permission key registered in TS catalog.
+- 17-probe smoke gate (pnpm smoke:floor-plans) + cross-tenant coverage.
+
+## Migrations
+- 00367 spaces.floor_plan_render_hint + polygon shape CHECK
+- 00368 floor_plan_drafts (tenant-scoped, RLS, optimistic-locking-ready)
+- 00369 labels jsonb on floor_plans + drafts
+- 00370 publish_floor_plan_draft RPC (audit + history snapshot)
+- 00371 floor_plan_publish_history
+- 00372 floor-plans Storage bucket (private, full RLS, signed URLs)
+- 00373 restore_floor_plan_publish RPC
+
+## Plan-review remediation
+Adversarial plan review surfaced 5 CRITICALs + 15 IMPORTANTs before code; all addressed in the plan rewrite (see plan §"Plan-review delta" at end).
+
+## Test plan
+- [ ] pnpm smoke:floor-plans — 17/17 probes pass
+- [ ] pnpm --filter @prequest/api test — green
+- [ ] pnpm --filter @prequest/web test — green
+- [ ] Manual: trace + publish + restore happy path
+- [ ] Manual: 500-polygon perf check ≥ 30fps
+EOF
+)"
 ```
 
-Open a PR with title: `feat: floor plan designer (Plan 1 — Phases A-C)`.
-
-**Plan 1 done.** Designer ships. Booking surface (Plan 2 — Phases D-F) is the next plan to write once this one is reviewed.
+**Plan 1 done.** Designer + draft+publish ship. Plan 2 (booking surface, Phases D-F) is the next plan to write.
 
 ---
 
+## Plan-review delta (what changed from v1)
+
+Applied from the full-review skill output (2026-05-12):
+
+| # | Severity | Fix |
+|---|---|---|
+| C1 | CRITICAL | Dropped `permission_catalog` SQL table migration; permissions are TS-only (`packages/shared/src/permissions.ts`). |
+| C2 | CRITICAL | RPC uses correct `audit_events` schema (`event_type/entity_type/entity_id/actor_user_id/details`). |
+| C3 | CRITICAL | `backTo` moved from `SettingsPageShell` to `SettingsPageHeader`. |
+| C4 | CRITICAL | Designer page does NOT wrap in `SettingsPageShell` — custom topbar like workflow editor. |
+| C5 | CRITICAL | Storage bucket made PRIVATE; full RLS (insert/update/delete/select) all tenant-scoped; client uses signed URLs. |
+| I1 | IMPORTANT | Migrations ordered linearly: 00367 → 00368 → 00369 (labels) → 00370 (RPC) → 00371 (history) → 00372 (bucket) → 00373 (restore RPC). No renumber dance. |
+| I2 | IMPORTANT | Polygon shape canonicalized to `{points:[…]}` via CHECK constraint in 00367; readers no longer carry fallback logic. |
+| I3 | IMPORTANT | All TS Supabase queries explicitly filter by `tenant_id`. |
+| I4 | IMPORTANT | Smoke probe set expanded from 8 → 17 covering deleted-space-on-publish, image-bounds, concurrent publish, null fields, duplicate space_id, cross-tenant polygon, polygon-not-child-of-floor, optimistic-lock 409. |
+| I5 | IMPORTANT | `If-Match: updated_at` optimistic locking on PATCH; 409 surfaces a toast prompting reload. |
+| I6 | IMPORTANT | `floor_plan_publish_history` table snapshots each publish; restore RPC + UI added. PublishDialog red-flags large removals with typed confirmation. |
+| I7 | IMPORTANT | Resolved via N4: single `floor_plans.admin` key, no half-shipped DELETE permission. |
+| I8 | IMPORTANT | Frontend-design skill invocation flagged at top of Phase B. |
+| I9 | IMPORTANT | Index page uses shadcn `<Table>`, has empty state with icon + CTA, header `actions` slot links to Locations. |
+| I10 | IMPORTANT | PolygonInspector uses `<ToggleGroup>` for render hint and `<SettingsRow>` for stats. |
+| I11 | IMPORTANT | Dropped `admin_floor_plans_index` RPC; `listForAdmin` uses a direct Supabase query. |
+| I12 | IMPORTANT | Take-over flow deferred to followups; not in v1. |
+| I13 | IMPORTANT | Keyboard accessibility expanded: V/P/R/S/I/Enter/Esc/Delete + Cmd-Z/Cmd-Shift-Z. Vertex nudge deferred. |
+| I14 | IMPORTANT | `useFloorPlanDraft` uses `usePageQuery` (page primary). |
+| I15 | IMPORTANT | Decided: skip per-PATCH audit (admins are trusted); publish + restore are the audited events. |
+| N1 | NIT | Draft insert sets `tenant_id` explicitly. |
+| N2 | NIT | Lucide icons used in ToolDock from the start. |
+| N3 | NIT | Perf target = 500 polygons / 30fps. |
+| N4 | NIT | One `floor_plans.admin` permission key. |
+| N5 | NIT | Index page header has a link to /admin/locations; designer topbar has back link. |
+| N6 | NIT | Stray `parent_vendor_account_id` line removed from followups. |
+
 ## Followups to track (do NOT block Plan 1)
 
-1. Replace placeholder glyphs in `<ToolDock>` with Lucide icons (B.6 step 1 footnote).
-2. Implement parking tool as its own file (currently aliased to stamp-seat in TOOL_MAP — B.8 step 3 footnote).
-3. Implement label tool (currently aliased to select).
-4. Add Konva fallback for polygon layer if perf becomes an issue.
-5. Add a "remap polygons after image replacement" tool (B.10 step 2 banner).
-6. Add `parent_vendor_account_id` escape hatch is unrelated — ignore for floor plans.
+1. Parking-slot tool (`render_hint: 'parking'` is supported but the dedicated drawing tool is deferred).
+2. Label tool (positioned text annotations — schema + storage exist; UI not in v1).
+3. Image-remap tool: when the background image is replaced, project existing polygons onto the new image via reference-point alignment.
+4. Konva fallback for polygon layer if perf falls below 30fps at 500+ polygons.
+5. Arrow-key vertex nudge in Select tool (1 px per press; Shift = 10 px).
+6. Take-over flow when two admins open the same floor — currently last-writer-wins protected by optimistic lock; explicit take-over UI deferred.
+7. Multi-touch pinch zoom on the designer (current ZoomPanLayer is single-touch + scroll).
