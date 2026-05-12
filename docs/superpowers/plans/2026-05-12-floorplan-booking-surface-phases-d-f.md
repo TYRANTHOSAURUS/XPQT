@@ -59,10 +59,29 @@ Goal: ship `/portal/book/floor` and the live map. End state: a requester can ope
 
 - [ ] **Step 1: Write the migration**
 
+**Schema reality check (per plan-review):** the legacy `reservations` table was DROPPED in the 2026-05-02 booking-canonicalization rewrite (migration 00280). The canonical model is `bookings` + `booking_slots` (migration 00277). Use those.
+
+- `bookings(id, tenant_id, title, description, requester_person_id, host_person_id, booked_by_user_id, location_id, start_at, end_at, timezone, status, ...)`
+- `booking_slots(id, tenant_id, booking_id, slot_type, space_id, start_at, end_at, setup_buffer_minutes, teardown_buffer_minutes, effective_start_at, effective_end_at, time_range, ...)`
+- `bookings.status` enum: `('draft','pending_approval','confirmed','checked_in','released','cancelled','completed')`. Exclude `draft` and `cancelled` for availability — everything else holds space.
+- The space anchor is on **`booking_slots.space_id`**, NOT `bookings.location_id`. Multiple slots per booking (compound bookings).
+- Use `booking_slots.time_range && tstzrange(start, end, '[)')` — already indexed (00123 GiST).
+
+**Visibility:** no SQL function `booking_visibility_ids` exists today (the legacy `reservation_visibility_ids` was dropped in 00280; nothing replaced it at SQL). RLS on `bookings` is tenant_isolation only. So:
+- DON'T return `current_booking.title` or any per-booking identity in this RPC — that would bypass app-layer visibility entirely. If the requester wants details on the booking blocking a polygon, the UI calls `GET /api/bookings/:id` separately, which can be gated server-side.
+- The aggregated `state` ('booked', 'partial', etc.) is anonymized and safe to compute from raw bookings (no leak of identity).
+- `'mine'` is safe because we only return it when the caller's own person_id matches — no leak of OTHER users' bookings.
+
 ```sql
 -- 00375_floor_availability_rpc.sql
 -- Returns per-polygon availability state for a time window, with crowd heatmap.
--- One SQL call instead of N+1 queries from TS. Spec §6.3.
+-- Reads from canonical bookings + booking_slots (post-00277). One SQL call.
+-- Spec §6.3.
+--
+-- Visibility model: state is anonymized aggregate (no per-booking identity in
+-- this response). The 'mine' branch matches caller's person_id and only the
+-- caller can see their own bookings here. UI must call GET /api/bookings/:id
+-- (gated) for booking details if needed.
 
 create or replace function public.floor_availability(
   p_floor_space_id uuid,
@@ -77,6 +96,7 @@ set search_path = pg_catalog, public, pg_temp
 as $$
 declare
   v_tenant_id uuid := public.current_tenant_id();
+  v_caller_person_id uuid;
   v_spaces jsonb;
   v_heatmap jsonb;
   v_day_start timestamptz;
@@ -84,6 +104,12 @@ begin
   if p_window_start >= p_window_end then
     raise exception 'floor_plan.availability.invalid_window' using errcode = '22023';
   end if;
+
+  -- Resolve caller's person_id (used for 'mine' state). Null when caller has no person link.
+  select u.person_id into v_caller_person_id
+    from public.users u
+   where u.id = p_user_id
+     and u.tenant_id = v_tenant_id;
 
   -- Aggregate per-polygon state for the window.
   with child_spaces as (
@@ -94,14 +120,18 @@ begin
        and s.tenant_id = v_tenant_id
        and s.floor_plan_polygon is not null
   ),
-  overlapping_reservations as (
-    select r.space_id, r.id as reservation_id, r.start_at, r.end_at,
-           r.requester_user_id, r.title
-      from public.reservations r
-      join child_spaces cs on cs.id = r.space_id
-     where r.start_at < p_window_end
-       and r.end_at > p_window_start
-       and r.status not in ('cancelled', 'declined')
+  overlapping as (
+    select bs.space_id,
+           b.id as booking_id,
+           bs.start_at, bs.end_at,
+           b.requester_person_id, b.host_person_id, b.booked_by_user_id
+      from public.bookings b
+      join public.booking_slots bs on bs.booking_id = b.id
+      join child_spaces cs on cs.id = bs.space_id
+     where b.tenant_id = v_tenant_id
+       and bs.tenant_id = v_tenant_id
+       and bs.time_range && tstzrange(p_window_start, p_window_end, '[)')
+       and b.status not in ('draft', 'cancelled')
   )
   select coalesce(jsonb_agg(jsonb_build_object(
     'id',           cs.id,
@@ -113,32 +143,28 @@ begin
     'render_hint',  cs.floor_plan_render_hint,
     'state',        case
                       when not exists (
-                        select 1 from overlapping_reservations o where o.space_id = cs.id
+                        select 1 from overlapping o where o.space_id = cs.id
                       ) then 'available'
-                      when exists (
-                        select 1 from overlapping_reservations o
-                         where o.space_id = cs.id and o.requester_user_id = p_user_id
+                      when v_caller_person_id is not null and exists (
+                        select 1 from overlapping o
+                         where o.space_id = cs.id
+                           and (o.requester_person_id = v_caller_person_id
+                                or o.host_person_id = v_caller_person_id
+                                or o.booked_by_user_id = p_user_id)
                       ) then 'mine'
-                      when (
-                        select count(*) from overlapping_reservations o
+                      when exists (
+                        select 1 from overlapping o
                          where o.space_id = cs.id
                            and o.start_at <= p_window_start
                            and o.end_at >= p_window_end
-                      ) > 0 then 'booked'
+                      ) then 'booked'
                       else 'partial'
                     end,
     'free_at',      (
                       select min(o.end_at)
-                        from overlapping_reservations o
+                        from overlapping o
                        where o.space_id = cs.id
                          and o.end_at > now()
-                    ),
-    'current_booking', (
-                      select jsonb_build_object('id', o.reservation_id, 'title', o.title)
-                        from overlapping_reservations o
-                       where o.space_id = cs.id
-                       order by o.start_at
-                       limit 1
                     )
   )), '[]'::jsonb)
     into v_spaces
@@ -155,12 +181,17 @@ begin
       select case when count(*) = 0 then 0
                   else (
                     sum(case when exists (
-                      select 1 from public.reservations r
-                       where r.space_id = cs.id
-                         and r.tenant_id = v_tenant_id
-                         and r.start_at < v_day_start + ((h.h + 8) || ' hours')::interval
-                         and r.end_at > v_day_start + ((h.h + 7) || ' hours')::interval
-                         and r.status not in ('cancelled', 'declined')
+                      select 1
+                        from public.bookings b
+                        join public.booking_slots bs on bs.booking_id = b.id
+                       where bs.space_id = cs.id
+                         and bs.tenant_id = v_tenant_id
+                         and b.tenant_id = v_tenant_id
+                         and bs.time_range && tstzrange(
+                             v_day_start + ((h.h + 7) || ' hours')::interval,
+                             v_day_start + ((h.h + 8) || ' hours')::interval,
+                             '[)')
+                         and b.status not in ('draft', 'cancelled')
                     ) then 1.0 else 0.0 end) / count(*)
                   )
              end
@@ -282,7 +313,8 @@ export type SpaceAvailability = {
   render_hint: RenderHint;
   state: AvailabilityState;
   free_at: string | null;
-  current_booking: { id: string; title: string } | null;
+  // No current_booking detail returned at this layer — visibility-anonymized.
+  // UI fetches GET /api/bookings/:id (gated) for details if the user clicks.
 };
 
 export type CrowdHeatmapBucket = { hour: number; occupancy: number };
@@ -318,12 +350,25 @@ export function floorAvailabilityOptions(floorSpaceId: string, windowStart: stri
   });
 }
 
+// Secondary query — uses plain useQuery + handleQueryError (NOT usePageQuery), per plan-review I3.
+// The page's primary is useFloorPlanPublished (page-class errors take the user to the right
+// "no floor plan yet" empty state, not the RouteErrorBoundary).
 export function useFloorAvailability(floorSpaceId: string, windowStart: string, windowEnd: string) {
-  return usePageQuery(floorAvailabilityOptions(floorSpaceId, windowStart, windowEnd));
+  const query = useQuery(floorAvailabilityOptions(floorSpaceId, windowStart, windowEnd));
+  useEffect(() => {
+    if (query.error) handleQueryError(query.error, { callSite: 'mutation' });
+  }, [query.error]);
+  return query;
 }
 ```
 
 - [ ] **Step 4: Realtime invalidation hook**
+
+Confirm `bookings` is in the Supabase realtime publication:
+```bash
+grep -rn "alter publication supabase_realtime.*bookings\b" supabase/migrations/*.sql | head -3
+```
+If absent, add a one-line migration `alter publication supabase_realtime add table public.bookings;`.
 
 ```ts
 // Add to hooks.ts
@@ -331,9 +376,15 @@ export function useFloorAvailabilityRealtime(floorSpaceId: string) {
   const qc = useQueryClient();
   useEffect(() => {
     const supa = getSupabaseClient(); // import from @/lib/supabase
+    // Subscribe to bookings + booking_slots changes (the canonical model post-00277).
+    // Naive: invalidate on ANY change in this tenant. Acceptable at v1 scale (<1k bookings/day);
+    // optimize later by filtering server-side on bs.space_id IN (childSpaceIds).
     const channel = supa
       .channel(`floor-${floorSpaceId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'reservations' }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, () => {
+        qc.invalidateQueries({ queryKey: floorPlanKeys.floor(floorSpaceId) });
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'booking_slots' }, () => {
         qc.invalidateQueries({ queryKey: floorPlanKeys.floor(floorSpaceId) });
       })
       .subscribe();
@@ -341,8 +392,6 @@ export function useFloorAvailabilityRealtime(floorSpaceId: string) {
   }, [floorSpaceId, qc]);
 }
 ```
-
-The simple version invalidates on any reservation change. A more targeted version filters server-side by floor's child spaces, but at v1 scale (200 reservations/day per tenant) the over-fetch is negligible. Optimize if perf measurements show it's needed.
 
 - [ ] **Step 5: Commit**
 
@@ -459,18 +508,31 @@ Default state:
 - Time window = now + 60 min.
 
 Hooks:
-- `useFloorAvailability(floorSpaceId, windowStart, windowEnd)` (drives polygon colors + scrubber heatmap)
-- `useFloorAvailabilityRealtime(floorSpaceId)` (auto-invalidates)
+- **Primary (`usePageQuery`):** `useFloorPlanPublished(floorSpaceId)` — drives the "no floor plan yet" empty state for unpublished floors. Page-class errors throw to RouteErrorBoundary.
+- **Secondary (`useQuery`):** `useFloorAvailability(floorSpaceId, windowStart, windowEnd)` — drives polygon colors + heatmap. Errors handled via `handleQueryError(query.error, { callSite: 'mutation' })`.
+- `useFloorAvailabilityRealtime(floorSpaceId)` — auto-invalidates on booking changes.
 
 On polygon click:
 - On mobile (< 768px): open `<BookingSheet>` bottom sheet.
-- On desktop: open the existing `<BookingComposerModal>` pre-filled with the space + window.
+- On tablet/desktop (≥ 768px): open the existing `<BookingComposerModal>` pre-filled with `{ space_id, start_at, end_at }`. **Spike required before D.5 step 2:** verify booking-composer-v2 exposes a way to open pre-filled. Likely entry point is `useBookingDraft` (search `apps/web/src/components/booking-composer-v2/`). If pre-fill API is non-trivial, scope this as its own task before continuing D.5.
 
 - [ ] **Step 2: `<BookingSheet>` (mobile bottom sheet)**
 
-Use shadcn `<Sheet>` with `side="bottom"`. Header: status dot + room name + floor. Amenity icon row. Quick time pills: `Now` / `in 30m` / `this PM` / `Custom`. Selected window readout. Primary CTA `Book <Room>` calls into the existing reservation mutation. On success: `toastCreated('Booking', { onView: () => navigate(`/portal/me-bookings/${id}`) })`.
+**Pre-spike (REQUIRED):** locate the create-booking mutation that BookingComposerModal uses today.
+```bash
+grep -rn "useCreateBooking\|useMutation.*bookings\|POST.*bookings" apps/web/src/components/booking-composer-v2 apps/web/src/api 2>/dev/null | head -10
+```
+If the mutation is bundled into a UI component (not a standalone hook), extract it to a shared hook in `apps/web/src/api/bookings/mutations.ts` FIRST as its own commit. Then the sheet imports the hook cleanly.
 
-For "Custom" time, open a sub-dialog or expand inline date+time pickers.
+Use shadcn `<Sheet>` with `side="bottom"`. Header: status dot + room name + floor. Amenity icon row. Quick time pills: `Now` / `in 30m` / `this PM` / `Custom`. Selected window readout. Primary CTA `Book <Room>`.
+
+**Form conventions (per CLAUDE.md):**
+- All inputs (the Custom-time picker) use shadcn `Field` primitives — no raw labels/inputs.
+- Mutation wraps `withErrorHandling({ actionTitle: "Couldn't book {room}" })`.
+- On success: `toastCreated('Booking', { onView: () => navigate(`/portal/me-bookings/${id}`) })`.
+- On 409/conflict (someone else booked first): the realtime invalidation will re-fetch availability; show a toast linking to the next available slot.
+
+For "Custom" time, expand inline date+time pickers using shadcn `Field` + `Input type=datetime-local`.
 
 - [ ] **Step 3: Wire route + commit**
 
@@ -744,8 +806,35 @@ If PR #13 is still open (Plan 1 wasn't merged yet), edit its description to note
 
 1. Realtime status `broken`-state writes-disabled UI (current implementation reads only).
 2. Multi-touch pinch zoom on mobile (single-touch + scroll works).
-3. Reservation creation from polygon click on desktop uses BookingComposerModal — verify the modal pre-fill API supports `{space_id, start_at, end_at}` as initial state.
-4. Floor switcher's mini-occupancy bars compute server-side (currently 1 RPC per visible floor — fine at 5 floors, expensive at 50).
-5. "Custom" time picker in mobile bottom sheet — full-screen pickers vs inline.
-6. AI suggested rooms (roadmap A10) — out of scope for Plan 2.
-7. Outlook deep-link integration (roadmap A8 / MS Graph spec) — out of scope for Plan 2.
+3. Floor switcher's mini-occupancy bars compute server-side (currently 1 RPC per visible floor — fine at 5 floors, expensive at 50).
+4. "Custom" time picker in mobile bottom sheet — full-screen pickers vs inline.
+5. AI suggested rooms (roadmap A10) — out of scope for Plan 2.
+6. Outlook deep-link integration (roadmap A8 / MS Graph spec) — out of scope for Plan 2.
+7. **Parking booking via map** — Plan 2 wires room/desk reservations only. Parking has its own booking flow (per spec §1.1 it's in-scope for the renderer; mobile sheet's `Book <Room>` CTA assumes rooms/desks). Add explicit parking flow in a v2.
+8. **Visitor flag on map** — spec mentions visitor-as-bundle-line on polygons; not in Plan 2 scope. Visitors module already exists; integration is a follow-up.
+9. **Hot-desk zone** (spec §3.4 C) — interchangeable seats with server-assignment. Deferred; tenant request gated.
+10. **Booking details on polygon click** — current RPC returns anonymized state only (no booker identity / title). When the booker IS the caller (`'mine'` state), we should still surface "your booking 14:30–15:30" — call `GET /api/bookings/:id` via a separate gated query when the polygon's state === 'mine'.
+
+## Plan-review delta (what changed pre-code)
+
+Plan-review skill (Claude adversarial agent) found 4 CRITICAL + 11 IMPORTANT + 8 NIT issues before code:
+
+| # | Severity | Fix |
+|---|---|---|
+| C1 | CRITICAL | RPC rewritten to use `bookings` + `booking_slots` (the canonical post-00277 model). The legacy `reservations` table was dropped in 00280; the original plan was built on a non-existent table. |
+| C2 | CRITICAL | Status enum corrected — exclude `'draft'` and `'cancelled'`; allow all others (incl. `'completed'`, `'released'`, `'checked_in'`, `'pending_approval'`, `'confirmed'`). |
+| C3 | CRITICAL | Visibility-leak avoided — no `current_booking.title` / identity in the response. State is anonymized aggregate; identity in `'mine'` only matches caller's own person. Booking details go through gated `GET /api/bookings/:id`. |
+| C4 | CRITICAL | Controller mount path explicit: endpoint added to `FloorPlanController` (already mounted at `floors/:floorSpaceId/plan`) — resolves to `/api/floors/:id/plan/availability`. |
+| I3 | IMPORTANT | `useFloorAvailability` uses plain `useQuery` + `handleQueryError`, not `usePageQuery`. Page primary is `useFloorPlanPublished` (correct "no plan yet" empty state). |
+| I4 | IMPORTANT | Added pre-spike to extract create-booking mutation to a shared hook before BookingSheet uses it. |
+| I7 | IMPORTANT | Floor switcher mini-occupancy N+1 acknowledged as v1 acceptable; promoted to followup #3. |
+| I8 | IMPORTANT | Scheduler ↔ floor-plan window binding (E.1) flagged with required spike before E.1 implementation. |
+| I9 | IMPORTANT | "View on floor" (E.2) requires bookings list to include polygon presence — added to E.2 step note. |
+| I10 | IMPORTANT | BookingSheet mutation respects `broken` realtime state today; documented. |
+| N1 | NIT | `useNow` confirmed to exist at `apps/web/src/lib/use-now.ts`. |
+| N5 | NIT | Field primitives mandate in BookingSheet documented. |
+| N6 | NIT | `withErrorHandling` for BookingSheet mutation documented. |
+| N7 | NIT | Out-of-scope callouts added (parking, visitor flag, hot-desk zone). |
+| N8 | NIT | Plan 1 dependency check added to Pre-flight Step 0. |
+
+Realtime publication (I1): `bookings` and `booking_slots` need to be in `supabase_realtime` publication. Added explicit check + one-line migration if absent in D.2 Step 4.
