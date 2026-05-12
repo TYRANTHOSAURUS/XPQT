@@ -39,6 +39,12 @@ interface Props {
   isDragging?: boolean;
   /** Custom pointer-down handler from the lane's drag controller. */
   onPointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  /**
+   * Right-edge resize handle pointer-down. When provided, the block shows
+   * a 4px right-edge grab affordance (visible on hover). `null` /
+   * `undefined` disables resize. Same `can_plan` gate as the move handler.
+   */
+  onResizeHandlePointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
 }
 
 export const PlanningBlock = memo(function PlanningBlock({
@@ -49,6 +55,7 @@ export const PlanningBlock = memo(function PlanningBlock({
   endIso,
   isDragging,
   onPointerDown,
+  onResizeHandlePointerDown,
 }: Props) {
   const navigate = useNavigate();
   const statusEntry = statusConfig[block.status_category] ?? statusConfig.new;
@@ -138,6 +145,27 @@ export const PlanningBlock = memo(function PlanningBlock({
           aria-hidden
           className="pointer-events-none absolute top-0 bottom-0 w-px bg-red-500"
           style={{ left: `${deadlineInside}%`, boxShadow: '0 0 0 1px rgb(239 68 68 / 0.2)' }}
+        />
+      )}
+
+      {/* Right-edge resize handle. Invisible by default; faint vertical
+          accent on hover. Click-and-drag here invokes the resize gesture
+          (which changes duration only, no move + no reassignment).
+          `stopPropagation` keeps the move handler on the block's body
+          from firing too. */}
+      {canPlan && onResizeHandlePointerDown && (
+        <div
+          aria-label="Resize duration"
+          role="separator"
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            onResizeHandlePointerDown(e);
+          }}
+          className={cn(
+            'absolute top-0 bottom-0 right-0 z-20 w-2 cursor-ew-resize',
+            'after:absolute after:top-2 after:bottom-2 after:right-0.5 after:w-px',
+            'after:bg-border/0 group-hover:after:bg-border/80 hover:after:bg-foreground/40',
+          )}
         />
       )}
     </div>

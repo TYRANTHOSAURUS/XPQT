@@ -42,6 +42,8 @@ interface Props {
   rowHeight?: number;
   pendingDrag?: PendingBlockDrag | null;
   onBlockPointerDown?: (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => void;
+  /** Resize-handle pointer-down — passed through to each lane row. */
+  onBlockResizePointerDown?: (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => void;
   onLaneRowPointerMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onLaneRowPointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
 }
@@ -63,6 +65,7 @@ export function PlanningGrid({
   rowHeight = 64,
   pendingDrag,
   onBlockPointerDown,
+  onBlockResizePointerDown,
   onLaneRowPointerMove,
   onLaneRowPointerUp,
 }: Props) {
@@ -120,6 +123,7 @@ export function PlanningGrid({
               isPinned={lane.id.kind === 'unassigned'}
               isDropTarget={isDropTarget}
               onBlockPointerDown={onBlockPointerDown}
+              onBlockResizePointerDown={onBlockResizePointerDown}
               onLaneRowPointerMove={onLaneRowPointerMove}
               onLaneRowPointerUp={onLaneRowPointerUp}
             />

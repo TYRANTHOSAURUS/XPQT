@@ -29,6 +29,9 @@ interface Props {
   pendingDrag?: PendingDrag | null;
   /** Pointer-down on a block — forwarded to the drag controller. */
   onBlockPointerDown?: (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => void;
+  /** Pointer-down on a block's right-edge resize handle — forwarded to the
+   *  drag controller with a `'resize'` source so only the duration changes. */
+  onBlockResizePointerDown?: (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => void;
   /** Lane row pointer events (for drag-move tracking + rail-to-lane drops). */
   onLaneRowPointerMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onLaneRowPointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
@@ -75,6 +78,7 @@ export const PlanningLaneRow = memo(function PlanningLaneRow({
   windowEndIso,
   pendingDrag,
   onBlockPointerDown,
+  onBlockResizePointerDown,
   onLaneRowPointerMove,
   onLaneRowPointerUp,
   isPinned,
@@ -185,6 +189,9 @@ export const PlanningLaneRow = memo(function PlanningLaneRow({
               isDragging={isDragging}
               onPointerDown={
                 onBlockPointerDown ? (e) => onBlockPointerDown(e, block) : undefined
+              }
+              onResizeHandlePointerDown={
+                onBlockResizePointerDown ? (e) => onBlockResizePointerDown(e, block) : undefined
               }
             />
           );

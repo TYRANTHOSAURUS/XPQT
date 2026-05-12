@@ -231,6 +231,8 @@ export function DeskPlanningPage() {
   const onBlockPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => {
       if (!block.planned_start_at || !block.can_plan) return;
+      // If the user grabbed the right-edge resize handle, we don't reach
+      // this callback (the handle stops propagation). Still bail-guard.
       const startCell = isoToCell({
         dates,
         columnsPerDay: COLUMNS_PER_DAY,
@@ -308,6 +310,47 @@ export function DeskPlanningPage() {
     [invalidatePlanning, mutateWorkOrder, patchPlanningCache],
   );
 
+  // Block resize-handle drag start. Anchors at the current block's start
+  // cell; moves only the right edge → only `planned_duration_minutes`
+  // changes on commit. No lane reassignment.
+  const onBlockResizePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => {
+      if (!block.planned_start_at || !block.can_plan) return;
+      const startCell = isoToCell({
+        dates,
+        columnsPerDay: COLUMNS_PER_DAY,
+        dayStartHour: DAY_START_HOUR,
+        cellMinutes: CELL_MINUTES,
+        iso: block.planned_start_at,
+      });
+      if (startCell == null) return;
+      const cellSpan = Math.max(
+        1,
+        Math.ceil((block.planned_duration_minutes ?? 60) / CELL_MINUTES),
+      );
+      // The block's body owns the move gesture; the resize handle that
+      // dispatched this event is `e.currentTarget`. Capture pointer on
+      // the parent block so events keep firing after we leave the
+      // handle's tiny hit-area.
+      const handleEl = e.currentTarget as HTMLElement;
+      const blockEl = (handleEl.parentElement ?? handleEl) as HTMLElement;
+      const laneEl = blockEl.closest('[data-lane-key]') as HTMLElement | null;
+      const originLaneKey = laneEl?.getAttribute('data-lane-key') ?? null;
+      dragController.begin(e, {
+        blockId: block.id,
+        source: 'resize',
+        // grabOffsetPx is unused for resize, the handle is the implicit
+        // anchor and the math uses cellAtCursor directly.
+        grabOffsetPx: 0,
+        cellSpan,
+        originLaneKey,
+        captureEl: blockEl,
+        originStartCell: startCell,
+      });
+    },
+    [dates, dragController],
+  );
+
   // Rail (rail → lane) drag start.
   const onRailPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => {
@@ -331,12 +374,56 @@ export function DeskPlanningPage() {
     [dragController],
   );
 
+  const commitResize = useCallback(
+    async (
+      block: WorkOrderPlanningBlock,
+      newDurationMinutes: number,
+      requestId?: string,
+    ) => {
+      const xCid = requestId ?? crypto.randomUUID();
+      // Optimistic update — replace the block's duration in the cached
+      // planned[] response. Lane / start unchanged.
+      patchPlanningCache((prev) => {
+        const idx = prev.planned.findIndex((b) => b.id === block.id);
+        if (idx < 0) return prev;
+        const next = [...prev.planned];
+        next[idx] = { ...next[idx], planned_duration_minutes: newDurationMinutes };
+        return { ...prev, planned: next };
+      });
+      try {
+        await mutateWorkOrder(
+          block.id,
+          { planned_duration_minutes: newDurationMinutes },
+          xCid,
+        );
+      } catch (err) {
+        invalidatePlanning();
+        toastError("Couldn't resize plan", {
+          error: err,
+          retry: () => commitResize(block, newDurationMinutes, xCid),
+        });
+        return;
+      }
+      invalidatePlanning();
+    },
+    [invalidatePlanning, mutateWorkOrder, patchPlanningCache],
+  );
+
   const handleDrop = useCallback(
     (state: PlanningDragState) => {
       const block =
         data.planned.find((b) => b.id === state.blockId) ??
         data.unscheduled.find((b) => b.id === state.blockId);
       if (!block) return;
+
+      // Resize commits as a duration-only PATCH; bypass the move path.
+      if (state.source === 'resize') {
+        const newDurationMinutes = state.cellSpan * CELL_MINUTES;
+        if (newDurationMinutes === block.planned_duration_minutes) return;
+        void commitResize(block, newDurationMinutes);
+        return;
+      }
+
       if (!state.targetLaneKey) return;
 
       const isoStart = cellToIso({
@@ -372,7 +459,7 @@ export function DeskPlanningPage() {
       }
       void commitDrop(block, isoStart, durationMinutes, assigneeOverride);
     },
-    [commitDrop, data, dates],
+    [commitDrop, commitResize, data, dates],
   );
 
   handleDropRef.current = handleDrop;
@@ -494,6 +581,7 @@ export function DeskPlanningPage() {
               windowEndIso={windowEndIso}
               pendingDrag={pendingDrag}
               onBlockPointerDown={onBlockPointerDown}
+              onBlockResizePointerDown={onBlockResizePointerDown}
               onLaneRowPointerMove={onLaneRowPointerMove}
               onLaneRowPointerUp={onLaneRowPointerUp}
             />

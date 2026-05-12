@@ -23,14 +23,22 @@ import { useCallback, useRef, useState } from 'react';
 
 export interface PlanningDragState {
   blockId: string;
-  source: 'lane' | 'rail';
+  /**
+   * `'lane'` — drag-move from a placed lane block to a new slot / lane.
+   * `'rail'` — drop from the unscheduled rail onto a lane.
+   * `'resize'` — drag the right edge of a placed lane block to extend / shrink
+   * its `planned_duration_minutes`. Origin lane is preserved; only `cellSpan`
+   * + `newEndCell` move. `newStartCell` stays at the block's original start.
+   */
+  source: 'lane' | 'rail' | 'resize';
   /** Lane key the drag originated on. `null` for rail items. */
   originLaneKey: string | null;
   /** Lane key the cursor is currently over. `null` when not over a lane. */
   targetLaneKey: string | null;
-  /** Block's cell span. Constant during the drag. */
+  /** Block's cell span. Mutable when `source === 'resize'`; fixed otherwise. */
   cellSpan: number;
-  /** New start cell inside the target lane. */
+  /** New start cell inside the target lane. For `'resize'` this stays at
+   *  the origin start cell. */
   newStartCell: number;
   /** New end cell inside the target lane. */
   newEndCell: number;
@@ -38,9 +46,10 @@ export interface PlanningDragState {
 
 interface BeginArgs {
   blockId: string;
-  source: 'lane' | 'rail';
+  source: 'lane' | 'rail' | 'resize';
   /** Pixel offset within the originating block where the drag started.
-   *  Used to keep the block's grab point under the cursor. */
+   *  Used to keep the block's grab point under the cursor. Ignored for
+   *  `'resize'` (the right edge is the implicit anchor). */
   grabOffsetPx: number;
   /** Block's cell span (from current `planned_duration_minutes`). */
   cellSpan: number;
@@ -68,6 +77,13 @@ export function usePlanningDrag(opts: {
         currentTargetLaneKey: string | null;
         currentStartCell: number;
         currentEndCell: number;
+        /**
+         * The cellSpan at gesture begin. `cellSpan` on BeginArgs is also
+         * mutated during the drag (resize only); this captures the
+         * original so we can detect "did the span actually change" on
+         * pointerUp without comparing against the post-mutation value.
+         */
+        originCellSpan: number;
       })
     | null
   >(null);
@@ -88,6 +104,7 @@ export function usePlanningDrag(opts: {
         currentTargetLaneKey: args.originLaneKey,
         currentStartCell: args.originStartCell,
         currentEndCell: args.originStartCell + args.cellSpan - 1,
+        originCellSpan: args.cellSpan,
       };
       setActive({
         blockId: args.blockId,
@@ -107,20 +124,39 @@ export function usePlanningDrag(opts: {
       const ctx = ctxRef.current;
       if (!ctx) return;
       const { laneKey, cellAtCursor } = resolveLaneAtPoint(e.clientX, e.clientY, totalColumns, ctx.grabOffsetPx);
-      let startCell = cellAtCursor;
-      // Clamp inside the lane.
-      const maxStart = totalColumns - ctx.cellSpan;
-      startCell = Math.max(0, Math.min(maxStart, startCell));
-      const endCell = startCell + ctx.cellSpan - 1;
+
+      let startCell: number;
+      let endCell: number;
+      let span: number;
+
+      if (ctx.source === 'resize') {
+        // Resize keeps the block anchored at its original start cell and
+        // moves only the right edge. The cursor's cell becomes the new
+        // end cell (inclusive); cellSpan recomputes to (end - start + 1).
+        // Clamp to at least 1 cell wide so the block can never collapse.
+        startCell = ctx.originStartCell;
+        const maxEnd = totalColumns - 1;
+        endCell = Math.max(startCell, Math.min(maxEnd, cellAtCursor));
+        span = endCell - startCell + 1;
+      } else {
+        // Move / rail-drop: the cursor's cell becomes the new start cell,
+        // the span is preserved.
+        const maxStart = totalColumns - ctx.cellSpan;
+        startCell = Math.max(0, Math.min(maxStart, cellAtCursor));
+        endCell = startCell + ctx.cellSpan - 1;
+        span = ctx.cellSpan;
+      }
+
       ctx.currentTargetLaneKey = laneKey;
       ctx.currentStartCell = startCell;
       ctx.currentEndCell = endCell;
+      ctx.cellSpan = span;
       setActive({
         blockId: ctx.blockId,
         source: ctx.source,
         originLaneKey: ctx.originLaneKey,
-        targetLaneKey: laneKey,
-        cellSpan: ctx.cellSpan,
+        targetLaneKey: ctx.source === 'resize' ? ctx.originLaneKey : laneKey,
+        cellSpan: span,
         newStartCell: startCell,
         newEndCell: endCell,
       });
@@ -141,25 +177,47 @@ export function usePlanningDrag(opts: {
       // the pointer with the cursor still moving — `currentTargetLaneKey`
       // may be one event behind).
       const { laneKey, cellAtCursor } = resolveLaneAtPoint(e.clientX, e.clientY, totalColumns, ctx.grabOffsetPx);
-      const maxStart = totalColumns - ctx.cellSpan;
-      const startCell = Math.max(0, Math.min(maxStart, cellAtCursor));
-      const endCell = startCell + ctx.cellSpan - 1;
+
+      let startCell: number;
+      let endCell: number;
+      let span: number;
+      let effectiveTargetLane: string | null;
+
+      if (ctx.source === 'resize') {
+        startCell = ctx.originStartCell;
+        const maxEnd = totalColumns - 1;
+        endCell = Math.max(startCell, Math.min(maxEnd, cellAtCursor));
+        span = endCell - startCell + 1;
+        // Resize is anchored to the origin lane. The cursor's lane is
+        // irrelevant — even if it strays the block stays put.
+        effectiveTargetLane = ctx.originLaneKey;
+      } else {
+        const maxStart = totalColumns - ctx.cellSpan;
+        startCell = Math.max(0, Math.min(maxStart, cellAtCursor));
+        endCell = startCell + ctx.cellSpan - 1;
+        span = ctx.cellSpan;
+        effectiveTargetLane = laneKey;
+      }
 
       const movedOnSameLane =
-        laneKey !== null &&
-        laneKey === ctx.originLaneKey &&
+        ctx.source !== 'resize' &&
+        effectiveTargetLane !== null &&
+        effectiveTargetLane === ctx.originLaneKey &&
         startCell !== ctx.originStartCell;
       const droppedOnAnotherLane =
-        laneKey !== null && laneKey !== ctx.originLaneKey;
-      const droppedFromRail = ctx.source === 'rail' && laneKey !== null;
+        ctx.source !== 'resize' &&
+        effectiveTargetLane !== null &&
+        effectiveTargetLane !== ctx.originLaneKey;
+      const droppedFromRail = ctx.source === 'rail' && effectiveTargetLane !== null;
+      const resizedCommit = ctx.source === 'resize' && span !== ctx.originCellSpan;
 
-      if (movedOnSameLane || droppedOnAnotherLane || droppedFromRail) {
+      if (movedOnSameLane || droppedOnAnotherLane || droppedFromRail || resizedCommit) {
         onComplete({
           blockId: ctx.blockId,
           source: ctx.source,
           originLaneKey: ctx.originLaneKey,
-          targetLaneKey: laneKey,
-          cellSpan: ctx.cellSpan,
+          targetLaneKey: effectiveTargetLane,
+          cellSpan: span,
           newStartCell: startCell,
           newEndCell: endCell,
         });
