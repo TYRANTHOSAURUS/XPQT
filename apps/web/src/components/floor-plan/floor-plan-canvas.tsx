@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { PolygonShape } from './polygon-shape';
+import { polygonCentroid } from './lib/polygon-geometry';
 import type { PublishedFloorPlan } from '../../api/floor-plans/types';
 import type { AvailabilityState } from './lib/availability-state';
 
@@ -12,20 +13,33 @@ type Props = {
   onSpaceClick?: (spaceId: string) => void;
   /** Pass true when the canvas is showing the current time window (now is within from..to). */
   isCurrentWindow?: boolean;
+  /** Display name for the floor — used in the region aria-label for keyboard users. */
+  floorName?: string;
 };
 
-export function FloorPlanCanvas({ plan, states, selectedSpaceId, onSpaceClick, isCurrentWindow }: Props) {
+export function FloorPlanCanvas({ plan, states, selectedSpaceId, onSpaceClick, isCurrentWindow, floorName }: Props) {
   const stateMap = useMemo(() => {
     const m = new Map<string, SpaceState>();
     states?.forEach((s) => m.set(s.spaceId, s));
     return m;
   }, [states]);
 
+  // Sort spaces by centroid Y then X so Tab order matches top-to-bottom, left-to-right reading.
+  const sortedSpaces = useMemo(
+    () =>
+      [...plan.spaces].sort((a, b) => {
+        const ca = polygonCentroid(a.floor_plan_polygon.points);
+        const cb = polygonCentroid(b.floor_plan_polygon.points);
+        return ca.y !== cb.y ? ca.y - cb.y : ca.x - cb.x;
+      }),
+    [plan.spaces],
+  );
+
   return (
     <svg
       viewBox={`0 0 ${plan.floor.width_px} ${plan.floor.height_px}`}
-      role="img"
-      aria-label="Floor plan"
+      role="region"
+      aria-label={`Floor plan: ${floorName ?? 'floor'}`}
       style={{ width: '100%', height: '100%', display: 'block' }}
     >
       <defs>
@@ -35,7 +49,7 @@ export function FloorPlanCanvas({ plan, states, selectedSpaceId, onSpaceClick, i
         </pattern>
       </defs>
       <image href={plan.floor.image_url} x="0" y="0" width={plan.floor.width_px} height={plan.floor.height_px} />
-      {plan.spaces.map((s) => {
+      {sortedSpaces.map((s) => {
         const entry = stateMap.get(s.id);
         return (
           <PolygonShape

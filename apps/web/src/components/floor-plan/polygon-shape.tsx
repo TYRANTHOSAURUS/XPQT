@@ -45,7 +45,7 @@ export function PolygonShape({ spaceId, points, renderHint, name, capacity, stat
       <g
         role="button"
         tabIndex={0}
-        aria-label={`${name}: ${state}`}
+        aria-label={`${name}${capacity ? `, ${capacity} seats` : ''}, ${state}`}
         onClick={() => onClick?.(spaceId)}
         onKeyDown={(e) => e.key === 'Enter' && onClick?.(spaceId)}
         style={{ cursor: 'pointer' }}
@@ -64,7 +64,7 @@ export function PolygonShape({ spaceId, points, renderHint, name, capacity, stat
     <g
       role="button"
       tabIndex={0}
-      aria-label={`${name}: ${state}, capacity ${capacity ?? 'unknown'}${freeInLabel ? `, ${freeInLabel}` : ''}`}
+      aria-label={`${name}${capacity ? `, ${capacity} seats` : ''}, ${state}${freeInLabel ? `, ${freeInLabel}` : ''}`}
       onClick={() => onClick?.(spaceId)}
       onKeyDown={(e) => e.key === 'Enter' && onClick?.(spaceId)}
       style={{ cursor: 'pointer' }}

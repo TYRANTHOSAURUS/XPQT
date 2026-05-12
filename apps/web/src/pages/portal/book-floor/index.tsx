@@ -13,6 +13,16 @@
  *   ?to=<iso>        — window end (defaults to from + 60 min)
  *
  * D.5 — floor-plan booking surface.
+ *
+ * Mobile click-to-book acceptance path (F.2):
+ * 1. Open /portal/book/floor at <= 767px viewport
+ * 2. See building/floor switcher + time scrubber + at least one green polygon
+ * 3. Tap available polygon → BookingSheet slides up
+ * 4. Tap "Book {room}" → toast "Booking created" with View action
+ * 5. Sheet closes; polygon turns blue (state: 'mine') within 2s via realtime
+ * 6. Tap polygon again → sheet shows the booking's window with cancel action (TODO: cancel wiring)
+ *
+ * If any step breaks at /portal/book/floor manual test, file a bug.
  */
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';

@@ -2,6 +2,11 @@ import { useRef, useState, useCallback, type ReactNode, type WheelEvent, type Po
 
 type Props = { children: ReactNode; minScale?: number; maxScale?: number };
 
+/** Returns true when the user has requested reduced motion via OS/browser preference. */
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
 export function ZoomPanLayer({ children, minScale = 0.25, maxScale = 8 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [{ scale, tx, ty }, setTransform] = useState({ scale: 1, tx: 0, ty: 0 });
@@ -13,7 +18,8 @@ export function ZoomPanLayer({ children, minScale = 0.25, maxScale = 8 }: Props)
     if (!rect) return;
     const cx = e.clientX - rect.left;
     const cy = e.clientY - rect.top;
-    const delta = -e.deltaY * 0.0012;
+    // Reduced-motion: skip the smooth ramp (delta multiplier) and jump directly to a fixed step.
+    const delta = prefersReducedMotion() ? (e.deltaY < 0 ? 0.15 : -0.15) : -e.deltaY * 0.0012;
     setTransform((prev) => {
       const next = Math.min(maxScale, Math.max(minScale, prev.scale * (1 + delta)));
       const ratio = next / prev.scale;
