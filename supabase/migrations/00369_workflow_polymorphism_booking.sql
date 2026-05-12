@@ -163,9 +163,17 @@ end $$;
 --    inherited the column default — both cases require explicit operator
 --    decision.
 --
---    Phase 0 therefore adds a third preflight (below) that aborts if any
---    'ticket' row survives, then widens the CHECK. No auto-derive UPDATE.
---    The spec §3.1 drafted SQL is corrected by this migration.
+--    Phase 0 therefore adds a third preflight (below) — DEFENSE-IN-DEPTH
+--    only. The PRIMARY fail-loud lives in 00368's audit block (escalated
+--    to RAISE EXCEPTION 2026-05-12), which catches any 'ticket' row not
+--    classified by the enumerated id list or the dynamic name match. This
+--    third preflight covers the edge case where 00368 was rolled back
+--    manually, skipped, or where a tenant admin authored a NEW
+--    entity_type='ticket' row between 00368 and 00369 applying.
+--    The codex review (2026-05-12) flagged that the primary attribution
+--    is 00368; this preflight is a backstop, not the front door.
+--    No auto-derive UPDATE here — the v2.1 spec drafted one; v2.2
+--    plan-review removed it per §4 "no silent heuristic" rule.
 --
 --    00009:8 declared `entity_type text not null default 'ticket'` with NO
 --    CHECK constraint, so dropping `if exists` is the safe baseline.
@@ -186,6 +194,18 @@ alter table public.workflow_definitions
 alter table public.workflow_definitions
   add constraint workflow_definitions_entity_type_check
     check (entity_type in ('case', 'work_order', 'booking'));
+
+-- Codex remediation (BLOCKER 2026-05-12): 00009:8 declared
+-- `entity_type text not null default 'ticket'`. After this migration
+-- widens the CHECK above to exclude 'ticket', the legacy default would
+-- cause every new INSERT that omits `entity_type` to violate the CHECK
+-- and fail. The API at `apps/api/src/modules/workflow/workflow.service.ts:51`
+-- also defaulted to 'ticket' — that's fixed in the same commit. Change
+-- the column default to 'case' (the dominant historical use) so the
+-- DB-level fallback is safe even if a future caller skips the TS
+-- default.
+alter table public.workflow_definitions
+  alter column entity_type set default 'case';
 
 -- ── 4. workflow_instances: drop ticket_id NOT NULL + add booking_id +
 --    widen entity_kind CHECK. Spec §3.1 lines 396-418.
@@ -237,6 +257,15 @@ begin
   -- entity_kind = 'case'|'work_order'|'booking'). Dropping the old index
   -- without classifying these rows silently removes their uniqueness
   -- protection — duplicate active workflows could land per (tenant, ticket).
+  --
+  -- Scope: ACTIVE / WAITING only. Codex remediation 2026-05-12 noted
+  -- completed/failed rows with NULL entity_kind could survive Phase 0 if
+  -- they existed pre-00228. Those rows are inert: the old 00345 index
+  -- already excluded them (predicate `status in ('active','waiting')`),
+  -- the new partial indices also exclude them, and the validate trigger
+  -- only fires on INSERT/UPDATE not on existing rows. They represent
+  -- legacy junk, not a correctness risk. A NOTICE block below surfaces
+  -- them so operators can clean up at their leisure post-Phase 0.
   select count(*) into v_null_kind
     from public.workflow_instances
    where status in ('active', 'waiting')
@@ -244,6 +273,21 @@ begin
   if v_null_kind > 0 then
     raise exception
       'workflow_instances active-NULL-entity_kind preflight: % active row(s) with entity_kind IS NULL. These were protected by the 00345 (tenant_id, ticket_id) index but won''t fit any of the new polymorphic partial indices. Classify each row''s entity_kind explicitly (case/work_order) before re-running 00369. Audit query: select id, ticket_id, status, started_at from workflow_instances where status in (''active'',''waiting'') and entity_kind is null;',
+      v_null_kind;
+  end if;
+
+  -- Surface (but don't block on) historical NULL-entity_kind terminal rows.
+  -- Codex remediation 2026-05-12: completed/failed rows with NULL
+  -- entity_kind that pre-date 00230's derive trigger can persist. Inert
+  -- (no schema constraint applies to them) but worth flagging so operators
+  -- can run a cleanup migration when convenient.
+  select count(*) into v_null_kind
+    from public.workflow_instances
+   where status not in ('active', 'waiting')
+     and entity_kind is null;
+  if v_null_kind > 0 then
+    raise notice
+      'workflow_instances has % terminal-status row(s) with entity_kind IS NULL. These are inert (excluded from all indices + the validate trigger only fires on new INSERT/UPDATE) but represent legacy data drift. Recommended cleanup: update entity_kind + the matching polymorphic id based on the row''s ticket_id existence in tickets / work_orders. Not blocking 00369.',
       v_null_kind;
   end if;
 
@@ -365,11 +409,18 @@ begin
       raise exception 'workflow_instance.entity_kind_immutable_post_insert';
     end if;
     -- Permits the FK SET NULL transition (non-null → null on parent delete)
-    -- per the 00239 contract; rejects non-null → other-non-null swaps and
-    -- cross-kind id smuggling.
+    -- per the 00239 contract; rejects all other transitions:
+    --   - non-null → other-non-null (rebind to a different entity)
+    --   - null → non-null (re-attach orphaned instance to any new entity —
+    --     codex remediation 2026-05-12: previously allowed, which let an
+    --     instance whose parent was FK-SET-NULL be silently rebound)
+    --   - cross-kind id smuggling (writing the wrong polymorphic id)
     if (old.case_id is not null and new.case_id is not null and new.case_id <> old.case_id) or
        (old.work_order_id is not null and new.work_order_id is not null and new.work_order_id <> old.work_order_id) or
        (old.booking_id is not null and new.booking_id is not null and new.booking_id <> old.booking_id) or
+       (old.case_id is null and new.case_id is not null) or
+       (old.work_order_id is null and new.work_order_id is not null) or
+       (old.booking_id is null and new.booking_id is not null) or
        (new.entity_kind = 'case'       and (new.work_order_id is distinct from old.work_order_id or new.booking_id    is distinct from old.booking_id)) or
        (new.entity_kind = 'work_order' and (new.case_id       is distinct from old.case_id       or new.booking_id    is distinct from old.booking_id)) or
        (new.entity_kind = 'booking'    and (new.case_id       is distinct from old.case_id       or new.work_order_id is distinct from old.work_order_id))

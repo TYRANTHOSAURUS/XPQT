@@ -56,10 +56,12 @@
 -- child_instance_id is non-null, child.tenant_id) matches NEW.tenant_id.
 -- Without this trigger, a privileged caller could smuggle a cross-tenant
 -- parent reference into a tenant-isolated link row, leaking workflow state
--- across tenants. The trigger is NOT `security definer` — it reads
--- workflow_instances which is RLS-gated, but at INSERT time the calling
--- session must already see both the parent and child rows for this to be
--- a meaningful check. Operators (admin/service-role) bypass RLS naturally.
+-- across tenants. The trigger IS `security definer` with explicit
+-- search_path = public, pg_catalog (plan-review remediation 2026-05-12).
+-- Defends against the case where the caller's RLS context filters the
+-- workflow_instances SELECT to zero rows and the check would otherwise
+-- false-reject a legitimate same-tenant insert. The tenant-equality
+-- semantics are preserved: cross-tenant attempts still raise.
 --
 -- ── Cleanup runbook ───────────────────────────────────────────────────────
 --
@@ -170,6 +172,18 @@ create index idx_wil_waiting on public.workflow_instance_links (resolved_at, wai
   where resolved_at is null and spawn_mode = 'wait';
 create index idx_wil_aggregation on public.workflow_instance_links (aggregation_group_id)
   where aggregation_group_id is not null;
+
+-- Tier 2 wake handler composite index (codex remediation 2026-05-12).
+-- Spec §3.5 Tier 2 query: `WHERE tenant_id = X AND child_entity_id = Y
+-- AND resolved_at IS NULL AND spawn_mode = 'wait'`. The existing indices
+-- (tenant alone, child_instance_id alone, resolved_at+wait_timeout) all
+-- match on a subset but force the planner to filter the rest. A composite
+-- partial covers the wake path cleanly. child_entity_id is the
+-- denormalized entity reference (entity_id), distinct from
+-- child_instance_id (workflow_instance fk).
+create index idx_wil_wake_lookup on public.workflow_instance_links
+  (tenant_id, child_entity_id)
+  where resolved_at is null and spawn_mode = 'wait';
 
 -- ── Tenant assertion trigger. Spec §3.2 lines 571-598.
 --
