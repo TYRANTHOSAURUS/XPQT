@@ -1219,7 +1219,18 @@ export class BookingFlowService {
     }
   }
 
-  private async loadSpace(spaceId: string): Promise<{
+  /**
+   * Load + tenant-validate a `spaces` row.
+   *
+   * Visibility (B.4 step 2D-C, 2026-05-12): EXPOSED (was `private`) so the
+   * `assembleEditPlan` orchestrator can reuse the same tenant-scoped read +
+   * `space_inactive` / `space_not_reservable` validation when building the
+   * `EditPlan` for a target room. The shape + invariants are unchanged.
+   * Reference: docs/follow-ups/b4-booking-edit-pipeline.md §3.3 step 3
+   * (cited at "loadSpace in booking-flow.service.ts:1264-1282" — re-anchored
+   * after this exposure).
+   */
+  async loadSpace(spaceId: string): Promise<{
     id: string;
     type: string;
     reservable: boolean;
