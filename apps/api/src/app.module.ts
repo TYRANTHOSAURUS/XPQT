@@ -51,6 +51,7 @@ import { VisitorsModule } from './modules/visitors/visitors.module';
 import { MailModule } from './common/mail/mail.module';
 import { OutboxModule } from './modules/outbox/outbox.module';
 import { FloorPlanModule } from './modules/floor-plan/floor-plan.module';
+import { MaintenanceModule } from './modules/maintenance/maintenance.module';
 
 @Module({
   imports: [
@@ -103,6 +104,7 @@ import { FloorPlanModule } from './modules/floor-plan/floor-plan.module';
     MailModule,
     OutboxModule,
     FloorPlanModule,
+    MaintenanceModule,
   ],
   controllers: [HealthController],
   providers: [
