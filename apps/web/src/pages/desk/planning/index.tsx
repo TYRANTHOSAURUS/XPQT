@@ -31,6 +31,7 @@ import { PlanningGrid, type PlanningLane, type PendingBlockDrag } from './compon
 import { UnscheduledRail } from './components/unscheduled-rail';
 import { usePlanningDrag, type PlanningDragState } from './hooks/use-planning-drag';
 import { runOptimisticWithRollback } from './lib/commit-with-rollback';
+import { deriveLanesFromBlocks } from './lib/lanes';
 
 const RAIL_STORAGE_KEY = 'desk-planning-rail-collapsed';
 
@@ -191,32 +192,10 @@ export function DeskPlanningPage() {
     onComplete: (state) => handleDropRef.current?.(state),
   });
 
-  const lanes: PlanningLane[] = useMemo(() => {
-    const map = new Map<string, PlanningLane>();
-    const ensure = (laneId: PlanningLaneId): PlanningLane => {
-      const key = `${laneId.kind}:${laneId.id ?? '∅'}`;
-      let lane = map.get(key);
-      if (!lane) {
-        lane = { id: laneId, blocks: [] };
-        map.set(key, lane);
-      }
-      return lane;
-    };
-    for (const block of data.planned) {
-      const lane = ensure(block.lane);
-      lane.blocks.push(block);
-    }
-    // Codex review 2026-05-12: also seed lanes from the unscheduled rail's
-    // current assignees. Without this, a day with zero planned blocks for a
-    // given user shows zero drop targets, even though the user has open
-    // rail work that the dispatcher wants to drag onto them. Don't push
-    // the unscheduled block onto `lane.blocks` — those render in the rail,
-    // not on the grid — just register the lane so it's a drop target.
-    for (const block of data.unscheduled) {
-      ensure(block.lane);
-    }
-    return Array.from(map.values());
-  }, [data.planned, data.unscheduled]);
+  const lanes: PlanningLane[] = useMemo(
+    () => deriveLanesFromBlocks(data.planned, data.unscheduled),
+    [data.planned, data.unscheduled],
+  );
 
   // Block (lane → lane) drag start.
   const onBlockPointerDown = useCallback(
