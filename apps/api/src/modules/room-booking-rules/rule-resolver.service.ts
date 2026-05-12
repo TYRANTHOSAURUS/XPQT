@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { TenantContext } from '../../common/tenant-context';
 import { AppErrors } from '../../common/errors';
 import {
   loadPermissionMap,
@@ -84,30 +83,37 @@ export class RuleResolverService {
   /**
    * The single-space resolution path. Builds the EvaluationContext, fetches
    * all candidate rules in one query, evaluates each, and aggregates.
+   *
+   * `tenantId` is threaded explicitly (Phase 8 — retired the ALS read
+   * here). Callers source it from `TenantContext.current().id` at their
+   * own request-boundary; the data-plane helpers below take it as a
+   * typed arg so a missing/wrong tenant is a compile error, not a
+   * runtime cross-tenant leak.
    */
-  async resolve(scenario: BookingScenario): Promise<ResolveOutcome> {
-    const tenant = TenantContext.current();
-
+  async resolve(scenario: BookingScenario, tenantId: string): Promise<ResolveOutcome> {
     const [ctx, candidateRules] = await Promise.all([
-      this.buildContext(scenario),
-      this.fetchCandidateRules(scenario.space_id),
+      this.buildContext(scenario, tenantId),
+      this.fetchCandidateRules(scenario.space_id, tenantId),
     ]);
 
-    return this.evaluateAndAggregate(candidateRules, ctx, scenario.space_id, tenant.id);
+    return this.evaluateAndAggregate(candidateRules, ctx, scenario.space_id, tenantId);
   }
 
   /**
    * Bulk path used by the picker. Loads the requester + every space in one go,
    * fetches rules in one query (tenant + room_type are shared, room/subtree
    * are filtered per space), then evaluates per-space.
+   *
+   * `tenantId` is threaded explicitly (Phase 8) — same rationale as
+   * `resolve`.
    */
   async resolveBulk(
     requesterPersonId: string,
     spaceIds: string[],
     timeRange: { start_at: string; end_at: string },
     criteria: BookingScenario['criteria'] = {},
+    tenantId: string,
   ): Promise<Map<string, ResolveOutcome>> {
-    const tenant = TenantContext.current();
     const out = new Map<string, ResolveOutcome>();
     if (spaceIds.length === 0) return out;
 
@@ -119,12 +125,12 @@ export class RuleResolverService {
     // sequentially is pure latency. Permissions still depend on the
     // requester's user_id, so they happen inside loadRequester's branch.
     const [allRules, { requester, permissions }, spaces] = await Promise.all([
-      this.fetchAllRules(),
+      this.fetchAllRules(tenantId),
       loadRequesterContext(this.supabase, requesterPersonId).then(async (r) => ({
         requester: r,
         permissions: await loadPermissionMap(this.supabase, r.user_id),
       })),
-      this.loadSpacesWithAncestors(spaceIds),
+      this.loadSpacesWithAncestors(spaceIds, tenantId),
     ]);
 
     for (const spaceId of spaceIds) {
@@ -149,28 +155,30 @@ export class RuleResolverService {
       });
       out.set(
         spaceId,
-        await this.evaluateAndAggregate(candidates, ctx, spaceId, tenant.id),
+        await this.evaluateAndAggregate(candidates, ctx, spaceId, tenantId),
       );
     }
     return out;
   }
 
-  /** Used by SimulationService to evaluate a draft rule against a scenario. */
+  /** Used by SimulationService to evaluate a draft rule against a scenario.
+   *
+   * `tenantId` is threaded explicitly (Phase 8) — same rationale as
+   * `resolve`. */
   async evaluateAdHoc(
     rules: RuleRow[],
     scenario: BookingScenario,
+    tenantId: string,
   ): Promise<ResolveOutcome> {
-    const tenant = TenantContext.current();
-    const ctx = await this.buildContext(scenario);
-    return this.evaluateAndAggregate(rules, ctx, scenario.space_id, tenant.id);
+    const ctx = await this.buildContext(scenario, tenantId);
+    return this.evaluateAndAggregate(rules, ctx, scenario.space_id, tenantId);
   }
 
   // ── Internals ──────────────────────────────────────────────────────────
 
-  private async fetchCandidateRules(spaceId: string): Promise<RuleRow[]> {
-    const tenant = TenantContext.current();
+  private async fetchCandidateRules(spaceId: string, tenantId: string): Promise<RuleRow[]> {
     // Load space ancestor chain so we can match space_subtree rules.
-    const ancestorIds = await this.loadAncestorChain(spaceId);
+    const ancestorIds = await this.loadAncestorChain(spaceId, tenantId);
 
     // Single query: pull every rule that COULD match this space. We
     // intentionally over-fetch room_type rules (no SQL filter on type) and
@@ -187,7 +195,7 @@ export class RuleResolverService {
     const { data, error } = await this.supabase.admin
       .from('room_booking_rules')
       .select('*')
-      .eq('tenant_id', tenant.id)
+      .eq('tenant_id', tenantId)
       .eq('active', true)
       .or(orConds);
     if (error) throw error;
@@ -195,23 +203,21 @@ export class RuleResolverService {
   }
 
   /** All active rules in the tenant — used by the bulk picker path. */
-  private async fetchAllRules(): Promise<RuleRow[]> {
-    const tenant = TenantContext.current();
+  private async fetchAllRules(tenantId: string): Promise<RuleRow[]> {
     const { data, error } = await this.supabase.admin
       .from('room_booking_rules')
       .select('*')
-      .eq('tenant_id', tenant.id)
+      .eq('tenant_id', tenantId)
       .eq('active', true);
     if (error) throw error;
     return (data ?? []) as RuleRow[];
   }
 
-  private async loadAncestorChain(spaceId: string): Promise<string[]> {
+  private async loadAncestorChain(spaceId: string, tenantId: string): Promise<string[]> {
     // Walk up via space.parent_id. We could call space_descendants on the
     // root and check membership, but the chain length is bounded (<= 5 for
     // typical tenant trees), so iterative SELECT is fine and doesn't pull
     // every space in the tenant.
-    const tenant = TenantContext.current();
     const ids: string[] = [];
     let current: string | null = spaceId;
     let safety = 0;
@@ -220,7 +226,7 @@ export class RuleResolverService {
         .from('spaces')
         .select('id, parent_id')
         .eq('id', current)
-        .eq('tenant_id', tenant.id)
+        .eq('tenant_id', tenantId)
         .maybeSingle();
       if (result.error) throw result.error;
       const row = result.data as { id: string; parent_id: string | null } | null;
@@ -235,10 +241,10 @@ export class RuleResolverService {
     return ids;
   }
 
-  private async loadSpacesWithAncestors(spaceIds: string[]): Promise<
-    Map<string, SpaceWithChain>
-  > {
-    const tenant = TenantContext.current();
+  private async loadSpacesWithAncestors(
+    spaceIds: string[],
+    tenantId: string,
+  ): Promise<Map<string, SpaceWithChain>> {
     // One query loads all spaces in the tenant — but we don't need every
     // space. Instead we walk parents iteratively per id using a single
     // batched select per layer. For the bulk path (picker, ~30 candidates),
@@ -252,7 +258,7 @@ export class RuleResolverService {
       const { data, error } = await this.supabase.admin
         .from('spaces')
         .select('id, type, parent_id, capacity, min_attendees, default_calendar_id')
-        .eq('tenant_id', tenant.id)
+        .eq('tenant_id', tenantId)
         .in('id', Array.from(layer));
       if (error) throw error;
       const nextLayer = new Set<string>();
@@ -299,10 +305,13 @@ export class RuleResolverService {
     return out;
   }
 
-  private async buildContext(scenario: BookingScenario): Promise<EvaluationContext> {
+  private async buildContext(
+    scenario: BookingScenario,
+    tenantId: string,
+  ): Promise<EvaluationContext> {
     const requester = await loadRequesterContext(this.supabase, scenario.requester_person_id);
     const permissions = await loadPermissionMap(this.supabase, requester.user_id);
-    const spaceMap = await this.loadSpacesWithAncestors([scenario.space_id]);
+    const spaceMap = await this.loadSpacesWithAncestors([scenario.space_id], tenantId);
     const space = spaceMap.get(scenario.space_id);
     if (!space) throw AppErrors.notFoundWithCode('room_rule.space_not_found', `Space ${scenario.space_id} not found`);
     return this.assembleContext({ requester, permissions, space, scenario });

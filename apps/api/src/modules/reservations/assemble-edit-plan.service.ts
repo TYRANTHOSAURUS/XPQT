@@ -56,7 +56,6 @@
 import { Injectable } from '@nestjs/common';
 import { AppError, AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { TenantContext } from '../../common/tenant-context';
 import { ConflictGuardService } from './conflict-guard.service';
 import { BookingFlowService } from './booking-flow.service';
 import { RuleResolverService } from '../room-booking-rules/rule-resolver.service';
@@ -264,44 +263,18 @@ export class AssembleEditPlanService {
   }
 
   /**
-   * Codex remediation 2026-05-12 — hard-assert that the ALS-stored
-   * TenantContext matches the explicit `args.tenantId` BEFORE any plan-
-   * builder DB I/O. The pivot/scope reads in this service filter by
-   * `args.tenantId`, but helpers reached via `buildSingleSlotPlan`
-   * (BookingFlowService.loadSpace at booking-flow.service.ts:1251,
-   * RuleResolverService.resolve at rule-resolver.service.ts:88,
-   * ConflictGuardService.snapshotBuffersForBooking at
-   * conflict-guard.service.ts:138) read tenant from `TenantContext.
-   * current().id`. A drift (ALS not set, programmatic caller mismatch,
-   * async context loss) would silently route those reads to the WRONG
-   * tenant via the supabase.admin client (which bypasses RLS). Pivot +
-   * slot rows tagged with args.tenantId would join against another
-   * tenant's rules/spaces/conflict-windows — silent cross-tenant leak.
+   * Phase 8 (Tier B follow-up #2) — `assertTenantContextMatch` retired.
    *
-   * The proper fix is to thread `tenantId` explicitly through every
-   * helper so they don't read from TenantContext at all (Phase 8
-   * refactor — see docs/follow-ups/b4-followups.md "Plan-builder helpers
-   * read tenant from ALS"). Until then, this assertion at every entry
-   * point catches the mismatch before any helper runs.
-   *
-   * Caller convention: `TenantMiddleware` sets TenantContext from the
-   * request's tenant resolution; service callers that build args.
-   * tenantId from the same source will never trip this. The mismatch
-   * surface is programmatic callers (tests, jobs) that forget to wrap
-   * in `TenantContext.run()`.
+   * The Step 2F.2 hard-assert was a mitigation for ALS-reading helpers
+   * (`BookingFlowService.loadSpace`, `RuleResolverService.resolve`,
+   * `ConflictGuardService.snapshotBuffersForBooking`) that pulled tenant
+   * from `TenantContext.current()`. Those helpers now take `tenantId`
+   * as an explicit arg — the typed signature makes a missing/wrong
+   * tenant a compile error, not a runtime cross-tenant leak. The
+   * runtime 500 (`edit_booking.tenant_context_mismatch`) is gone; the
+   * code, message, and STATUS_BY_CODE entry have been removed from the
+   * shared error registry.
    */
-  private assertTenantContextMatch(expectedTenantId: string): void {
-    const ctx = TenantContext.currentOrNull();
-    if (!ctx || ctx.id !== expectedTenantId) {
-      throw AppErrors.server('edit_booking.tenant_context_mismatch', {
-        detail:
-          `TenantContext.current()=${ctx?.id ?? 'null'} != args.tenantId=${expectedTenantId}. ` +
-          `Helpers in buildSingleSlotPlan rely on TenantContext; mismatch would leak cross-tenant ` +
-          `reads via the admin client. Caller must set TenantContext.run() before invoking the ` +
-          `plan-builder.`,
-      });
-    }
-  }
 
   /**
    * Step 2D-C body — the single-slot, geometry-only edit pipeline.
@@ -313,7 +286,6 @@ export class AssembleEditPlanService {
     args: AssembleEditPlanArgs,
     patch: AssembleEditPlanSlotPatch,
   ): Promise<EditPlan> {
-    this.assertTenantContextMatch(args.tenantId);
     return this.buildSingleSlotPlan(args, {
       space_id: patch.space_id,
       start_at: patch.start_at,
@@ -347,7 +319,6 @@ export class AssembleEditPlanService {
     args: AssembleEditPlanArgs,
     patch: AssembleEditPlanOnePatch,
   ): Promise<EditPlan> {
-    this.assertTenantContextMatch(args.tenantId);
     return this.buildSingleSlotPlan(args, {
       space_id: patch.space_id,
       start_at: patch.start_at,
@@ -427,13 +398,10 @@ export class AssembleEditPlanService {
      */
     forwardOnlyFromStartAt?: string;
   }): Promise<AssembleScopeEditPlanResult> {
-    // Codex remediation 2026-05-12: hard-assert tenant context match BEFORE
-    // any DB I/O. The per-occurrence loop fans out to helpers (loadSpace /
-    // ruleResolver.resolve / conflictGuard.snapshotBuffersForBooking) that
-    // read tenant from TenantContext.current(); a drift between ALS context
-    // and args.tenantId would silently leak cross-tenant reads. See
-    // assertTenantContextMatch() for the full rationale.
-    this.assertTenantContextMatch(args.tenantId);
+    // Phase 8 (Tier B follow-up #2): the Step 2F.2 hard-assert is retired —
+    // helpers (loadSpace / ruleResolver.resolve / snapshotBuffersForBooking)
+    // now take `tenantId` as an explicit arg, so a wrong-tenant call is a
+    // compile error, not a runtime mismatch.
 
     // ── A. Runtime gate on start_at/end_at ────────────────────────────
     // Belt-and-suspenders: the typed union doesn't admit these keys
@@ -698,7 +666,7 @@ export class AssembleEditPlanService {
     };
 
     // ── 3. Load target space (validates active + reservable) ─────────
-    const targetSpace = await this.bookingFlow.loadSpace(target.spaceId);
+    const targetSpace = await this.bookingFlow.loadSpace(target.spaceId, args.tenantId);
 
     // ── 4. (Removed N-CODE-5) The OLD-state resolver call was dead.
     //   `old_outcome` is derived from chain presence (line below), not
@@ -706,14 +674,17 @@ export class AssembleEditPlanService {
     //   per edit for an unused result.
 
     // ── 5. Resolve rules for NEW state (target slot geometry) ────────
-    const newOutcome = await this.ruleResolver.resolve({
-      requester_person_id: booking.requester_person_id,
-      space_id: target.spaceId,
-      start_at: target.startAt,
-      end_at: target.endAt,
-      attendee_count: target.attendeeCount,
-      criteria: {},
-    });
+    const newOutcome = await this.ruleResolver.resolve(
+      {
+        requester_person_id: booking.requester_person_id,
+        space_id: target.spaceId,
+        start_at: target.startAt,
+        end_at: target.endAt,
+        attendee_count: target.attendeeCount,
+        criteria: {},
+      },
+      args.tenantId,
+    );
 
     // ── 4b. CRITICAL C1 fail-fast — require_approval with no approvers.
     //   The rule resolver can return final='require_approval' with
@@ -739,6 +710,7 @@ export class AssembleEditPlanService {
     // current geometry doesn't accidentally collapse a buffer with itself
     // when a same-room move overlaps the original window.
     const buffers = await this.conflict.snapshotBuffersForBooking({
+      tenant_id: args.tenantId,
       space_id: target.spaceId,
       requester_person_id: booking.requester_person_id,
       start_at: target.startAt,

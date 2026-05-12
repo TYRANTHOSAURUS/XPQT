@@ -853,21 +853,6 @@ export type KnownErrorCode =
   // toast (retry + traceId + contact-support) instead of an inline
   // validation surface that the operator can't action.
   | 'edit_booking_scope.update_failed'
-  // B.4 Step 2F.2 codex remediation — tenant context drift guard.
-  // Thrown by AssembleEditPlanService at every plan-builder entry point
-  // (assembleSlotEditPlan / assembleOneEditPlan / assembleScopeEditPlan)
-  // when `TenantContext.current()?.id !== args.tenantId`. Without this
-  // guard, helpers reached from buildSingleSlotPlan (BookingFlowService.
-  // loadSpace, RuleResolverService.resolve, ConflictGuardService.
-  // snapshotBuffersForBooking) read tenant from ALS via TenantContext.
-  // current() — a drift between the ALS context and args.tenantId would
-  // leak cross-tenant reads via the admin client (which bypasses RLS).
-  // The proper long-term fix is to thread tenantId explicitly through
-  // every helper (Phase 8 refactor — see docs/follow-ups/b4-followups.md
-  // "Plan-builder helpers read tenant from ALS"); this 500 catches the
-  // mismatch at the entry point so the wrong-tenant read never happens.
-  | 'edit_booking.tenant_context_mismatch'
-
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.12
   // (Phase 1 codes — three spawn-link safety guards raised by
@@ -1483,9 +1468,6 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   // B.4 Step 2F.3 self-review remediation (I1) — see KnownErrorCode union
   // for rationale (500 server-class fallback for unknown RPC errors).
   'edit_booking_scope.update_failed',
-  // B.4 Step 2F.2 codex remediation — see KnownErrorCode union for
-  // rationale (tenant context drift guard at plan-builder entry points).
-  'edit_booking.tenant_context_mismatch',
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // See KnownErrorCode union for per-code rationale. All 422.
   'spawn_link.parent_terminated',

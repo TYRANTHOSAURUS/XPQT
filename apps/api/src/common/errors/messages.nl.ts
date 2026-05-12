@@ -1827,13 +1827,6 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon de reeks-wijziging niet opslaan',
     detail: 'Er ging iets mis bij het opslaan van deze reeks-wijziging. Probeer het over een moment opnieuw; neem contact op met support als dit blijft gebeuren.',
   },
-  // B.4 Step 2F.2 codex remediation — tenant context drift guard.
-  // 500 server-class. Generic NL-voice — programmer error niet
-  // gebruikersactie.
-  'edit_booking.tenant_context_mismatch': {
-    title: 'Kon de wijziging niet verwerken',
-    detail: 'Er trad een interne consistentiefout op bij het opslaan van deze wijziging. Probeer het over een moment opnieuw of neem contact op met support als dit blijft gebeuren.',
-  },
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // NL-vertaling van de api en-tabel; spec §3.6 + §3.12.
   'spawn_link.parent_terminated': {

@@ -1870,15 +1870,6 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save the series edit",
     detail: "Something went wrong saving this series edit. Try again in a moment; contact support if this persists.",
   },
-  // B.4 Step 2F.2 codex remediation — tenant context drift guard.
-  // 500 server-class. Generic voice — this is a programmer error (ALS
-  // missing or programmatic caller mismatch), not something the operator
-  // can mitigate. The traceId attached by the filter routes ops to the
-  // underlying tenant-id mismatch in the request stack.
-  'edit_booking.tenant_context_mismatch': {
-    title: "Couldn't process the booking edit",
-    detail: "We hit an internal consistency error while saving this edit. Try again in a moment, or contact support if this persists.",
-  },
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // Spec §3.6 + §3.12. Three guards that block invalid spawn-link writes
   // before the engine commits. 422 surfaces as inline editor copy — the

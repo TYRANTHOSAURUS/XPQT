@@ -145,10 +145,11 @@ export class BookingFlowService {
     }
 
     // 1+2. Load space + snapshot
-    const space = await this.loadSpace(input.space_id);
+    const space = await this.loadSpace(input.space_id, tenantId);
 
     // 3. Buffer collapse for same-requester back-to-back
     const buffers = await this.conflict.snapshotBuffersForBooking({
+      tenant_id: tenantId,
       space_id: input.space_id,
       requester_person_id: input.requester_person_id,
       start_at: input.start_at,
@@ -158,14 +159,17 @@ export class BookingFlowService {
     });
 
     // 4. Resolve rules
-    const ruleOutcome = await this.ruleResolver.resolve({
-      requester_person_id: input.requester_person_id,
-      space_id: input.space_id,
-      start_at: input.start_at,
-      end_at: input.end_at,
-      attendee_count: input.attendee_count ?? null,
-      criteria: {},
-    });
+    const ruleOutcome = await this.ruleResolver.resolve(
+      {
+        requester_person_id: input.requester_person_id,
+        space_id: input.space_id,
+        start_at: input.start_at,
+        end_at: input.end_at,
+        attendee_count: input.attendee_count ?? null,
+        criteria: {},
+      },
+      tenantId,
+    );
 
     // 5. Deny handling — service desk override gated by permission + reason
     if (ruleOutcome.final === 'deny') {
@@ -786,10 +790,11 @@ export class BookingFlowService {
     const tenantId = TenantContext.current().id;
 
     // 1+2. Load space + verify
-    const space = await this.loadSpace(input.space_id);
+    const space = await this.loadSpace(input.space_id, tenantId);
 
     // 3. Buffer collapse for same-requester back-to-back
     const buffers = await this.conflict.snapshotBuffersForBooking({
+      tenant_id: tenantId,
       space_id: input.space_id,
       requester_person_id: input.requester_person_id,
       start_at: input.start_at,
@@ -799,14 +804,17 @@ export class BookingFlowService {
     });
 
     // 4. Resolve booking rules
-    const ruleOutcome = await this.ruleResolver.resolve({
-      requester_person_id: input.requester_person_id,
-      space_id: input.space_id,
-      start_at: input.start_at,
-      end_at: input.end_at,
-      attendee_count: input.attendee_count ?? null,
-      criteria: {},
-    });
+    const ruleOutcome = await this.ruleResolver.resolve(
+      {
+        requester_person_id: input.requester_person_id,
+        space_id: input.space_id,
+        start_at: input.start_at,
+        end_at: input.end_at,
+        attendee_count: input.attendee_count ?? null,
+        criteria: {},
+      },
+      tenantId,
+    );
 
     // 5. Deny gate — same shape as `create`
     if (ruleOutcome.final === 'deny') {
@@ -1056,15 +1064,19 @@ export class BookingFlowService {
     overridable: boolean;
   }> {
     this.assertValid(input);
+    const tenantId = TenantContext.current().id;
 
-    const ruleOutcome = await this.ruleResolver.resolve({
-      requester_person_id: input.requester_person_id,
-      space_id: input.space_id,
-      start_at: input.start_at,
-      end_at: input.end_at,
-      attendee_count: input.attendee_count ?? null,
-      criteria: {},
-    });
+    const ruleOutcome = await this.ruleResolver.resolve(
+      {
+        requester_person_id: input.requester_person_id,
+        space_id: input.space_id,
+        start_at: input.start_at,
+        end_at: input.end_at,
+        attendee_count: input.attendee_count ?? null,
+        criteria: {},
+      },
+      tenantId,
+    );
 
     return {
       outcome:
@@ -1107,8 +1119,12 @@ export class BookingFlowService {
    * Reference: docs/follow-ups/b4-booking-edit-pipeline.md §3.3 step 3
    * (cited at "loadSpace in booking-flow.service.ts:1264-1282" — re-anchored
    * after this exposure).
+   *
+   * Phase 8 (Tier B follow-up #2): `tenantId` is threaded explicitly so
+   * a missing/wrong tenant is a compile error, not a runtime cross-tenant
+   * leak through the admin client.
    */
-  async loadSpace(spaceId: string): Promise<{
+  async loadSpace(spaceId: string, tenantId: string): Promise<{
     id: string;
     type: string;
     reservable: boolean;
@@ -1119,7 +1135,6 @@ export class BookingFlowService {
     check_in_grace_minutes: number | null;
     cost_per_hour: string | null;
   }> {
-    const tenantId = TenantContext.current().id;
     const { data, error } = await this.supabase.admin
       .from('spaces')
       .select('id, type, reservable, capacity, setup_buffer_minutes, teardown_buffer_minutes, check_in_required, check_in_grace_minutes, cost_per_hour, active')

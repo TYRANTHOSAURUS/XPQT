@@ -141,6 +141,7 @@ export class MultiRoomBookingService {
       }
 
       const buffers = await this.conflict.snapshotBuffersForBooking({
+        tenant_id: tenantId,
         space_id: spaceId,
         requester_person_id: input.requester_person_id,
         start_at: input.start_at,
@@ -149,14 +150,17 @@ export class MultiRoomBookingService {
         room_teardown_buffer_minutes: space.teardown_buffer_minutes ?? 0,
       });
 
-      const ruleOutcome = await this.ruleResolver.resolve({
-        requester_person_id: input.requester_person_id,
-        space_id: spaceId,
-        start_at: input.start_at,
-        end_at: input.end_at,
-        attendee_count: input.attendee_count ?? null,
-        criteria: {},
-      });
+      const ruleOutcome = await this.ruleResolver.resolve(
+        {
+          requester_person_id: input.requester_person_id,
+          space_id: spaceId,
+          start_at: input.start_at,
+          end_at: input.end_at,
+          attendee_count: input.attendee_count ?? null,
+          criteria: {},
+        },
+        tenantId,
+      );
       ruleOutcome.matchedRules.forEach((r) => matchedRuleIds.add(r.id));
       if (ruleOutcome.final === 'deny') {
         const overridable = actor.has_override_rules && ruleOutcome.overridable;

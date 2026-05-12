@@ -1748,14 +1748,6 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't save the series edit",
     detail: 'Something went wrong saving this series edit. Try again in a moment; contact support if this persists.',
   },
-  // B.4 Step 2F.2 codex remediation — tenant context drift guard. Web
-  // mirror of the api registry so the renderer can resolve before any
-  // network round-trip (matches the single source of truth at
-  // apps/api/src/common/errors/messages.en.ts).
-  'edit_booking.tenant_context_mismatch': {
-    title: "Couldn't process the booking edit",
-    detail: "We hit an internal consistency error while saving this edit. Try again in a moment, or contact support if this persists.",
-  },
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // Web mirror of the api en table. Spec §3.6 + §3.12.
   'spawn_link.parent_terminated': {

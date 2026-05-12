@@ -117,6 +117,7 @@ export class ListBookableRoomsService {
         candidateIds,
         { start_at: input.start_at, end_at: input.end_at },
         this.criteriaToContext(input),
+        tenantId,
       ),
       // Parent chains disambiguate same-named rooms ("Meeting Room 2.12"
       // on three different floors). Recursive CTE — one round-trip
@@ -411,6 +412,7 @@ export class ListBookableRoomsService {
         floor_id: input.floor_id,
         must_have_amenities: input.must_have_amenities,
       },
+      tenantId,
     );
   }
 

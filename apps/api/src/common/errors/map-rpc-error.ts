@@ -307,16 +307,6 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // actually a transient platform problem.
   'edit_booking_scope.update_failed': 500,
   // B.4 Step 2F.2 codex remediation — tenant context drift guard.
-  // Raised by AssembleEditPlanService at every plan-builder entry point
-  // when `TenantContext.current()?.id !== args.tenantId`. 500 server-class:
-  // a drift between the ALS-stored tenant and the explicit args.tenantId
-  // is a programmer error (ALS not set, programmatic caller mismatch) —
-  // the user payload is fine but the request can't be safely served
-  // because helpers reached via buildSingleSlotPlan read tenant from
-  // TenantContext.current() and would query the wrong tenant via the
-  // admin client (which bypasses RLS). See KnownErrorCode union for the
-  // proper long-term fix (Phase 8 — thread tenantId through every helper).
-  'edit_booking.tenant_context_mismatch': 500,
   // B.4 step 2D-D — controller-vs-notification gate. The TS layer in
   // ReservationService.editSlot pre-flight-rejects any edit whose plan
   // would emit `booking.approval_required` (rows 2/7/8 of §3.6.5) until
