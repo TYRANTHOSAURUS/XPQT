@@ -9,7 +9,7 @@ type Props = { floorSpaceId: string; state: DesignerState; dispatch: React.Dispa
 export function SpacesTree({ floorSpaceId, state, dispatch }: Props) {
   const children = useQuery({
     queryKey: ['spaces', 'children', floorSpaceId],
-    queryFn: () => apiFetch<ChildSpace[]>(`/api/spaces/${floorSpaceId}/children`),
+    queryFn: () => apiFetch<ChildSpace[]>(`/spaces/${floorSpaceId}/children`),
     staleTime: 60_000,
   });
   const drawnIds = new Set(state.polygons.map((p) => p.space_id).filter(Boolean));

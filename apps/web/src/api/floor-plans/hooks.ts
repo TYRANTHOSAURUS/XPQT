@@ -18,7 +18,7 @@ export type FloorPlanIndexRow = {
 export function floorPlansAdminIndexOptions() {
   return queryOptions({
     queryKey: floorPlanKeys.adminIndex(),
-    queryFn: async () => apiFetch<FloorPlanIndexRow[]>('/api/admin/floor-plans-index'),
+    queryFn: async () => apiFetch<FloorPlanIndexRow[]>('/admin/floor-plans-index'),
     staleTime: 60_000,
   });
 }
@@ -30,7 +30,7 @@ export function useAdminFloorPlansIndex() {
 export function floorPlanPublishedOptions(floorSpaceId: string) {
   return queryOptions({
     queryKey: floorPlanKeys.floorPublished(floorSpaceId),
-    queryFn: async () => apiFetch<PublishedFloorPlan | null>(`/api/floors/${floorSpaceId}/plan`),
+    queryFn: async () => apiFetch<PublishedFloorPlan | null>(`/floors/${floorSpaceId}/plan`),
     staleTime: 5 * 60_000,
   });
 }
@@ -42,7 +42,7 @@ export function useFloorPlanPublished(floorSpaceId: string) {
 export function useFloorPlanDraft(floorSpaceId: string) {
   return usePageQuery(queryOptions({
     queryKey: floorPlanKeys.floorDraft(floorSpaceId),
-    queryFn: async () => apiFetch<DraftResponse>(`/api/floors/${floorSpaceId}/plan/draft`),
+    queryFn: async () => apiFetch<DraftResponse>(`/floors/${floorSpaceId}/plan/draft`),
     staleTime: 0,
   }));
 }
@@ -52,7 +52,7 @@ export function useUpdateDraft(floorSpaceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async ({ patch, ifMatch }: { patch: Partial<DraftResponse>; ifMatch: string }) =>
-      apiFetch<DraftResponse>(`/api/floors/${floorSpaceId}/plan/draft`, {
+      apiFetch<DraftResponse>(`/floors/${floorSpaceId}/plan/draft`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
         headers: { 'If-Match': ifMatch },
@@ -81,7 +81,7 @@ export function useUpdateDraft(floorSpaceId: string) {
 export function useDiscardDraft(floorSpaceId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async () => apiFetch(`/api/floors/${floorSpaceId}/plan/draft`, { method: 'DELETE' }),
+    mutationFn: async () => apiFetch(`/floors/${floorSpaceId}/plan/draft`, { method: 'DELETE' }),
     onSuccess: () => qc.removeQueries({ queryKey: floorPlanKeys.floorDraft(floorSpaceId) }),
     ...withErrorHandling({ actionTitle: "Couldn't discard the draft" }),
   });
@@ -91,7 +91,7 @@ export function usePublishDraft(floorSpaceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async () =>
-      apiFetch<{ history_id: string }>(`/api/floors/${floorSpaceId}/plan/draft/publish`, { method: 'POST' }),
+      apiFetch<{ history_id: string }>(`/floors/${floorSpaceId}/plan/draft/publish`, { method: 'POST' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: floorPlanKeys.floor(floorSpaceId) });
     },
@@ -177,7 +177,7 @@ export type BuildingFloor = { id: string; name: string; code: string | null };
 export function useBuildingFloors(buildingId: string) {
   return useQuery({
     queryKey: buildingKeys.floors(buildingId),
-    queryFn: async () => apiFetch<BuildingFloor[]>(`/api/buildings/${buildingId}/floors`),
+    queryFn: async () => apiFetch<BuildingFloor[]>(`/buildings/${buildingId}/floors`),
     staleTime: 5 * 60_000,
     enabled: !!buildingId,
   });

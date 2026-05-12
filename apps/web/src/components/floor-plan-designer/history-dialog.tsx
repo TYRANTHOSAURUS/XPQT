@@ -15,13 +15,13 @@ export function HistoryDialog({ open, onOpenChange, floorSpaceId }: Props) {
 
   const history = useQuery({
     queryKey: floorPlanKeys.floorHistory(floorSpaceId),
-    queryFn: () => apiFetch<PublishHistoryEntry[]>(`/api/floors/${floorSpaceId}/plan/history`),
+    queryFn: () => apiFetch<PublishHistoryEntry[]>(`/floors/${floorSpaceId}/plan/history`),
     enabled: open,
   });
 
   const restore = useMutation({
     mutationFn: (historyId: string) =>
-      apiFetch(`/api/floors/${floorSpaceId}/plan/history/${historyId}/restore`, { method: 'POST' }),
+      apiFetch(`/floors/${floorSpaceId}/plan/history/${historyId}/restore`, { method: 'POST' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: floorPlanKeys.floor(floorSpaceId) });
       toastUpdated('Floor plan restored');
