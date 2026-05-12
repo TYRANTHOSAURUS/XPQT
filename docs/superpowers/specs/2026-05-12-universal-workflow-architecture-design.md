@@ -1042,14 +1042,24 @@ All registered in 5 sites: `packages/shared/src/error-codes.ts` union
 
 ## 4. Migration plan
 
+**Slot shift at execution time (2026-05-12):** B.4.Step2F.1 shipped
+`00367_edit_booking_scope_rpc.sql` between v2.2 spec lock and Phase 0
+execution. Phase 0 also needed an unanticipated prep migration to
+classify 24 pre-existing dev seeds (`entity_type='ticket'` with zero
+instances — fixtures from 00042/00045/00104 inheriting the 00009:8
+column default) so the polymorphism preflight could pass on a fresh
+`pnpm db:reset`. The slot table below reflects actuals; downstream
+Phase 1+ slots shift by +3 from v2.2's reservation.
+
 | # | File | Purpose |
 |---|---|---|
-| 00367 | `workflow_polymorphism_booking.sql` | Phase 0: add 'booking' to entity_kind enum + booking_id column on workflow_instances + one-of constraint extension. |
-| 00368 | `workflow_instance_links.sql` | Phase 0: new table + RLS policies + indexes + tenant assertion trigger. |
-| 00369 | `bookings_outbox_lifecycle_events.sql` | Phase 1: add `booking.created`, `booking.cancelled`, `booking.status_changed` outbox emissions to the existing booking RPCs (plus `delete_booking_with_guard` 00292 + the create flow). Mandatory if §9.1 picks Tier 2 (recommended); only "optional" under cron-poll-only MVP. |
-| 00370 | `transition_booking_status_rpc.sql` | Phase 2: NEW RPC (verified missing 2026-05-12 — no equivalent state-machine surface for `bookings.status` exists today). Emits `booking.status_changed` outbox event. |
-| 00371-00375 | `spawn_<direction>_with_link_rpc.sql` × 5 | Phase 3: one atomic RPC per spawn direction (codex BLOCKER remediation — spawn must not be a TS pipeline). Each RPC wraps validate + create entity + insert link + flip parent state in one tx. |
-| 00376 | `claim_aggregation_group_resume_rpc.sql` | Phase 1.x (deferred per §9.3): claim RPC for multi-spawn aggregation. Schema-additive — ships when concrete demand arrives. |
+| 00368 | `workflow_definitions_seed_entity_type_backfill.sql` | Phase 0 prep (NEW, unanticipated): classify 24 pre-existing dev seeds (`entity_type='ticket'`, zero instances) as `'case'` so the 00369 preflight can pass without a silent heuristic. Each row enumerated by id or exact name; gated by `where entity_type='ticket'` so admin-classified rows pass through. |
+| 00369 | `workflow_polymorphism_booking.sql` | Phase 0: widen `entity_type` vocabulary on definitions + drop `workflow_instances.ticket_id NOT NULL` + add `booking_id` polymorphic FK + replace 00345 single index with three polymorphic partial indices + INSERT+UPDATE polymorphism trigger + retire the 00240 `trg_workflow_instances_kind_consistency` trigger (which pre-empted the new one and lacked booking-kind awareness). |
+| 00370 | `workflow_instance_links.sql` | Phase 0: new table + RLS policies + indexes + tenant assertion trigger. |
+| 00371 | `bookings_outbox_lifecycle_events.sql` | Phase 1: add `booking.created`, `booking.cancelled`, `booking.status_changed` outbox emissions to the existing booking RPCs (plus `delete_booking_with_guard` 00292 + the create flow). Mandatory per §9.1 LOCKED Tier 2 wake. |
+| 00372 | `transition_booking_status_rpc.sql` | Phase 2: NEW RPC (verified missing 2026-05-12 — no equivalent state-machine surface for `bookings.status` exists today). Emits `booking.status_changed` outbox event. |
+| 00373-00377 | `spawn_<direction>_with_link_rpc.sql` × 5 | Phase 3: one atomic RPC per spawn direction (codex BLOCKER remediation — spawn must not be a TS pipeline). Each RPC wraps validate + create entity + insert link + flip parent state in one tx. |
+| 00378 | `claim_aggregation_group_resume_rpc.sql` | Phase 1.x (deferred per §9.3): claim RPC for multi-spawn aggregation. Schema-additive — ships when concrete demand arrives. |
 
 **Backfill safety (codex remediation).** §3.1 backfill runs two
 preflight `RAISE EXCEPTION` blocks BEFORE any UPDATE: (a) refuse to
@@ -1060,12 +1070,24 @@ explicitly). The v1 "default to case for ambiguous rows" silent
 heuristic was wrong — silent mis-mapping would put workflow
 definitions on the wrong palette and break their existing instances.
 
-**Active-uniqueness cutover (00367 step 4).** Before dropping
+**Active-uniqueness cutover (00369 step 5).** Before dropping
 `workflow_instances_active_unique_idx` (00345) and replacing with the
 three polymorphic partial indices, run a duplicate-detection preflight
 across the polymorphic surface (mirrors 00345:79-94 but keyed on the
 new index columns). Any duplicates found block the migration; operator
-runs the cleanup runbook from 00345's header before re-running 00367.
+runs the cleanup runbook from 00345's header before re-running 00369.
+
+**00240 trigger retirement (00369 step 7, discovered at execution
+time).** `trg_workflow_instances_kind_consistency` (declared at
+`supabase/migrations/00240_*.sql:70-74`) calls a shared assertion
+function that only knew about `case + work_order`. It fires
+alphabetically before the new `workflow_instances_assert_polymorphism`
+trigger, doesn't cover UPDATE OF booking_id, and raises a message
+string that doesn't match the §3.12 error codes. The new trigger is a
+strict superset, so 00369 drops it on workflow_instances. The shared
+function `assert_polymorphic_entity_kind_consistent` stays — it's
+still used by `sla_timers` and `routing_decisions`, which Phase 0
+doesn't extend to bookings.
 
 Per project CLAUDE.md: confirm with user before `pnpm db:push` against
 the remote. Standing permission for the B.4 workstream does NOT extend
