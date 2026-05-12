@@ -106,11 +106,54 @@ export function FloorPlanDesigner({ floorSpaceId, floorName, backTo }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [dispatch, state.inProgressPolygon, state.selectedPolygonIndex]);
 
+  // Warn the user before closing the tab while an autosave is in flight.
+  // Prevents losing the last ~500ms of edits.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isSaving) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [isSaving]);
+
   if (draft.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
+    return (
+      <div className="flex h-screen w-screen flex-col bg-background">
+        <header className="flex h-12 shrink-0 items-center border-b border-border px-3">
+          <div className="h-4 w-32 animate-pulse rounded bg-muted" />
+        </header>
+        <div className="grid flex-1 grid-cols-[240px_1fr_244px] gap-0">
+          <div className="border-r border-border bg-background p-4">
+            <div className="h-3 w-24 animate-pulse rounded bg-muted mb-3" />
+            <div className="space-y-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="h-7 w-full animate-pulse rounded bg-muted/50" />
+              ))}
+            </div>
+          </div>
+          <div className="bg-muted/20" />
+          <div className="border-l border-border bg-background p-4">
+            <div className="h-3 w-20 animate-pulse rounded bg-muted" />
+          </div>
+        </div>
+      </div>
+    );
   }
   if (!draft.data) {
-    return <div className="p-6 text-sm text-muted-foreground">No draft.</div>;
+    return (
+      <div className="flex h-screen w-screen flex-col items-center justify-center gap-3 bg-background p-6 text-center">
+        <p className="text-base font-medium">Couldn't load draft</p>
+        <p className="text-sm text-muted-foreground max-w-sm">
+          The floor plan draft for this floor isn't available. Refresh, or go back to the index.
+        </p>
+        <Link to={backTo} className="text-sm text-primary hover:underline">
+          ← Back to Floor plans
+        </Link>
+      </div>
+    );
   }
 
   return (

@@ -169,6 +169,14 @@ export function useDesignerState(floorSpaceId: string, draft: DraftResponse | un
   // doesn't echo the server-provided draft back as an autosave.
   const lastSyncedRef = useRef<string>('__init__');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Backoff: after N consecutive autosave failures, stop trying until the user
+  // makes another edit. Prevents an infinite hammer when something is broken.
+  const failureCountRef = useRef<number>(0);
+  const MAX_FAILURES = 3;
+  // Stable ref to the mutation — `updateDraft` is a fresh object every render,
+  // which would otherwise re-run the autosave effect every render.
+  const mutateRef = useRef(updateDraft.mutateAsync);
+  mutateRef.current = updateDraft.mutateAsync;
 
   useEffect(() => {
     if (draft && draft.id !== state.draftId) dispatch({ type: 'hydrate', draft });
@@ -192,12 +200,21 @@ export function useDesignerState(floorSpaceId: string, draft: DraftResponse | un
       return;
     }
     if (snapshot === lastSyncedRef.current) return;
+    // Reset backoff on each new user-driven snapshot. If the user keeps editing
+    // after failures, we'll try again; if they walk away after errors we stop.
+    failureCountRef.current = 0;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
+      if (failureCountRef.current >= MAX_FAILURES) {
+        toast.error('Autosave is failing', {
+          description: 'Your changes are not being saved. Reload to retry.',
+          action: { label: 'Reload', onClick: () => window.location.reload() },
+        });
+        return;
+      }
       try {
-        // Build the patch with undefined values dropped (otherwise the
-        // optimistic-update spread on the client would nuke previously-set
-        // width/height in the cache).
+        // Drop undefined values so the optimistic-update spread on the client
+        // doesn't nuke previously-set width/height in the cache.
         const patch: Record<string, unknown> = {
           polygons: state.polygons,
           labels: state.labels,
@@ -205,14 +222,16 @@ export function useDesignerState(floorSpaceId: string, draft: DraftResponse | un
         if (state.imageUrl !== null && state.imageUrl !== undefined) patch.image_url = state.imageUrl;
         if (state.widthPx !== null && state.widthPx !== undefined) patch.width_px = state.widthPx;
         if (state.heightPx !== null && state.heightPx !== undefined) patch.height_px = state.heightPx;
-        const data = await updateDraft.mutateAsync({
+        const data = await mutateRef.current({
           patch: patch as Partial<DraftResponse>,
           ifMatch: state.updatedAt,
         });
-        // Update lastSynced AFTER success so a failed PATCH doesn't pretend it synced.
+        // Success — reset backoff and mark synced.
+        failureCountRef.current = 0;
         lastSyncedRef.current = snapshot;
         dispatch({ type: 'server-sync', updatedAt: data.updated_at });
       } catch (err: unknown) {
+        failureCountRef.current += 1;
         const e = err as Record<string, unknown>;
         if (e?.['code'] === 'floor_plan.draft.stale_update' || e?.['status'] === 409) {
           toast.warning('Another change happened', {
@@ -224,7 +243,10 @@ export function useDesignerState(floorSpaceId: string, draft: DraftResponse | un
       }
     }, 500);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [state.polygons, state.labels, state.imageUrl, state.widthPx, state.heightPx, state.draftId, state.updatedAt, updateDraft, dispatch]);
+    // updateDraft intentionally omitted — captured via mutateRef so the effect
+    // doesn't re-run on every render (mutation object is a new ref each render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.polygons, state.labels, state.imageUrl, state.widthPx, state.heightPx, state.draftId, state.updatedAt]);
 
   const canUndo = state._historyIndex >= 0;
   const canRedo = state._historyIndex + 1 < state._history.length;
