@@ -288,14 +288,35 @@ export class ReservationController {
     return data;
   }
 
+  // B.4 step 2E — editOne is now a producer route. The cutover from the
+  // legacy meta-only UPDATEs (+ delegation to editSlot for geometry) to
+  // the §3.0 combined `edit_booking` (00364) RPC requires a CLIENT-
+  // supplied `X-Client-Request-Id` so retries collapse on the
+  // `command_operations` idempotency gate (spec §3.3 + §3.4 step 2).
+  // Without the guard, the middleware's server-default falls through and
+  // every retry mints a new key — silently double-applying on a network
+  // blip. Mirrors the editSlot pattern at reservation.controller.ts:
+  // 329-353 + the create/multi-room/services routes at :106 / :151 /
+  // :431.
   @Patch(':id')
+  @UseGuards(RequireClientRequestIdGuard)
   async edit(
     @Req() request: Request,
     @Param('id') id: string,
     @Body() dto: UpdateReservationDto,
   ) {
     const actor = await this.actorFromRequest(request);
-    return this.service.editOne(id, actor, dto);
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    if (!clientRequestId) {
+      // Defense-in-depth — the guard already rejected the missing-header
+      // case, so reaching this branch means a programming error in the
+      // guard wiring, not a user mistake. Surface as a server-class
+      // missing-config so ops investigate. Mirrors editSlot at :339-346.
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail: 'editOne reached service layer with no clientRequestId despite RequireClientRequestIdGuard.',
+      });
+    }
+    return this.service.editOne(id, actor, dto, clientRequestId);
   }
 
   /**

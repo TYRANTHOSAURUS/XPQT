@@ -422,7 +422,7 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart }),
+        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart }, CLIENT_REQUEST_ID),
       );
 
       // One per visitor.
@@ -457,7 +457,7 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editOne(BOOKING_ID, ACTOR, { space_id: SPACE_NEW }),
+        () => svc.editOne(BOOKING_ID, ACTOR, { space_id: SPACE_NEW }, CLIENT_REQUEST_ID),
       );
       const roomChanges = captured.filter((e) => e.kind === 'bundle.line.room_changed');
       expect(roomChanges).toHaveLength(2);
@@ -484,7 +484,7 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart, space_id: SPACE_NEW }),
+        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart, space_id: SPACE_NEW }, CLIENT_REQUEST_ID),
       );
       // 2 visitors × 2 events each = 4 emissions.
       expect(captured).toHaveLength(4);
@@ -505,7 +505,7 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart }),
+        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart }, CLIENT_REQUEST_ID),
       );
       expect(captured).toHaveLength(0);
     } finally {
@@ -523,7 +523,7 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
     try {
       await TenantContext.run(
         { id: OTHER_TENANT, slug: 'other', tier: 'standard' },
-        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart }),
+        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart }, CLIENT_REQUEST_ID),
       );
       expect(captured.length).toBeGreaterThan(0);
       for (const evt of captured) {
@@ -541,7 +541,7 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
       // reservation.service.ts:653-655 because no patch keys are populated.
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: baseSlot.start_at }),
+        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: baseSlot.start_at }, CLIENT_REQUEST_ID),
       );
       expect(captured).toHaveLength(0);
     } finally {
@@ -619,7 +619,7 @@ describe('ReservationService.editSlot — visitor cascade emission (I3)', () => 
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart }),
+        () => svc.editOne(BOOKING_ID, ACTOR, { start_at: newStart }, CLIENT_REQUEST_ID),
       );
       const moved = captured.filter((e) => e.kind === 'bundle.line.moved');
       // 2 visitors × 1 event = 2. NOT 4 (which would be 2 visitors × 2

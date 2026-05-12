@@ -635,15 +635,43 @@ export class ReservationService {
    * to the booking's PRIMARY slot only (lowest display_order). Editing
    * non-primary slots goes through a future per-slot endpoint.
    */
-  async editOne(id: string, actor: ActorContext, patch: {
-    space_id?: string;
-    start_at?: string;
-    end_at?: string;
-    attendee_count?: number;
-    attendee_person_ids?: string[];
-    host_person_id?: string;
-  }): Promise<Reservation> {
+  async editOne(
+    id: string,
+    actor: ActorContext,
+    patch: {
+      space_id?: string;
+      start_at?: string;
+      end_at?: string;
+      attendee_count?: number;
+      attendee_person_ids?: string[];
+      host_person_id?: string;
+    },
+    // B.4 step 2E — editOne is now a producer route. The controller
+    // (reservation.controller.ts:291-323 post-cutover) is gated by
+    // RequireClientRequestIdGuard, and forwards the validated header
+    // value here. Combined with buildEditBookingIdempotencyKey at the
+    // RPC call site below, this makes retries collapse on the
+    // command_operations cached_result row (00364:330-410). Defense-in-
+    // depth UUID validation lives in the editSlot path (reservation
+    // .service.ts:1026-1029); editOne validates the same way below.
+    clientRequestId: string,
+  ): Promise<Reservation> {
     const tenantId = TenantContext.current().id;
+
+    // self-review N-CODE-1 (B.4 step 2E) — defense-in-depth UUID
+    // validation. Mirrors editSlot at reservation.service.ts:1026-1029.
+    // The RequireClientRequestIdGuard already validates UUID shape at
+    // the controller boundary; this catches non-controller callers
+    // (workflow engine, future CLI) that build clientRequestId by other
+    // means. Surfaces the contract violation as a clean
+    // command_operations.unexpected_state instead of letting a malformed
+    // key end up in the command_operations.idempotency_key column.
+    if (!UUID_RE.test(clientRequestId)) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail: `editOne received malformed clientRequestId (length=${clientRequestId.length}).`,
+      });
+    }
+
     const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
     const r = await this.findByIdOrThrow(id, tenantId);
     this.visibility.assertVisible(r, ctx);
@@ -768,200 +796,190 @@ export class ReservationService {
       );
     }
 
-    // /full-review v3 closure C2 — split the patch into geometry vs. meta.
+    // ── B.4 step 2E: cutover to assembleEditPlan({kind:'one'}) + edit_booking RPC ──
     //
-    // Pre-fix: editOne wrote every key directly to the booking's PRIMARY
-    // slot AND mirrored start_at/end_at literally onto bookings (lines
-    // ~654 below). For multi-slot bookings, that mirror is wrong: the
-    // booking-level start_at MUST be MIN(slots.start_at), NOT the
-    // patched value, because non-primary slots may sit at earlier or
-    // later windows. Same bug-class as the original Bug #2 (silently
-    // moving the primary instead of the targeted slot — 00291 was the
-    // RPC that fixed THAT half; this delegation closes the second half
-    // where the legacy editOne path bypassed the RPC entirely).
+    // Replaces the legacy C2 split:
+    //   - geometry → delegate to editSlot (which already ran the RPC)
+    //   - slot-meta → direct booking_slots UPDATE
+    //   - booking-meta → direct bookings UPDATE
+    //   - manual audit_events insert + recurrence_overridden flip
     //
-    // Fix: any geometry key (space_id / start_at / end_at) is delegated
-    // to editSlot() for the booking's PRIMARY slot. editSlot calls the
-    // 00291 + 00293 RPC which:
-    //   - updates ONE slot atomically,
-    //   - serialises with FOR UPDATE on the parent booking row (00293),
-    //   - recomputes bookings.start_at = MIN(slots) / end_at = MAX(slots)
-    //     in the same transaction (the only correct mirror).
-    // Meta keys (attendee_count, attendee_person_ids, host_person_id)
-    // stay on the legacy path — they're not in the RPC's contract and
-    // don't need atomicity with mirror recompute.
-    const geometryPatch: { space_id?: string; start_at?: string; end_at?: string } = {};
-    let hasGeometryChange = false;
-    if (patch.space_id && patch.space_id !== r.space_id) {
-      geometryPatch.space_id = patch.space_id;
-      hasGeometryChange = true;
-    }
-    if (patch.start_at && patch.start_at !== r.start_at) {
-      geometryPatch.start_at = patch.start_at;
-      hasGeometryChange = true;
-    }
-    if (patch.end_at && patch.end_at !== r.end_at) {
-      geometryPatch.end_at = patch.end_at;
-      hasGeometryChange = true;
+    // Post-cutover everything flows through ONE atomic RPC, mirroring
+    // editSlot at reservation.service.ts:1117-1308. Benefits:
+    //   - Cross-table atomicity (slot + booking + approvals + audit are
+    //     one transaction with FOR UPDATE on the booking row).
+    //   - Idempotency on retries via command_operations + (bookingId,
+    //     clientRequestId) keying.
+    //   - Single audit shape (RPC writes a richer 'booking.edited' row
+    //     with full before/after diff — 00364:976-999 — replacing the
+    //     legacy slim 'booking.updated' insert at audit_events).
+    //   - Approval reconciliation per §3.6.5 happens inside the RPC,
+    //     not split across TS code.
+    //
+    // The TS-side preflights (validation gates above + assertTenantOwned
+    // for host_person_id, attendee_person_ids, space_id) STAY — they
+    // catch bad payloads BEFORE the DB round-trip and produce friendlier
+    // error codes than the RPC's defense-in-depth raises.
+    //
+    // Citation discipline: every line cited below was Read this session.
+    //   - editSlot template:               reservation.service.ts:1117-1308
+    //   - editSlot B.4.A.5 gate:           reservation.service.ts:1209-1224
+    //   - editSlot idempotency-key build:  reservation.service.ts:1226
+    //   - editSlot RPC call:               reservation.service.ts:1228-1234
+    //   - editSlot error map:              reservation.service.ts:1235-1256
+    //   - editSlot visitor cascade:        reservation.service.ts:1265-1306
+    //   - assembleEditPlan kind='one':     assemble-edit-plan.service.ts:227-256
+    //   - RPC booking-patch shape:         00364:340-355
+    //   - RPC host_person_id apply:        00364:763-767
+    //   - RPC recurrence_overridden apply: 00364:768-773
+
+    if (!this.assembleEditPlan) {
+      // Defense-in-depth — DI wiring in the parent module provides the
+      // dep, but a malformed test harness could miss it. Surface as 500
+      // so the failure is loud, not silent. Mirrors editSlot at
+      // reservation.service.ts:1150-1157.
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail: 'editOne: AssembleEditPlanService is not wired into ReservationService.',
+      });
     }
 
-    // Build the meta patches. attendee_count + attendee_person_ids live
-    // on booking_slots (per-slot semantics — different rooms can have
-    // different attendee counts in v2). host_person_id lives on bookings
-    // (booking-level metadata).
-    const slotMetaPatch: Record<string, unknown> = {};
-    const bookingMetaPatch: Record<string, unknown> = {};
-    if (patch.attendee_count !== undefined) slotMetaPatch.attendee_count = patch.attendee_count;
-    if (patch.attendee_person_ids !== undefined) slotMetaPatch.attendee_person_ids = patch.attendee_person_ids;
-    if (patch.host_person_id !== undefined) bookingMetaPatch.host_person_id = patch.host_person_id;
-    if (r.recurrence_series_id && (hasGeometryChange || Object.keys(bookingMetaPatch).length > 0 || Object.keys(slotMetaPatch).length > 0)) {
-      bookingMetaPatch.recurrence_overridden = true;
-    }
-
+    // Early-return no-op preserves the legacy editOne contract at
+    // reservation.service.ts:821-827 (pre-cutover): a patch with no
+    // keys or every key equal to the current row was treated as a
+    // no-op, returning the booking unchanged. Without this we'd
+    // unnecessarily hit the RPC + idempotency gate for empty patches.
     if (
-      !hasGeometryChange &&
-      Object.keys(slotMetaPatch).length === 0 &&
-      Object.keys(bookingMetaPatch).length === 0
+      patch.space_id === undefined &&
+      patch.start_at === undefined &&
+      patch.end_at === undefined &&
+      patch.attendee_count === undefined &&
+      patch.attendee_person_ids === undefined &&
+      patch.host_person_id === undefined
     ) {
       return r;
     }
 
-    // /full-review v4 I9 — cache the primary slot id across both
-    // branches. The geometry path and the slot-meta path each ran
-    // the identical SELECT, sequentially. For a combined patch like
-    // `{ space_id, attendee_count }` that's two round-trips for the
-    // same row. Hoist into a lazy resolver so we read once at most.
-    let cachedPrimarySlotId: string | null = null;
-    const resolvePrimarySlotId = async (): Promise<string> => {
-      if (cachedPrimarySlotId) return cachedPrimarySlotId;
-      const { data, error } = await this.supabase.admin
-        .from('booking_slots')
-        .select('id')
-        .eq('tenant_id', tenantId)
-        .eq('booking_id', id)
-        .order('display_order', { ascending: true })
-        .order('created_at', { ascending: true })
-        .limit(1)
-        .maybeSingle();
-      if (error || !data) {
-        throw AppErrors.validationFailed('booking.no_primary_slot', { detail: 'edit_failed:no_primary_slot' });
-      }
-      cachedPrimarySlotId = (data as { id: string }).id;
-      return cachedPrimarySlotId;
-    };
+    // Resolve the booking's PRIMARY slot id (lowest display_order, ties
+    // by created_at). Definition matches the RPC's internal ordering at
+    // assemble-edit-plan.service.ts:393-433. Single read, no caching
+    // (the C2 lazy resolver is no longer needed — only one path remains
+    // through the RPC).
+    const { data: primarySlotRow, error: primarySlotErr } = await this.supabase.admin
+      .from('booking_slots')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('booking_id', id)
+      .order('display_order', { ascending: true })
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (primarySlotErr || !primarySlotRow) {
+      throw AppErrors.validationFailed('booking.no_primary_slot', { detail: 'edit_failed:no_primary_slot' });
+    }
+    const primarySlotId = (primarySlotRow as { id: string }).id;
 
-    // Geometry first — invokes the locked RPC + atomic mirror recompute.
-    // editSlot owns the visitor-cascade emission (I3); the once-only
-    // emission is preserved here because we don't fire it again below.
-    if (hasGeometryChange) {
-      // Primary slot lookup runs at most once per editOne call thanks
-      // to `cachedPrimarySlotId` above. Definition matches the RPC's
-      // (lowest display_order, ties by created_at ascending). editSlot
-      // takes the slot id as input, so we can't piggy-back on its
-      // pre-flight for that resolution.
-      const primarySlotId = await resolvePrimarySlotId();
-      // Delegate. editSlot enforces canEdit (we already checked above —
-      // redundant but cheap), surfaces 409 ConflictException on GiST
-      // exclusion, NotFoundException on missing slot, and emits the
-      // visitor cascade exactly once.
-      //
-      // B.4 step 2D-D — editSlot now requires a clientRequestId for the
-      // edit_booking RPC's idempotency_key (`buildEditBookingIdempotencyKey`).
-      // editOne itself isn't yet a producer route (no
-      // RequireClientRequestIdGuard until Step 2E ships its own cutover),
-      // so we forward `actor.client_request_id` — which the middleware
-      // always populates (server-defaulted UUID if the client didn't send
-      // one). That preserves at-most-once-per-attempt within a single
-      // request lifecycle; cross-retry idempotency for editOne will
-      // become a hard contract when Step 2E ships its guard.
-      const delegateCrid = actor.client_request_id;
-      if (!delegateCrid) {
-        // Defense-in-depth — middleware guarantees this is set on real
-        // HTTP requests, but a non-controller caller (workflow engine,
-        // future CLI) could construct an actor without it.
-        throw AppErrors.server('command_operations.unexpected_state', {
-          detail: 'editOne→editSlot delegation requires actor.client_request_id.',
+    // /full-review v3 closure I1 — load TARGET slot's pre-state for the
+    // visitor cascade comparison (mirror of editSlot at reservation
+    // .service.ts:1085). editOne edits affect the primary slot's
+    // geometry (the RPC mirrors location_id / start_at / end_at onto
+    // the booking only via single-slot MIN/MAX), so the cascade diffs
+    // the PRIMARY slot's pre/post. Without this read the cascade would
+    // compare the post-RPC primary slot against `r` (which is also a
+    // primary-slot projection, but read pre-validation — slightly stale
+    // if anything moved between findByIdOrThrow and the RPC).
+    const targetSlotPre = await this.findByIdOrThrowAtSlot(primarySlotId, tenantId);
+
+    const plan = await this.assembleEditPlan.assembleEditPlan({
+      bookingId: id,
+      tenantId,
+      slotId: primarySlotId,
+      patch: {
+        kind: 'one',
+        space_id: patch.space_id,
+        start_at: patch.start_at,
+        end_at: patch.end_at,
+        attendee_count: patch.attendee_count,
+        attendee_person_ids: patch.attendee_person_ids,
+        host_person_id: patch.host_person_id,
+      },
+    });
+
+    // B.4.A.5 sequencing gate. Mirrors editSlot at reservation.service.ts
+    // :1209-1224 — same predicate, same 422 + booking.edit_requires_
+    // notification_dispatch code. This is the 4th producer-side emit
+    // site documented at docs/follow-ups/b4-followups.md (alongside
+    // create / multi-room / editSlot). Lift mechanism when B.4.A.5
+    // ships notification dispatch: delete the gate predicate +
+    // optionally retire the error code (or leave registered for
+    // defense-in-depth across all four sites).
+    const wouldEmitApprovalRequired =
+      plan.approval.new_outcome === 'require_approval' &&
+      (plan.approval.old_outcome !== 'require_approval' ||
+        plan.approval.chain_config_changed === true);
+    if (wouldEmitApprovalRequired) {
+      throw new AppError('booking.edit_requires_notification_dispatch', 422, {
+        detail:
+          "This edit would change approval requirements. Ask the rooms admin to remove approval from this room, or pick a different room.",
+      });
+    }
+
+    const idempotencyKey = buildEditBookingIdempotencyKey(id, clientRequestId);
+
+    const { error: rpcErr } = await this.supabase.admin.rpc('edit_booking', {
+      p_booking_id: id,
+      p_plan: plan as unknown as Record<string, unknown>,
+      p_tenant_id: tenantId,
+      p_actor_user_id: actor.user_id,
+      p_idempotency_key: idempotencyKey,
+    });
+    if (rpcErr) {
+      // GiST exclusion (booking_slots_no_overlap, 00277:211-217) → 409.
+      // Mirror editSlot at reservation.service.ts:1240-1244 — the
+      // constraint fires inside the RPC's UPDATE before any RAISE has
+      // a chance to translate it.
+      if (this.conflict.isExclusionViolation(rpcErr)) {
+        throw AppErrors.conflict('booking.slot_conflict', {
+          detail: 'Slot conflicts with another booking.',
         });
       }
-      // self-review I-CODE-3 (B.4 step 2D-D) — observability for the
-      // unguarded editOne path. PATCH /reservations/:id has no
-      // RequireClientRequestIdGuard yet (Step 2E ships it), so when the
-      // frontend forgets X-Client-Request-Id the middleware mints a
-      // fresh UUID per request. Forwarding that into editSlot's
-      // buildEditBookingIdempotencyKey produces a different key on each
-      // retry — silently soft-breaking cross-retry idempotency on the
-      // RPC's `command_operations` cached_result row.
-      // Log at warn so ops can measure the actual rate before flipping
-      // the controller guard. Once Step 2E ships and this branch
-      // becomes unreachable from real HTTP, the log volume should drop
-      // to non-controller callers (workflow engine, CLI) only.
-      if (actor.client_request_id_source === 'server_default') {
-        this.log.warn(
-          `editOne→editSlot delegation running with server-defaulted X-Client-Request-Id ` +
-            `(booking_id=${id}, user_id=${actor.user_id}). Cross-retry idempotency on the ` +
-            `delegated edit_booking RPC is broken until the caller sends a client-supplied UUID.`,
-        );
-      }
-      await this.editSlot(id, primarySlotId, actor, delegateCrid, geometryPatch);
+      // booking.edit_failed is the booking-scoped fallback (registered
+      // at packages/shared/src/error-codes.ts:239 + 960; api+web copy
+      // at messages.en.ts:449 ("Couldn't save the changes")). Under
+      // mapRpcErrorToAppError this routes through AppErrors.server →
+      // 500 — same shape as editSlot's slot_update_failed fallback at
+      // reservation.service.ts:1255 (which is also a 500 server-class
+      // per map-rpc-error.ts:289). Honest framing: an unrecognised
+      // RPC raise is a server bug, not a payload bug.
+      throw mapRpcErrorToAppError(rpcErr, { fallbackCode: 'booking.edit_failed' });
     }
 
-    // Slot-meta (attendee_count / attendee_person_ids) on the primary
-    // slot. Pre-fix this happened in the same UPDATE as geometry; now
-    // it's a separate write because geometry went through the RPC.
-    if (Object.keys(slotMetaPatch).length > 0) {
-      // Reuses the cached lookup if the geometry branch already ran;
-      // does a fresh SELECT only if this is the only path taken.
-      const primarySlotId = await resolvePrimarySlotId();
-
-      const { error: updErr } = await this.supabase.admin
-        .from('booking_slots')
-        .update(slotMetaPatch)
-        .eq('tenant_id', tenantId)
-        .eq('id', primarySlotId);
-      if (updErr) {
-        // C3+I4: DB-side write failure → server-class, no pgErr.message interpolation.
-        throw AppErrors.server('edit_failed');
-      }
-    }
-
-    // Booking-meta (host_person_id, recurrence_overridden).
-    if (Object.keys(bookingMetaPatch).length > 0) {
-      const { error: bErr } = await this.supabase.admin
-        .from('bookings')
-        .update(bookingMetaPatch)
-        .eq('tenant_id', tenantId)
-        .eq('id', id);
-      // C3+I4: DB-side write failure → server-class, no pgErr.message interpolation.
-      if (bErr) throw AppErrors.server('edit_failed');
-    }
-
-    const updated = await this.findByIdOrThrow(id, tenantId);
+    // Project the post-RPC slot via the slot-pinned read so the cascade
+    // diff at the bottom of this method compares apples-to-apples (both
+    // `targetSlotPre` and `updated` are findByIdOrThrowAtSlot projections
+    // of the same primary slot). The returned Reservation has
+    // `id = booking_id` per reservation-projection.ts:78 so editOne's
+    // callers see the booking-shaped response.
+    const updated = await this.findByIdOrThrowAtSlot(primarySlotId, tenantId);
     if (this.notifications) void this.notifications.onCreated(updated);
-    try {
-      await this.supabase.admin.from('audit_events').insert({
-        tenant_id: tenantId,
-        event_type: 'booking.updated',
-        entity_type: 'booking',
-        entity_id: id,
-        details: {
-          booking_id: id,
-          // Track the patch shape per axis so the audit feed can show
-          // "geometry edited" vs "host changed" without re-deriving.
-          geometry_patch: geometryPatch,
-          slot_meta_patch: slotMetaPatch,
-          booking_meta_patch: bookingMetaPatch,
-        },
-      });
-    } catch { /* best-effort */ }
 
-    // Visitor cascade emission (Slice 4) was originally fired from this
-    // method. /full-review v3 closure I3 moved it to editSlot so the
-    // slot-targeted endpoint emits too — and so geometry edits via
-    // editOne (which now delegates to editSlot under C2) don't
-    // double-fire. The cascade for any geometry change is owned by
-    // editSlot. This block is intentionally empty: meta-only edits
-    // (host_person_id, attendee_count) don't move visitors and don't
-    // need a cascade.
+    // Visitor cascade emit on geometry change. Mirrors editSlot at
+    // reservation.service.ts:1265-1306 — same target-pre/post comparison
+    // pattern. editOne edits target the primary slot, so cascading from
+    // the primary slot's diff is correct here. The RPC doesn't know
+    // about the visitors module; cascade stays a TS responsibility per
+    // the existing pattern.
+    const movedTime = updated.start_at !== targetSlotPre.start_at;
+    const changedRoom = updated.space_id !== targetSlotPre.space_id;
+    if ((movedTime || changedRoom) && updated.id && this.bundleEventBus) {
+      await this.emitVisitorCascadeForBundle({
+        tenantId,
+        bundleId: updated.id,
+        oldStartAt: movedTime ? targetSlotPre.start_at : null,
+        newStartAt: movedTime ? updated.start_at : null,
+        oldSpaceId: changedRoom ? targetSlotPre.space_id : null,
+        newSpaceId: changedRoom ? updated.space_id : null,
+      });
+    }
 
     return updated;
   }

@@ -250,7 +250,7 @@ describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
     let caught: unknown = null;
     try {
       await TenantContext.run(TENANT, () =>
-        svc.editOne(BOOKING_ID, makeActor(), { host_person_id: FOREIGN }),
+        svc.editOne(BOOKING_ID, makeActor(), { host_person_id: FOREIGN }, CLIENT_REQUEST_ID),
       );
     } catch (e) {
       caught = e;
@@ -274,7 +274,7 @@ describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
     try {
       await TenantContext.run(TENANT, () =>
         svc.editOne(BOOKING_ID, makeActor(), {
-          attendee_person_ids: [VALID_PERSON_A, VALID_PERSON_B] }),
+          attendee_person_ids: [VALID_PERSON_A, VALID_PERSON_B] }, CLIENT_REQUEST_ID),
       );
     } catch (e) {
       caught = e;
@@ -294,7 +294,7 @@ describe('ReservationService.editOne — Plan A.2 tenant validation', () => {
     let caught: unknown = null;
     try {
       await TenantContext.run(TENANT, () =>
-        svc.editOne(BOOKING_ID, makeActor(), { space_id: FOREIGN }),
+        svc.editOne(BOOKING_ID, makeActor(), { space_id: FOREIGN }, CLIENT_REQUEST_ID),
       );
     } catch (e) {
       caught = e;

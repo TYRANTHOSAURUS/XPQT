@@ -287,6 +287,15 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // the intended fallback as 500 server-class. Make it explicit so the
   // registered code matches the documented semantics.
   'booking.slot_update_failed': 500,
+  // B.4 step 2E — symmetric fallback for the editOne rpcErr path
+  // (reservation.service.ts:editOne post-cutover). Same shape as
+  // booking.slot_update_failed above — a 500 server-class for any
+  // unrecognised RPC raise that mapRpcErrorToAppError can't translate.
+  // booking.edit_failed is already registered as a wider "couldn't
+  // save the changes" code (packages/shared/src/error-codes.ts:239 +
+  // api/web message tables); making it explicit here keeps the
+  // (fallback, STATUS_BY_CODE) tuple consistent.
+  'booking.edit_failed': 500,
 };
 
 /**

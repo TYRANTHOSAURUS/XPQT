@@ -531,8 +531,15 @@ const ACTOR = {
   has_override_rules: false,
   // B.4 step 2D-D — editOne forwards client_request_id into the editSlot
   // delegation; without this, editOne raises command_operations.unexpected_state
-  // and the editSlot RPC never fires.
+  // and the editSlot RPC never fires. Post-2E (commit-2 of step2e) editOne
+  // takes clientRequestId as a positional arg; the constant below is what
+  // the call sites pass in.
   client_request_id: 'cccccccc-1111-4111-8111-cccccccccccc' };
+
+// B.4 step 2E — editOne signature now ends with `clientRequestId`. The
+// constant below is a stable uuid the test uses across every editOne
+// call so retries (if any) collapse on the same idempotency key.
+const CLIENT_REQUEST_ID = 'cccccccc-1111-4111-8111-cccccccccccc';
 
 // Allow the bus subscription's microtask + the adapter's async handler chain
 // to drain before assertions.
@@ -557,7 +564,7 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => h.reservationService.editOne(BUNDLE, ACTOR, { start_at: newStart }),
+        () => h.reservationService.editOne(BUNDLE, ACTOR, { start_at: newStart }, CLIENT_REQUEST_ID),
       );
       await drainMicrotasks();
 
@@ -586,7 +593,7 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => h.reservationService.editOne(BUNDLE, ACTOR, { start_at: newStart }),
+        () => h.reservationService.editOne(BUNDLE, ACTOR, { start_at: newStart }, CLIENT_REQUEST_ID),
       );
       await drainMicrotasks();
 
@@ -617,7 +624,7 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => h.reservationService.editOne(BUNDLE, ACTOR, { space_id: SPACE_NEW }),
+        () => h.reservationService.editOne(BUNDLE, ACTOR, { space_id: SPACE_NEW }, CLIENT_REQUEST_ID),
       );
       await drainMicrotasks();
 
