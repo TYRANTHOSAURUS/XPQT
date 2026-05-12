@@ -130,6 +130,8 @@ public.edit_booking(
 ) returns jsonb
 ```
 
+**Sister RPC for series/this-and-following — `public.edit_booking_scope`.** Lives at `supabase/migrations/00367_edit_booking_scope_rpc.sql` (v1), superseded by `00371_edit_booking_scope_rpc_v2.sql`. Accepts an array of `{ booking_id, plan }` envelopes (one EditPlan per occurrence) + the same tenant/actor/idempotency triple; loops over occurrences inside one transaction. The v2 contract treats dry-run as a stateless preview (no `command_operations` interaction; `payload_hash` excludes `p_dry_run`), so a TS caller can issue dry-run + commit with the SAME idempotency key without tripping `payload_mismatch`. Return shape carries `space_id_before/after` + `start_at_before/after` per occurrence so Step 2F.3's visitor cascade fan-out reads the diff directly instead of N re-reads.
+
 **Return shape (v2 — 6 keys, doc-synced 2026-05-12 self-review Fix 8 in 00362):**
 
 | Key | Type | Description |
@@ -223,10 +225,12 @@ The shape compared by TS mirrors the create-time `approval_config` consumed by `
 
 | # | File | Purpose |
 |---|---|---|
-| 00339 | `edit_booking_rpc.sql` | The combined RPC. **Hard-replaces** 00291's `edit_booking_slot` — see §7 cutover. |
+| 00339 | `edit_booking_rpc.sql` | The combined RPC. **Hard-replaces** 00291's `edit_booking_slot` — see §7 cutover. (Final slot landed at 00364.) |
 | 00340 | `bookings_calendar_etag_bump_helper.sql` (optional) | If the etag bump becomes a hot path. Defer until smoke shows latency. |
+| 00367 | `edit_booking_scope_rpc.sql` | Step 2F.1 — series/this-and-following sister RPC, accepts an EditPlan array. v1 contract. |
+| 00371 | `edit_booking_scope_rpc_v2.sql` | Step 2F.1 self-review remediation. Supersedes 00367: dry-run is stateless w.r.t. command_operations; payload_hash excludes p_dry_run; booking_not_found error is bounded (count + first missing id); per-occurrence before/after fields in return shape; recurrence_overridden rejected from scope-mode plans. |
 
-2 migrations. **No enum extension** — the approvals.status `'expired'` value already supports the supersede semantics (see §3.6.5).
+4 migrations. **No enum extension** — the approvals.status `'expired'` value already supports the supersede semantics (see §3.6.5).
 
 `validate_entity_in_tenant` and `command_operations` are NOT B.4 migrations — they're B.2 dependencies. B.4 starts AFTER B.2.A foundation lands; if B.2.A delays past B.4's planned start, B.4 can ship with stub helpers (rejecting any non-tenant-scoped FK) and switch to B.2's once it lands.
 

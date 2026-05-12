@@ -33,7 +33,7 @@ import {
   registerCleanup,
   runRpcCapture,
   seedBaseFixture,
-  waitForBlocker,
+  waitForRowLockBlocker,
   withClient,
   type BaseFixture,
 } from './helpers';
@@ -606,6 +606,37 @@ describe('edit_booking_scope RPC — concurrency + state-machine probes', () => 
       [base.tenantId],
     );
     expect(auditCount.rows[0].n).toBe(0);
+
+    // v2 I4 — tighter rollback assertions: zero domain_events, zero
+    // outbox rows, zero approvals, and every booking row's location_id
+    // unchanged (none should have moved to targetSpaceId).
+    const domainCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.domain_events where tenant_id = $1`,
+      [base.tenantId],
+    );
+    expect(domainCount.rows[0].n).toBe(0);
+
+    const outboxCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from outbox.events where tenant_id = $1`,
+      [base.tenantId],
+    );
+    expect(outboxCount.rows[0].n).toBe(0);
+
+    const approvalsCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.approvals where tenant_id = $1`,
+      [base.tenantId],
+    );
+    expect(approvalsCount.rows[0].n).toBe(0);
+
+    const bookingRows = await pool.query<{ location_id: string }>(
+      `select location_id from public.bookings
+        where recurrence_series_id = $1
+        order by recurrence_index asc`,
+      [fixture.seriesId],
+    );
+    for (const row of bookingRows.rows) {
+      expect(row.location_id).toBe(base.spaceId);
+    }
   });
 
   // ── Scenario 6: smuggled foreign-series booking → mixed_series ───────
@@ -706,6 +737,43 @@ describe('edit_booking_scope RPC — concurrency + state-machine probes', () => 
       [base.tenantId, targetSpaceId],
     );
     expect(slotChanged.rows[0].n).toBe(0);
+
+    // v2 I4 — tighter rollback assertions: zero domain_events, zero
+    // outbox rows, zero audit rows, zero approvals, and every booking
+    // row's location_id unchanged (none should have moved).
+    const auditCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.audit_events where tenant_id = $1`,
+      [base.tenantId],
+    );
+    expect(auditCount.rows[0].n).toBe(0);
+
+    const domainCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.domain_events where tenant_id = $1`,
+      [base.tenantId],
+    );
+    expect(domainCount.rows[0].n).toBe(0);
+
+    const outboxCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from outbox.events where tenant_id = $1`,
+      [base.tenantId],
+    );
+    expect(outboxCount.rows[0].n).toBe(0);
+
+    const approvalsCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.approvals where tenant_id = $1`,
+      [base.tenantId],
+    );
+    expect(approvalsCount.rows[0].n).toBe(0);
+
+    const bookingRows = await pool.query<{ location_id: string }>(
+      `select location_id from public.bookings
+        where recurrence_series_id = $1
+        order by recurrence_index asc`,
+      [fixture.seriesId],
+    );
+    for (const row of bookingRows.rows) {
+      expect(row.location_id).toBe(base.spaceId);
+    }
   });
 
   // ── Scenario 8: concurrent scope edits, different idempotency keys ───
@@ -749,25 +817,26 @@ describe('edit_booking_scope RPC — concurrency + state-machine probes', () => 
 
       // Start B with a different key — B's advisory lock won't collide,
       // but its per-row FOR UPDATE on the same bookings DOES. So B
-      // blocks at the row lock. We don't have a probe for row locks but
-      // we can observe via pg_stat_activity (state='active' + wait_event
-      // like 'transactionid'). Simpler: ensure B's promise doesn't
-      // resolve before A commits.
+      // blocks at the row lock (`wait_event='transactionid'`). v2 I6 fix:
+      // replace the v1 250ms sentinel race with deterministic polling on
+      // pg_stat_activity for the row-lock wait state. Resolves the
+      // CI-flakiness pattern where B's lock wait may not register within
+      // 250ms under load.
       await clientB.query('begin');
+      // Capture B's backend pid BEFORE issuing the blocking RPC so the
+      // pg_stat_activity poll has a target.
+      const bPidRow = await clientB.query<{ pid: number }>(
+        'select pg_backend_pid()::int as pid',
+      );
+      const bPid = bPidRow.rows[0].pid;
+
       const bPromise = clientB.query<{ result: CommitResult }>(
         `select public.edit_booking_scope($1::jsonb, $2, $3, $4, $5) as result`,
         [JSON.stringify(plansB), base.tenantId, null, idempotencyKeyB, false],
       );
 
-      // Give B a brief moment to start; verify it hasn't resolved
-      // (because A still holds row locks). Race-fragile — use a short
-      // sleep + assert "not settled" via Promise.race with a timer.
-      const sentinel = Symbol('not-settled');
-      const settledFirst = await Promise.race([
-        bPromise.then(() => 'b'),
-        new Promise((res) => setTimeout(() => res(sentinel), 250)),
-      ]);
-      expect(settledFirst).toBe(sentinel);
+      // Wait until pg_stat_activity reports B is blocked on a row lock.
+      await waitForRowLockBlocker(pool, bPid, { timeoutMs: 5_000 });
 
       // Commit A; B should now complete.
       await clientA.query('commit');
@@ -885,8 +954,16 @@ describe('edit_booking_scope RPC — concurrency + state-machine probes', () => 
     await pool.query(
       `insert into public.recurrence_series
          (id, tenant_id, recurrence_rule, series_start_at, materialized_through)
-       values ($1, $2, '{}'::jsonb, $3::timestamptz, $4::timestamptz)`,
-      [newSeriesId, base.tenantId, '2026-11-15T10:00:00Z', '2026-12-15T10:00:00Z'],
+       values ($1, $2, $3::jsonb, $4::timestamptz, $5::timestamptz)`,
+      [
+        newSeriesId,
+        base.tenantId,
+        // v2 I5 fix — empty {} jsonb is semantically invalid for a real
+        // splitSeries result. Use a realistic weekly count=3 rule.
+        JSON.stringify({ frequency: 'weekly', interval: 1, count: 3 }),
+        '2026-11-15T10:00:00Z',
+        '2026-12-15T10:00:00Z',
+      ],
     );
     registerCleanup(async () => {
       // Same teardown ordering rationale as seedRecurrenceSeries' cleanup:
@@ -984,4 +1061,183 @@ describe('edit_booking_scope RPC — concurrency + state-machine probes', () => 
     if (result.kind !== 'error') return;
     expect(result.error.message).toContain('edit_booking_scope.too_many_occurrences');
   });
+
+  // ── Scenario 13: §3.6.5 Row 3 — require_approval → allow w/ pending ──
+  // Pending approval rows on every occurrence + require_approval → allow
+  // edit. Per §3.6.5 Row 3: action='expire' on the pending rows; booking
+  // status flips to 'confirmed'. Passes the B.4.A.5 gate (new outcome
+  // 'allow' does not emit booking.approval_required).
+  it('require_approval → allow w/ pending approvals — expires pending + flips to confirmed', async () => {
+    const base = await seedBaseFixture(pool, `scope-r3-${Date.now()}`);
+    const fixture = await seedRecurrenceSeries(pool, base, 3);
+    const targetSpaceId = await seedTargetMeetingRoom(pool, base);
+
+    // Flip every occurrence into pending_approval state + seed one
+    // pending approval row per booking.
+    for (const occ of fixture.occurrences) {
+      await pool.query(
+        `update public.bookings set status = 'pending_approval' where id = $1`,
+        [occ.bookingId],
+      );
+      await pool.query(
+        `insert into public.approvals
+           (id, tenant_id, target_entity_type, target_entity_id,
+            approver_person_id, status, parallel_group)
+         values ($1, $2, 'booking', $3, $4, 'pending', null)`,
+        [randomUUID(), base.tenantId, occ.bookingId, base.approverPersonId],
+      );
+    }
+
+    // Plans: require_approval → allow (no chain_config_changed needed —
+    // new=allow short-circuits the chain path).
+    const plans = await buildPlansForFixture(
+      pool,
+      fixture,
+      targetSpaceId,
+      base.spaceId,
+      '2026-10-15T00:00:00Z',
+      () =>
+        buildApprovalBlock({
+          oldOutcome: 'require_approval',
+          newOutcome: 'allow',
+          chainConfigChanged: false,
+        }),
+    );
+    const idempotencyKey = scopeIdempotencyKey(`r3-${Date.now()}`);
+
+    const result = await runRpcCapture<CommitResult>(pool, 'public.edit_booking_scope', [
+      JSON.stringify(plans),
+      base.tenantId,
+      null,
+      idempotencyKey,
+      false,
+    ]);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.committed).toBe(3);
+
+    // Every booking now 'confirmed'.
+    const confirmedCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.bookings
+        where recurrence_series_id = $1 and status = 'confirmed'`,
+      [fixture.seriesId],
+    );
+    expect(confirmedCount.rows[0].n).toBe(3);
+
+    // Every approval now 'expired'.
+    const expiredCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.approvals
+        where tenant_id = $1 and status = 'expired'`,
+      [base.tenantId],
+    );
+    expect(expiredCount.rows[0].n).toBe(3);
+
+    // No pending approvals left.
+    const pendingCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.approvals
+        where tenant_id = $1 and status = 'pending'`,
+      [base.tenantId],
+    );
+    expect(pendingCount.rows[0].n).toBe(0);
+  });
+
+  // ── Scenario 14: §3.6.5 Row 4 — require_approval → allow w/ approved ─
+  // terminal_approved state + require_approval → allow edit. Per §3.6.5
+  // Row 4: action='noop' on approvals (historical chain stands as audit);
+  // booking status stays 'confirmed'.
+  it('require_approval → allow w/ terminal_approved — no approval mutation + preserves confirmed', async () => {
+    const base = await seedBaseFixture(pool, `scope-r4-${Date.now()}`);
+    const fixture = await seedRecurrenceSeries(pool, base, 3);
+    const targetSpaceId = await seedTargetMeetingRoom(pool, base);
+
+    // Bookings are 'confirmed' (per fixture default) + every occurrence
+    // has one 'approved' approval row.
+    for (const occ of fixture.occurrences) {
+      await pool.query(
+        `insert into public.approvals
+           (id, tenant_id, target_entity_type, target_entity_id,
+            approver_person_id, status, parallel_group, responded_at)
+         values ($1, $2, 'booking', $3, $4, 'approved', null, now())`,
+        [randomUUID(), base.tenantId, occ.bookingId, base.approverPersonId],
+      );
+    }
+
+    const plans = await buildPlansForFixture(
+      pool,
+      fixture,
+      targetSpaceId,
+      base.spaceId,
+      '2026-10-15T00:00:00Z',
+      () =>
+        buildApprovalBlock({
+          oldOutcome: 'require_approval',
+          newOutcome: 'allow',
+          chainConfigChanged: false,
+        }),
+    );
+    const idempotencyKey = scopeIdempotencyKey(`r4-${Date.now()}`);
+
+    const result = await runRpcCapture<CommitResult>(pool, 'public.edit_booking_scope', [
+      JSON.stringify(plans),
+      base.tenantId,
+      null,
+      idempotencyKey,
+      false,
+    ]);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.committed).toBe(3);
+
+    // Every booking still 'confirmed' (status_target was null →
+    // preserved).
+    const confirmedCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.bookings
+        where recurrence_series_id = $1 and status = 'confirmed'`,
+      [fixture.seriesId],
+    );
+    expect(confirmedCount.rows[0].n).toBe(3);
+
+    // Approvals untouched — 3 still 'approved', 0 'expired'.
+    const approvedCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.approvals
+        where tenant_id = $1 and status = 'approved'`,
+      [base.tenantId],
+    );
+    expect(approvedCount.rows[0].n).toBe(3);
+    const expiredCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.approvals
+        where tenant_id = $1 and status = 'expired'`,
+      [base.tenantId],
+    );
+    expect(expiredCount.rows[0].n).toBe(0);
+
+    // Per-occurrence 'approval_action' = noop.
+    for (const entry of result.value.per_occurrence) {
+      expect((entry as { booking_id: string }).booking_id).toBeDefined();
+    }
+  });
+
+  // ── Scenario 15 (code N-2): N = 200 exact-pass ────────────────────────
+  // The 200 cap is inclusive. A 200-occurrence series MUST commit; only
+  // 201+ trips too_many_occurrences. Verifies the off-by-one isn't
+  // silently `>=`.
+  it('p_plans length = 200 (cap boundary) — commits successfully', async () => {
+    const base = await seedBaseFixture(pool, `scope-cap200-${Date.now()}`);
+    const fixture = await seedRecurrenceSeries(pool, base, 200);
+    const targetSpaceId = await seedTargetMeetingRoom(pool, base);
+
+    const plans = await buildPlansForFixture(pool, fixture, targetSpaceId, base.spaceId, '2026-10-15T00:00:00Z');
+    const idempotencyKey = scopeIdempotencyKey(`cap200-${Date.now()}`);
+
+    const result = await runRpcCapture<CommitResult>(pool, 'public.edit_booking_scope', [
+      JSON.stringify(plans),
+      base.tenantId,
+      null,
+      idempotencyKey,
+      false,
+    ]);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.committed).toBe(200);
+  }, 120_000);
 });

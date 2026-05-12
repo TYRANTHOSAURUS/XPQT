@@ -1657,22 +1657,23 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     detail:
       'Deze wijziging verandert de goedkeuringsregels. Vraag de ruimte-beheerder om goedkeuring voor deze ruimte uit te zetten, of kies een andere ruimte.',
   },
-  // B.4 Step 2F.1 — edit_booking_scope RPC (00367). Series-scope edits.
+  // B.4 Step 2F.1 — edit_booking_scope RPC (00367 + v2 00371). Series-scope edits.
+  // v2 N-2: "afspraken" → "reserveringen"; "seriewijziging" → "reeks-wijziging".
   'edit_booking_scope.invalid_plans': {
-    title: 'Kon de seriewijziging niet opslaan',
-    detail: 'De aanvraag voor de seriewijziging was ongeldig. Vernieuw de pagina en probeer het opnieuw.',
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'De aanvraag voor de reeks-wijziging was ongeldig. Vernieuw de pagina en probeer het opnieuw.',
   },
   'edit_booking_scope.too_many_occurrences': {
-    title: 'Kon de seriewijziging niet opslaan — te groot',
-    detail: 'Deze wijziging raakt te veel afspraken om in één keer op te slaan. Beperk de scope (bijv. "deze en volgende") of neem contact op met support.',
+    title: 'Kon de reeks-wijziging niet opslaan — te groot',
+    detail: 'Deze wijziging raakt te veel reserveringen in de serie om in één keer op te slaan. Beperk de scope (bijv. "deze en volgende") of neem contact op met support.',
   },
   'edit_booking_scope.booking_not_found': {
-    title: 'Kon de seriewijziging niet opslaan — niet gevonden',
-    detail: 'Eén of meer afspraken in de serie bestaan niet meer. Vernieuw de pagina en probeer het opnieuw.',
+    title: 'Kon de reeks-wijziging niet opslaan — niet gevonden',
+    detail: 'Eén of meer reserveringen in de serie bestaan niet meer. Vernieuw de pagina en probeer het opnieuw.',
   },
   'edit_booking_scope.mixed_series': {
-    title: 'Kon de seriewijziging niet opslaan',
-    detail: 'De geselecteerde afspraken horen niet allemaal bij dezelfde serie. Vernieuw de pagina en kies de scope opnieuw.',
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'De geselecteerde reserveringen horen niet allemaal bij dezelfde serie. Vernieuw de pagina en kies de scope opnieuw.',
   },
 };
 

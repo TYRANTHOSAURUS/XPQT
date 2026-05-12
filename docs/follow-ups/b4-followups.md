@@ -204,3 +204,78 @@ Hardening (when worth the engineering cost):
 - Migration impact: `command_operations.idempotency_key` is a free-form text column; in-flight retries with the old key shape would still find their cached result, but new calls would mint new key shapes. Safe.
 
 Tracked here so the next time a cross-mutation collision surfaces in a bug report, the fix is unambiguous.
+
+## Step 2F.1 dry-run idempotency contract — shipped (00371 v2)
+
+Self-review on commit `8a89048a` (Step 2F.1 v1, 00367) flagged two
+convergent issues in the dry-run × idempotency-key contract. The v2
+migration (00371) drops + recreates `edit_booking_scope` with a clean
+contract.
+
+**The v1 bug:** the payload_hash on 00367 mixed `p_dry_run` into the
+md5, AND the dry-run path wrote a `command_operations` row before the
+per-occurrence loop. Two consequences:
+
+1. If a TS caller used one idempotency key across an end-to-end user
+   intent — `client_request_id = abc-123` covering both the "preview"
+   (dry-run=true) AND the "commit" (dry-run=false) — the commit phase
+   raised `command_operations.payload_mismatch` (409) because the
+   hashes differed (the preview wrote a row hashed with `p_dry_run=true`;
+   the commit's hash was for `p_dry_run=false`).
+2. Every preview clicked an idempotency row that lived indefinitely.
+   An operator previewing N times = N persisted rows.
+
+**The v2 contract (00371):**
+
+- Dry-run is a **stateless preview**. The function runs the
+  validation block (cancelled guard, semantic re-derivation, FK
+  validation, approval reconciliation, B.4.A.5 emit gate, per-occurrence
+  before/after capture) and returns predicted outcomes — but does NOT
+  touch `command_operations` at all. No replay check, no insert, no
+  success update. No advisory lock either (no command_operations row =
+  nothing to serialise).
+- Commit (dry_run=false) is unchanged from v1 except the payload_hash
+  is now `md5(p_plans::text)` — no `p_dry_run` mix.
+- Consequence: dry-run and commit CAN share an idempotency key. The
+  natural pattern (one `clientRequestId` per user-visible action) is
+  the correct pattern.
+- The 5-arg function signature `(jsonb, uuid, uuid, text, boolean)` is
+  unchanged — TS callers don't change.
+
+Other v2 changes folded into the same migration:
+
+- **`booking_not_found` error bounded.** v1 raised
+  `... requested=<v_booking_id_set>` which interpolated up to 200
+  UUIDs (~7.6KB error string). v2 raises with a count + the first
+  missing id only (DETAIL). Error string stays under 200 bytes.
+- **Per-occurrence `space_id_before/after` + `start_at_before/after`**
+  in the return shape so Step 2F.3's visitor cascade fan-out reads
+  the diff directly instead of N re-reads.
+- **`recurrence_overridden` is rejected from scope-mode plans.**
+  recurrence_overridden is a per-occurrence concept (single occurrence
+  diverging from the series projection). v2 raises
+  `edit_booking_scope.invalid_plans` if a scope plan sets it. The
+  Step 2F.2 plan-builder will assert this at build time; the RPC
+  guard is defense-in-depth.
+- **NL voice updated** to use "reserveringen in de serie" /
+  "reeks-wijziging" instead of "afspraken" / "seriewijziging" —
+  consistent with the booking-voice in the rest of the app.
+
+Reference: `supabase/migrations/00371_edit_booking_scope_rpc_v2.sql`.
+
+Concurrency probe additions (commit-set with 00371):
+
+- **Tighter rollback assertions** on scenarios 5 + 7 — verify zero
+  `domain_events`, zero `outbox.events`, zero `approvals`, and every
+  booking row's `location_id` preserved after the abort.
+- **Scenario 13:** §3.6.5 Row 3 — require_approval → allow with
+  pending approvals — verifies action='expire' + status flips to
+  'confirmed'.
+- **Scenario 14:** §3.6.5 Row 4 — require_approval → allow with
+  terminal_approved — verifies action='noop' + 'confirmed' preserved.
+- **Scenario 15:** N=200 cap boundary — exact-pass test (the cap is
+  inclusive; only N=201 trips `too_many_occurrences`).
+- **Scenario 8 timing:** replaced the 250ms sentinel race with
+  deterministic `waitForRowLockBlocker(pid)` polling on
+  `pg_stat_activity` for `wait_event_type='Lock' AND wait_event IN
+  ('transactionid', 'tuple')`. Removes CI flakiness under load.
