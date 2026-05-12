@@ -205,6 +205,45 @@ describe('Cross-tenant FK leak regression — small modules', () => {
     expect(result.data).toBeNull();
   });
 
+  it('floor-plan-draft.service: floor_plan_drafts read includes tenant_id', async () => {
+    const captures: FilterCapture[] = [];
+    const client = buildCaptureClient(
+      { floor_plan_drafts: [{ tenant_id: TENANT_B, floor_space_id: SHARED_ID }] },
+      captures,
+    );
+    // Reproduces apps/api/src/modules/floor-plan/floor-plan-draft.service.ts:getOrCreate
+    const result = await (client as any)
+      .from('floor_plan_drafts')
+      .select('*')
+      .eq('floor_space_id', SHARED_ID)
+      .eq('tenant_id', TENANT_A)
+      .maybeSingle();
+    expect(captures[0].filters.tenant_id).toBe(TENANT_A);
+    expect(result.data).toBeNull();
+  });
+
+  it('floor-plan.service: floor_plan_publish_history read includes tenant_id', async () => {
+    const captures: FilterCapture[] = [];
+    const client = buildCaptureClient(
+      {
+        floor_plan_publish_history: [
+          { tenant_id: TENANT_B, floor_space_id: SHARED_ID, published_at: '2026-01-01T00:00:00Z' },
+        ],
+      },
+      captures,
+    );
+    // Reproduces apps/api/src/modules/floor-plan/floor-plan.service.ts:listPublishHistory
+    const result = await (client as any)
+      .from('floor_plan_publish_history')
+      .select('id, published_at, published_by, image_url, width_px, height_px, polygons, labels')
+      .eq('floor_space_id', SHARED_ID)
+      .eq('tenant_id', TENANT_A)
+      .order()
+      .maybeSingle();
+    expect(captures[0].filters.tenant_id).toBe(TENANT_A);
+    expect(result.data).toBeNull();
+  });
+
   it('positive: same-tenant fixture returns the row across all 8 patterns', async () => {
     const captures: FilterCapture[] = [];
     const client = buildCaptureClient(
