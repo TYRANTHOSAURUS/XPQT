@@ -155,6 +155,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Verplaatst door iemand anders',
     detail: 'Een andere planner heeft deze werkorder zojuist verplaatst. Herlaad om hun wijziging te zien, of behoud je wijziging en overschrijf de hunne.',
   },
+  'planning.operator_only': {
+    title: 'Je hebt geen toegang tot het planbord',
+    detail: 'Het planbord is alleen beschikbaar voor operators. Vraag een beheerder als je toegang nodig hebt.',
+  },
 
   // ─── Phase 1 registered codes ────────────────────────────────────────────
   'work_order.plan_invalid': {

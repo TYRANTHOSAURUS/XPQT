@@ -174,6 +174,10 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: 'Moved by someone else',
     detail: 'Another dispatcher just moved this work order. Reload to see their change, or keep yours and overwrite theirs.',
   },
+  'planning.operator_only': {
+    title: "You don't have access to the planning board",
+    detail: 'The planning board is available to operators only. Ask an administrator if you need access.',
+  },
 
   // ─── work-orders ─────────────────────────────────────────────────────────
   'work_order.plan_invalid': {

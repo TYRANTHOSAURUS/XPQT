@@ -20,6 +20,11 @@ import {
 import { WorkOrderPlanningService } from './work-order-planning.service';
 import { AppErrors } from '../../common/errors';
 import { RequireClientRequestIdGuard } from '../../common/guards/require-client-request-id.guard';
+import {
+  TicketVisibilityService,
+  isOperatorContext,
+} from '../ticket/ticket-visibility.service';
+import { TenantContext } from '../../common/tenant-context';
 
 interface UpdateWorkOrderAssignmentDto {
   assigned_team_id?: string | null;
@@ -57,6 +62,7 @@ export class WorkOrderController {
   constructor(
     private readonly workOrderService: WorkOrderService,
     private readonly planningService: WorkOrderPlanningService,
+    private readonly visibility: TicketVisibilityService,
   ) {}
 
   /**
@@ -72,6 +78,16 @@ export class WorkOrderController {
    * The window is capped at `PLANNING_WINDOW_MAX_DAYS` (14) so accidental
    * wide ranges fail closed with a 400 rather than fetching thousands of
    * rows. `status` accepts repeated values; `team_id` is an exact match.
+   *
+   * Operator-only — full-review C1 (2026-05-12). The block-level predicate
+   * (`work_orders_planning_visible_for_actor`) correctly drops requester /
+   * watcher branches from `planned[]` + `unscheduled[]`, but the service's
+   * lane derivation pulls `team_members` + tenant vendors when `team_id`
+   * is set. A requester JWT with `?team_id=<uuid>` would get back the
+   * team roster and vendor identities. Gate the entire endpoint at the
+   * controller — requesters have zero use cases for the planning board.
+   * `tickets.read_all` (admin override) still passes, since it's an
+   * operator path per `isOperatorContext`.
    */
   @Get('planning')
   async getPlanning(
@@ -83,6 +99,11 @@ export class WorkOrderController {
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
+    const tenant = TenantContext.current();
+    const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+    if (!isOperatorContext(ctx)) {
+      throw AppErrors.forbidden('planning.operator_only');
+    }
     const statusList = status === undefined
       ? undefined
       : Array.isArray(status)

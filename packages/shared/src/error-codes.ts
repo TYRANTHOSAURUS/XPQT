@@ -87,6 +87,10 @@ export type KnownErrorCode =
   // Optimistic-lock conflict on PATCH /work-orders/:id when the caller's
   // plan_version doesn't match the row's current plan_version (00382).
   | 'planning.version_conflict'
+  // 403: requester / watcher / unknown actor tried to read the planning
+  // board. The endpoint is operator-scoped — lane rosters + vendor labels
+  // leak PII otherwise (full-review C1 finding).
+  | 'planning.operator_only'
 
   // ─── Phase 1 registered codes (per docs/follow-ups/phase-7-error-codes.md) ─
   | 'work_order.plan_invalid'
@@ -1490,6 +1494,11 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   // row) + clientVersion (what the caller passed) per AppErrors.conflict
   // wire-shape contract.
   'planning.version_conflict',
+  // 403: GET /work-orders/planning rejected because the actor has no
+  // operator paths (full-review C1 — lane endpoint leaks team rosters
+  // + vendor identity to non-operators). Admin/operator override via
+  // tickets.read_all still bypasses.
+  'planning.operator_only',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

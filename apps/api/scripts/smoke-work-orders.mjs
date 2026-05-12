@@ -992,9 +992,14 @@ async function runPlanningProbes(headers, probe) {
 
 // Fetch the planning window for the given headers and return parsed body
 // (or null on error — the caller records the failure with the right
-// probe label).
-async function fetchPlanningWindow(headers, fromIso, toIso) {
-  const url = `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`;
+// probe label). Optionally pass `teamId` to set the `?team_id=` query
+// param — used by the full-review C1 probe to assert the operator gate
+// also blocks the lane-roster leak path (requester + ?team_id).
+async function fetchPlanningWindow(headers, fromIso, toIso, teamId) {
+  const params = `from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}${
+    teamId ? `&team_id=${encodeURIComponent(teamId)}` : ''
+  }`;
+  const url = `${API_BASE}/api/work-orders/planning?${params}`;
   const resp = await fetch(url, { headers });
   if (resp.status !== 200) {
     return { ok: false, status: resp.status, text: await resp.text() };
@@ -1004,6 +1009,38 @@ async function fetchPlanningWindow(headers, fromIso, toIso) {
     return { ok: false, status: 200, text: 'malformed response' };
   }
   return { ok: true, body };
+}
+
+// Hit the planning endpoint expecting a 403 + planning.operator_only code
+// (full-review C1). Returns { ok: true } when both checks pass; on any
+// mismatch returns a structured failure description that the caller logs
+// + counts.
+async function expectPlanningOperatorOnly(headers, fromIso, toIso, teamId) {
+  const params = `from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}${
+    teamId ? `&team_id=${encodeURIComponent(teamId)}` : ''
+  }`;
+  const url = `${API_BASE}/api/work-orders/planning?${params}`;
+  const resp = await fetch(url, { headers });
+  if (resp.status !== 403) {
+    return {
+      ok: false,
+      reason: `expected HTTP 403, got ${resp.status}`,
+      body: (await resp.text()).slice(0, 240),
+    };
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(await resp.text());
+  } catch {
+    return { ok: false, reason: 'response not JSON' };
+  }
+  if (parsed?.code !== 'planning.operator_only') {
+    return {
+      ok: false,
+      reason: `expected code=planning.operator_only, got code=${parsed?.code}`,
+    };
+  }
+  return { ok: true };
 }
 
 // To run the negative-control branch (which proves the probe is
@@ -1119,61 +1156,38 @@ async function runPlanningRequesterProbe(adminHeaders) {
     'Content-Type': 'application/json',
   };
 
-  const reqBody = await fetchPlanningWindow(reqHeaders, fromIso, toIso);
-  if (!reqBody.ok) {
+  // Full-review C1 (2026-05-12) — the planning endpoint is now gated at
+  // the controller. A requester with zero operator paths must receive a
+  // 403 with code=planning.operator_only, not a 200 with empty arrays.
+  // The previous probe (200 + empty arrays) was insufficient: when
+  // `?team_id` was supplied, the service ran `loadTeamRoster` +
+  // `loadActiveTenantVendors` BEFORE applying the predicate, leaking the
+  // roster + vendor identities back to the requester. The controller gate
+  // closes that path; this probe verifies the gate fires.
+  const noTeamProbe = await expectPlanningOperatorOnly(reqHeaders, fromIso, toIso);
+  if (!noTeamProbe.ok) {
     results.fail += 1;
-    results.failed.push('Planning requester: GET → non-200');
-    console.log(`  ✗ GET planning (requester) → HTTP ${reqBody.status}`);
-    console.log(`     ${(reqBody.text || '').slice(0, 240)}`);
+    results.failed.push('Planning requester: operator gate (no team_id)');
+    console.log(`  ✗ requester GET planning (no team_id) — ${noTeamProbe.reason}`);
+    if (noTeamProbe.body) console.log(`     ${noTeamProbe.body}`);
     return;
   }
-  const body = reqBody.body;
-
-  // Core assertion — operator-only predicate must exclude the fixture
-  // (and every other row in the tenant, since the requester has zero
-  // operator paths).
-  const leakedPlanned = body.planned.find((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID);
-  const leakedUnsched = body.unscheduled.find((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID);
-  if (leakedPlanned || leakedUnsched) {
-    results.fail += 1;
-    results.failed.push('Planning requester: fixture WO leaked');
-    const where = leakedPlanned ? 'planned[]' : 'unscheduled[]';
-    console.log(
-      `  ✗ operator-only predicate LEAKED requester fixture in ${where} — 00380 broken`,
-    );
-    return;
-  }
-
-  // Stronger assertion — requester has no operator paths at all, so
-  // both arrays should be empty. A non-empty array implies the predicate
-  // is matching some non-operator branch (requester / watcher / unknown).
-  if (body.planned.length > 0 || body.unscheduled.length > 0) {
-    results.fail += 1;
-    results.failed.push('Planning requester: non-empty arrays');
-    console.log(
-      `  ✗ requester sees ${body.planned.length} planned + ${body.unscheduled.length} unscheduled — predicate leaks beyond fixture`,
-    );
-    return;
-  }
-
   results.pass += 1;
-  console.log(`  ✓ requester sees planned: [] / unscheduled: [] — operator-only predicate excludes requester branch`);
+  console.log(`  ✓ requester GET planning → 403 planning.operator_only (no team_id)`);
 
-  // P1-1: top-level lanes must also be empty for the requester. The
-  // lane derivation skips when team_id is unfiltered (and the predicate
-  // already excluded every block), so this should always be [].
-  if (!Array.isArray(body.lanes)) {
+  // C1 lane-roster leak — the more dangerous path. Without the
+  // controller gate, this request would pull `team_members` + tenant
+  // vendor labels into the response. The gate must block it identically.
+  const teamProbe = await expectPlanningOperatorOnly(reqHeaders, fromIso, toIso, REAL_TEAM);
+  if (!teamProbe.ok) {
     results.fail += 1;
-    results.failed.push('Planning requester: missing lanes[]');
-    console.log(`  ✗ requester response missing lanes[] (P1-1 shape requirement)`);
-  } else if (body.lanes.length > 0) {
-    results.fail += 1;
-    results.failed.push('Planning requester: non-empty lanes');
-    console.log(`  ✗ requester sees ${body.lanes.length} lanes — predicate leaks via lanes`);
-  } else {
-    results.pass += 1;
-    console.log(`  ✓ requester sees lanes: [] (P1-1 operator-only invariant)`);
+    results.failed.push('Planning requester: operator gate (?team_id=…)');
+    console.log(`  ✗ requester GET planning (?team_id=${REAL_TEAM.slice(0, 8)}…) — ${teamProbe.reason}`);
+    if (teamProbe.body) console.log(`     ${teamProbe.body}`);
+    return;
   }
+  results.pass += 1;
+  console.log(`  ✓ requester GET planning (?team_id) → 403 planning.operator_only (lane-roster leak closed)`);
 
   // Negative-control branch — env-gated. Codifies the "did I manually
   // verify the probe goes red when an operator path is granted?" check.
@@ -1183,12 +1197,42 @@ async function runPlanningRequesterProbe(adminHeaders) {
   }
 }
 
-// Insert a team_members row that grants the seed requester an operator
-// path (team-membership branch of the operator predicate), re-assign
-// the fixture to that team, re-run the probe, assert it now sees the
-// fixture (proving the probe is non-vacuous), then clean up.
+// Three sub-scenarios — each independently grants the seed requester an
+// operator path through ONE of the three branches `isOperatorContext`
+// checks (team_members + role_assignment + read_all override is admin-
+// only; assigned_user_id is technically a participant path but flips
+// can_plan into "yes"). Each scenario inserts the operator grant,
+// re-runs the planning probe (now expecting 200 because the controller
+// gate passes), asserts the fixture is visible, then cleans up in
+// `finally`. Full-review I2 (2026-05-12) — extends the prior single-
+// scenario coverage so a future regression in either the role or
+// assignee branch doesn't slip through.
 async function runRequesterNegativeControl(reqHeaders, fromIso, toIso) {
   console.log('\n=== Planning requester NEGATIVE control (DEBUG_NEGATIVE_REQUESTER_PROBE=1) ===');
+
+  // ── Scenario A: team_members grant ──────────────────────────────────
+  await runNegativeControlScenarioTeamMembership(reqHeaders, fromIso, toIso);
+
+  // ── Scenario B: user_role_assignments grant ─────────────────────────
+  // The role_assignments branch of isOperatorContext is exercised here.
+  // Uses the seeded Agent role (`91000000-0000-0000-0000-000000000002`,
+  // migration 00102) with an empty domain_scope + location_scope (= all
+  // domains / all locations) so the predicate flips for any fixture row.
+  await runNegativeControlScenarioRoleAssignment(reqHeaders, fromIso, toIso);
+
+  // ── Scenario C: assigned_user_id (planning predicate sees the
+  //    requester as the assignee). This isn't an "operator" path in
+  //    `isOperatorContext` BUT the SQL predicate `work_orders_planning_
+  //    visible_for_actor` also includes the assignee branch. The
+  //    controller gate fires FIRST though — so this scenario must STILL
+  //    return 403 even though the seed is the assignee. That confirms
+  //    the controller gate is the structural defense; assignee status
+  //    alone doesn't unlock planning-board access.
+  await runNegativeControlScenarioAssignedUser(reqHeaders, fromIso, toIso);
+}
+
+async function runNegativeControlScenarioTeamMembership(reqHeaders, fromIso, toIso) {
+  console.log('\n  — Scenario A: team_members grant');
   const teamMemberId = crypto.randomUUID();
   let inserted = false;
   let reassigned = false;
@@ -1202,25 +1246,22 @@ async function runRequesterNegativeControl(reqHeaders, fromIso, toIso) {
     });
     if (insErr) {
       results.fail += 1;
-      results.failed.push('Negative-control: team_members insert failed');
-      console.log(`  ✗ could not grant operator path: ${insErr.message}`);
+      results.failed.push('Negative-control A: team_members insert failed');
+      console.log(`    ✗ could not grant operator path: ${insErr.message}`);
       return;
     }
     inserted = true;
-    console.log(`  ✓ inserted team_members row ${teamMemberId.slice(0, 8)}… on ${REAL_TEAM.slice(0, 8)}…`);
 
-    // The fixture's `assigned_team_id` is null by default, so team
-    // membership alone doesn't flip the predicate. Re-assign the
-    // fixture to REAL_TEAM for the duration of the control. Restored
-    // in `finally`.
+    // Re-assign the fixture to REAL_TEAM for the duration of the control
+    // so the team-membership branch of the SQL predicate matches.
     const { error: assignErr } = await supa()
       .from('work_orders')
       .update({ assigned_team_id: REAL_TEAM })
       .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID);
     if (assignErr) {
       results.fail += 1;
-      results.failed.push('Negative-control: fixture team-assign failed');
-      console.log(`  ✗ could not assign fixture to REAL_TEAM: ${assignErr.message}`);
+      results.failed.push('Negative-control A: fixture team-assign failed');
+      console.log(`    ✗ could not assign fixture to REAL_TEAM: ${assignErr.message}`);
       return;
     }
     reassigned = true;
@@ -1228,26 +1269,21 @@ async function runRequesterNegativeControl(reqHeaders, fromIso, toIso) {
     const probe = await fetchPlanningWindow(reqHeaders, fromIso, toIso);
     if (!probe.ok) {
       results.fail += 1;
-      results.failed.push('Negative-control: GET non-200');
-      console.log(`  ✗ negative-control GET → HTTP ${probe.status}`);
+      results.failed.push('Negative-control A: GET non-200');
+      console.log(`    ✗ GET → HTTP ${probe.status}`);
       return;
     }
     const seesFixture =
       probe.body.planned.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID) ||
       probe.body.unscheduled.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID);
     if (!seesFixture) {
-      // Probe stays green with team-membership granted → the green-path
-      // probe is vacuous: even adding a real operator path doesn't flip
-      // the predicate, so its empty-arrays assertion proves nothing.
       results.fail += 1;
-      results.failed.push('Negative-control: probe still empty with operator path');
-      console.log(
-        `  ✗ requester with team membership + fixture re-assigned to team STILL sees no rows — probe is vacuous`,
-      );
+      results.failed.push('Negative-control A: probe empty with team membership');
+      console.log(`    ✗ team membership + fixture re-assigned STILL sees no rows`);
       return;
     }
     results.pass += 1;
-    console.log(`  ✓ negative-control passed: probe is non-vacuous (requester with operator path sees fixture)`);
+    console.log(`    ✓ team-membership scenario non-vacuous`);
   } finally {
     if (reassigned) {
       const { error: unassignErr } = await supa()
@@ -1255,15 +1291,128 @@ async function runRequesterNegativeControl(reqHeaders, fromIso, toIso) {
         .update({ assigned_team_id: null })
         .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID);
       if (unassignErr) {
-        console.log(`  ! cleanup warn: fixture unassign failed: ${unassignErr.message}`);
+        console.log(`    ! cleanup warn: fixture unassign failed: ${unassignErr.message}`);
       }
     }
     if (inserted) {
       const { error: delErr } = await supa().from('team_members').delete().eq('id', teamMemberId);
       if (delErr) {
-        console.log(`  ! cleanup warn: team_members delete failed: ${delErr.message}`);
+        console.log(`    ! cleanup warn: team_members delete failed: ${delErr.message}`);
       } else {
-        console.log(`  ✓ cleanup: team_members row removed, fixture unassigned`);
+        console.log(`    ✓ cleanup: scenario A teardown clean`);
+      }
+    }
+  }
+}
+
+async function runNegativeControlScenarioRoleAssignment(reqHeaders, fromIso, toIso) {
+  console.log('\n  — Scenario B: user_role_assignments grant');
+  const uraId = crypto.randomUUID();
+  const AGENT_ROLE_ID = '91000000-0000-0000-0000-000000000002';
+  let inserted = false;
+  try {
+    // Agent role + empty scope = matches any domain + any location.
+    // The role_assignments branch of isOperatorContext checks
+    // `role_assignments.length > 0` — granting an active row flips it.
+    const { error: insErr } = await supa().from('user_role_assignments').insert({
+      id: uraId,
+      tenant_id: TENANT_ID,
+      user_id: PLANNING_REQUESTER_USER_ID,
+      role_id: AGENT_ROLE_ID,
+      domain_scope: [],
+      location_scope: [],
+      read_only_cross_domain: false,
+      active: true,
+    });
+    if (insErr) {
+      // If user_role_assignments grant fails for shape reasons, log + skip
+      // rather than fail the whole smoke. team_members + assigned_user_id
+      // cover the bulk of the operator-path matrix.
+      console.log(
+        `    ! skipped: user_role_assignments insert failed (${insErr.message}) — team-member + assignee scenarios still cover the matrix`,
+      );
+      return;
+    }
+    inserted = true;
+
+    const probe = await fetchPlanningWindow(reqHeaders, fromIso, toIso);
+    if (!probe.ok) {
+      results.fail += 1;
+      results.failed.push('Negative-control B: GET non-200');
+      console.log(`    ✗ GET → HTTP ${probe.status}`);
+      return;
+    }
+    const seesFixture =
+      probe.body.planned.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID) ||
+      probe.body.unscheduled.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID);
+    if (!seesFixture) {
+      results.fail += 1;
+      results.failed.push('Negative-control B: probe empty with role assignment');
+      console.log(`    ✗ role assignment STILL sees no rows`);
+      return;
+    }
+    results.pass += 1;
+    console.log(`    ✓ role-assignment scenario non-vacuous`);
+  } finally {
+    if (inserted) {
+      const { error: delErr } = await supa().from('user_role_assignments').delete().eq('id', uraId);
+      if (delErr) {
+        console.log(`    ! cleanup warn: user_role_assignments delete failed: ${delErr.message}`);
+      } else {
+        console.log(`    ✓ cleanup: scenario B teardown clean`);
+      }
+    }
+  }
+}
+
+async function runNegativeControlScenarioAssignedUser(reqHeaders, fromIso, toIso) {
+  console.log('\n  — Scenario C: assigned_user_id (participant path, NOT operator)');
+  let assigned = false;
+  try {
+    // The seed user is now the assignee. The SQL predicate
+    // `work_orders_planning_visible_for_actor` includes the assignee
+    // branch, so without the controller gate the fixture would surface.
+    // With the gate in place, the request must still 403 because
+    // assignee status alone isn't an operator path per
+    // isOperatorContext (no team_ids, no role_assignments,
+    // no read_all).
+    const { error: assignErr } = await supa()
+      .from('work_orders')
+      .update({ assigned_user_id: PLANNING_REQUESTER_USER_ID })
+      .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID);
+    if (assignErr) {
+      results.fail += 1;
+      results.failed.push('Negative-control C: assignee update failed');
+      console.log(`    ✗ could not set assigned_user_id: ${assignErr.message}`);
+      return;
+    }
+    assigned = true;
+
+    // Critical assertion — the controller gate fires FIRST, so even
+    // though the SQL predicate would include the fixture for the
+    // assignee, the requester still gets 403. This is the gate's
+    // defense-in-depth value: the predicate alone is not enough.
+    const probe = await expectPlanningOperatorOnly(reqHeaders, fromIso, toIso);
+    if (!probe.ok) {
+      results.fail += 1;
+      results.failed.push('Negative-control C: assignee bypassed operator gate');
+      console.log(
+        `    ✗ assignee bypassed controller gate — ${probe.reason} (defense-in-depth broken)`,
+      );
+      return;
+    }
+    results.pass += 1;
+    console.log(`    ✓ assignee STILL receives 403 — controller gate not bypassed by participant paths`);
+  } finally {
+    if (assigned) {
+      const { error: clearErr } = await supa()
+        .from('work_orders')
+        .update({ assigned_user_id: null })
+        .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID);
+      if (clearErr) {
+        console.log(`    ! cleanup warn: assignee clear failed: ${clearErr.message}`);
+      } else {
+        console.log(`    ✓ cleanup: scenario C teardown clean`);
       }
     }
   }

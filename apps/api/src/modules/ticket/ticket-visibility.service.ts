@@ -56,6 +56,32 @@ export interface PlanRowForPolicy {
 }
 
 /**
+ * Pure policy — "does this actor count as an operator in this tenant?".
+ *
+ * Operator = has at least one operator path that could ever flip a
+ * `tickets_visible_for_actor` row into visibility: team membership, an
+ * active role assignment, or a read-all / write-all permission override.
+ * Requester / watcher / vendor paths are NOT operator paths — a person
+ * is a requester only relative to a specific row, never globally.
+ *
+ * Used by the planning controller (full-review C1) to fail-closed BEFORE
+ * the service runs any roster / vendor lookup. Without this gate, the
+ * service's lane derivation leaks team_members + tenant vendors to
+ * requesters via the `?team_id=…` query parameter, even though the
+ * SQL-layer block predicate (`work_orders_planning_visible_for_actor`)
+ * correctly filters the blocks.
+ *
+ * Single source of truth for "is operator". Other surfaces that need
+ * the same check should call this rather than re-deriving.
+ */
+export function isOperatorContext(ctx: VisibilityContext): boolean {
+  if (ctx.has_read_all || ctx.has_write_all) return true;
+  if (ctx.team_ids.length > 0) return true;
+  if (ctx.role_assignments.length > 0) return true;
+  return false;
+}
+
+/**
  * Pure policy — "can this actor plan this row?". Single source of truth
  * for the plandate gate; both `assertCanPlan` (single-row, throws on
  * deny) and `WorkOrderPlanningService.evaluateCanPlan` (batch, returns
