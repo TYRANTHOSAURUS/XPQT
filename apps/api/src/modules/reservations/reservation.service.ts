@@ -1980,6 +1980,13 @@ export class ReservationService {
    * fans out the cascade for N occurrences using the per-occurrence
    * before/after fields from the `edit_booking_scope` RPC return shape
    * (`00371:1113-1125`). Single new caller; no shared-service refactor.
+   *
+   * @internal — public ONLY so the editScope path inside this same service
+   * can fan out per-occurrence cascades. Do NOT import or call this from
+   * another service. Cross-service fan-out belongs in a shared
+   * `BundleEventEmitter` (planned but not built); when that exists,
+   * relax this back to `private`. Tier C followup #8 closure
+   * (b4-followups.md).
    */
   async emitVisitorCascadeForBundle(args: {
     tenantId: string;

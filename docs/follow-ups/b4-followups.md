@@ -444,9 +444,24 @@ threading tenantId through the helpers re-introduces the silent
 cross-tenant leak. The assertion is the load-bearing structural
 defense until Phase 8 lands.
 
+## Tier C item #8 — `emitVisitorCascadeForBundle` `@internal` tag — CLOSED (2026-05-12)
+
+`apps/api/src/modules/reservations/reservation.service.ts:1972-1990` —
+added `@internal` JSDoc tag explaining why the method is `public` (single
+sibling-method caller inside the same service: `editScope`) and what
+the proper home is when a second caller appears (a shared
+`BundleEventEmitter`, not currently built). Discourages accidental
+imports from outside `ReservationService`.
+
+The tag itself is informational — TypeScript honors `@internal` only
+when `stripInternal: true` is set in `tsconfig.json` (it isn't here),
+so this is documentation for future maintainers rather than a compile-
+time gate. The structural defense is the single-file location of the
+caller; relax to `private` when no longer needed.
+
 ## Step 2F.3 — deferred items
 
-### In-flight retry hazard across the deploy window
+### In-flight retry hazard across the deploy window — DEFERRED to launch-time
 
 Step 2F.3 changed `buildEditBookingIdempotencyKey` to accept an
 optional op discriminator. Existing callers (editOne, editSlot) now
@@ -458,12 +473,45 @@ miss the in-flight `command_operations` cached_result row.
 **Risk:** double-write on retry across the cutover window (RPC re-
 runs the write under a new key).
 
-**Mitigation for production cutover:**
-- Drain edit-booking traffic during deploy
-- OR add a fallback read: if op-discriminated key misses, retry with
-  legacy 4-segment shape
-- Test scenarios at `apps/api/src/common/idempotency.spec.ts:113-126`
-  document the divergence.
+**Mitigation options:**
+- **Option A — operational drain.** Pause writes to the booking-edit
+  routes during the deploy window. Smallest code change (zero); the
+  client-side `command_operations` cache shows in-flight retries
+  via `outcome='in_progress'` rows — wait for those to terminal before
+  flipping traffic.
+- **Option B — fallback read in `command_operations` lookup.** If
+  the 5-segment key misses, retry the lookup with the legacy
+  4-segment shape (`booking:edit:<bid>:<crid>`). If the legacy hits
+  with `outcome='success'` and a `cached_result`, return that as the
+  retry response. Adds ~15 LOC to the idempotency-resolve path; net
+  removable once the deploy window closes.
+
+**Trigger condition.** The hazard fires ONLY across an actual
+production deploy where customers have client-side state from the
+pre-Step-2F.3 build. Per project status (`project_no_wave1_yet.md`)
+no production customers exist yet; the deploy window for the
+op-discriminator change has effectively already passed (all current
+clients are post-2F.3 dev / smoke / staging).
+
+**Resurfacing trigger.** When the project takes its first
+customer-facing cutover that involves an op-discriminator-shape
+change (or any wire-format change to `command_operations` idempotency
+keys), revisit this section. At that point either Option A (drain) or
+Option B (fallback read shim) ships in the same release as the
+change. The pre-deploy runbook checklist should include "review
+idempotency-key shape drift since last release; if non-zero, choose
+drain or shim BEFORE the cutover."
+
+**Test scenarios at `apps/api/src/common/idempotency.spec.ts:113-126`
+already document the divergence at the unit-test level**, so a future
+fallback-read implementation has a contract to write against without
+re-discovering the failure mode.
+
+**Status:** Tier B item #7 — CLOSED as DEFERRED (2026-05-12). The
+risk is documented; the mitigation choice is parameterised by the
+launch-time deploy posture (drain vs shim); the test fixture for the
+shim already exists. Re-opening triggered by first customer-facing
+cutover.
 
 ### Visitor cascade fan-out — batch optimization
 
