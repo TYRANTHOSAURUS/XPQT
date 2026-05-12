@@ -1930,6 +1930,21 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon niet spawnen — workflow-cyclus',
     detail: 'Deze spawn zou een eerdere entiteit opnieuw aanroepen en een oneindige keten vormen. Pas de workflow aan zodat dezelfde entiteit niet opnieuw wordt bezocht.',
   },
+  'maintenance_plans.target_mutex_violation': {
+    title: 'Kon het plan niet opslaan',
+    detail: 'Kies precies één doel — een specifieke asset of een asset-type, niet beide.',
+  },
+  'maintenance_plans.invalid_recurrence': {
+    title: 'Kon het plan niet opslaan',
+    detail: 'Stel een positief interval in en kies een herhalingseenheid (dag, week, maand of jaar).',
+  },
+  'maintenance_plans.not_found': {
+    title: 'We kunnen dat plan niet vinden',
+  },
+  'maintenance_plans.in_use': {
+    title: 'Kon het plan niet verwijderen',
+    detail: 'Er zijn nog werkorders die naar dit plan verwijzen. Deactiveer het plan, of verwijder eerst de gekoppelde werkorders.',
+  },
 };
 
 /**

@@ -430,6 +430,18 @@ export const PERMISSION_CATALOG = {
       },
     },
   },
+  maintenance_plans: {
+    label: 'Maintenance plans',
+    icon: 'wrench',
+    description:
+      'Preventive-maintenance plans — recurring templates the generator spawns into work orders.',
+    actions: {
+      read: { label: 'View maintenance plans' },
+      create: { label: 'Create maintenance plans' },
+      update: { label: 'Edit maintenance plans' },
+      delete: { label: 'Delete maintenance plans', danger: true },
+    },
+  },
   gdpr: {
     label: 'Privacy & compliance (GDPR)',
     icon: 'shield-check',

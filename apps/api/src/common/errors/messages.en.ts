@@ -1975,6 +1975,21 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't spawn — workflow cycle",
     detail: 'This spawn would re-enter an ancestor entity, creating an infinite chain. Refactor the workflow to avoid revisiting the same entity.',
   },
+  'maintenance_plans.target_mutex_violation': {
+    title: "Couldn't save plan",
+    detail: 'Pick exactly one target — a specific asset or an asset type — not both.',
+  },
+  'maintenance_plans.invalid_recurrence': {
+    title: "Couldn't save plan",
+    detail: 'Set a positive interval and pick a recurrence unit (day, week, month, or year).',
+  },
+  'maintenance_plans.not_found': {
+    title: "We can't find that plan",
+  },
+  'maintenance_plans.in_use': {
+    title: "Couldn't delete plan",
+    detail: 'Work orders still reference this plan. Deactivate the plan instead, or remove the linked work orders first.',
+  },
 };
 
 /**

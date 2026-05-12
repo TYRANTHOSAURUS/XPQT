@@ -894,7 +894,31 @@ export type KnownErrorCode =
   // re-authoring the workflow definition is the mitigation).
   | 'spawn_link.parent_terminated'
   | 'spawn_link.depth_exceeded'
-  | 'spawn_link.cycle_detected';
+  | 'spawn_link.cycle_detected'
+
+  // ─── Slice C — PM (preventive-maintenance) generator ────────────────────
+  // Plan: ai/slice-c-plan.md §5. Granular CRUD permissions live in the
+  // `maintenance_plans` module of PERMISSION_CATALOG; the controller raises
+  // these codes via AppError factories.
+  //
+  // - target_mutex_violation (422): create/update DTO supplied both
+  //   asset_id and asset_type_id, or neither. Surfaced inline next to the
+  //   target picker; the schema CHECK constraint is the
+  //   defense-in-depth backstop but this code keeps the round-trip cheap
+  //   (no DB hit).
+  // - invalid_recurrence (422): recurrence_interval <= 0 OR
+  //   recurrence_unit not in {day,week,month,year}. Mirrors the schema
+  //   CHECK so the operator gets actionable copy instead of a generic
+  //   db.constraint.
+  // - not_found (404): id not found in caller's tenant. The composite-FK
+  //   tenant scoping (00386) means cross-tenant ids are indistinguishable
+  //   from missing ones — return not_found for both per spec decision #6.1.
+  // - in_use (409): hard-delete attempted but work_orders still reference
+  //   the plan. Caller can soft-delete (active=false) instead.
+  | 'maintenance_plans.target_mutex_violation'
+  | 'maintenance_plans.invalid_recurrence'
+  | 'maintenance_plans.not_found'
+  | 'maintenance_plans.in_use';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1538,6 +1562,11 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   // + vendor identity to non-operators). Admin/operator override via
   // tickets.read_all still bypasses.
   'planning.operator_only',
+  // ─── Slice C PM generator — see KnownErrorCode union for per-code rationale.
+  'maintenance_plans.target_mutex_violation',
+  'maintenance_plans.invalid_recurrence',
+  'maintenance_plans.not_found',
+  'maintenance_plans.in_use',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */
