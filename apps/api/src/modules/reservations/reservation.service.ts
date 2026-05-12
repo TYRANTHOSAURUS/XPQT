@@ -1507,16 +1507,27 @@ export class ReservationService {
    * (00371 v2 contract — dry-run does NOT touch command_operations).
    *
    * IDEMPOTENCY MITIGATION (C1 fix, Step 2F.3 self-review remediation,
-   * 2026-05-12): the retry hazard from splitSeries non-idempotency is
-   * mitigated by an EXPLICIT command_operations cached_result check
-   * BEFORE splitSeries fires. If a prior attempt's RPC commit succeeded
-   * (cached row exists with outcome='success'), this method short-
-   * circuits and returns the cached response verbatim — no splitSeries,
-   * no assembler, no RPC, no cascade. splitSeries does NOT re-fire on
-   * retries. This is structural defense: without it, splitSeries-on-
-   * retry would mint orphan series with no edits while the RPC's own
-   * cached_result returned the first attempt's (now-stale) series id.
-   * See the pre-check at the body of this method (search "C1").
+   * codex-revised 2026-05-12): the retry hazard from splitSeries non-
+   * idempotency is mitigated by a `command_operations` cached_result
+   * pre-check that sets a `skipSplitSeries` flag — it does NOT short-
+   * circuit return. The full assembler + RPC flow still runs; the RPC
+   * owns the cached_result return (00371:266-267) AND the payload_hash
+   * vs. payload_mismatch check (00371:268-274). The TS pre-check's only
+   * job is to prevent `splitSeries` from re-firing on a retry — that
+   * function commits side effects OUTSIDE the RPC transaction (new
+   * recurrence_series row + UPDATEs forward bookings' series_id) and
+   * is non-idempotent.
+   *
+   * The pre-check is GATED on commit mode (`if (!dryRun)`). Dry-run is
+   * a stateless preview per the 00371 v2 contract (00371:247-258) and
+   * MUST NOT read or write command_operations — a previous codex
+   * remediation (CRITICAL C1) caught a bug where dry-run replayed a
+   * prior commit's cached envelope; this revision fixes it. A second
+   * codex finding (CRITICAL C2) caught that the old short-circuit
+   * bypassed the RPC's payload_hash check, allowing a same-crid /
+   * different-body retry to silently return the FIRST attempt's
+   * response. Both are resolved by delegating cache-return + mismatch
+   * detection to the RPC; the TS layer only suppresses splitSeries.
    *
    * Visitor cascade emission: walks the RPC's `per_occurrence[]` return
    * shape (`00371:1114-1125` — each row carries `space_id_before/after` +
@@ -1526,9 +1537,12 @@ export class ReservationService {
    *
    * Errors mirror editOne (`reservation.service.ts:1011-1037`):
    *   - `booking.slot_conflict` (409) on GiST exclusion.
-   *   - `edit_booking_scope.invalid_plans` (400) as the RPC fallback —
+   *   - `edit_booking_scope.update_failed` (500) as the RPC fallback —
    *     mapRpcErrorToAppError routes recognised raises to their canonical
    *     codes (see `common/errors/map-rpc-error.ts`).
+   *   - `command_operations.payload_mismatch` (409) when a retry with
+   *     the same crid carries a different assembled-plans payload —
+   *     mapped via `map-rpc-error.ts:180`.
    *   - `wrong_endpoint` (422) when caller sends `scope='this'` here
    *     instead of `PATCH /reservations/:id`.
    *   - `edit_booking_scope.not_recurring` (422) if the pivot booking
@@ -1650,11 +1664,12 @@ export class ReservationService {
       });
     }
 
-    // Type the RPC return + the cached_result jsonb shape per 00371 v2:
+    // Type the RPC return shape per 00371 v2:
     //   - commit (00371:1143-1148):  { committed, series_id, per_occurrence, aggregated_follow_ups }
     //   - dry_run (00371:1131-1140): { dry_run, would_succeed, series_id, per_occurrence, aggregated_follow_ups }
-    // Declared early because the C1 cached_result pre-check below
-    // references it before the RPC fires.
+    //   - retry  (00371:266-267):    the RPC reads cached_result and returns
+    //                                the FIRST attempt's envelope verbatim
+    //                                (so TS sees the same shape).
     type RpcEditBookingScopeResult = {
       committed?: number;
       dry_run?: boolean;
@@ -1682,82 +1697,79 @@ export class ReservationService {
       aggregated_follow_ups: string[];
     };
 
-    // Idempotency key — built EARLY (before splitSeries) so the C1
-    // pre-check below can short-circuit a retry without re-firing the
-    // non-idempotent splitSeries side effect. Keyed on (pivot bookingId,
-    // crid, 'scope') because the pivot id is stable across retries.
-    // dry_run is NOT in the key (00371 v2 contract — dry-run does not
-    // touch command_operations).
+    // Idempotency key — built EARLY (before the optional pre-check + before
+    // splitSeries) so the codex C1+C2 fix below can reuse it for the
+    // commit-mode pre-check AND we pass the same value to the RPC. Keyed
+    // on (pivot bookingId, crid, 'scope') because the pivot id is stable
+    // across retries; dry_run is NOT in the key (00371 v2 contract).
     const idempotencyKey = buildEditBookingIdempotencyKey(
       bookingId,
       clientRequestId,
       'scope',
     );
 
-    // Self-review remediation C1 (2026-05-12) — pre-check command_operations
-    // BEFORE splitSeries fires. The retry hazard: splitSeries mints a new
-    // recurrence_series_id row + UPDATEs forward bookings — side effects
-    // that COMMIT outside the RPC's transaction. If a prior attempt's RPC
-    // commit succeeded (cached_result row stored under this same key) but
-    // the response was dropped (network failure, client crash, timeout),
-    // a retry with the same crid would:
-    //   1. Re-run splitSeries → mint a SECOND new series_id (SERIES_2)
-    //   2. assembleScopeEditPlan reads under SERIES_2
-    //   3. RPC hits command_operations cached_result → returns SERIES_1's
-    //      response (the FIRST attempt's series_id) verbatim
-    // Result: orphan SERIES_1 (no forward bookings, no edits), audit/
-    // response advertises SERIES_1, actual edited data on SERIES_2.
+    // Codex C1+C2 remediation (2026-05-12) — pre-check command_operations
+    // to detect a successful prior attempt, but ONLY to suppress the
+    // non-idempotent splitSeries call. We do NOT short-circuit return.
+    //
+    // The original (now reverted) implementation read the cached row,
+    // returned its `cached_result` verbatim, and skipped the rest of the
+    // flow. That had two bugs codex flagged as CRITICAL:
+    //
+    //   C1 (dry-run replays a commit cache): the pre-check fired on
+    //       every call. A dry-run preview made after a successful commit
+    //       with the same crid would hit the cached row and return the
+    //       commit envelope — violating the 00371 v2 contract that
+    //       dry-run is stateless (00371:247-258).
+    //
+    //   C2 (payload_mismatch bypass): the pre-check returned the cached
+    //       envelope WITHOUT comparing the request's assembled-plans
+    //       payload_hash to the cached row's payload_hash. A retry that
+    //       reused the same crid but carried a DIFFERENT body silently
+    //       returned the FIRST attempt's response — the operator believed
+    //       their second edit landed, but it never did. The RPC owns the
+    //       payload_hash check (00371:268-274 raises
+    //       command_operations.payload_mismatch); short-circuiting in TS
+    //       bypassed it.
+    //
+    // The fix: the pre-check is gated on commit mode AND only sets a
+    // flag. The full assembler + RPC pipeline runs. On retry the RPC
+    // itself returns cached_result (00371:266-267) verbatim, or raises
+    // payload_mismatch if the assembled plans differ. The TS layer is
+    // responsible only for the side effect the RPC cannot undo:
+    // RecurrenceService.splitSeries commits a new recurrence_series row
+    // + UPDATEs forward bookings OUTSIDE the RPC transaction. A second
+    // splitSeries on retry would mint an orphan series whose id never
+    // appears in the cached_result the RPC replays.
     //
     // Schema reference: 00316_command_operations_table.sql — columns are
     // (tenant_id, idempotency_key, payload_hash, outcome, cached_result).
-    // outcome is enum('in_progress', 'success'); v6 contract drops 'failed'
-    // (rolled back by RPC tx). RLS uses current_tenant_id(); we use
-    // supabase.admin to bypass and tenant-scope explicitly.
-    //
-    // If payload_hash differs between attempts, the RPC will raise
-    // `command_operations.payload_mismatch` later — defer that check to
-    // the RPC; here we only short-circuit on a confirmed 'success' row.
-    const { data: cachedRow, error: cachedErr } = await this.supabase.admin
-      .from('command_operations')
-      .select('outcome, cached_result')
-      .eq('tenant_id', tenantId)
-      .eq('idempotency_key', idempotencyKey)
-      .maybeSingle();
-    if (cachedErr) {
-      // A DB error reading command_operations is itself server-class —
-      // don't proceed (we'd risk firing splitSeries twice if it transiently
-      // failed and was actually present).
-      throw AppErrors.server('edit_booking_scope.update_failed', {
-        detail: 'Failed to read command_operations cache before splitSeries.',
-      });
-    }
-    if (
-      cachedRow !== null &&
-      (cachedRow as { outcome: string }).outcome === 'success'
-    ) {
-      // Replay path — return the cached jsonb verbatim. No splitSeries,
-      // no RPC, no visitor cascade, no assembler. The first attempt's
-      // response is the source of truth (it already committed the cascade
-      // via OutboxService.emit() fire-and-forget on the first attempt).
-      // dry_run is forced false because cached rows only exist on commit
-      // (Step 2F.1 v2 contract: dry-run never writes command_operations).
-      const cached = (cachedRow as { cached_result: RpcEditBookingScopeResult }).cached_result;
-      // For 'this_and_following' the FIRST attempt's splitSeries minted a
-      // new series_id which the RPC stored as cached.series_id; surface
-      // that as new_series_id so the response shape matches the original
-      // commit envelope. For 'series', no split happened so new_series_id
-      // remains undefined.
-      return {
-        scope: body.scope,
-        new_series_id:
-          body.scope === 'this_and_following' ? cached.series_id : undefined,
-        dry_run: false,
-        committed: cached.committed,
-        would_succeed: cached.would_succeed,
-        series_id: cached.series_id,
-        per_occurrence: cached.per_occurrence,
-        aggregated_follow_ups: cached.aggregated_follow_ups,
-      };
+    // outcome is enum('in_progress', 'success'). RLS uses
+    // current_tenant_id(); we use supabase.admin to bypass and tenant-
+    // scope explicitly.
+    let skipSplitSeries = false;
+    if (!dryRun) {
+      const { data: cachedRow, error: cachedErr } = await this.supabase.admin
+        .from('command_operations')
+        .select('outcome')
+        .eq('tenant_id', tenantId)
+        .eq('idempotency_key', idempotencyKey)
+        .maybeSingle();
+      if (cachedErr) {
+        // A DB error reading command_operations is itself server-class.
+        // Bail before splitSeries fires — we'd otherwise risk a second
+        // splitSeries if the cached row exists but the read transiently
+        // failed (orphan-series hazard).
+        throw AppErrors.server('command_operations.unexpected_state', {
+          detail: `editScope retry-detection read failed for tenant=${tenantId}.`,
+        });
+      }
+      if (
+        cachedRow !== null &&
+        (cachedRow as { outcome: string }).outcome === 'success'
+      ) {
+        skipSplitSeries = true;
+      }
     }
 
     // Load pivot booking. `findByIdOrThrow` enforces tenant scope +
@@ -1794,15 +1806,30 @@ export class ReservationService {
         // Filter scope-rows to the forward subset of the CURRENT series.
         effectiveSeriesId = pivot.recurrence_series_id;
         forwardOnlyFromStartAt = pivot.start_at;
+      } else if (skipSplitSeries) {
+        // Retry path (codex C1+C2 fix): the FIRST attempt's splitSeries
+        // already ran and moved the pivot to the new series. The pivot
+        // we just loaded therefore sits on the post-split series id —
+        // pivot.recurrence_series_id IS the new series id. Using it as
+        // both `effectiveSeriesId` AND `newSeriesId` lets the assembler
+        // re-derive the same plans the first attempt assembled, and the
+        // RPC then returns cached_result (matching payload_hash) or
+        // raises payload_mismatch (differing payload). No
+        // forwardOnlyFromStartAt: the post-split series only contains
+        // forward occurrences by construction (splitSeries put them
+        // there), so no extra filter is needed.
+        effectiveSeriesId = pivot.recurrence_series_id;
+        newSeriesId = pivot.recurrence_series_id;
       } else {
-        // Commit: split the series at the pivot. Forward occurrences
-        // move to a fresh recurrence_series_id; the assembler then sees
-        // only forward rows by construction (no filter needed).
+        // Commit, first attempt: split the series at the pivot. Forward
+        // occurrences move to a fresh recurrence_series_id; the assembler
+        // then sees only forward rows by construction (no filter needed).
         newSeriesId = await this.recurrence.splitSeries(bookingId);
         effectiveSeriesId = newSeriesId;
       }
     } else {
       // scope='series' — preview + commit both walk the current series.
+      // skipSplitSeries is irrelevant here (no split was ever called).
       effectiveSeriesId = pivot.recurrence_series_id;
     }
 
@@ -1823,12 +1850,22 @@ export class ReservationService {
       forwardOnlyFromStartAt,
     });
 
-    // Idempotency key was built earlier (before the C1 cached_result
-    // pre-check + splitSeries) so the pre-check could short-circuit a
-    // retry without re-firing the non-idempotent splitSeries side effect.
-    // We reuse the same key here so the RPC's own command_operations
-    // advisory-lock + cached_result path stays consistent with the
-    // pre-check above.
+    // Idempotency key was built earlier (before the commit-mode pre-check
+    // + splitSeries) so the pre-check could detect a retry and set
+    // skipSplitSeries without re-firing the non-idempotent splitSeries
+    // side effect. We reuse the same key here so the RPC's own
+    // command_operations advisory-lock + cached_result path is keyed
+    // consistently across attempts. The RPC owns cached return (00371:
+    // 266-267) and payload_mismatch detection (00371:268-274) — TS does
+    // NOT short-circuit on the pre-check.
+    //
+    // Cascade re-emission on retry: this loop is fire-and-forget through
+    // BundleEventBus (in-process Subject). On retry the RPC replays the
+    // FIRST attempt's per_occurrence verbatim, so the same diffs are
+    // observed and the cascade re-fires. This is the same accepted
+    // hazard as editOne/editSlot retries — fixing it requires a domain
+    // outbox keyed on (idempotency_key, occurrence_id) which is tracked
+    // separately. Mentioned here for visibility, not blocking C1/C2.
 
     const { data: rpcData, error: rpcErr } = await this.supabase.admin.rpc(
       'edit_booking_scope',
@@ -1863,8 +1900,9 @@ export class ReservationService {
       });
     }
 
-    // RpcEditBookingScopeResult type declared above (before the C1
-    // cached_result pre-check, which also references it).
+    // RpcEditBookingScopeResult type declared above. On retry the RPC
+    // returns cached_result (00371:266-267) verbatim, which matches this
+    // shape; the same destructure works for fresh-commit + replay paths.
     const result = rpcData as unknown as RpcEditBookingScopeResult;
 
     // Visitor cascade fan-out (commit only — dry-run has no committed

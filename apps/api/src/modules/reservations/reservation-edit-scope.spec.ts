@@ -19,6 +19,19 @@
  *   - 6. Pivot has no recurrence_series_id → 422 edit_booking_scope.not_recurring.
  *   - 7. Idempotency key uses (bookingId, crid, 'scope') — closes cross-op-collision.
  *   - 8. Visibility canEdit=false → 403 reservation_not_editable.
+ *
+ * Codex remediation (2026-05-12) — pre-check restructure:
+ *   - C1 (revised): retry detection only suppresses splitSeries, does NOT
+ *     short-circuit return. Gated on commit mode (dry-run is stateless).
+ *     5 tests cover: retry → skip splitSeries + run assembler + run RPC;
+ *     dry-run after commit → pre-check never reads; payload_mismatch on
+ *     retry with different body → RPC raises 409 conflict; cached read
+ *     error → bail with command_operations.unexpected_state; in_progress
+ *     cached row → no skip.
+ *   - C2 (revised): payload_mismatch is the RPC's job, not the TS layer's.
+ *     A same-crid / different-body retry hits the RPC's payload_hash
+ *     check (00371:268-274) and surfaces as
+ *     command_operations.payload_mismatch (409 per map-rpc-error.ts).
  */
 
 import { AppError } from '../../common/errors';
@@ -108,11 +121,16 @@ function makePivotReservation(overrides?: {
  *      from('bookings') / from('booking_slots') chain only needs to
  *      no-op cleanly for the rare paths that touch it.
  *   2. `supabase.rpc('edit_booking_scope', ...)` — what the spec asserts on.
- *   3. The `command_operations` read for the C1 self-review remediation
+ *   3. The `command_operations` read for the codex C1+C2 remediation
  *      pre-check: `from('command_operations').select().eq().eq().maybeSingle()`.
- *      Returns `{ data: null }` by default (no cached row → proceed
- *      normally); a test can override via `cachedRow` to exercise the
- *      short-circuit replay path.
+ *      The pre-check ONLY runs on commit mode (codex C1 fix — dry-run
+ *      must stay stateless per 00371 v2). When the cached row has
+ *      `outcome='success'`, the service sets `skipSplitSeries=true` but
+ *      DOES NOT short-circuit — the assembler + RPC still run, and the
+ *      RPC owns cached_result return + payload_mismatch detection
+ *      (00371:266-274). Tests assert this contract: splitSeries call
+ *      count, assemble call count, RPC call count, and idempotency-key
+ *      flow through to the RPC.
  */
 function makeSupabase(opts?: {
   rpcResponse?: { data: unknown; error: unknown };
@@ -687,19 +705,24 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
   });
 
   // ─── Self-review remediation (2026-05-12) ─────────────────────────────────
-  // C1: splitSeries-then-RPC retry race.
+  // C1 (codex-revised): retry detection suppresses splitSeries but does
+  //     NOT short-circuit. RPC owns cached_result return + payload check.
+  //     Gated on commit mode — dry-run is stateless (00371 v2).
   // C2-plan-rev: start_at / end_at smuggled in body silently dropped.
   // C2-code-rev: scope value never validated (garbage falls through to series).
 
-  it('C1: command_operations cached_result short-circuits BEFORE splitSeries on retry', async () => {
-    // Pre-seeded cached_result row. The first-attempt's RPC commit
-    // succeeded and stored cached_result; the response was dropped (network
-    // failure). On retry with the same crid, the service MUST detect the
-    // cached row and return its content verbatim WITHOUT firing splitSeries
-    // again (which would mint a phantom orphan series).
-    const cachedResult = {
+  it('C1 (codex-revised): retry on `this_and_following` commit skips splitSeries; assembler+RPC still run; RPC returns cached envelope', async () => {
+    // First attempt: splitSeries succeeded + RPC committed + cached_result
+    // stored under (tenant, idempotency_key). Response dropped before
+    // reaching the client (network failure). On retry the pivot is now
+    // on the POST-SPLIT series (splitSeries moved it). The pre-check
+    // detects outcome='success' and sets skipSplitSeries=true; the
+    // assembler runs against pivot.recurrence_series_id (which IS the
+    // new series id); the RPC returns the cached envelope verbatim
+    // (00371:266-267).
+    const cachedEnvelope = {
       committed: 3,
-      series_id: NEW_SERIES_ID, // FIRST attempt's split-series id
+      series_id: NEW_SERIES_ID,
       per_occurrence: [
         {
           booking_id: 'occ-1',
@@ -714,10 +737,127 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
       aggregated_follow_ups: ['booking.location_changed'],
     };
     const supabase = makeSupabase({
-      cachedRow: { outcome: 'success', cached_result: cachedResult },
+      cachedRow: { outcome: 'success', cached_result: cachedEnvelope },
+      // RPC mock returns the cached envelope verbatim (what the real RPC
+      // does on a payload_hash match — 00371:266-267).
+      rpcResponse: { data: cachedEnvelope, error: null },
     });
     const recurrence = makeRecurrence();
-    const assemble = makeAssembleEditPlan();
+    const captured: { args?: unknown } = {};
+    const assemble = makeAssembleEditPlan({ captured });
+    const bundleEventBus = makeBundleEventBus();
+    const svc = buildService({
+      supabase,
+      visibility: makeVisibility(),
+      conflict: makeConflictGuard(),
+      recurrence,
+      assemble,
+      bundleEventBus,
+      // Post-split pivot: recurrence_series_id is the NEW series id
+      // because the first attempt's splitSeries moved it there.
+      pivot: makePivotReservation({ recurrence_series_id: NEW_SERIES_ID }),
+    });
+    const cascadeSpy = jest
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .spyOn(svc as any, 'emitVisitorCascadeForBundle')
+      .mockResolvedValue(undefined);
+
+    const result = await TenantContext.run(TENANT, async () =>
+      svc.editScope(
+        PIVOT_BOOKING_ID,
+        { scope: 'this_and_following', space_id: NEW_SPACE_ID },
+        makeActor(),
+        CLIENT_REQUEST_ID,
+      ),
+    );
+
+    // splitSeries MUST NOT fire (the C1 hazard the pre-check guards against).
+    expect(recurrence.splitSeries).not.toHaveBeenCalled();
+
+    // Assembler MUST fire — the RPC needs the assembled plans to compare
+    // payload_hash against cached. The assembler reads against the
+    // POST-SPLIT series id (pivot.recurrence_series_id, which the first
+    // attempt's splitSeries moved the pivot to).
+    expect(assemble.assembleScopeEditPlan).toHaveBeenCalledTimes(1);
+    const assembleArgs = captured.args as {
+      effectiveSeriesId: string;
+      forwardOnlyFromStartAt?: string;
+    };
+    expect(assembleArgs.effectiveSeriesId).toBe(NEW_SERIES_ID);
+    expect(assembleArgs.forwardOnlyFromStartAt).toBeUndefined();
+
+    // RPC MUST fire — it owns the cached_result return.
+    expect(supabase.calls.rpc).toHaveLength(1);
+    const rpcArgs = supabase.calls.rpc[0].args as Record<string, unknown>;
+    expect(rpcArgs.p_idempotency_key).toBe(
+      buildEditBookingIdempotencyKey(PIVOT_BOOKING_ID, CLIENT_REQUEST_ID, 'scope'),
+    );
+    expect(rpcArgs.p_dry_run).toBe(false);
+
+    // Pre-check read DID happen with the expected key (commit mode → gated on).
+    expect(supabase.calls.commandOpsReads).toHaveLength(1);
+    expect(supabase.calls.commandOpsReads[0].tenantId).toBe(TENANT.id);
+    expect(supabase.calls.commandOpsReads[0].idempotencyKey).toBe(
+      buildEditBookingIdempotencyKey(PIVOT_BOOKING_ID, CLIENT_REQUEST_ID, 'scope'),
+    );
+
+    // Response shape comes from RPC (cached envelope replayed verbatim).
+    // new_series_id is surfaced from pivot.recurrence_series_id (post-split
+    // = NEW_SERIES_ID) — matches what the FIRST attempt's response advertised.
+    expect(result.scope).toBe('this_and_following');
+    expect(result.new_series_id).toBe(NEW_SERIES_ID);
+    expect(result.dry_run).toBe(false);
+    expect(result.committed).toBe(3);
+    expect(result.series_id).toBe(NEW_SERIES_ID);
+    expect(result.aggregated_follow_ups).toEqual(['booking.location_changed']);
+  });
+
+  it('C1 (codex-revised): dry-run AFTER a successful commit (same crid) does NOT replay the cached envelope', async () => {
+    // The codex CRITICAL C1 bug: the previous (unconditional) pre-check
+    // fired even on dry-run preview calls. After a successful commit with
+    // crid X, a follow-up dry-run with crid X hit the cached row and
+    // returned the commit envelope — violating 00371 v2 (dry-run is
+    // stateless, never reads command_operations). Fixed by gating the
+    // pre-check on `if (!dryRun)`. This test locks the contract.
+    const supabase = makeSupabase({
+      // A cached row exists from a prior successful commit. If the
+      // pre-check were not gated, this would trigger the (now-removed)
+      // short-circuit and the test would observe commit-shape output.
+      cachedRow: {
+        outcome: 'success',
+        cached_result: {
+          committed: 99,
+          series_id: NEW_SERIES_ID,
+          per_occurrence: [],
+          aggregated_follow_ups: ['commit.envelope.tag'],
+        },
+      },
+      // Dry-run RPC returns the proper preview shape.
+      rpcResponse: {
+        data: {
+          dry_run: true,
+          would_succeed: true,
+          series_id: ORIGINAL_SERIES_ID,
+          per_occurrence: [
+            {
+              booking_id: 'occ-1',
+              would_succeed: true,
+              space_id_before: PIVOT_SPACE_ID,
+              space_id_after: NEW_SPACE_ID,
+              start_at_before: PIVOT_START_AT,
+              start_at_after: PIVOT_START_AT,
+              follow_ups_preview: ['booking.location_changed'],
+              slots_to_update: 1,
+            },
+          ],
+          aggregated_follow_ups: ['booking.location_changed'],
+        },
+        error: null,
+      },
+    });
+    const recurrence = makeRecurrence();
+    const captured: { args?: unknown } = {};
+    const assemble = makeAssembleEditPlan({ captured });
     const bundleEventBus = makeBundleEventBus();
     const svc = buildService({
       supabase,
@@ -735,50 +875,155 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
     const result = await TenantContext.run(TENANT, async () =>
       svc.editScope(
         PIVOT_BOOKING_ID,
-        { scope: 'this_and_following', space_id: NEW_SPACE_ID },
+        { scope: 'this_and_following', space_id: NEW_SPACE_ID, dry_run: true },
         makeActor(),
         CLIENT_REQUEST_ID,
       ),
     );
 
-    // splitSeries MUST NOT fire (the C1 hazard — first attempt already
-    // minted a series; the second mint would be orphan).
+    // Pre-check MUST NOT read command_operations on dry-run (the C1 fix).
+    expect(supabase.calls.commandOpsReads).toHaveLength(0);
+    // splitSeries MUST NOT fire on dry-run.
     expect(recurrence.splitSeries).not.toHaveBeenCalled();
-    // Assembler MUST NOT fire (no plan to assemble — replay path).
-    expect(assemble.assembleScopeEditPlan).not.toHaveBeenCalled();
-    // RPC MUST NOT fire (cached_result IS the response).
-    expect(supabase.calls.rpc).toHaveLength(0);
-    // Cascade MUST NOT fire (already fanned out on first attempt).
+    // Assembler MUST fire (with forwardOnlyFromStartAt for dry-run).
+    expect(assemble.assembleScopeEditPlan).toHaveBeenCalledTimes(1);
+    const assembleArgs = captured.args as {
+      effectiveSeriesId: string;
+      forwardOnlyFromStartAt?: string;
+    };
+    expect(assembleArgs.effectiveSeriesId).toBe(ORIGINAL_SERIES_ID);
+    expect(assembleArgs.forwardOnlyFromStartAt).toBe(PIVOT_START_AT);
+    // RPC MUST fire with p_dry_run=true.
+    expect(supabase.calls.rpc).toHaveLength(1);
+    const rpcArgs = supabase.calls.rpc[0].args as Record<string, unknown>;
+    expect(rpcArgs.p_dry_run).toBe(true);
+    // Cascade MUST NOT fire (dry-run committed nothing).
     expect(cascadeSpy).not.toHaveBeenCalled();
 
-    // Defensive: the pre-check read DID happen, with the expected key.
-    expect(supabase.calls.commandOpsReads).toHaveLength(1);
-    expect(supabase.calls.commandOpsReads[0].tenantId).toBe(TENANT.id);
-    expect(supabase.calls.commandOpsReads[0].idempotencyKey).toBe(
-      buildEditBookingIdempotencyKey(
-        PIVOT_BOOKING_ID,
-        CLIENT_REQUEST_ID,
-        'scope',
-      ),
-    );
-
-    // Response shape matches cached_result + recovers new_series_id from
-    // cached.series_id (because scope='this_and_following' → first attempt
-    // wrote effectiveSeriesId = newSeriesId into the RPC's series_id).
-    expect(result.scope).toBe('this_and_following');
-    expect(result.new_series_id).toBe(NEW_SERIES_ID);
-    expect(result.dry_run).toBe(false);
-    expect(result.committed).toBe(3);
-    expect(result.series_id).toBe(NEW_SERIES_ID);
+    // Response is the DRY-RUN envelope — would_succeed surfaced, NOT the
+    // cached commit's `committed: 99` / `aggregated_follow_ups: ['commit.envelope.tag']`.
+    expect(result.dry_run).toBe(true);
+    expect(result.would_succeed).toBe(true);
+    expect(result.committed).toBeUndefined();
     expect(result.aggregated_follow_ups).toEqual(['booking.location_changed']);
   });
 
-  it('C1: cached row with outcome=in_progress does NOT short-circuit', async () => {
-    // Only outcome='success' triggers the replay path. A stale in_progress
-    // row (which shouldn't materialise per the 00316 v6 contract — rolled
-    // back by the RPC tx — but defense-in-depth) must still let the normal
-    // flow proceed; the RPC's own advisory lock + payload_hash check will
-    // serialize correctly.
+  it('C2 (codex-revised): payload_mismatch on retry with different body propagates from RPC', async () => {
+    // The codex CRITICAL C2 bug: the previous pre-check returned cached
+    // content verbatim WITHOUT comparing the request's assembled-plans
+    // hash to the cached row's payload_hash. A retry with the same crid
+    // but a different body silently returned the first attempt's response.
+    // Fixed by removing the short-circuit return — the RPC's
+    // payload_hash check (00371:268-274) now fires on every retry,
+    // raising command_operations.payload_mismatch when the assembled
+    // plans differ.
+    //
+    // Setup: cached row exists (success). Retry submits a different body
+    // (different attendee_count). Pre-check sets skipSplitSeries; the
+    // assembler produces different plans; the RPC raises payload_mismatch.
+    const supabase = makeSupabase({
+      cachedRow: { outcome: 'success', cached_result: { /* opaque */ } },
+      rpcResponse: {
+        data: null,
+        error: {
+          code: 'P0001',
+          message: 'command_operations.payload_mismatch',
+        },
+      },
+    });
+    const recurrence = makeRecurrence();
+    const assemble = makeAssembleEditPlan();
+    const svc = buildService({
+      supabase,
+      visibility: makeVisibility(),
+      conflict: makeConflictGuard(),
+      recurrence,
+      assemble,
+      bundleEventBus: makeBundleEventBus(),
+      pivot: makePivotReservation({ recurrence_series_id: NEW_SERIES_ID }),
+    });
+
+    await TenantContext.run(TENANT, async () => {
+      let caught: unknown;
+      try {
+        await svc.editScope(
+          PIVOT_BOOKING_ID,
+          {
+            scope: 'this_and_following',
+            space_id: NEW_SPACE_ID,
+            attendee_count: 42, // different from first attempt's body
+          },
+          makeActor(),
+          CLIENT_REQUEST_ID,
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(AppError);
+      // mapRpcErrorToAppError surfaces the RPC's payload_mismatch raise.
+      // STATUS is 409 per map-rpc-error.ts:180 (canonical conflict class
+      // — same crid + different payload is a duplicate-with-mismatch).
+      expect((caught as AppError).code).toBe('command_operations.payload_mismatch');
+      expect((caught as AppError).status).toBe(409);
+    });
+
+    // splitSeries MUST NOT fire (pre-check still suppressed it).
+    expect(recurrence.splitSeries).not.toHaveBeenCalled();
+    // Assembler MUST fire (the RPC needs plans to compute payload_hash).
+    expect(assemble.assembleScopeEditPlan).toHaveBeenCalledTimes(1);
+    // RPC MUST fire (it's the layer that detects payload_mismatch).
+    expect(supabase.calls.rpc).toHaveLength(1);
+  });
+
+  it('C1 (codex-revised): pre-check read error surfaces command_operations.unexpected_state', async () => {
+    // If the command_operations read transiently fails, we cannot tell
+    // whether a cached row exists. Bailing before splitSeries fires is
+    // safer than firing splitSeries blindly (which could orphan a series
+    // if the cached row actually exists). Code path:
+    //   supabase.from('command_operations').select().eq().eq().maybeSingle()
+    //   → { data: null, error: <transient> }
+    //   → throw AppErrors.server('command_operations.unexpected_state', ...)
+    const supabase = makeSupabase({
+      cachedError: { code: '57014', message: 'statement timeout' },
+    });
+    const recurrence = makeRecurrence();
+    const assemble = makeAssembleEditPlan();
+    const svc = buildService({
+      supabase,
+      visibility: makeVisibility(),
+      conflict: makeConflictGuard(),
+      recurrence,
+      assemble,
+      bundleEventBus: makeBundleEventBus(),
+    });
+
+    await TenantContext.run(TENANT, async () => {
+      let caught: unknown;
+      try {
+        await svc.editScope(
+          PIVOT_BOOKING_ID,
+          { scope: 'this_and_following', space_id: NEW_SPACE_ID },
+          makeActor(),
+          CLIENT_REQUEST_ID,
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(AppError);
+      expect((caught as AppError).code).toBe('command_operations.unexpected_state');
+    });
+
+    // splitSeries / assembler / RPC MUST NOT fire (we bailed early).
+    expect(recurrence.splitSeries).not.toHaveBeenCalled();
+    expect(assemble.assembleScopeEditPlan).not.toHaveBeenCalled();
+    expect(supabase.calls.rpc).toHaveLength(0);
+  });
+
+  it('C1 (codex-revised): cached row with outcome=in_progress does NOT skip splitSeries', async () => {
+    // Only outcome='success' sets skipSplitSeries=true. An in_progress
+    // row (which shouldn't materialise per 00316 v6 — rolled back by the
+    // RPC tx — but defense-in-depth) lets the normal flow proceed; the
+    // RPC's own advisory lock + payload_hash check serialize correctly.
     const supabase = makeSupabase({
       cachedRow: { outcome: 'in_progress', cached_result: null },
     });
@@ -804,7 +1049,7 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
       ),
     );
 
-    // Normal flow proceeded: splitSeries + assemble + RPC all fired.
+    // splitSeries DOES fire (no skip on in_progress).
     expect(recurrence.splitSeries).toHaveBeenCalledTimes(1);
     expect(assemble.assembleScopeEditPlan).toHaveBeenCalledTimes(1);
     expect(supabase.calls.rpc).toHaveLength(1);
