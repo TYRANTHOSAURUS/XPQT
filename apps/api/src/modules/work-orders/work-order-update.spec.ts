@@ -320,6 +320,85 @@ describe('WorkOrderService.update — §3.0 orchestrator call shape', () => {
     });
   });
 
+  // P1-4 (00383): audit-source provenance flows from DTO `_source` to
+  // the RPC's `p_activity_source` arg, where the migration stamps it
+  // into the plan_changed ticket_activities row's metadata. _source is
+  // a meta-field — it must NOT bleed into p_patches.
+  it('plan DTO with _source=board forwards p_activity_source=board, NOT into patches', async () => {
+    const { svc, rpcCalls } = makeSvc({
+      refetchedRow: makeRow({
+        planned_start_at: '2026-05-04T13:00:00.000Z',
+        planned_duration_minutes: 60,
+      }),
+    });
+    await svc.update(
+      'wo1',
+      {
+        planned_start_at: '2026-05-04T13:00:00.000Z',
+        planned_duration_minutes: 60,
+        _source: 'board',
+      },
+      SYSTEM_ACTOR,
+      CRI,
+    );
+
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_activity_source).toBe('board');
+    expect(combined[0].p_patches).not.toHaveProperty('_source');
+    expect((combined[0].p_patches as { plan: Record<string, unknown> }).plan).not.toHaveProperty(
+      '_source',
+    );
+  });
+
+  it('plan DTO with _source=detail forwards p_activity_source=detail', async () => {
+    const { svc, rpcCalls } = makeSvc({
+      refetchedRow: makeRow({
+        planned_start_at: '2026-05-04T13:00:00.000Z',
+        planned_duration_minutes: 60,
+      }),
+    });
+    await svc.update(
+      'wo1',
+      {
+        planned_start_at: '2026-05-04T13:00:00.000Z',
+        planned_duration_minutes: 60,
+        _source: 'detail',
+      },
+      SYSTEM_ACTOR,
+      CRI,
+    );
+
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    expect(combined[0].p_activity_source).toBe('detail');
+  });
+
+  it('DTO without _source forwards p_activity_source=null (backward-compat)', async () => {
+    const { svc, rpcCalls } = makeSvc({
+      refetchedRow: makeRow({
+        planned_start_at: '2026-05-04T13:00:00.000Z',
+        planned_duration_minutes: 60,
+      }),
+    });
+    await svc.update(
+      'wo1',
+      {
+        planned_start_at: '2026-05-04T13:00:00.000Z',
+        planned_duration_minutes: 60,
+      },
+      SYSTEM_ACTOR,
+      CRI,
+    );
+
+    const combined = combinedCalls(rpcCalls);
+    expect(combined).toHaveLength(1);
+    // Explicit null (not undefined / absent) — the RPC's default is null
+    // but the service passes the value explicitly so the wire shape is
+    // unambiguous in the request log.
+    expect(combined[0].p_activity_source).toBeNull();
+  });
+
   it('status DTO emits patches.{status,status_category} at top level', async () => {
     const { svc, rpcCalls } = makeSvc();
     await svc.update(

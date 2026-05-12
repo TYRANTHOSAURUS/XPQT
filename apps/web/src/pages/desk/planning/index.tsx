@@ -162,6 +162,12 @@ export function DeskPlanningPage() {
         // server returns 409 planning.version_conflict on mismatch; the
         // FE rolls back + opens the conflict dialog.
         plan_version?: number;
+        // P1-4 (00383): audit-source provenance for the plan_changed
+        // activity row. Always 'board' from this page (drag, resize,
+        // keyboard nudge all originate from the same canvas). The
+        // detail-page PlanField sends 'detail'; the Slice C PM
+        // generator will send 'generator'.
+        _source?: 'board' | 'detail' | 'generator';
       },
       // X-Client-Request-Id is minted at the gesture root (commitDrop) so a
       // retry through toastError({ retry }) reuses the same id and hits the
@@ -326,7 +332,8 @@ export function DeskPlanningPage() {
         assigned_team_id?: string | null;
         assigned_vendor_id?: string | null;
         plan_version?: number;
-      } = { planned_start_at: isoStart };
+        _source?: 'board' | 'detail' | 'generator';
+      } = { planned_start_at: isoStart, _source: 'board' };
       if (wasUnscheduled && durationMinutes != null) {
         payload.planned_duration_minutes = durationMinutes;
       }
@@ -473,7 +480,11 @@ export function DeskPlanningPage() {
         mutationFn: () =>
           mutateWorkOrder(
             block.id,
-            { planned_duration_minutes: newDurationMinutes, plan_version: planVersion },
+            {
+              planned_duration_minutes: newDurationMinutes,
+              plan_version: planVersion,
+              _source: 'board',
+            },
             xCid,
           ),
         onError: (err) => {
@@ -515,7 +526,8 @@ export function DeskPlanningPage() {
         planned_start_at: string;
         planned_duration_minutes?: number;
         plan_version?: number;
-      } = { planned_start_at: isoStart };
+        _source?: 'board' | 'detail' | 'generator';
+      } = { planned_start_at: isoStart, _source: 'board' };
       if (durationMinutes != null) payload.planned_duration_minutes = durationMinutes;
       payload.plan_version = planVersionOverride ?? block.plan_version;
       const planningKey = workOrderPlanningKeys.window(filters);

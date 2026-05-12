@@ -504,6 +504,7 @@ export type KnownErrorCode =
   | 'update_entity_combined.invalid_cost'
   | 'update_entity_combined.invalid_watcher'
   | 'update_entity_combined.invalid_plan'
+  | 'update_entity_combined.invalid_source'
 
   // ─── B.2.A §3.4 dispatch_child_work_order RPC (00338 / 00339 — v2) ───────
   // `parent_not_case` removed in remediation pass: post step1c.10c
@@ -1412,6 +1413,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'update_entity_combined.invalid_cost',
   'update_entity_combined.invalid_watcher',
   'update_entity_combined.invalid_plan',
+  'update_entity_combined.invalid_source',
   'dispatch_child_work_order.parent_not_found',
   'dispatch_child_work_order.parent_not_dispatchable',
   'dispatch_child_work_order.invalid_payload',

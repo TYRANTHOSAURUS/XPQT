@@ -1631,6 +1631,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't update",
     detail: 'Plan dates must be a valid ISO timestamp and duration must be a non-negative integer.',
   },
+  'update_entity_combined.invalid_source': {
+    title: "Couldn't update",
+    detail: 'Plan change source must be one of board, detail, or generator.',
+  },
 
   // B.2.A §3.4 dispatch_child_work_order RPC (00338 / 00339)
   // parent_not_case removed (F-IMP-2 / plan-I2): post step1c.10c

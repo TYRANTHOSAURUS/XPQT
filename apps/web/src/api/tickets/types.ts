@@ -163,4 +163,17 @@ export interface UpdateWorkOrderPayload {
    * priority, title) — the check is skipped.
    */
   plan_version?: number;
+  /**
+   * Audit-source provenance for the `plan_changed` activity row (00383
+   * v6). Three accepted values:
+   *  - `'board'` — drag, resize, or keyboard nudge on /desk/planning.
+   *  - `'detail'` — PlanField popover on the ticket detail panel.
+   *  - `'generator'` — reserved for the Slice C PM generator producer.
+   *
+   * Stamped into `ticket_activities.metadata.source` only when the
+   * plan branch fires. Omit on patches that don't touch the plan
+   * (sla / status / priority / metadata) — the RPC ignores it. The
+   * server validates the enum at both the controller and RPC layers.
+   */
+  _source?: 'board' | 'detail' | 'generator';
 }

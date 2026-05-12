@@ -342,6 +342,10 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
           planned_start_at: next.startsAt,
           planned_duration_minutes: next.durationMinutes,
           plan_version: displayedTicket?.plan_version,
+          // P1-4 (00383): the detail-page PlanField is the only plan
+          // editor outside the planning board canvas. Stamp 'detail'
+          // so the audit log can tell a popover edit from a board drag.
+          _source: 'detail',
         },
         requestId,
       },

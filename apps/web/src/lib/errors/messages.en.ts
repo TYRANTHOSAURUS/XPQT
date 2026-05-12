@@ -1552,6 +1552,10 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't update",
     detail: 'Plan dates must be a valid ISO timestamp and duration must be a non-negative integer.',
   },
+  'update_entity_combined.invalid_source': {
+    title: "Couldn't update",
+    detail: 'Plan change source must be one of board, detail, or generator.',
+  },
 
   // B.2.A §3.4 dispatch_child_work_order RPC (00338 / 00339)
   'dispatch_child_work_order.parent_not_found': { title: "Couldn't find that case" },

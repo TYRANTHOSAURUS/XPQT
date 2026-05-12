@@ -1631,6 +1631,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon niet bijwerken',
     detail: 'Plandata moeten een geldige ISO-tijdstempel zijn en duur moet een niet-negatief geheel getal zijn.',
   },
+  'update_entity_combined.invalid_source': {
+    title: 'Kon niet bijwerken',
+    detail: 'Bron van planwijziging moet board, detail of generator zijn.',
+  },
 
   // B.2.A §3.4 dispatch_child_work_order RPC (00338 / 00339)
   'dispatch_child_work_order.parent_not_found': { title: 'Case niet gevonden' },

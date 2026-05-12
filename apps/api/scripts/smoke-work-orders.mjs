@@ -602,6 +602,93 @@ async function runWorkOrderMutations(headers, probe) {
     },
   }, TENANT_ID, 'work_order', WO_ID);
 
+  // ── P1-4 audit-source provenance probe (00383 v6) ───────────────────
+  // The combined-update RPC v6 adds an optional p_activity_source arg.
+  // When the plan branch fires, the value lands in ticket_activities.
+  // metadata->>source so operators can tell the planning board ('board')
+  // from the detail-page PlanField ('detail') from the Slice C PM
+  // generator ('generator'). Probe shape:
+  //   1. Read the current plan_version + planned_start_at for the WO.
+  //   2. PATCH planned_start_at with _source: 'board' (different value
+  //      from the restore probe above so the no-op fast path can't fire).
+  //   3. Query the most recent plan_changed activity row for the WO and
+  //      assert metadata->>'source' = 'board'.
+  // Audit rows are append-only by design — no teardown required.
+  const auditProbeStart = new Date(Date.now() + 7 * 86400000).toISOString();
+  const auditProbe = await probeAndAssertCommandOp(
+    probe,
+    'WO: plan PATCH with _source=board → 200',
+    {
+      url: `${API_BASE}/api/work-orders/${WO_ID}`,
+      body: { planned_start_at: auditProbeStart, _source: 'board' },
+    },
+    TENANT_ID,
+    'work_order',
+    WO_ID,
+  );
+  if (auditProbe.ok) {
+    // The RPC inserts the plan_changed row inside the same transaction
+    // as the work_orders UPDATE; by the time the HTTP response lands
+    // the row is committed + queryable by the admin client.
+    const { data: auditRows, error: auditErr } = await supa()
+      .from('ticket_activities')
+      .select('metadata, created_at')
+      .eq('tenant_id', TENANT_ID)
+      .eq('ticket_id', WO_ID)
+      .eq('activity_type', 'system_event')
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (auditErr) {
+      results.fail += 1;
+      results.failed.push('WO: audit row source=board (query error)');
+      console.log(`  ✗ WO: audit row source=board (query error: ${auditErr.message})`);
+    } else if (!auditRows || auditRows.length === 0) {
+      results.fail += 1;
+      results.failed.push('WO: audit row source=board (no row)');
+      console.log(`  ✗ WO: audit row source=board — no ticket_activities row after PATCH`);
+    } else {
+      const meta = auditRows[0].metadata ?? {};
+      if (meta.event === 'plan_changed' && meta.source === 'board') {
+        results.pass += 1;
+        console.log(`  ✓ WO: audit row metadata.source=board (event=plan_changed)`);
+      } else {
+        results.fail += 1;
+        results.failed.push('WO: audit row source=board (wrong shape)');
+        console.log(
+          `  ✗ WO: audit row source=board — got event=${meta.event} source=${meta.source}`,
+        );
+      }
+    }
+  }
+
+  // Invalid _source must reject at the controller layer before any RPC
+  // call lands. Defense in depth: even though the RPC re-validates,
+  // the controller's enum gate is what users hit first.
+  const badSource = await probe('WO: _source=invalid → 400', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: {
+      planned_start_at: new Date(Date.now() + 8 * 86400000).toISOString(),
+      _source: 'bogus',
+    },
+    expect: 'badrequest',
+  });
+  if (badSource.ok) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(badSource.body);
+    } catch {
+      // ignore
+    }
+    if (parsed && parsed.code === 'work_order.field_invalid') {
+      results.pass += 1;
+      console.log('  ✓ WO: invalid _source rejected (code=work_order.field_invalid)');
+    } else {
+      results.fail += 1;
+      results.failed.push('WO: invalid _source rejected (code check)');
+      console.log(`  ✗ WO: invalid _source rejected (code check) — got code=${parsed?.code}`);
+    }
+  }
+
   // sla: clear (null is XOR-different from any current sla_id)
   await probeAndAssertCommandOp(probe, 'WO: sla_id = null', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,

@@ -199,6 +199,23 @@ export class WorkOrderController {
         detail: 'watchers must be an array of strings (person UUIDs) or null',
       });
     }
+    // P1-4 (00383): audit-source enum gate. Three accepted values
+    // (board / detail / generator); anything else is rejected at the
+    // HTTP boundary. The service layer also strips this meta-field from
+    // the column-patch clone, and the RPC re-validates as defense in
+    // depth, so an internal caller bypassing the controller can't
+    // smuggle a bad value into ticket_activities either.
+    if (
+      Object.prototype.hasOwnProperty.call(dto, '_source') &&
+      dto._source !== undefined &&
+      dto._source !== 'board' &&
+      dto._source !== 'detail' &&
+      dto._source !== 'generator'
+    ) {
+      throw AppErrors.validationFailed('work_order.field_invalid', {
+        detail: '_source must be one of board, detail, or generator',
+      });
+    }
 
     const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
     return this.workOrderService.update(id, dto, actorAuthUid, clientRequestId);

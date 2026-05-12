@@ -75,6 +75,17 @@ export interface UpdateWorkOrderDto {
   // mismatch. Optional so non-planning-board callers (detail-page SLA
   // edit, status flip, etc.) don't have to thread a version.
   plan_version?: number;
+  // P1-4 (00383): audit-source provenance for the plan_changed activity
+  // row. When present and the plan branch fires, the value is stamped
+  // into `ticket_activities.metadata.source` so operators can tell where
+  // the change came from. Three allowed values: 'board' (drag/resize/
+  // keyboard nudge on /desk/planning), 'detail' (PlanField in the
+  // ticket detail panel), 'generator' (reserved for the Slice C PM
+  // generator). Omit when the patch doesn't touch the plan branch (the
+  // RPC ignores it). Validation happens both in the controller layer
+  // (work_order.field_invalid 400) and the RPC (invalid_source 400) so
+  // an unrecognised value cannot leak into the audit log.
+  _source?: 'board' | 'detail' | 'generator';
 }
 
 const PLAN_FIELDS = ['planned_start_at', 'planned_duration_minutes'] as const;
@@ -309,6 +320,13 @@ export class WorkOrderService {
     // can't accidentally treat it as a writable column on a future
     // refactor that iterates dto keys generically.
     delete dtoNormalized.plan_version;
+    // _source is a meta-field consumed by the RPC's p_activity_source
+    // arg (00383 v6) — strip from the column-patch clone for the same
+    // reason as plan_version above. The raw value is captured into
+    // `activitySource` below before stripping so the RPC call can
+    // forward it.
+    const activitySource = dto._source ?? null;
+    delete dtoNormalized._source;
 
     if (hasPlan) {
       let currentStart: string | null = null;
@@ -435,6 +453,13 @@ export class WorkOrderService {
         p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
         p_idempotency_key: buildPatchIdempotencyKey('work_order', workOrderId, clientRequestId),
         p_patches: patches,
+        // P1-4 (00383): forward optional audit-source provenance. Null
+        // when the caller didn't supply `_source` — the RPC stamps no
+        // `source` key into the plan_changed metadata in that case
+        // (byte-identical to v5 behaviour). The RPC also re-validates
+        // the value (defense-in-depth) so an internal caller that
+        // bypasses the controller can't smuggle an unrecognised string.
+        p_activity_source: activitySource,
       },
     );
     if (rpcErr) throw mapRpcErrorToAppError(rpcErr);
