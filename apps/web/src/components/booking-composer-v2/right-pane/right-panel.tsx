@@ -40,7 +40,7 @@ function pickerKindFromView(view: RightPanelView): RightPanelPickerKind | null {
 }
 
 /**
- * View-state machine for the booking-composer right pane.
+ * View-state machine for the booking-composer right pane (desktop only).
  *
  * Two slots — summary and picker — sit side-by-side inside an
  * overflow-hidden track that translates -100% when a picker view is
@@ -49,6 +49,20 @@ function pickerKindFromView(view: RightPanelView): RightPanelPickerKind | null {
  *
  * Only the active picker's children are mounted; the slot div is always
  * rendered to keep the side-by-side layout stable.
+ *
+ * **C3 a11y fix (/full-review v4):** the hidden slot is gated with
+ * `inert` rather than `aria-hidden`. The prior pattern marked the
+ * off-screen slot `aria-hidden={true}` but its descendants (the
+ * SummaryCard empty-state buttons) stayed focusable — a Tab from the
+ * footer could land on a control inside a region screen readers had
+ * been told to ignore (WCAG 2.2 1.3.1 + 4.1.2). `inert` blocks focus
+ * AND announces the subtree as hidden, in one attribute.
+ *
+ * Mobile uses a different layout — the modal renders the summary cards
+ * and pickers directly without this component (see
+ * booking-composer-modal.tsx). Keeping this component desktop-only lets
+ * the slide animation stay simple; on mobile the same panelView state
+ * drives a screen-swap rather than a side-by-side translate.
  */
 export function RightPanel({
   summary,
@@ -73,13 +87,13 @@ export function RightPanel({
       >
         <div
           className="flex h-full w-full shrink-0 flex-col overflow-y-auto"
-          aria-hidden={isPicker}
+          inert={isPicker}
         >
           {summary}
         </div>
         <div
           className="flex h-full w-full shrink-0 flex-col"
-          aria-hidden={!isPicker}
+          inert={!isPicker}
         >
           {isPicker && (
             <>

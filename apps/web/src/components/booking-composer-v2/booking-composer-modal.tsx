@@ -11,11 +11,12 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { FieldGroup } from '@/components/ui/field';
-import { Loader2, X } from 'lucide-react';
+import { ArrowLeft, Loader2, X } from 'lucide-react';
 import { PersonPicker } from '@/components/person-picker';
 import { useBookingDraft } from './use-booking-draft';
 import { type BookingDraft, validateDraft } from './booking-draft';
 import type { ComposerMode, ComposerEntrySource } from '../booking-composer/state';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
 import { TitleInput } from './left-pane/title-input';
 import { TimeRow } from './left-pane/time-row';
@@ -60,6 +61,12 @@ function describeVisitorFailures(
   return `Couldn't invite ${head} and ${failures.length - 2} others.`;
 }
 
+const PICKER_TITLES = {
+  'picker:room': 'Pick a room',
+  'picker:catering': 'Add catering',
+  'picker:av': 'Add AV equipment',
+} satisfies Record<Exclude<RightPanelView, 'summary'>, string>;
+
 export interface BookingComposerModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -81,8 +88,18 @@ export interface BookingComposerModalProps {
 }
 
 /**
- * The redesigned full composer. Two-pane Dialog (880×680, max-h-[85vh]).
- * Phase 3 ships the shell only — the panes are wired in Phases 4 + 5.
+ * The redesigned full composer. Two layouts:
+ *
+ * - **Desktop (md+, ≥ 768px)** — Two-pane Dialog. Left pane = form rows
+ *   (title / time / repeat / description / host / visitors). Right pane
+ *   = `<RightPanel>` summary↔picker state machine, fixed 384px column.
+ * - **Mobile (< 768px)** — Single-column Dialog at viewport size. The
+ *   right-pane content collapses into a flat "Add-ons" section below the
+ *   form fields; tapping a summary card swaps the whole content area to
+ *   the picker (replacing form + add-ons, footer stays sticky). Back
+ *   button on the picker returns to summary. Pattern matches the rest of
+ *   the app's mobile design — no off-screen sidebar that buries the
+ *   primary action.
  *
  * Spec: docs/superpowers/specs/2026-05-02-create-booking-modal-redesign.md.
  */
@@ -96,6 +113,7 @@ export function BookingComposerModal({
   initialDraft,
   onBooked,
 }: BookingComposerModalProps) {
+  const isMobile = useIsMobile();
   const navigate = useNavigate();
   const composer = useBookingDraft({
     seed: initialDraft
@@ -145,7 +163,8 @@ export function BookingComposerModal({
   );
 
   // Right-pane view-state machine. The `<RightPanel>` slides between the
-  // summary and per-domain pickers (Phase B/C of the summary↔picker pivot).
+  // summary and per-domain pickers on desktop. On mobile, the same
+  // panelView drives a screen-swap inside the modal body.
   const [panelView, setPanelView] = useState<RightPanelView>('summary');
 
   // Re-seed on open so cancelled sessions don't leak state.
@@ -344,6 +363,192 @@ export function BookingComposerModal({
     onOpenChange,
   ]);
 
+  // ─── Shared layout fragments ─────────────────────────────────────────
+  // Both desktop and mobile render the same form fields and summary
+  // cards; only the surrounding scroll containers differ. Extract them
+  // here so JSX duplication doesn't drift between layouts.
+
+  const formNode = (
+    <FieldGroup>
+      <TitleInput
+        value={composer.draft.title}
+        onChange={composer.setTitle}
+        hostFirstName={hostFirstName}
+        roomName={pickedRoom?.name ?? null}
+      />
+      <TimeRow
+        startAt={composer.draft.startAt}
+        endAt={composer.draft.endAt}
+        onChange={composer.setTime}
+      />
+      <RepeatRow
+        rule={composer.draft.recurrence}
+        onChange={composer.setRepeat}
+      />
+      <DescriptionRow
+        value={composer.draft.description}
+        onChange={composer.setDescription}
+      />
+      <HostRow
+        mode={mode}
+        hostPersonId={composer.draft.hostPersonId}
+        onHostChange={composer.setHost}
+      />
+      <VisitorsRow
+        visitors={composer.draft.visitors}
+        bookingDefaults={{
+          expected_at: composer.draft.startAt ?? undefined,
+          expected_until: composer.draft.endAt ?? undefined,
+          building_id:
+            deriveBuildingId(spacesCache as Space[] | undefined, composer.draft.spaceId) || undefined,
+          meeting_room_id: composer.draft.spaceId ?? undefined,
+        }}
+        disabled={!composer.draft.spaceId || !composer.draft.startAt}
+        disabledReason={
+          !composer.draft.spaceId
+            ? 'Pick a room first — visitors are anchored to a building.'
+            : !composer.draft.startAt
+              ? 'Pick a start time first.'
+              : undefined
+        }
+        onAdd={composer.addVisitor}
+        onUpdate={composer.updateVisitor}
+        onRemove={composer.removeVisitor}
+      />
+    </FieldGroup>
+  );
+
+  const summaryNode = (
+    <SummaryView
+      times={
+        <TimesSummaryCard
+          startAt={composer.draft.startAt}
+          endAt={composer.draft.endAt}
+          onPick={() => {
+            // No `picker:time` view — times are edited inline on the
+            // form. Focus the From-side TimeRow button (data-focus-target
+            // attribute set in time-row.tsx); fall back to scrollIntoView
+            // so a missing target still nudges the eye.
+            const target = document.querySelector<HTMLElement>(
+              '[data-focus-target="time-row"]',
+            );
+            if (target) {
+              target.focus();
+              target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+          }}
+        />
+      }
+      room={
+        <RoomSummaryCard
+          spaceId={composer.draft.spaceId}
+          roomName={pickedRoom?.name ?? null}
+          capacity={pickedRoom?.capacity ?? null}
+          // Conflict-check API is not yet wired into v2;
+          // pass null so no Available/Unavailable pill renders.
+          available={null}
+          onPick={() => setPanelView('picker:room')}
+          onRemove={() => composer.setRoom(null)}
+        />
+      }
+      catering={
+        <CateringSummaryCard
+          selections={composer.draft.services}
+          attendeeCount={composer.draft.attendeeCount}
+          onPick={() => setPanelView('picker:catering')}
+          onClearAll={() =>
+            composer.setServices(
+              composer.draft.services.filter(
+                (s) => s.service_type !== 'catering',
+              ),
+            )
+          }
+          suggested={suggestions.some((s) => s.target === 'catering')}
+          suggestionReason={
+            suggestions.find((s) => s.target === 'catering')?.reason
+          }
+        />
+      }
+      av={
+        <AvSummaryCard
+          selections={composer.draft.services}
+          attendeeCount={composer.draft.attendeeCount}
+          onPick={() => setPanelView('picker:av')}
+          onClearAll={() =>
+            composer.setServices(
+              composer.draft.services.filter(
+                (s) => s.service_type !== 'av_equipment',
+              ),
+            )
+          }
+          suggested={suggestions.some((s) => s.target === 'av_equipment')}
+          suggestionReason={
+            suggestions.find((s) => s.target === 'av_equipment')?.reason
+          }
+        />
+      }
+    />
+  );
+
+  const pickerSlots = {
+    room: (
+      <div className="p-3">
+        <RoomPickerInline
+          value={composer.draft.spaceId}
+          attendeeCount={composer.draft.attendeeCount}
+          excludeIds={[]}
+          onChange={(id) => {
+            composer.setRoom(id);
+            // Single-select picker: pop back to summary on selection —
+            // there's nothing else to do here.
+            setPanelView('summary');
+          }}
+        />
+      </div>
+    ),
+    catering: (
+      <ServicePickerBody
+        deliverySpaceId={composer.draft.spaceId}
+        onDate={composer.draft.startAt}
+        attendeeCount={composer.draft.attendeeCount}
+        bookingStartAt={composer.draft.startAt}
+        bookingEndAt={composer.draft.endAt}
+        selections={composer.draft.services}
+        onSelectionsChange={composer.setServices}
+        initialServiceType="catering"
+        // Multi-select cart — body has no "Done" callback; the user
+        // clicks Back when finished. Keep the body's own padding in
+        // line with the summary cards via px-3.
+        className="px-3 pb-3"
+      />
+    ),
+    av: (
+      <ServicePickerBody
+        deliverySpaceId={composer.draft.spaceId}
+        onDate={composer.draft.startAt}
+        attendeeCount={composer.draft.attendeeCount}
+        bookingStartAt={composer.draft.startAt}
+        bookingEndAt={composer.draft.endAt}
+        selections={composer.draft.services}
+        onSelectionsChange={composer.setServices}
+        initialServiceType="av_equipment"
+        className="px-3 pb-3"
+      />
+    ),
+  } as const;
+
+  // Mobile-only: resolve picker kind + title from panelView.
+  const mobilePickerKind: 'room' | 'catering' | 'av' | null =
+    panelView === 'picker:room'
+      ? 'room'
+      : panelView === 'picker:catering'
+        ? 'catering'
+        : panelView === 'picker:av'
+          ? 'av'
+          : null;
+  const mobilePickerTitle =
+    panelView === 'summary' ? '' : PICKER_TITLES[panelView];
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogPortal>
@@ -359,9 +564,16 @@ export function BookingComposerModal({
           showCloseButton={false}
           className={cn(
             'flex flex-col gap-0 p-0',
+            // Mobile baseline (< 768px) — fill the viewport. Matches
+            // useIsMobile()'s breakpoint so JS-detected layout and
+            // CSS-detected sizing agree on every width.
             'w-screen h-screen max-w-none max-h-none rounded-none',
-            'sm:w-[min(calc(100vw-6rem),1600px)] sm:h-[min(calc(100vh-6rem),960px)]',
-            'sm:max-w-none sm:max-h-none sm:rounded-xl',
+            // Desktop (≥ 768px / md:) — sized modal. Was `sm:` (640px)
+            // before; the gap between sm and useIsMobile's 768px left
+            // 640-767 in an ambiguous "mobile useIsMobile but desktop
+            // CSS" zone that produced the mobile layout bug.
+            'md:w-[min(calc(100vw-6rem),1600px)] md:h-[min(calc(100vh-6rem),960px)]',
+            'md:max-w-none md:max-h-none md:rounded-xl',
             'overflow-hidden',
             'data-open:duration-[380ms] data-open:ease-[var(--ease-spring)]',
             'data-closed:duration-[200ms] data-closed:ease-[var(--ease-swift-out)]',
@@ -402,207 +614,107 @@ export function BookingComposerModal({
               <X className="size-4" aria-hidden />
             </Button>
           </DialogHeader>
-          <div className="flex flex-1 min-h-0 flex-col sm:flex-row">
-            {/* Left pane — 520px on desktop. Outer div owns the scroll +
-                sizing; the inner <FieldGroup> owns the form rhythm per
-                CLAUDE.md form-composition rule (gap-5, no hand-rolled
-                gap-4 between fields). */}
-            <div
-              data-testid="booking-composer-left-pane"
-              className="flex min-h-0 flex-1 flex-col overflow-y-auto p-5"
-            >
-              <FieldGroup>
-                <TitleInput
-                  value={composer.draft.title}
-                  onChange={composer.setTitle}
-                  hostFirstName={hostFirstName}
-                  roomName={pickedRoom?.name ?? null}
-                />
-                <TimeRow
-                  startAt={composer.draft.startAt}
-                  endAt={composer.draft.endAt}
-                  onChange={composer.setTime}
-                />
-                <RepeatRow
-                  rule={composer.draft.recurrence}
-                  onChange={composer.setRepeat}
-                />
-                <DescriptionRow
-                  value={composer.draft.description}
-                  onChange={composer.setDescription}
-                />
-                <HostRow
-                  mode={mode}
-                  hostPersonId={composer.draft.hostPersonId}
-                  onHostChange={composer.setHost}
-                />
-                <VisitorsRow
-                  visitors={composer.draft.visitors}
-                  bookingDefaults={{
-                    expected_at: composer.draft.startAt ?? undefined,
-                    expected_until: composer.draft.endAt ?? undefined,
-                    building_id:
-                      deriveBuildingId(spacesCache as Space[] | undefined, composer.draft.spaceId) || undefined,
-                    meeting_room_id: composer.draft.spaceId ?? undefined,
-                  }}
-                  disabled={!composer.draft.spaceId || !composer.draft.startAt}
-                  disabledReason={
-                    !composer.draft.spaceId
-                      ? 'Pick a room first — visitors are anchored to a building.'
-                      : !composer.draft.startAt
-                        ? 'Pick a start time first.'
-                        : undefined
-                  }
-                  onAdd={composer.addVisitor}
-                  onUpdate={composer.updateVisitor}
-                  onRemove={composer.removeVisitor}
-                />
-              </FieldGroup>
-            </div>
-            {/* Right pane — flex-1 on desktop so it absorbs the surplus
-                width (1024 modal − 520 left = 504px effective). Hairline
-                divider on the left edge desktop, top edge mobile
-                (matches the table-inspector-layout pattern). The pane
-                itself owns no padding — RightPanel + summary cards
-                control their own spacing so the slide animation between
-                summary and picker is gap-free. */}
-            <aside
-              data-testid="booking-composer-right-pane"
-              className={cn(
-                'flex min-h-0 flex-col overflow-hidden border-t border-border/60 bg-muted/30',
-                'sm:w-[384px] sm:flex-none sm:border-t-0 sm:border-l',
+
+          {isMobile ? (
+            /* ─── Mobile layout (< 768px) ───────────────────────────
+               Single-column flow. The form + add-ons scroll together
+               as one stream when panelView==='summary'. Tapping a
+               summary card swaps the whole content area to the picker;
+               Back returns to summary. Footer stays sticky throughout.
+               This replaces the prior stacked-pane layout where the
+               right-pane content kept auto-height and pushed the
+               footer below the fold.
+               ───────────────────────────────────────────────────────*/
+            <div className="flex min-h-0 flex-1 flex-col">
+              {panelView === 'summary' ? (
+                <div
+                  data-testid="booking-composer-mobile-content"
+                  className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4"
+                >
+                  {/* Hidden test hook so the desktop test selectors
+                      (booking-composer-left-pane / -right-pane) still
+                      resolve when matchMedia stubs to desktop=false.
+                      Keeps mobile-only test coverage additive, not
+                      breaking. */}
+                  <div data-testid="booking-composer-left-pane" className="contents">
+                    {formNode}
+                  </div>
+                  <section
+                    data-testid="booking-composer-right-pane"
+                    aria-label="Room and services"
+                    className="mt-6 border-t border-border/60 pt-4"
+                  >
+                    <h2 className="mb-2 px-1 text-sm font-medium text-foreground">
+                      Add-ons
+                    </h2>
+                    {summaryNode}
+                  </section>
+                </div>
+              ) : (
+                <div
+                  data-testid="booking-composer-mobile-picker"
+                  className="flex min-h-0 flex-1 flex-col"
+                >
+                  <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setPanelView('summary')}
+                      className={cn(
+                        'inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-sm',
+                        'text-muted-foreground transition-colors hover:text-foreground',
+                      )}
+                      aria-label="Back to booking details"
+                    >
+                      <ArrowLeft className="size-4" aria-hidden />
+                      <span>Back</span>
+                    </button>
+                    <h3 className="text-sm font-medium text-foreground">
+                      {mobilePickerTitle}
+                    </h3>
+                  </div>
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                    {mobilePickerKind ? pickerSlots[mobilePickerKind] : null}
+                  </div>
+                </div>
               )}
-            >
-              <RightPanel
-                view={panelView}
-                onViewChange={setPanelView}
-                pickerTitles={{
-                  room: 'Pick a room',
-                  catering: 'Add catering',
-                  av: 'Add AV equipment',
-                }}
-                summary={
-                  <SummaryView
-                    times={
-                      <TimesSummaryCard
-                        startAt={composer.draft.startAt}
-                        endAt={composer.draft.endAt}
-                        onPick={() => {
-                          // No `picker:time` view — times are edited inline
-                          // on the left pane. Focus the From-side TimeRow
-                          // button (data-focus-target attribute set in
-                          // time-row.tsx); fall back to scrollIntoView so a
-                          // missing target still nudges the eye.
-                          const target = document.querySelector<HTMLElement>(
-                            '[data-focus-target="time-row"]',
-                          );
-                          if (target) {
-                            target.focus();
-                            target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-                          }
-                        }}
-                      />
-                    }
-                    room={
-                      <RoomSummaryCard
-                        spaceId={composer.draft.spaceId}
-                        roomName={pickedRoom?.name ?? null}
-                        capacity={pickedRoom?.capacity ?? null}
-                        // Conflict-check API is not yet wired into v2;
-                        // pass null so no Available/Unavailable pill renders.
-                        available={null}
-                        onPick={() => setPanelView('picker:room')}
-                        onRemove={() => composer.setRoom(null)}
-                      />
-                    }
-                    catering={
-                      <CateringSummaryCard
-                        selections={composer.draft.services}
-                        attendeeCount={composer.draft.attendeeCount}
-                        onPick={() => setPanelView('picker:catering')}
-                        onClearAll={() =>
-                          composer.setServices(
-                            composer.draft.services.filter(
-                              (s) => s.service_type !== 'catering',
-                            ),
-                          )
-                        }
-                        suggested={suggestions.some((s) => s.target === 'catering')}
-                        suggestionReason={
-                          suggestions.find((s) => s.target === 'catering')?.reason
-                        }
-                      />
-                    }
-                    av={
-                      <AvSummaryCard
-                        selections={composer.draft.services}
-                        attendeeCount={composer.draft.attendeeCount}
-                        onPick={() => setPanelView('picker:av')}
-                        onClearAll={() =>
-                          composer.setServices(
-                            composer.draft.services.filter(
-                              (s) => s.service_type !== 'av_equipment',
-                            ),
-                          )
-                        }
-                        suggested={suggestions.some((s) => s.target === 'av_equipment')}
-                        suggestionReason={
-                          suggestions.find((s) => s.target === 'av_equipment')?.reason
-                        }
-                      />
-                    }
-                  />
-                }
-                picker={{
-                  room: (
-                    <div className="p-3">
-                      <RoomPickerInline
-                        value={composer.draft.spaceId}
-                        attendeeCount={composer.draft.attendeeCount}
-                        excludeIds={[]}
-                        onChange={(id) => {
-                          composer.setRoom(id);
-                          // Single-select picker: pop back to summary on
-                          // selection — there's nothing else to do here.
-                          setPanelView('summary');
-                        }}
-                      />
-                    </div>
-                  ),
-                  catering: (
-                    <ServicePickerBody
-                      deliverySpaceId={composer.draft.spaceId}
-                      onDate={composer.draft.startAt}
-                      attendeeCount={composer.draft.attendeeCount}
-                      bookingStartAt={composer.draft.startAt}
-                      bookingEndAt={composer.draft.endAt}
-                      selections={composer.draft.services}
-                      onSelectionsChange={composer.setServices}
-                      initialServiceType="catering"
-                      // Multi-select cart — body has no "Done" callback; the
-                      // user clicks Back in <RightPanel> when finished. Keep
-                      // the body's own padding in line with the summary
-                      // cards via px-3.
-                      className="px-3 pb-3"
-                    />
-                  ),
-                  av: (
-                    <ServicePickerBody
-                      deliverySpaceId={composer.draft.spaceId}
-                      onDate={composer.draft.startAt}
-                      attendeeCount={composer.draft.attendeeCount}
-                      bookingStartAt={composer.draft.startAt}
-                      bookingEndAt={composer.draft.endAt}
-                      selections={composer.draft.services}
-                      onSelectionsChange={composer.setServices}
-                      initialServiceType="av_equipment"
-                      className="px-3 pb-3"
-                    />
-                  ),
-                }}
-              />
-            </aside>
-          </div>
+            </div>
+          ) : (
+            /* ─── Desktop layout (≥ 768px) ──────────────────────────
+               Two panes side-by-side. Right pane is now a labelled
+               <section> (was <aside>), since it carries the picker /
+               summary cards — primary form controls, not tangential
+               content. The `<RightPanel>` itself handles the
+               summary↔picker slide with `inert` on the hidden slot
+               (C3 closure — focusable buttons inside aria-hidden
+               regions used to be reachable by Tab).
+               ───────────────────────────────────────────────────────*/
+            <div className="flex min-h-0 flex-1 flex-row">
+              <div
+                data-testid="booking-composer-left-pane"
+                className="flex min-h-0 flex-1 flex-col overflow-y-auto p-5"
+              >
+                {formNode}
+              </div>
+              <section
+                data-testid="booking-composer-right-pane"
+                aria-label="Room and services"
+                className="flex min-h-0 w-[384px] flex-none flex-col overflow-hidden border-l border-border/60 bg-muted/30"
+              >
+                <RightPanel
+                  view={panelView}
+                  onViewChange={setPanelView}
+                  pickerTitles={{
+                    room: 'Pick a room',
+                    catering: 'Add catering',
+                    av: 'Add AV equipment',
+                  }}
+                  summary={summaryNode}
+                  picker={pickerSlots}
+                />
+              </section>
+            </div>
+          )}
+
           <footer className="flex items-center justify-end gap-2 border-t border-border/60 bg-background/85 px-5 py-3 backdrop-blur-md">
             {validation && (
               <span
