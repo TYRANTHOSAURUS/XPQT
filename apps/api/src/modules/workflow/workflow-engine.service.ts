@@ -38,53 +38,31 @@ import { SlaService } from '../sla/sla.service';
 // `docs/assignments-routing-fulfillment.md` (§Workflow engine writes).
 
 /**
- * The 14 fields the §3.0 `update_entity_combined` orchestrator accepts,
- * partitioned into the orchestrator's six branches. Used by
- * `buildPatchesFromUpdateTicketNode` to bucket node-config keys into
- * the patches payload, and by the up-front allowlist check to reject
- * anything that doesn't belong.
+ * The 14 fields the §3.0 `update_entity_combined` orchestrator accepts.
  *
- * Branch citations:
+ * Branch citations (orchestrator's six branches):
  *   - status:     00335:159-160 (status / status_category / waiting_reason)
  *   - priority:   00335:163     (priority)
  *   - assignment: 00335:161     (assigned_team_id / _user_id / _vendor_id)
  *   - sla:        00335:162     (sla_id; timers built TS-side)
- *   - plan:       00335:164     (planned_start_at / planned_duration_minutes;
- *                                WO-only — see §Plan branch below)
+ *   - plan:       00335:164     — WO-only on `update_entity_combined`
+ *                                (00335:170-173 rejects `entity_kind='case'`
+ *                                + plan with `plan_not_supported_on_case`).
+ *                                Workflow `update_ticket` nodes ALWAYS
+ *                                target the parent case, so plan fields
+ *                                are categorically misconfigured on this
+ *                                surface — rejected via
+ *                                `workflow.update_ticket_field_not_allowed`
+ *                                here rather than the downstream
+ *                                `plan_not_supported_on_case` raise.
  *   - metadata:   00335:165     (title / description / cost / tags / watchers)
+ *
+ * The granular per-branch sets (status/priority/assignment/sla/metadata)
+ * used to be declared here but were dead — only the union below is
+ * referenced. Imported from `@prequest/shared` so the visual editor's
+ * design-time validation uses the same source of truth as this runtime
+ * check.
  */
-const UPDATE_TICKET_STATUS_FIELDS = new Set<string>([
-  'status',
-  'status_category',
-  'waiting_reason',
-]);
-const UPDATE_TICKET_PRIORITY_FIELDS = new Set<string>(['priority']);
-const UPDATE_TICKET_ASSIGNMENT_FIELDS = new Set<string>([
-  'assigned_team_id',
-  'assigned_user_id',
-  'assigned_vendor_id',
-]);
-const UPDATE_TICKET_SLA_FIELDS = new Set<string>(['sla_id']);
-// Plan fields are WO-only on `update_entity_combined` (00335:170-173 rejects
-// `entity_kind='case'` + plan with `plan_not_supported_on_case`). Workflow
-// `update_ticket` nodes ALWAYS target the parent case (workflow_instances
-// link to tickets, not work_orders), so plan fields are categorically
-// misconfigured on this surface. Documented as an orphan field in
-// docs/follow-ups/b2-followups.md alongside the other 17 — surfacing as
-// `workflow.update_ticket_field_not_allowed` (422) here is clearer than
-// the orchestrator's `plan_not_supported_on_case` raise downstream.
-const UPDATE_TICKET_METADATA_FIELDS = new Set<string>([
-  'title',
-  'description',
-  'cost',
-  'tags',
-  'watchers',
-]);
-
-/** The full 14-field allowlist (union of the five branch sets — plan
- *  is excluded because workflow update_ticket is case-only). Imported
- *  from `@prequest/shared` so the visual editor's design-time validation
- *  uses the same source of truth as this runtime check. */
 const UPDATE_TICKET_ALLOWED_FIELDS = UPDATE_TICKET_ALLOWED_FIELD_SET;
 
 interface WorkflowNode {
@@ -912,25 +890,53 @@ export class WorkflowEngineService {
    * no side effect.
    */
   async resume(instanceId: string, tenantId: string, edgeCondition?: string) {
-    // Two-step read: load instance ONLY (no embedded definition). The
-    // PostgREST embed `definition:workflow_definitions(*)` would FK-traverse
-    // server-side without an independent tenant filter — a foreign
-    // workflow_definition_id (FK-smuggle) would load a foreign graph and
-    // execute it. Audit finding: separate query so the second SELECT can
-    // be tenant-filtered explicitly.
-    const { data: instance } = await this.supabase.admin
+    // Codex IMPORTANT 1 remediation (2026-05-12): atomic claim as the
+    // first DB write. The prior implementation read `status='waiting'`,
+    // then later wrote `status='active'` without a claim guard. Two
+    // concurrent handler invocations on sibling links of the same
+    // parent could both pass the read check, both advance, both write
+    // audit events. Phase 1.A's per-row claim of workflow_instance_links
+    // makes that race REACHABLE (each handler picks a sibling link, both
+    // see the parent as `waiting`).
+    //
+    // Fix: the status='waiting' → status='active' transition is now the
+    // FIRST write — `UPDATE ... WHERE status='waiting' RETURNING ...`
+    // is atomic, so exactly one caller observes data!=null. The losers
+    // observe data=null and no-op (idempotent — covers the cancelled /
+    // completed transitions as well as another worker beating us).
+    const claimRes = await this.supabase.admin
       .from('workflow_instances')
-      .select('*')
+      .update({ status: 'active', waiting_for: null })
       .eq('id', instanceId)
       .eq('tenant_id', tenantId)
+      .eq('status', 'waiting')
+      .select('id, workflow_definition_id, current_node_id, ticket_id')
       .maybeSingle();
 
-    if (!instance || instance.status !== 'waiting') return;
+    if (!claimRes.data) {
+      // Idempotent no-op: another worker already claimed it, OR the
+      // instance was cancelled/completed between caller's request and
+      // our claim, OR the instance doesn't exist / belongs to a different
+      // tenant. All four cases collapse to "do nothing".
+      return;
+    }
+    const instance = claimRes.data as {
+      id: string;
+      workflow_definition_id: string;
+      current_node_id: string;
+      ticket_id: string;
+    };
 
+    // Two-step read for the definition: the PostgREST embed
+    // `definition:workflow_definitions(*)` on workflow_instances would
+    // FK-traverse server-side without an independent tenant filter — a
+    // foreign workflow_definition_id (FK-smuggle) would load a foreign
+    // graph and execute it. Audit finding: separate query so the second
+    // SELECT can be tenant-filtered explicitly.
     const { data: definition } = await this.supabase.admin
       .from('workflow_definitions')
       .select('*')
-      .eq('id', instance.workflow_definition_id as string)
+      .eq('id', instance.workflow_definition_id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
     if (!definition) return;
@@ -954,12 +960,6 @@ export class WorkflowEngineService {
     }
 
     await TenantContext.run(tenantInfo, async () => {
-      await this.supabase.admin
-        .from('workflow_instances')
-        .update({ status: 'active', waiting_for: null })
-        .eq('id', instanceId)
-        .eq('tenant_id', tenantInfo.id);
-
       await this.emit(instanceId, 'instance_resumed', { payload: { edge_condition: edgeCondition ?? null } });
       await this.advance(instanceId, graph, instance.current_node_id, instance.ticket_id, edgeCondition);
     });

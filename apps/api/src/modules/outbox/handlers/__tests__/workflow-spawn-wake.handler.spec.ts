@@ -124,6 +124,15 @@ interface FakeSupabaseOpts {
   claimError?: { message: string };
   /** If set, the per-row UPDATE (unclaim) against workflow_instance_links returns this error. */
   unclaimError?: { message: string };
+  /**
+   * Optional gate awaited inside the claim UPDATE just BEFORE the row
+   * mutation. Used by the interleaved-concurrency NIT test to suspend
+   * both invocations between their entry and the actual write, so the
+   * test can control which one wins the atomic claim. The fake calls
+   * `gate()` each time the claim is about to mutate; resolve the
+   * returned promise to release that specific invocation.
+   */
+  claimGate?: () => Promise<void>;
 }
 
 interface CapturedCalls {
@@ -157,7 +166,26 @@ function makeSupabase(opts: FakeSupabaseOpts) {
   const linkStore: StoredLinkRow[] = [...(opts.links ?? [])];
 
   function matchesFilters(row: StoredLinkRow, filters: Record<string, unknown>): boolean {
+    const nowIso = new Date().toISOString();
     for (const [key, val] of Object.entries(filters)) {
+      if (key === '__or') {
+        // Handler uses `.or('wait_timeout_at.is.null,wait_timeout_at.gt.now()')`
+        // — null OR (timestamp > now). Only need to support that exact
+        // shape; if a test passes a different `or` expression, extend
+        // here.
+        const expr = val as string;
+        const nullMatch = row.wait_timeout_at === null;
+        const gtMatch =
+          row.wait_timeout_at !== null && row.wait_timeout_at > nowIso;
+        if (
+          expr === 'wait_timeout_at.is.null,wait_timeout_at.gt.now()' ||
+          expr === 'wait_timeout_at.is.null,wait_timeout_at.gt.now'
+        ) {
+          if (!(nullMatch || gtMatch)) return false;
+          continue;
+        }
+        throw new Error(`unsupported .or() expression in fake: ${expr}`);
+      }
       if (key.endsWith('__is')) {
         const col = key.slice(0, -'__is'.length) as keyof StoredLinkRow;
         if (row[col] !== val) return false;
@@ -242,6 +270,7 @@ function makeSupabase(opts: FakeSupabaseOpts) {
           const updateChain: {
             eq: (col: string, val: unknown) => typeof updateChain;
             is: (col: string, val: unknown) => typeof updateChain;
+            or: (expr: string) => typeof updateChain;
             select: (_cols: string) => Promise<{ data: unknown; error: unknown }>;
             then: (
               onfulfilled?: (value: { data: unknown; error: unknown }) => unknown,
@@ -256,11 +285,28 @@ function makeSupabase(opts: FakeSupabaseOpts) {
               filters[`${col}__is`] = val;
               return updateChain;
             },
+            // Codex IMPORTANT 2 remediation (2026-05-12): the claim
+            // UPDATE now carries `.or('wait_timeout_at.is.null,wait_timeout_at.gt.now()')`
+            // so a row whose timeout passes between SELECT and UPDATE
+            // can't be claimed (leaves it for the Tier 1 cron's
+            // `timeout` branch). Mock the supabase-js or() filter:
+            // parse the two clauses and store them so matchesFilters can
+            // evaluate them against the stored row.
+            or(expr: string) {
+              filters['__or'] = expr;
+              return updateChain;
+            },
             // Claim path: `.update(...).eq(...).is(...).select('id')`.
             async select(_cols: string) {
               captured.updates.push({ payload, filters });
               if (opts.claimError) {
                 return { data: null, error: opts.claimError };
+              }
+              if (opts.claimGate) {
+                // Suspend right at the moment the claim is about to
+                // mutate. The NIT interleaving test releases gates in a
+                // controlled order to drive the race.
+                await opts.claimGate();
               }
               const updated: Array<Pick<StoredLinkRow, 'id'>> = [];
               for (const row of linkStore) {
@@ -449,7 +495,12 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
   });
 
   describe('one waiting row claimed', () => {
-    it('Cancelled event resumes parent on `cancelled` branch', async () => {
+    // Codex BLOCKER remediation (2026-05-12): all entity-event-driven
+    // wakes now resume on the canonical `condition_met` branch per spec
+    // §3.4 / §3.6 / §3.11. The verb-specific information (`cancelled` /
+    // `created` / status value) is preserved on `link.resolution_kind` +
+    // structured logs, not on the engine branch label.
+    it('Cancelled event resumes parent on `condition_met` branch', async () => {
       const supabase = makeSupabase({
         links: [makeStoredLink()],
         parents: { [PARENT_INSTANCE_ID]: { id: PARENT_INSTANCE_ID, tenant_id: TENANT_ID } },
@@ -460,13 +511,13 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       await expect(handler.handle(makeEvent(BookingLifecycleEventType.Cancelled)))
         .resolves.toBeUndefined();
       expect(engine.resume).toHaveBeenCalledTimes(1);
-      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'cancelled');
+      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'condition_met');
       // Link is in claimed state.
       expect(supabase.linkStore[0].resolved_at).not.toBeNull();
       expect(supabase.linkStore[0].resolution_kind).toBe('condition_met');
     });
 
-    it('Created event resumes parent on `created` branch (when entity_terminal_statuses includes "created")', async () => {
+    it('Created event resumes parent on `condition_met` branch (when entity_terminal_statuses includes "created")', async () => {
       const supabase = makeSupabase({
         links: [makeStoredLink({ entity_terminal_statuses: ['created'] })],
         parents: { [PARENT_INSTANCE_ID]: { id: PARENT_INSTANCE_ID, tenant_id: TENANT_ID } },
@@ -475,10 +526,10 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
       const handler = new WorkflowSpawnWakeOnBookingCreatedHandler(core);
       await handler.handle(makeEvent(BookingLifecycleEventType.Created));
-      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'created');
+      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'condition_met');
     });
 
-    it('StatusChanged event resumes parent on the new status branch when status is in entity_terminal_statuses', async () => {
+    it('StatusChanged event resumes parent on `condition_met` branch when status is in entity_terminal_statuses', async () => {
       const supabase = makeSupabase({
         links: [
           makeStoredLink({ entity_terminal_statuses: ['confirmed', 'cancelled'] }),
@@ -495,7 +546,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
           { from_status: 'pending_approval', to_status: 'confirmed' },
         ),
       );
-      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'confirmed');
+      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'condition_met');
     });
   });
 
@@ -594,7 +645,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
       const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
       await handler.handle(makeEvent(BookingLifecycleEventType.Cancelled));
-      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'cancelled');
+      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'condition_met');
       expect(supabase.linkStore[0].resolved_at).not.toBeNull();
     });
 
@@ -630,7 +681,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
       await handler.handle(makeEvent(BookingLifecycleEventType.Cancelled));
       expect(engine.resume).toHaveBeenCalledTimes(1);
-      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'cancelled');
+      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'condition_met');
     });
   });
 
@@ -654,6 +705,71 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       expect(engine.resume).toHaveBeenCalledTimes(1);
     });
 
+    // Codex NIT remediation (2026-05-12): real interleaving test —
+    // both handler invocations are suspended mid-claim via a controllable
+    // gate, then released in a known order so the SELECT/UPDATE/UPDATE
+    // sequencing can be inspected. Without this, the existing pair-test
+    // only proves the sequential case (which the simple `resolved_at IS
+    // NOT NULL` SELECT filter trivially handles).
+    it('two interleaved invocations: both reach claim UPDATE; only one mutates row; second observes 0 rows', async () => {
+      // Build two pending gates. The first invocation to reach the claim
+      // UPDATE awaits gateA; the second invocation awaits gateB. The
+      // test releases gateA first (lets invocation A's claim mutate the
+      // row to resolved_at=non-null), then releases gateB (invocation
+      // B's matchesFilters re-evaluates against the now-mutated row and
+      // matches 0 rows — atomic CAS semantics under the simulated race).
+      let releaseA: () => void = () => {};
+      let releaseB: () => void = () => {};
+      const gateA = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+      const gateB = new Promise<void>((resolve) => {
+        releaseB = resolve;
+      });
+      let nextGate: Promise<void> = gateA;
+      const claimGate = () => {
+        const g = nextGate;
+        nextGate = gateB;
+        return g;
+      };
+
+      const supabase = makeSupabase({
+        links: [makeStoredLink()],
+        parents: { [PARENT_INSTANCE_ID]: { id: PARENT_INSTANCE_ID, tenant_id: TENANT_ID } },
+        claimGate,
+      });
+      const engine = makeWorkflowEngine();
+      const core = new WorkflowSpawnWakeCore(supabase.service, engine);
+      const handlerA = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handlerB = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+
+      // Kick both invocations off; neither awaited yet — they will pause
+      // at the gate.
+      const pA = handlerA.handle(makeEvent(BookingLifecycleEventType.Cancelled));
+      const pB = handlerB.handle(makeEvent(BookingLifecycleEventType.Cancelled));
+
+      // Yield twice to let both invocations reach their gate (SELECT
+      // resolves synchronously in the fake, so a single microtask isn't
+      // enough to reach the claim UPDATE — give a few microtask ticks).
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Release A first: A's claim mutates the row.
+      releaseA();
+      await pA;
+      expect(engine.resume).toHaveBeenCalledTimes(1);
+      expect(supabase.linkStore[0].resolved_at).not.toBeNull();
+
+      // Release B: B's claim UPDATE re-evaluates filters AND finds the
+      // row already has resolved_at IS NOT NULL → 0 rows updated → no
+      // resume. This is the atomic CAS semantics: under real Postgres,
+      // the WHERE clause is re-evaluated at the moment of the UPDATE.
+      releaseB();
+      await pB;
+      expect(engine.resume).toHaveBeenCalledTimes(1);
+    });
+
     it('multiple waiting parents on the same booking — all claimed (per-row), all resumed', async () => {
       const supabase = makeSupabase({
         links: [
@@ -670,8 +786,8 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
       await handler.handle(makeEvent(BookingLifecycleEventType.Cancelled));
       expect(engine.resume).toHaveBeenCalledTimes(2);
-      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'cancelled');
-      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID_B, TENANT_ID, 'cancelled');
+      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'condition_met');
+      expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID_B, TENANT_ID, 'condition_met');
     });
   });
 
@@ -773,7 +889,14 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       expect(linkB.resolution_kind).toBe('condition_met');
     });
 
-    it('unclaim failure escalates to DeadLetterError (stranded link)', async () => {
+    it('unclaim failure throws plain Error (NOT DeadLetterError) so outbox retries', async () => {
+      // Codex IMPORTANT 3 remediation (2026-05-12): the previous design
+      // raised DeadLetterError on unclaim failure, but outbox.worker.ts:220
+      // bypasses retry for DeadLetterError. A transient DB blip on the
+      // unclaim UPDATE would permanently strand the link in claimed
+      // state, requiring SQL surgery. New behaviour: throw plain Error,
+      // outbox retries with backoff, and only after retries exhaust does
+      // the worker dead-letter the event.
       const supabase = makeSupabase({
         links: [makeStoredLink()],
         parents: { [PARENT_INSTANCE_ID]: { id: PARENT_INSTANCE_ID, tenant_id: TENANT_ID } },
@@ -786,8 +909,15 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
       const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
 
-      await expect(handler.handle(makeEvent(BookingLifecycleEventType.Cancelled)))
-        .rejects.toBeInstanceOf(DeadLetterError);
+      let captured: unknown = null;
+      try {
+        await handler.handle(makeEvent(BookingLifecycleEventType.Cancelled));
+      } catch (err) {
+        captured = err;
+      }
+      expect(captured).toBeInstanceOf(Error);
+      expect(captured).not.toBeInstanceOf(DeadLetterError);
+      expect((captured as Error).message).toMatch(/unclaim_failed/);
     });
   });
 

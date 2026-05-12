@@ -51,5 +51,6 @@ apps/api/src/modules/workflow/workflow-engine.service.ts:              ? { sla_i
 apps/api/src/modules/workflow/workflow-engine.service.ts:            ...(Object.prototype.hasOwnProperty.call(task, 'sla_policy_id')
 apps/api/src/modules/workflow/workflow-engine.service.ts:            // sla_policy_id semantics preserved: explicit key (including
 apps/api/src/modules/workflow/workflow-engine.service.ts:        workflow_definition_id: workflowDefinitionId,
-apps/api/src/modules/workflow/workflow-engine.service.ts:      .eq('id', instance.workflow_definition_id as string)
-apps/api/src/modules/workflow/workflow-engine.service.ts:    // workflow_definition_id (FK-smuggle) would load a foreign graph and
+apps/api/src/modules/workflow/workflow-engine.service.ts:      .eq('id', instance.workflow_definition_id)
+apps/api/src/modules/workflow/workflow-engine.service.ts:      .select('id, workflow_definition_id, current_node_id, ticket_id')
+apps/api/src/modules/workflow/workflow-engine.service.ts:    // foreign workflow_definition_id (FK-smuggle) would load a foreign

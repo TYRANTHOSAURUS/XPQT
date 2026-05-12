@@ -69,10 +69,13 @@ import type { OutboxEvent } from '../outbox.types';
  *
  * ── What this handler does NOT do (deferred to later Phase 1 sub-steps) ─
  *
- *   - DOES NOT touch `WorkflowEngineService.resume()` itself. The race
- *     window in resume() at workflow-engine.service.ts:928,957-961
- *     (`status='waiting'` read then `status='active'` write) is
- *     acknowledged in spec §3.5 and gets fixed in Phase 1.C.
+ *   - The sibling-race in `WorkflowEngineService.resume()` (the
+ *     `status='waiting'` read-then-write window acknowledged in spec
+ *     §3.5) was pulled forward into Phase 1.A — Phase 1.A makes the
+ *     race REACHABLE (per-row claim of sibling link rows can fire
+ *     concurrent resume() calls), so the engine fix shipped here too.
+ *     resume() now uses an atomic UPDATE ... WHERE status='waiting'
+ *     RETURNING ... as its first DB write; the losers no-op.
  *   - DOES NOT do multi-spawn aggregation. Per spec §9.3 LOCKED v2.2,
  *     v1 ships single-spawn only. Rows with `aggregation_group_id IS NOT
  *     NULL` are explicitly skipped at the candidate SELECT (filter
@@ -289,6 +292,15 @@ export class WorkflowSpawnWakeCore {
 
     for (const link of eligible) {
       // ── 4a. Atomic per-row claim ───────────────────────────────────────
+      //
+      // Timeout-ownership defense (codex IMPORTANT 2 remediation, 2026-05-12):
+      // the SELECT above filters expired rows in JS, but `nowIso` is a
+      // snapshot from before the SELECT. If `wait_timeout_at` passes
+      // between SELECT and this UPDATE, the Phase 1.C cron sweeper owns
+      // the row for the `timeout` branch — we must NOT claim it. Add the
+      // condition to the WHERE so the UPDATE matches zero rows in that
+      // race window. supabase-js doesn't expose a fluent
+      // `column > now()` builder, so we use `.or('wait_timeout_at.is.null,wait_timeout_at.gt.now()')`.
       const claimRes = await this.supabase.admin
         .from('workflow_instance_links')
         .update({
@@ -297,6 +309,7 @@ export class WorkflowSpawnWakeCore {
         })
         .eq('id', link.id)
         .is('resolved_at', null)
+        .or('wait_timeout_at.is.null,wait_timeout_at.gt.now()')
         .select('id');
 
       if (claimRes.error) {
@@ -363,7 +376,21 @@ export class WorkflowSpawnWakeCore {
           );
         }
 
-        const branch = this.resolveBranch(sourceEventType, payload, link);
+        // Branch label is ALWAYS `condition_met` for entity-event-driven
+        // wakes (spec §3.4 / §3.6 / §3.11). The spawn-wait node's three
+        // canonical branches are `condition_met` / `timeout` /
+        // `parent_cancelled` — `timeout` is owned by the Phase 1.C cron,
+        // `parent_cancelled` is owned by Phase 1.B's cancellation cascade.
+        // The "what specifically satisfied the wait" detail is preserved
+        // in:
+        //   - `resolution_kind = 'condition_met'` on the link row (set above).
+        //   - the `eligible link(s)` log line above + the `resumed` log line below.
+        //   - downstream `instance_resumed` audit event (engine.resume emits).
+        // engine.advance() falls through to `edges[0]` on an unmatched
+        // edgeCondition (workflow-engine.service.ts:214); passing the raw
+        // event verb here (e.g. `cancelled`) would silently take the
+        // wrong branch in a workflow authored per the spec.
+        const branch = 'condition_met';
 
         await this.workflowEngine.resume(
           link.parent_instance_id,
@@ -372,7 +399,7 @@ export class WorkflowSpawnWakeCore {
         );
 
         this.log.log(
-          `resumed event=${event.id} link=${link.id} parent=${link.parent_instance_id} parent_node=${link.parent_node_id} branch=${branch} booking=${bookingId}`,
+          `resumed event=${event.id} link=${link.id} parent=${link.parent_instance_id} parent_node=${link.parent_node_id} branch=${branch} source_event=${sourceEventType} booking=${bookingId}`,
         );
       } catch (err) {
         if (err instanceof DeadLetterError) {
@@ -397,12 +424,20 @@ export class WorkflowSpawnWakeCore {
 
         if (unclaimRes.error) {
           // Unclaim failed — link stays claimed but resume() never
-          // happened. This is a stranded-parent scenario; surface to
-          // ops via dead-letter so the link can be inspected manually.
-          // Worse-than-best-effort, but worse-than-silent-strand. The
-          // error message contains the link id so ops has the handle.
-          throw new DeadLetterError(
-            `workflow_spawn_wake.unclaim_failed: link=${link.id} parent=${link.parent_instance_id} resume_error="${message}" unclaim_error="${unclaimRes.error.message}" — link is stranded in claimed state; inspect manually`,
+          // happened. The Tier 1 cron sweeper (Phase 1.C) only inspects
+          // resolved_at IS NULL rows, so a stranded claimed-but-unresumed
+          // link would otherwise sit forever requiring SQL surgery.
+          //
+          // Codex IMPORTANT 3 remediation (2026-05-12): throw a PLAIN
+          // Error here, NOT DeadLetterError. The outbox worker
+          // (outbox.worker.ts:220) bypasses retry for DeadLetterError,
+          // turning a transient DB blip into permanent strandedness. A
+          // plain Error lets the backoff retries take another swing at
+          // the unclaim; if the DB is genuinely down the retries
+          // eventually exhaust and the event dead-letters at the worker
+          // level (per outbox §4.4 / §4.5).
+          throw new Error(
+            `workflow_spawn_wake.unclaim_failed: link=${link.id} parent=${link.parent_instance_id} resume_error="${message}" unclaim_error="${unclaimRes.error.message}" — link in claimed state; retrying`,
           );
         }
       }
@@ -467,33 +502,15 @@ export class WorkflowSpawnWakeCore {
     return matchAny || allowList.includes(newStatus);
   }
 
-  /**
-   * Determine the branch label to pass to WorkflowEngineService.resume().
-   *
-   * Rules:
-   *   - Cancelled event → branch is always `'cancelled'`. The wake is the
-   *     §3.6 cancellation-propagation contract; the parent always wants
-   *     a `cancelled` branch regardless of its wait_for shape.
-   *   - Created event → branch is `'created'`. Rare — parents typically
-   *     wait for status changes, not creation.
-   *   - StatusChanged event → branch is the new status (payload.to_status).
-   *     We've already gated on `entity_terminal_statuses` membership in
-   *     `isWaitMatch` so this is always a status in the allow-list.
-   */
-  private resolveBranch(
-    sourceEventType: BookingLifecycleEventTypeT,
-    payload: BookingLifecyclePayload,
-    _link: CandidateLink,
-  ): string {
-    if (sourceEventType === BookingLifecycleEventType.Cancelled) {
-      return 'cancelled';
-    }
-    if (sourceEventType === BookingLifecycleEventType.Created) {
-      return 'created';
-    }
-    // StatusChanged (Phase 2 producer; inert today).
-    return payload.to_status ?? payload.status ?? 'status_changed';
-  }
+  // resolveBranch() was removed (codex BLOCKER remediation, 2026-05-12).
+  // The spawn-wait node's canonical outgoing-edge labels per spec §3.4 /
+  // §3.6 / §3.11 are `condition_met` / `timeout` / `parent_cancelled`
+  // ONLY. Tier 2 entity-event wakes always resolve to `condition_met`;
+  // the verb-specific information (`cancelled` / `created` / status
+  // value) lives in `resolution_kind` + structured log lines, NOT in the
+  // engine branch label. Passing the raw verb here would silently take
+  // `edges[0]` (engine.advance() fallback at workflow-engine.service.ts:214)
+  // for any workflow authored against the spec.
 }
 
 @Injectable()
