@@ -513,18 +513,39 @@ launch-time deploy posture (drain vs shim); the test fixture for the
 shim already exists. Re-opening triggered by first customer-facing
 cutover.
 
-### Visitor cascade fan-out — batch optimization
+### Visitor cascade fan-out — batch optimization — CLOSED (2026-05-12)
 
-`ReservationService.editScope` cascade loop is N sequential queries
-(one `visitors` lookup per occurrence with geometry change). For
-N=200 series, that's up to 200 round-trips post-RPC.
+Shipped at commit `b72b2bde` + remediation `1fc3750d`. New sibling
+method `ReservationService.emitVisitorCascadesForBundles` batches the
+visitor lookup from N `.eq('booking_id', bundleId)` calls (one per
+moved occurrence) into one `.in('booking_id', bundleIds[])` query. For
+200-occurrence series that's a 200→1 round-trip reduction post-RPC.
 
-**Fix shape:**
-- Collect booking_ids with geometry changes
-- One `.in('booking_id', bookingIds)` query against visitors
-- Emit per-visitor in a single pass
+Implementation notes:
+- **Singular method retained** for editOne/editSlot (1 bundle per call;
+  no batching benefit). Both singular and plural now delegate to a
+  shared private helper `emitVisitorCascadeEvents` so the per-visitor
+  emit payload stays byte-identical between the two paths.
+- **Single-tenant assertion** — plural throws `booking.cascade_cross_
+  tenant_batch` (500 AppError, 5-site registry) if `items[]` spans
+  multiple tenants. Defensive against future programmer error.
+- **bundleId deduplication** — plural filters duplicate bundleIds out
+  of the items array before the `.in()` query + emit loop. editScope's
+  current caller can't produce duplicates (per_occurrence has unique
+  booking_ids per the 00371 RPC contract), but the method's public
+  contract no longer depends on caller-side uniqueness.
+- **Per-bundle isolation** — inner try/catch around each emit so a
+  thrown subscriber on bundle N doesn't block bundles N+1..M. Mirrors
+  the singular's outer try/catch posture.
+- **9 new vitest scenarios** at `reservation-edit-scope-cascade-batch
+  .spec.ts` cover: empty input, missing bus, single item, multiple
+  items + grouping, defensive (null axes), `.in()` error, `.in()`
+  thrown (network-class), cross-tenant assertion, per-bundle emit
+  isolation.
 
-Defer until smoke probes (Step 2F.4) quantify the actual cost.
+`editScope` cascade loop (was `reservation.service.ts:1909-1933`)
+migrated to: collect cascadeItems[] from `result.per_occurrence`,
+filter to time-or-room moved, then ONE call to the plural method.
 
 ### Frontend hook tests for useEditBookingScope[DryRun]
 
