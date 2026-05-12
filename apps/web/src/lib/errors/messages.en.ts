@@ -458,6 +458,10 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't update — invalid time window",
     detail: 'Check the start and end times.',
   },
+  'booking.invalid_space_id': {
+    title: "Couldn't update — invalid room",
+    detail: 'Pick a valid room or leave the room unchanged.',
+  },
   'booking.idempotency_payload_mismatch': {
     title: "Couldn't save — idempotency mismatch",
     detail: 'A retry sent a different payload than the original request.',

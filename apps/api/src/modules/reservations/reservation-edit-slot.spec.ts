@@ -708,6 +708,66 @@ describe('ReservationService.editSlot', () => {
     });
     expect(supabase.calls.rpc).toHaveLength(0);
   });
+
+  // Codex IMPORTANT-2 (2026-05-12): editSlot was missing the per-side
+  // timestamp preflight entirely. A patch like `{ start_at:
+  // 'invalid-date' }` reached the assembler and died in conflict-guard
+  // at `new Date(...).toISOString()` with `RangeError: Invalid time
+  // value` — a 500 server-class instead of a deterministic 400. Same
+  // bug class as editOne; same fix.
+  it('IMPORTANT-2: editSlot with start_at: invalid-date (only) rejects 400 booking.invalid_window — no RPC, no assembler', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility({ canEdit: true });
+    const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlan();
+    const svc = buildService(supabase, visibility, conflict, assemble);
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
+          start_at: 'invalid-date',
+        }),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
+      code: 'booking.invalid_window',
+      status: 400,
+    });
+    expect((caught as AppError).detail).toMatch(/start_at/);
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
+    expect(assemble.assembleEditPlan).not.toHaveBeenCalled();
+  });
+
+  it('IMPORTANT-2: editSlot with end_at: invalid-date (only) rejects 400 booking.invalid_window — no RPC, no assembler', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility({ canEdit: true });
+    const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlan();
+    const svc = buildService(supabase, visibility, conflict, assemble);
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
+          end_at: 'invalid-date',
+        }),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
+      code: 'booking.invalid_window',
+      status: 400,
+    });
+    expect((caught as AppError).detail).toMatch(/end_at/);
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
+    expect(assemble.assembleEditPlan).not.toHaveBeenCalled();
+  });
 });
 
 // /full-review v3 closure C2 regression — editOne(geometry) MUST go
@@ -780,6 +840,30 @@ describe('ReservationService.editOne — patch flows through edit_booking RPC (C
         };
         if (args.patch.host_person_id !== undefined) {
           booking.host_person_id = args.patch.host_person_id;
+        }
+        // Codex NIT-2b (2026-05-12): mirror the real assembler's
+        // recurrence_overridden auto-set for kind='one' so tests can
+        // assert the flag landed on the RPC plan. The real assembler
+        // (assemble-edit-plan.service.ts:500-516) flips this when
+        //   (i) auto_set_recurrence_overridden=true (always for 'one'),
+        //   (ii) booking.recurrence_series_id is not null,
+        //   (iii) any patched field would change state (geometry value-
+        //        compare OR any meta key defined).
+        // The mock can't see the booking row, so we approximate (iii)
+        // via "any patch key present at all" — same predicate the
+        // service-level no-op already filtered against, so by the time
+        // the mock runs, at least one of these is by construction true.
+        if (args.patch.kind === 'one') {
+          const hasAnyPatchKey =
+            args.patch.space_id !== undefined ||
+            args.patch.start_at !== undefined ||
+            args.patch.end_at !== undefined ||
+            args.patch.attendee_count !== undefined ||
+            args.patch.attendee_person_ids !== undefined ||
+            args.patch.host_person_id !== undefined;
+          if (hasAnyPatchKey) {
+            booking.recurrence_overridden = true;
+          }
         }
         return {
           booking,
@@ -1180,6 +1264,162 @@ describe('ReservationService.editOne — patch flows through edit_booking RPC (C
     expect(supabase.calls.bookingsUpdate).toHaveLength(0);
   });
 
+  // Codex IMPORTANT-2 (2026-05-12): single-side invalid timestamp must
+  // surface 400 booking.invalid_window, not a 500 RangeError from
+  // conflict-guard's `new Date(...).toISOString()`. Pre-fix the
+  // preflight only checked the pair `start_at && end_at`; a single-
+  // side invalid value slipped through.
+  it('IMPORTANT-2: editOne with start_at: invalid-date (only) rejects 400 booking.invalid_window — no RPC, no assembler', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlanC2();
+    const svc = new ReservationService(
+      supabase as never,
+      conflict as never,
+      visibility as never,
+      undefined, undefined, undefined, undefined,
+      assemble as never,
+    );
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.editOne(
+          BOOKING_ID,
+          makeActor(),
+          { start_at: 'invalid-date' },
+          CLIENT_REQUEST_ID,
+        ),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
+      code: 'booking.invalid_window',
+      status: 400,
+    });
+    expect((caught as AppError).detail).toMatch(/start_at/);
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
+    expect(assemble.assembleEditPlan).not.toHaveBeenCalled();
+  });
+
+  it('IMPORTANT-2: editOne with end_at: invalid-date (only) rejects 400 booking.invalid_window — no RPC, no assembler', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlanC2();
+    const svc = new ReservationService(
+      supabase as never,
+      conflict as never,
+      visibility as never,
+      undefined, undefined, undefined, undefined,
+      assemble as never,
+    );
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.editOne(
+          BOOKING_ID,
+          makeActor(),
+          { end_at: 'invalid-date' },
+          CLIENT_REQUEST_ID,
+        ),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
+      code: 'booking.invalid_window',
+      status: 400,
+    });
+    expect((caught as AppError).detail).toMatch(/end_at/);
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
+    expect(assemble.assembleEditPlan).not.toHaveBeenCalled();
+  });
+
+  // Codex IMPORTANT-1 (2026-05-12): `space_id: null` and `space_id: ''`
+  // are explicit rejections, not silent no-ops. The pre-cutover legacy
+  // editOne treated them as no-ops via a truthy check; post-cutover the
+  // no-op predicate would treat them as real edits and fail downstream
+  // with an unclear `reference.invalid_uuid` (`''`) or null propagation.
+  // Reject with a dedicated code so the UX message is actionable.
+  it('IMPORTANT-1: editOne with space_id: null rejects 400 booking.invalid_space_id — no RPC, no no-op short-circuit', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlanC2();
+    const svc = new ReservationService(
+      supabase as never,
+      conflict as never,
+      visibility as never,
+      undefined, undefined, undefined, undefined,
+      assemble as never,
+    );
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.editOne(
+          BOOKING_ID,
+          makeActor(),
+          // `as unknown` cast: the editOne DTO doesn't allow null on
+          // space_id, but JS clients may still send it. The preflight
+          // defends at runtime.
+          { space_id: null } as unknown as { space_id?: string },
+          CLIENT_REQUEST_ID,
+        ),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
+      code: 'booking.invalid_space_id',
+      status: 400,
+    });
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
+    expect(assemble.assembleEditPlan).not.toHaveBeenCalled();
+  });
+
+  it("IMPORTANT-1: editOne with space_id: '' rejects 400 booking.invalid_space_id — no RPC, no assembler", async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility();
+    const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlanC2();
+    const svc = new ReservationService(
+      supabase as never,
+      conflict as never,
+      visibility as never,
+      undefined, undefined, undefined, undefined,
+      assemble as never,
+    );
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.editOne(
+          BOOKING_ID,
+          makeActor(),
+          { space_id: '' },
+          CLIENT_REQUEST_ID,
+        ),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
+      code: 'booking.invalid_space_id',
+      status: 400,
+    });
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
+    expect(assemble.assembleEditPlan).not.toHaveBeenCalled();
+  });
+
   // B.4 step 2E — replaces the pre-cutover "meta path, no RPC" test.
   // Post-cutover ALL editOne patches flow through the unified RPC
   // including meta-only edits (attendee_count, host_person_id).
@@ -1442,6 +1682,18 @@ describe('ReservationService.editOne — patch flows through edit_booking RPC (C
     const rpcCalls = supabase.calls.rpc.filter((c) => c.fn === 'edit_booking');
     expect(rpcCalls).toHaveLength(1);
     expect(assemble.assembleEditPlan).toHaveBeenCalledTimes(1);
+
+    // Codex NIT-2b (2026-05-12): close the service-level gap on the
+    // asymmetric meta-key parity. The flip is unit-tested in
+    // __tests__/assemble-edit-plan.service.spec.ts under "C-1: a
+    // meta-key present (attendee_count) on a series booking AUTO-SETS
+    // recurrence_overridden"; this asserts the booking-patch surfaces
+    // the flag on the RPC plan once the assembler has emitted it. The
+    // mock's auto-set predicate (above in makeAssembleEditPlanC2)
+    // mirrors the real assembler's behaviour for kind='one' patches.
+    const planArg = rpcCalls[0].args as Record<string, unknown>;
+    const plan = planArg.p_plan as EditPlan;
+    expect(plan.booking).toMatchObject({ recurrence_overridden: true });
   });
 
   // Self-review I-1 (2026-05-12) — host_person_id null clears the booking

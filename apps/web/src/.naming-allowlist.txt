@@ -75,6 +75,7 @@ apps/web/src/api/room-booking/mutations.ts:116:      // Each `reservations[i].id
 apps/web/src/api/room-booking/mutations.ts:118:      apiFetch<{ group_id: string; reservations: Reservation[] }>(
 apps/web/src/api/room-booking/mutations.ts:119:        '/reservations/multi-room',
 apps/web/src/api/room-booking/mutations.ts:133: * the legacy `PATCH /reservations/:id` which only edits the booking's
+apps/web/src/api/room-booking/mutations.ts:149: * `PATCH /reservations/:id` which edits the booking's PRIMARY slot
 apps/web/src/api/room-booking/mutations.ts:148:      apiFetch<Reservation>(`/reservations/${id}`, {
 apps/web/src/api/room-booking/mutations.ts:164: * to `PATCH /reservations/:bookingId/slots/:slotId` so a non-primary
 apps/web/src/api/room-booking/mutations.ts:184:      apiFetch<Reservation>(`/reservations/${bookingId}/slots/${slotId}`, {

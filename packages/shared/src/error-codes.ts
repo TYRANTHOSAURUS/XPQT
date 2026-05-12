@@ -92,6 +92,7 @@ export type KnownErrorCode =
   | 'booking.invalid_attendee_count'
   | 'booking.invalid_attendee_person_ids'
   | 'booking.invalid_window'
+  | 'booking.invalid_space_id'
   | 'reference.not_in_tenant'
   | 'reference.lookup_failed'
   | 'reference.invalid_uuid'
@@ -836,6 +837,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'booking.invalid_attendee_count',
   'booking.invalid_attendee_person_ids',
   'booking.invalid_window',
+  'booking.invalid_space_id',
   'reference.not_in_tenant',
   'reference.lookup_failed',
   'reference.invalid_uuid',

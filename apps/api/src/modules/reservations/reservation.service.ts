@@ -741,19 +741,59 @@ export class ReservationService {
         detail: 'attendee_person_ids must be an array of person ids.',
       });
     }
+    // Codex IMPORTANT-2 (2026-05-12): per-side parseability before the
+    // pairwise ordering check. Pre-fix, `{ start_at: 'invalid-date' }`
+    // (single side) slipped past the gated `start_at && end_at` block,
+    // landed in the assembler, and then died in conflict-guard's
+    // `new Date(args.start_at).toISOString()` (conflict-guard.service.ts
+    // :155-160) with `RangeError: Invalid time value` — a 500 server
+    // error instead of a deterministic 400. Validate each side
+    // independently first; only run the pairwise check when both are
+    // present AND parseable.
+    if (patch.start_at !== undefined) {
+      const s = new Date(patch.start_at).getTime();
+      if (!Number.isFinite(s)) {
+        throw AppErrors.validationFailed('booking.invalid_window', {
+          detail: 'start_at must be an ISO timestamp.',
+        });
+      }
+    }
+    if (patch.end_at !== undefined) {
+      const e = new Date(patch.end_at).getTime();
+      if (!Number.isFinite(e)) {
+        throw AppErrors.validationFailed('booking.invalid_window', {
+          detail: 'end_at must be an ISO timestamp.',
+        });
+      }
+    }
     if (patch.start_at !== undefined && patch.end_at !== undefined) {
       const s = new Date(patch.start_at).getTime();
       const e = new Date(patch.end_at).getTime();
-      if (!Number.isFinite(s) || !Number.isFinite(e)) {
-        throw AppErrors.validationFailed('booking.invalid_window', {
-          detail: 'start_at and end_at must be ISO timestamps.',
-        });
-      }
       if (s >= e) {
         throw AppErrors.validationFailed('booking.invalid_window', {
           detail: 'start_at must be strictly before end_at.',
         });
       }
+    }
+
+    // Codex IMPORTANT-1 (2026-05-12): reject `space_id: null` and
+    // `space_id: ''` explicitly. Pre-fix, the legacy pre-cutover editOne
+    // used a truthy check (`if (patch.space_id && patch.space_id !==
+    // r.space_id)`) so both values were silent no-ops. Post-cutover the
+    // no-op predicate is `patch.space_id !== undefined && patch.space_id
+    // !== r.space_id`; null and '' BOTH pass that gate (they're
+    // !==undefined AND !==r.space_id which is a real uuid), so they
+    // reach the assembler and either die in tenant-validation (`''`,
+    // tenant-validation.ts:107 UUID_RE.test fails → reference.invalid_uuid)
+    // or propagate further (null, since this method's assertTenantOwned
+    // guard at :798 explicitly skips null). Either failure mode is
+    // unclear to operators. Reject deterministically here with a
+    // dedicated code so the UX message can say "pass undefined to
+    // preserve the current room."
+    if (patch.space_id === null || patch.space_id === '') {
+      throw AppErrors.validationFailed('booking.invalid_space_id', {
+        detail: 'space_id must be a non-empty uuid; pass undefined to preserve the current room.',
+      });
     }
 
     // Plan A.2 / gap map §reservation.service.ts:745-746 — close the
@@ -834,24 +874,28 @@ export class ReservationService {
     // catch bad payloads BEFORE the DB round-trip and produce friendlier
     // error codes than the RPC's defense-in-depth raises.
     //
-    // Citation discipline: every line cited below was Read this session.
-    // Self-review NIT-5 (2026-05-12): refreshed to match actual lines.
-    //   - editSlot B.4.A.5 gate (comment block start): reservation.service.ts:1189
-    //   - editSlot B.4.A.5 gate (predicate):           reservation.service.ts:1227-1230
-    //   - editSlot idempotency-key build:              reservation.service.ts:1244
-    //   - editSlot RPC call:                           reservation.service.ts:1246-1252
-    //   - editSlot visitor cascade (block start):      reservation.service.ts:1283
-    //   - assembleEditPlan kind='one' (wrapper):       assemble-edit-plan.service.ts:253-266
-    //   - assembleEditPlan kind='one' (shared core):   assemble-edit-plan.service.ts:278-512
-    //   - RPC booking-patch shape:                     00364:340-355
-    //   - RPC host_person_id apply:                    00364:763-767
-    //   - RPC recurrence_overridden apply:             00364:768-773
+    // Citation discipline: mirrors editSlot's full RPC call sequence
+    // below — DI guard → assembler call (kind='one') → B.4.A.5 gate →
+    // idempotency-key build → edit_booking RPC → 23P01 GiST mapping →
+    // visitor cascade emit. Codex NIT-1 (2026-05-12): line-numbered
+    // citations were drifting per commit; generalised to symbol/section
+    // references so future edits don't silently break the citation
+    // contract. Symbols + section names below are stable; line numbers
+    // are not.
+    //   - assembleEditPlan kind='one' wrapper:  assemble-edit-plan.service.ts
+    //                                           (assembleOneEditPlan)
+    //   - assembleEditPlan shared core:         assemble-edit-plan.service.ts
+    //                                           (buildSingleSlotPlan)
+    //   - RPC booking-patch shape:              00364 §3.0 (edit_booking)
+    //   - RPC host_person_id apply:             00364 §host_person_id apply
+    //   - RPC recurrence_overridden apply:      00364 §recurrence_overridden apply
 
     if (!this.assembleEditPlan) {
       // Defense-in-depth — DI wiring in the parent module provides the
       // dep, but a malformed test harness could miss it. Surface as 500
-      // so the failure is loud, not silent. Mirrors editSlot at
-      // reservation.service.ts:1150-1157.
+      // so the failure is loud, not silent. Mirrors editSlot's DI guard
+      // below (same pattern: assembleEditPlan absence → command_operations
+      // .unexpected_state).
       throw AppErrors.server('command_operations.unexpected_state', {
         detail: 'editOne: AssembleEditPlanService is not wired into ReservationService.',
       });
@@ -943,14 +987,16 @@ export class ReservationService {
       },
     });
 
-    // B.4.A.5 sequencing gate. Mirrors editSlot at reservation.service.ts
-    // :1209-1224 — same predicate, same 422 + booking.edit_requires_
-    // notification_dispatch code. This is the 4th producer-side emit
-    // site documented at docs/follow-ups/b4-followups.md (alongside
-    // create / multi-room / editSlot). Lift mechanism when B.4.A.5
-    // ships notification dispatch: delete the gate predicate +
-    // optionally retire the error code (or leave registered for
-    // defense-in-depth across all four sites).
+    // B.4.A.5 sequencing gate. Mirrors editSlot's gate below — same
+    // predicate, same 422 + booking.edit_requires_notification_dispatch
+    // code. This is the 4th producer-side emit site documented at
+    // docs/follow-ups/b4-followups.md (alongside create / multi-room /
+    // editSlot). Lift mechanism when B.4.A.5 ships notification
+    // dispatch: delete the gate predicate + optionally retire the
+    // error code (or leave registered for defense-in-depth across all
+    // four sites). Codex NIT-1 (2026-05-12): line-number citation
+    // generalised — predicate symbol `wouldEmitApprovalRequired` is
+    // stable, line numbers drift.
     const wouldEmitApprovalRequired =
       plan.approval.new_outcome === 'require_approval' &&
       (plan.approval.old_outcome !== 'require_approval' ||
@@ -972,23 +1018,22 @@ export class ReservationService {
       p_idempotency_key: idempotencyKey,
     });
     if (rpcErr) {
-      // GiST exclusion (booking_slots_no_overlap, 00277:211-217) → 409.
-      // Mirror editSlot at reservation.service.ts:1240-1244 — the
-      // constraint fires inside the RPC's UPDATE before any RAISE has
-      // a chance to translate it.
+      // GiST exclusion (booking_slots_no_overlap, migration 00277) → 409.
+      // Mirrors editSlot's exclusion-violation branch — the constraint
+      // fires inside the RPC's UPDATE before any RAISE has a chance to
+      // translate it.
       if (this.conflict.isExclusionViolation(rpcErr)) {
         throw AppErrors.conflict('booking.slot_conflict', {
           detail: 'Slot conflicts with another booking.',
         });
       }
       // booking.edit_failed is the booking-scoped fallback (registered
-      // at packages/shared/src/error-codes.ts:239 + 960; api+web copy
-      // at messages.en.ts:449 ("Couldn't save the changes")). Under
-      // mapRpcErrorToAppError this routes through AppErrors.server →
-      // 500 — same shape as editSlot's slot_update_failed fallback at
-      // reservation.service.ts:1255 (which is also a 500 server-class
-      // per map-rpc-error.ts:289). Honest framing: an unrecognised
-      // RPC raise is a server bug, not a payload bug.
+      // in packages/shared/src/error-codes.ts; api+web copy in
+      // messages.en.ts / messages.nl.ts). Under mapRpcErrorToAppError
+      // this routes through AppErrors.server → 500 — same shape as
+      // editSlot's slot_update_failed fallback (also a 500 server-class
+      // per map-rpc-error.ts). Honest framing: an unrecognised RPC
+      // raise is a server bug, not a payload bug.
       throw mapRpcErrorToAppError(rpcErr, { fallbackCode: 'booking.edit_failed' });
     }
 
@@ -1001,12 +1046,12 @@ export class ReservationService {
     const updated = await this.findByIdOrThrowAtSlot(primarySlotId, tenantId);
     if (this.notifications) void this.notifications.onCreated(updated);
 
-    // Visitor cascade emit on geometry change. Mirrors editSlot at
-    // reservation.service.ts:1265-1306 — same target-pre/post comparison
-    // pattern. editOne edits target the primary slot, so cascading from
-    // the primary slot's diff is correct here. The RPC doesn't know
-    // about the visitors module; cascade stays a TS responsibility per
-    // the existing pattern.
+    // Visitor cascade emit on geometry change. Mirrors editSlot's
+    // cascade block (same target-pre/post comparison pattern, same
+    // `emitVisitorCascadeForBundle` call shape). editOne edits target
+    // the primary slot, so cascading from the primary slot's diff is
+    // correct here. The RPC doesn't know about the visitors module;
+    // cascade stays a TS responsibility per the existing pattern.
     const movedTime = updated.start_at !== targetSlotPre.start_at;
     const changedRoom = updated.space_id !== targetSlotPre.space_id;
     if ((movedTime || changedRoom) && updated.id && this.bundleEventBus) {
@@ -1055,9 +1100,11 @@ export class ReservationService {
    *     active slot already covers the requested window on the target space.
    *   - `booking.slot_update_failed` (400) — any other RPC failure.
    *
-   * Existing `editOne` (`PATCH /reservations/:id`) stays as the booking-
-   * level edit path for fields that aren't slot geometry (host_person_id,
-   * attendee_count). Frontend callers are expected to use:
+   * `editOne` (`PATCH /reservations/:id`) is the sibling producer
+   * route for booking-level edits (host_person_id, attendee_count, and
+   * primary-slot geometry). Post B.4 step 2E both routes call the
+   * edit_booking RPC directly — there is no cross-method delegation.
+   * Frontend callers split by intent:
    *   - `useEditBooking` for booking-level edits
    *   - `useEditBookingSlot` for slot-geometry edits (drag/resize/move)
    */
@@ -1141,6 +1188,51 @@ export class ReservationService {
     // space_id for the cascade diff anymore.
     const targetSlotPre = await this.findByIdOrThrowAtSlot(slotId, tenantId);
 
+    // Codex IMPORTANT-2 (2026-05-12): per-side parseability + space_id
+    // shape validation BEFORE the RPC. Pre-fix editSlot had no
+    // timestamp preflight at all — a patch like `{ start_at:
+    // 'invalid-date' }` reached the assembler and died inside
+    // conflict-guard at `new Date(...).toISOString()`
+    // (conflict-guard.service.ts:155-160) with `RangeError: Invalid time
+    // value`, surfacing as 500 server-class. Mirrors the editOne
+    // preflight above (reservation.service.ts:744-792).
+    if (patch.start_at !== undefined) {
+      const s = new Date(patch.start_at).getTime();
+      if (!Number.isFinite(s)) {
+        throw AppErrors.validationFailed('booking.invalid_window', {
+          detail: 'start_at must be an ISO timestamp.',
+        });
+      }
+    }
+    if (patch.end_at !== undefined) {
+      const e = new Date(patch.end_at).getTime();
+      if (!Number.isFinite(e)) {
+        throw AppErrors.validationFailed('booking.invalid_window', {
+          detail: 'end_at must be an ISO timestamp.',
+        });
+      }
+    }
+    if (patch.start_at !== undefined && patch.end_at !== undefined) {
+      const s = new Date(patch.start_at).getTime();
+      const e = new Date(patch.end_at).getTime();
+      if (s >= e) {
+        throw AppErrors.validationFailed('booking.invalid_window', {
+          detail: 'start_at must be strictly before end_at.',
+        });
+      }
+    }
+    // Codex IMPORTANT-1 (2026-05-12): symmetric with editOne — reject
+    // `space_id: null` and `space_id: ''` deterministically. The
+    // assertTenantOwned guard below would either skip (null) or surface
+    // an unclear `reference.invalid_uuid` (empty string fails UUID_RE
+    // at tenant-validation.ts:107). A dedicated code lets the UX
+    // message say "pass undefined to preserve the current room."
+    if (patch.space_id === null || patch.space_id === '') {
+      throw AppErrors.validationFailed('booking.invalid_space_id', {
+        detail: 'space_id must be a non-empty uuid; pass undefined to preserve the current room.',
+      });
+    }
+
     // Plan A.4 / Commit 7 (I3) / round-4 codex flag
     // reservation.service.ts:1027-1036. editOne already runs an
     // assertTenantOwned pre-flight on patch.space_id (commit ec055f1,
@@ -1157,7 +1249,7 @@ export class ReservationService {
     //   mapRpcErrorToAppError (404), but the TS pre-flight surfaces a
     //   curated error before any DB round-trip and avoids polluting
     //   command_operations with a known-bad attempt.
-    if (patch.space_id !== undefined && patch.space_id !== null) {
+    if (patch.space_id !== undefined) {
       await assertTenantOwned(
         this.supabase,
         'spaces',
@@ -1328,7 +1420,8 @@ export class ReservationService {
     // (no host alert / email / cancel decision).
     //
     // /full-review v3 closure I1 — compare TARGET slot's pre/post, not
-    // primary's pre. `targetSlotPre` (loaded ~890 above) is the slot-
+    // primary's pre. `targetSlotPre` (loaded above via
+    // findByIdOrThrowAtSlot) is the slot-
     // pinned projection of the slot we just edited; `updated` is the
     // post-RPC slot-pinned projection. Both project through
     // findByIdOrThrowAtSlot so .start_at / .space_id on each are the
@@ -1336,9 +1429,13 @@ export class ReservationService {
     // `reservation` (booking-level / primary-slot projection), which
     // for non-primary edits made the diff fire wrong/missing events.
     //
-    // Decision: editSlot is the canonical write path for geometry post-C2.
-    // editOne now delegates to it, so the cascade emission belongs HERE,
-    // exactly once per geometry edit.
+    // Decision: editSlot and editOne are sibling producer routes post
+    // B.4 step 2E — both call assembleEditPlan + the edit_booking RPC
+    // directly, no cross-method delegation. The cascade emission lives
+    // in BOTH methods (mirror block in editOne above), each firing
+    // exactly once per geometry edit on its own write. Codex NIT-1c
+    // (2026-05-12): pre-2E this comment said "editOne now delegates to
+    // it" — that framing is stale; both routes are siblings now.
     //
     // The fields that drive the cascade come from the SLOT (per-resource):
     //   - start_at: when the edited slot's start changes, that slot's

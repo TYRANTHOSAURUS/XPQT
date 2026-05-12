@@ -183,6 +183,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't update — invalid time window",
     detail: 'Check the start and end times.',
   },
+  'booking.invalid_space_id': {
+    title: "Couldn't update — invalid room",
+    detail: 'Pick a valid room or leave the room unchanged.',
+  },
   'reference.not_in_tenant': {
     title: "Couldn't save — referenced item not available",
     detail: 'One of the references doesn\'t exist in this workspace.',

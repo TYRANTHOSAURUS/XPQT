@@ -412,7 +412,16 @@ function makeService(opts: {
     assembleEditPlan as never,
   );
 
-  return { svc, captured, unsubscribe: () => sub.unsubscribe() };
+  return {
+    svc,
+    captured,
+    unsubscribe: () => sub.unsubscribe(),
+    // Codex NIT-2a (2026-05-12): expose supabase + assembleEditPlan so
+    // tests can assert no-op short-circuits don't reach the RPC or the
+    // plan builder. The literally-empty-patch test relies on this.
+    supabase,
+    assembleEditPlan,
+  };
 }
 
 const ACTOR = {
@@ -577,14 +586,26 @@ describe('ReservationService.editOne — slice 4 visitor cascade emission', () =
   // which post-C-1 ALSO short-circuits, but goes through the
   // value-compare arm. This test pins the key-absent arm so a future
   // refactor that conflates the two arms is caught.
+  //
+  // Codex NIT-2a (2026-05-12): the original assertion only checked
+  // `captured.length === 0` — that's a weaker proxy than the test
+  // description claims. Tightened to also assert the assembler and the
+  // edit_booking RPC were never called. Stronger no-op coverage lives
+  // in reservation-edit-slot.spec.ts under the "editOne with empty
+  // patch is a no-op" test; this one closes the cascade-side gap.
   it('returns the booking unchanged on a literally empty patch (no assembler, no RPC, no emit)', async () => {
-    const { svc, captured, unsubscribe } = makeService({});
+    const { svc, captured, unsubscribe, supabase, assembleEditPlan } = makeService({});
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
         () => svc.editOne(BOOKING_ID, ACTOR, {}, CLIENT_REQUEST_ID),
       );
       expect(captured).toHaveLength(0);
+      expect(assembleEditPlan.assembleEditPlan).not.toHaveBeenCalled();
+      const editBookingCalls = (supabase.admin.rpc as jest.Mock).mock.calls.filter(
+        (call) => call[0] === 'edit_booking',
+      );
+      expect(editBookingCalls).toHaveLength(0);
     } finally {
       unsubscribe();
     }

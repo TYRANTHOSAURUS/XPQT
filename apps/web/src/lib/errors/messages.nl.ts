@@ -437,6 +437,10 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon niet bijwerken — ongeldig tijdvenster',
     detail: 'Controleer de start- en eindtijd.',
   },
+  'booking.invalid_space_id': {
+    title: 'Kon niet bijwerken — ongeldige ruimte',
+    detail: 'Kies een geldige ruimte of laat de ruimte ongewijzigd.',
+  },
   'booking.idempotency_payload_mismatch': {
     title: 'Kon niet opslaan — idempotentie-mismatch',
     detail: 'Een nieuwe poging stuurde een andere payload dan het oorspronkelijke verzoek.',

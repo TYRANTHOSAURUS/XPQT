@@ -146,23 +146,24 @@ export function useMultiRoomBooking() {
 /**
  * Booking-LEVEL edit. Use for fields that are not slot geometry —
  * `host_person_id`, `attendee_count`, `attendee_person_ids`. Routes to
- * the legacy `PATCH /reservations/:id` which only edits the booking's
- * PRIMARY slot (lowest display_order). For slot-geometry edits in a
- * multi-room context, use `useEditBookingSlot` below — that's the path
- * the desk scheduler drag/resize/move hits so a non-primary slot
- * actually moves the slot the operator clicked.
+ * `PATCH /reservations/:id` which edits the booking's PRIMARY slot
+ * (lowest display_order). For slot-geometry edits in a multi-room
+ * context, use `useEditBookingSlot` below — that's the path the desk
+ * scheduler drag/resize/move hits so a non-primary slot actually moves
+ * the slot the operator clicked.
  *
- * `requestId` — defense-in-depth (B.4 step 2D-D self-review P1).
- * The PATCH /:id (editOne) controller is NOT yet guarded by
- * RequireClientRequestIdGuard (Step 2E ships its own cutover), but
- * editOne's geometry path DELEGATES to editSlot (reservation.service.ts
- * :877, line `const delegateCrid = actor.client_request_id`). Without
- * a client-supplied header the middleware falls back to a fresh
- * server-generated UUID per request — cross-retry idempotency on the
- * delegated editSlot call is silently broken (the implementer's own
- * note at reservation.service.ts:870-876). Sending the header now
- * preserves at-most-once-per-attempt semantics through the delegation
- * AND lets Step 2E flip the controller guard with zero frontend churn.
+ * Producer route — REQUIRES `requestId`. Codex NIT-1e (2026-05-12):
+ * pre-cutover this hook's `requestId` was defense-in-depth because
+ * editOne delegated to editSlot under the hood. Post B.4 step 2E
+ * editOne is a producer route in its own right (assembleEditPlan +
+ * edit_booking RPC, sibling to editSlot — no cross-method delegation).
+ * The PATCH /:id controller is now guarded by RequireClientRequestIdGuard
+ * (same as multi-room and editSlot), so the header is mandatory: omit
+ * it and the request 400s with `client_request_id.required`. Caller
+ * generates `requestId` ONCE per attempt with `crypto.randomUUID()`
+ * inside the form-submit handler so React Query retries reuse the id
+ * and the backend's `command_operations` cached_result hits on the
+ * second attempt.
  */
 export interface EditBookingVariables {
   id: string;

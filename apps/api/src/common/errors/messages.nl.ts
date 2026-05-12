@@ -183,6 +183,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon niet bijwerken — ongeldig tijdvenster',
     detail: 'Controleer de start- en eindtijd.',
   },
+  'booking.invalid_space_id': {
+    title: 'Kon niet bijwerken — ongeldige ruimte',
+    detail: 'Kies een geldige ruimte of laat de ruimte ongewijzigd.',
+  },
   'reference.not_in_tenant': {
     title: 'Kon niet opslaan — verwezen item niet beschikbaar',
     detail: 'Een van de verwijzingen bestaat niet in deze werkruimte.',
