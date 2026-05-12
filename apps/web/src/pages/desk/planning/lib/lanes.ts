@@ -7,37 +7,38 @@ import type { PlanningLane } from '../components/planning-grid';
 /**
  * Pure lane-derivation for the planning board.
  *
- * The board is a grid of {assignee × time}. Each row is a `PlanningLane`
- * keyed by a `PlanningLaneId` (kind+id discriminator — see the shared
- * `WorkOrderPlanningBlock` type). The derivation rules:
+ * Two operating modes, decided by whether the server supplied a lane
+ * set:
  *
- *   1. Every `block.lane` in `planned[]` becomes a row, with that
- *      block (and any siblings on the same lane) collected under it.
- *   2. Every `block.lane` in `unscheduled[]` ALSO becomes a row, even
- *      though those blocks render in the left-rail (not on the grid).
- *      This is the codex 2026-05-12 fix: a user with open rail work but
- *      zero planned blocks for the day MUST appear as a drop target, or
- *      the dispatcher's most-common gesture (drag rail → empty lane) is
- *      impossible. We register the lane without pushing the rail block
- *      onto `lane.blocks` — those don't belong on the grid.
- *   3. Duplicate lane keys (same kind+id seen in both planned and
- *      unscheduled, or twice in planned) are deduped — the first
- *      occurrence's `label` wins.
+ *   - **Server-supplied (P1-1 path).** `providedLaneIds` non-null —
+ *     the lane set is the server's truth (full team roster when a
+ *     team filter is active, idle assignees included). The blocks
+ *     get grouped under their matching lane; lanes with zero blocks
+ *     remain in the result as empty drop targets. The server already
+ *     sorted in the canonical key order (unassigned → alpha by label
+ *     → kind) so we preserve insertion order rather than re-sort.
  *
- * Insertion order is preserved: planned-lanes first (in the order their
- * first block appears), then unscheduled-only lanes. The page hands the
- * result to `PlanningGrid` which has its own `orderLanes` pass for the
- * final visual sort (unassigned first, kind-grouped). So this function
- * only needs to produce a stable, deduped collection.
+ *   - **Fallback / legacy.** `providedLaneIds` null — derive lanes
+ *     purely from returned blocks (the pre-P1-1 behaviour, kept so
+ *     the page still functions during initial load before
+ *     `data.lanes` is available, and so a server response missing
+ *     the field doesn't crash the page). Every `block.lane` in
+ *     planned[] AND unscheduled[] registers a row. Rail-only blocks
+ *     register their lane as a drop target without pushing the
+ *     block onto `lane.blocks` (rail items render in the rail, not
+ *     on the grid).
  *
- * Extracted out of `DeskPlanningPage`'s useMemo so the rule can be unit-
- * tested without mounting the page — the regression that this guards
- * against ("operator can't drop rail work onto an idle assignee") is
- * silent and visual, easy to undo by accident in a refactor.
+ * Dedup discipline is the same in both modes — `{kind}:{id}` is the
+ * stable key.
+ *
+ * Why the fallback stays: the regression that "an operator can't drop
+ * rail work onto an idle assignee" is silent and visual; the unit test
+ * covers it specifically.
  */
 export function deriveLanesFromBlocks(
   planned: ReadonlyArray<WorkOrderPlanningBlock>,
   unscheduled: ReadonlyArray<WorkOrderPlanningBlock>,
+  providedLaneIds?: ReadonlyArray<PlanningLaneId> | null,
 ): PlanningLane[] {
   const map = new Map<string, PlanningLane>();
 
@@ -50,6 +51,14 @@ export function deriveLanesFromBlocks(
     }
     return lane;
   };
+
+  // Server-supplied path: seed the lane set FIRST so the server's
+  // label + iteration order win. Block-derived lanes layered on top
+  // are deduped by key — a planned block whose lane is already in the
+  // map just appends to that lane's blocks[].
+  if (providedLaneIds) {
+    for (const id of providedLaneIds) ensure(id);
+  }
 
   for (const block of planned) {
     const lane = ensure(block.lane);

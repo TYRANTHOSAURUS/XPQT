@@ -95,4 +95,38 @@ describe('deriveLanesFromBlocks', () => {
     const alexLane = lanes[0];
     expect(alexLane.blocks.map((b) => b.id)).toEqual(['wo-10']);
   });
+
+  it('case 5 — providedLaneIds takes precedence; lanes with no blocks get empty blocks[]', () => {
+    // The P1-1 path: the server hands us a full team roster (active +
+    // idle). We assert (a) the idle member appears with an empty
+    // blocks[] (= drop target available), (b) planned blocks get
+    // grouped under their matching lane via key dedup, (c) the
+    // server-supplied iteration order is preserved (no FE re-sort).
+    const providedLaneIds: PlanningLaneId[] = [
+      unassigned,
+      userAlex,
+      userBrenda, // idle — no blocks
+      teamFM,
+    ];
+    const planned = [makeBlock('wo-30', userAlex, true)];
+    const unscheduled = [makeBlock('wo-31', teamFM, false)];
+
+    const lanes = deriveLanesFromBlocks(planned, unscheduled, providedLaneIds);
+
+    const keys = lanes.map((l) => `${l.id.kind}:${l.id.id ?? '∅'}`);
+    expect(keys).toEqual([
+      'unassigned:∅',
+      'user:u-alex',
+      'user:u-brenda',
+      'team:t-fm',
+    ]);
+    const brendaLane = lanes.find((l) => l.id.id === 'u-brenda')!;
+    expect(brendaLane.blocks).toEqual([]);
+    const alexLane = lanes.find((l) => l.id.id === 'u-alex')!;
+    expect(alexLane.blocks.map((b) => b.id)).toEqual(['wo-30']);
+    const fmLane = lanes.find((l) => l.id.id === 't-fm')!;
+    // The unscheduled block registers under teamFM's lane but is NOT
+    // pushed (rail items render in the rail, not on the grid).
+    expect(fmLane.blocks).toEqual([]);
+  });
 });

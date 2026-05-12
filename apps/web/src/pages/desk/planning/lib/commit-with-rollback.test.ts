@@ -22,6 +22,7 @@ function seedSnapshot(): WorkOrderPlanningResponse {
       },
     ],
     unscheduled: [],
+    lanes: [{ kind: 'user', id: 'u-1', label: 'Alex' }],
   };
 }
 
@@ -150,6 +151,7 @@ describe('runOptimisticWithRollback', () => {
     const externallyMutated: WorkOrderPlanningResponse = {
       planned: [],
       unscheduled: [],
+      lanes: [],
     };
     qc.setQueryData(key, externallyMutated);
 
@@ -182,6 +184,7 @@ describe('runOptimisticWithRollback', () => {
     const unrelatedSnapshot: WorkOrderPlanningResponse = {
       planned: [],
       unscheduled: [],
+      lanes: [],
     };
 
     const onError = vi.fn();

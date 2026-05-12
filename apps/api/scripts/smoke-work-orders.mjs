@@ -741,15 +741,29 @@ async function runPlanningProbes(headers, probe) {
       );
       const badCanPlan = allBlocks.find((b) => typeof b.can_plan !== 'boolean');
       const badUnschedPlanField = body.unscheduled.find((b) => b.planned_start_at !== null);
-      if (badLane || badCanPlan || badUnschedPlanField) {
+      // P1-1: top-level `lanes: PlanningLaneId[]` is mandatory on the
+      // response. Asserted as an array (possibly empty); each entry must
+      // carry the same shape as `block.lane`. Catches a regression that
+      // drops or reshapes the field.
+      const badLanesShape =
+        !Array.isArray(body.lanes) ||
+        body.lanes.some(
+          (l) =>
+            !l ||
+            typeof l.kind !== 'string' ||
+            !['user', 'team', 'vendor', 'unassigned'].includes(l.kind) ||
+            typeof l.label !== 'string',
+        );
+      if (badLane || badCanPlan || badUnschedPlanField || badLanesShape) {
         results.fail += 1;
         results.failed.push('Planning: block shape probe');
         if (badLane) console.log(`  ✗ Planning block has malformed lane: ${JSON.stringify(badLane.lane)}`);
         if (badCanPlan) console.log(`  ✗ Planning block missing can_plan boolean`);
         if (badUnschedPlanField) console.log(`  ✗ Unscheduled block has non-null planned_start_at`);
+        if (badLanesShape) console.log(`  ✗ Planning response missing or malformed lanes[] (P1-1): ${JSON.stringify(body.lanes)?.slice(0, 200)}`);
       } else {
         results.pass += 1;
-        console.log(`  ✓ Planning block shape — lane typed, can_plan boolean, unscheduled has null planned_start_at`);
+        console.log(`  ✓ Planning block shape — lane typed, can_plan boolean, unscheduled has null planned_start_at, lanes[] present`);
       }
     }
   }
@@ -951,18 +965,20 @@ async function runPlanningRequesterProbe(adminHeaders) {
   results.pass += 1;
   console.log(`  ✓ requester sees planned: [] / unscheduled: [] — operator-only predicate excludes requester branch`);
 
-  // P1-1 forward-compat: if/when the planning endpoint returns `lanes`,
-  // assert it's also empty for the requester. Today the property doesn't
-  // exist; tolerate that until P1-1 ships.
-  if (Array.isArray(body.lanes)) {
-    if (body.lanes.length > 0) {
-      results.fail += 1;
-      results.failed.push('Planning requester: non-empty lanes');
-      console.log(`  ✗ requester sees ${body.lanes.length} lanes — predicate leaks via lanes`);
-    } else {
-      results.pass += 1;
-      console.log(`  ✓ requester sees lanes: [] (P1-1 forward-compat)`);
-    }
+  // P1-1: top-level lanes must also be empty for the requester. The
+  // lane derivation skips when team_id is unfiltered (and the predicate
+  // already excluded every block), so this should always be [].
+  if (!Array.isArray(body.lanes)) {
+    results.fail += 1;
+    results.failed.push('Planning requester: missing lanes[]');
+    console.log(`  ✗ requester response missing lanes[] (P1-1 shape requirement)`);
+  } else if (body.lanes.length > 0) {
+    results.fail += 1;
+    results.failed.push('Planning requester: non-empty lanes');
+    console.log(`  ✗ requester sees ${body.lanes.length} lanes — predicate leaks via lanes`);
+  } else {
+    results.pass += 1;
+    console.log(`  ✓ requester sees lanes: [] (P1-1 operator-only invariant)`);
   }
 
   // Negative-control branch — env-gated. Codifies the "did I manually
