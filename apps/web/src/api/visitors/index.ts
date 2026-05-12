@@ -332,6 +332,104 @@ export function useCreateInvitation() {
   });
 }
 
+/** Result shape from `useBulkCreateInvitations`. The mutation itself
+ *  always resolves successfully; per-request rejections are collected
+ *  into `failures[]` so callers can render a partial-success surface
+ *  (see CLAUDE.md "Bulk operations" rule). */
+export interface BulkCreateInvitationResult {
+  successes: CreateInvitationResponse[];
+  failures: {
+    /** Index into the original `payloads` array so callers can map
+     *  failures back to their domain objects (e.g. visitor name). */
+    index: number;
+    payload: CreateInvitationPayload;
+    error: unknown;
+  }[];
+}
+
+/** Per-chunk concurrency cap. Five simultaneous POSTs keeps us under
+ *  the browser's per-origin connection limit (Chrome: 6) and avoids
+ *  storming the visitors endpoint with N parallel RLS + auth
+ *  round-trips on a 30-visitor offsite. Higher = more thundering-herd;
+ *  lower = strictly serial UX. Five is the sweet spot. */
+const BULK_INVITATION_CONCURRENCY = 5;
+
+/**
+ * POST /visitors/invitations × N — chunked batch invite.
+ *
+ * Use this from any caller that invites more than one visitor in a
+ * single user action (booking-composer visitors flush, future
+ * "import CSV" affordance). The booking-composer used to call
+ * `useCreateInvitation` once per visitor inside `Promise.allSettled`,
+ * which had two real problems:
+ *
+ *  1. **Single-flight hook overwrites.** All N parallel `mutateAsync`
+ *     calls shared ONE `useMutation` instance — `mutation.state` was
+ *     overwritten N-1 times per attempt. Only the last invitation's
+ *     status / error survived for any UI bound to `mutation.isPending`
+ *     / `mutation.error`.
+ *  2. **N parallel global invalidations.** Each `useCreateInvitation`
+ *     onSuccess fires `invalidateQueries(visitorKeys.all)`. For a
+ *     30-visitor flush that's 30 simultaneous storm-refetches across
+ *     every cached visitors view (reception today, daglijst, host
+ *     expected, kiosk, etc.) — visible as a thrash spike on any open
+ *     tablet.
+ *
+ * This hook fixes both:
+ *  - One `useMutation` instance for the whole batch; React Query sees
+ *    ONE lifecycle.
+ *  - Single `invalidateQueries` on `onSettled` regardless of
+ *    partial-success state.
+ *  - Inner fan-out is chunked at `BULK_INVITATION_CONCURRENCY` so
+ *    large batches degrade gracefully instead of all firing at once.
+ *
+ * Returns `{ successes, failures }`; the mutation itself never
+ * rejects, even if all N requests fail. Callers should branch on
+ * `failures.length` for the partial-success toast.
+ */
+export function useBulkCreateInvitations() {
+  const qc = useQueryClient();
+  return useMutation<
+    BulkCreateInvitationResult,
+    Error,
+    CreateInvitationPayload[]
+  >({
+    mutationFn: async (payloads) => {
+      const successes: CreateInvitationResponse[] = [];
+      const failures: BulkCreateInvitationResult['failures'] = [];
+      for (let i = 0; i < payloads.length; i += BULK_INVITATION_CONCURRENCY) {
+        const chunk = payloads.slice(i, i + BULK_INVITATION_CONCURRENCY);
+        const results = await Promise.allSettled(
+          chunk.map((p) =>
+            apiFetch<CreateInvitationResponse>('/visitors/invitations', {
+              method: 'POST',
+              body: JSON.stringify(p),
+            }),
+          ),
+        );
+        results.forEach((r, idx) => {
+          const globalIdx = i + idx;
+          if (r.status === 'fulfilled') {
+            successes.push(r.value);
+          } else {
+            failures.push({
+              index: globalIdx,
+              payload: chunk[idx],
+              error: r.reason,
+            });
+          }
+        });
+      }
+      return { successes, failures };
+    },
+    onSettled: () => {
+      // Single invalidation regardless of partial-success state. See
+      // hook doc comment for the failure mode this replaces.
+      qc.invalidateQueries({ queryKey: visitorKeys.all });
+    },
+  });
+}
+
 /**
  * POST /visitors/cancel/:token — public-token cancellation.
  *

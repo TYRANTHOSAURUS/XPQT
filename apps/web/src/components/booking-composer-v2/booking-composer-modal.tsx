@@ -37,7 +37,7 @@ import { RoomPickerInline } from '../booking-composer/sections/room-picker-inlin
 import { ServicePickerBody } from '../booking-composer/service-picker-sheet';
 import { getSuggestions, type SuggestionRoomFacts } from './contextual-suggestions';
 import { useCreateBooking } from '@/api/room-booking';
-import { useCreateInvitation } from '@/api/visitors';
+import { useBulkCreateInvitations, type CreateInvitationPayload } from '@/api/visitors';
 import { buildBookingPayload } from '@/components/booking-composer/submit';
 import { toast, toastCreated, toastError } from '@/lib/toast';
 import { useNavigate } from 'react-router-dom';
@@ -184,7 +184,14 @@ export function BookingComposerModal({
   }, [open]);
 
   const createBooking = useCreateBooking();
-  const createInvitation = useCreateInvitation();
+  // /full-review v4 C1+C2 fix — bulk hook (one useMutation instance for
+  // the whole visitor flush, single invalidation on settled, internal
+  // concurrency cap of 5). Replaces the prior pattern of calling
+  // useCreateInvitation once per visitor inside Promise.allSettled,
+  // which (a) shared mutation state across N calls and (b) fired N
+  // parallel `invalidateQueries(visitorKeys.all)` from N onSuccess
+  // handlers for a 30-visitor flush.
+  const createInvitations = useBulkCreateInvitations();
   const validation = validateDraft(composer.draft, mode);
   const submitting = createBooking.isPending;
 
@@ -276,7 +283,8 @@ export function BookingComposerModal({
       const bookingId = result.id;
 
       // /full-review C4 fix — visitors-flush is a bulk op. Run all
-      // invites in parallel via Promise.allSettled, tally failures,
+      // invites through the bulk hook, which chunks to 5-concurrent
+      // and emits a single invalidation on settled, then tally failures
       // and surface a partial-success toast per CLAUDE.md
       // "Bulk operations use ... partialSuccess" rule. Per-visitor
       // toastError is gone — it interleaved with the success toast and
@@ -287,29 +295,25 @@ export function BookingComposerModal({
         const buildingId = deriveBuildingId(spacesCache as Space[] | undefined, composer.draft.spaceId);
         const visitors = composer.draft.visitors;
         visitorTotal = visitors.length;
-        const results = await Promise.allSettled(
-          visitors.map((v) =>
-            createInvitation.mutateAsync({
-              first_name: v.first_name,
-              last_name: v.last_name,
-              email: v.email,
-              phone: v.phone,
-              company: v.company,
-              visitor_type_id: v.visitor_type_id,
-              expected_at: composer.draft.startAt!,
-              expected_until: composer.draft.endAt ?? undefined,
-              building_id: buildingId ?? '',
-              meeting_room_id: composer.draft.spaceId ?? undefined,
-              // Canonical link (00278:41).
-              booking_id: bookingId,
-            }),
-          ),
-        );
-        visitorFailures = results
-          .map((r, i) => (r.status === 'rejected'
-            ? { name: visitors[i].first_name, error: r.reason }
-            : null))
-          .filter((x): x is { name: string; error: unknown } => x !== null);
+        const payloads: CreateInvitationPayload[] = visitors.map((v) => ({
+          first_name: v.first_name,
+          last_name: v.last_name,
+          email: v.email,
+          phone: v.phone,
+          company: v.company,
+          visitor_type_id: v.visitor_type_id,
+          expected_at: composer.draft.startAt!,
+          expected_until: composer.draft.endAt ?? undefined,
+          building_id: buildingId ?? '',
+          meeting_room_id: composer.draft.spaceId ?? undefined,
+          // Canonical link (00278:41).
+          booking_id: bookingId,
+        }));
+        const { failures } = await createInvitations.mutateAsync(payloads);
+        visitorFailures = failures.map((f) => ({
+          name: visitors[f.index].first_name,
+          error: f.error,
+        }));
       }
 
       // /full-review v2 fix — replace the dual-toast (green
@@ -357,7 +361,7 @@ export function BookingComposerModal({
     pickedRoom,
     spacesCache,
     createBooking,
-    createInvitation,
+    createInvitations,
     navigate,
     onBooked,
     onOpenChange,
