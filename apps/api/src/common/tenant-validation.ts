@@ -1,7 +1,19 @@
 import type { SupabaseService } from './supabase/supabase.service';
 import { AppError, AppErrors } from './errors';
 
-const UUID_RE =
+/**
+ * Canonical UUID shape regex — case-insensitive 8-4-4-4-12 hex. Loose by
+ * design (no version-nibble check) — Postgres `gen_random_uuid()` produces
+ * v4 today but a future move to v7 (timestamp-prefixed) MUST not require a
+ * regex bump across the codebase.
+ *
+ * Exported so cross-module callers (outbox handlers, controllers) share the
+ * same shape definition. Pre-existing local copies in
+ * `client-request-id.middleware.ts:32`, `sla-policy.controller.ts:10`,
+ * `work-order.service.ts:617` predate this export and are tracked as a
+ * consolidation follow-up in `docs/follow-ups/b4-followups.md`.
+ */
+export const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**

@@ -993,11 +993,22 @@ apps/api/src/modules/visitors/approval-integration.spec.ts:23: *     booking_bun
 
 # === B.4 — outbox handler for booking edit pipeline ===
 # `apps/api/src/modules/reservations/event-types.ts` is the canonical home
-# of `BookingEditEventType` (see file's own doc-comment on the legacy
-# `reservations/` directory pending the eventual rename to `bookings/`).
-# These four refs are: one current import, three docstring/code-comment
-# citations of the file path. Classify as KEEP_HISTORICAL_COMMENT until
-# the directory itself is renamed in a future Phase 8 sweep.
+# of `BookingEditEventType`. The TS literal at line 51 is the source of
+# truth for the producer + consumer event-type strings.
+#
+# Line 1 below (the `import` statement) is a LIVE IMPORT — not a historical
+# comment. The typed constant is the structural boundary that prevents
+# typo drift between the producer (00364 emit) and the consumer (this
+# handler). Classifying it as KEEP_HISTORICAL_COMMENT below is a label
+# inaccuracy because the script has no `KEEP_LIVE_IMPORT` class and does
+# not parse classifications anyway (it diffs raw lines per
+# scripts/check-naming-allowlist.sh:154). The path will move when the
+# `reservations/` directory is renamed to `bookings/` in a future Phase 8
+# sweep — see docs/follow-ups/b4-followups.md.
+#
+# Lines 2-4 below are docstring/comment citations of the same path; those
+# are genuinely KEEP_HISTORICAL_COMMENT and will be updated when the rename
+# happens.
 apps/api/src/modules/outbox/handlers/booking-approval-required.handler.ts:2:import { BookingEditEventType } from '../../reservations/event-types';
 apps/api/src/modules/outbox/handlers/booking-approval-required.handler.ts:15: * Event type literal: apps/api/src/modules/reservations/event-types.ts:51
 apps/api/src/modules/outbox/handlers/booking-approval-required.handler.ts:129:    //       apps/api/src/modules/reservations/event-types.ts:40-51.

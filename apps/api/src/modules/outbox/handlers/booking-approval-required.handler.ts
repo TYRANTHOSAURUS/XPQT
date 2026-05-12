@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { UUID_RE } from '../../../common/tenant-validation';
 import { BookingEditEventType } from '../../reservations/event-types';
 import { DeadLetterError } from '../dead-letter.error';
 import { OutboxHandler, type OutboxEventHandler } from '../outbox-handler.decorator';
@@ -57,9 +58,6 @@ export interface BookingApprovalRequiredPayload {
   /** ISO timestamp captured by the RPC (v_started_at). */
   started_at: string;
 }
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 @Injectable()
 @OutboxHandler(BookingEditEventType.ApprovalRequired, { version: 1 })
