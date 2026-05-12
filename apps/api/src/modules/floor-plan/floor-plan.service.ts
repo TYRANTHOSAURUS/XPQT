@@ -121,6 +121,35 @@ export class FloorPlanService {
     return { ok: true };
   }
 
+  async getAvailability(floorSpaceId: string, tenantId: string, userId: string, windowStart: string, windowEnd: string) {
+    const client = this.supabase.admin;
+    // p_tenant_id is server-resolved (TenantContext); RPC trusts the param because
+    // it's granted only to service_role (codex C5 + C7).
+    const { data, error } = await client.rpc('floor_availability', {
+      p_tenant_id: tenantId,
+      p_floor_space_id: floorSpaceId,
+      p_window_start: windowStart,
+      p_window_end: windowEnd,
+      p_user_id: userId,
+    });
+    if (error) {
+      const code = (error as { code?: string }).code ?? '';
+      if (code === '22023') throw AppErrors.validationFailed('floor_plan.availability.invalid_window');
+      throw AppErrors.server('floor_plan.availability_failed');
+    }
+    // Resolve image_url to a fresh signed URL if a published floor plan exists.
+    const { data: floor } = await client
+      .from('floor_plans')
+      .select('image_url, width_px, height_px')
+      .eq('space_id', floorSpaceId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    const floorMeta = floor
+      ? { image_url: await this.signFloorPlanImage(floor.image_url as string | null), width_px: floor.width_px, height_px: floor.height_px }
+      : null;
+    return { ...(data as object), floor: floorMeta };
+  }
+
   async listPublishHistory(floorSpaceId: string, tenantId: string) {
     const client = this.supabase.admin;
     const { data } = await client

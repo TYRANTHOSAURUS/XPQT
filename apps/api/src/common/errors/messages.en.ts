@@ -1864,6 +1864,18 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't restore floor plan",
     detail: "The floor plan couldn't be restored. Try again in a moment.",
   },
+  'floor_plan.availability.invalid_window': {
+    title: "Couldn't load availability",
+    detail: 'The time window is invalid. The start must be before the end.',
+  },
+  'floor_plan.availability.invalid_args': {
+    title: "Couldn't load availability",
+    detail: 'A required parameter is missing.',
+  },
+  'floor_plan.availability_failed': {
+    title: "Couldn't load availability",
+    detail: "Floor availability couldn't be loaded. Try again in a moment.",
+  },
 };
 
 /**

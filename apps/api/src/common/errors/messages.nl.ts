@@ -1824,6 +1824,18 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Plattegrond herstellen mislukt',
     detail: 'De plattegrond kon niet worden hersteld. Probeer het opnieuw.',
   },
+  'floor_plan.availability.invalid_window': {
+    title: 'Beschikbaarheid laden mislukt',
+    detail: 'Het tijdvenster is ongeldig. De begintijd moet vóór de eindtijd liggen.',
+  },
+  'floor_plan.availability.invalid_args': {
+    title: 'Beschikbaarheid laden mislukt',
+    detail: 'Een verplichte parameter ontbreekt.',
+  },
+  'floor_plan.availability_failed': {
+    title: 'Beschikbaarheid laden mislukt',
+    detail: 'De beschikbaarheid van de verdieping kon niet worden geladen. Probeer het opnieuw.',
+  },
 };
 
 /**

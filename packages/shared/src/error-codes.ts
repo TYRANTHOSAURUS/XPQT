@@ -808,7 +808,10 @@ export type KnownErrorCode =
   | 'floor_plan.list_failed'
   | 'floor_plan.history.not_found'
   | 'floor_plan.history.cross_tenant'
-  | 'floor_plan.restore_failed';
+  | 'floor_plan.restore_failed'
+  | 'floor_plan.availability.invalid_window'
+  | 'floor_plan.availability.invalid_args'
+  | 'floor_plan.availability_failed';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1410,6 +1413,9 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'floor_plan.history.not_found',
   'floor_plan.history.cross_tenant',
   'floor_plan.restore_failed',
+  'floor_plan.availability.invalid_window',
+  'floor_plan.availability.invalid_args',
+  'floor_plan.availability_failed',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

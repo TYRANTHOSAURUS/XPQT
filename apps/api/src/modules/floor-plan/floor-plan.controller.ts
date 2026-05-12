@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
 } from '@nestjs/common';
 import type { Request } from 'express';
@@ -37,6 +38,19 @@ export class FloorPlanController {
   async getPublished(@Param('floorSpaceId') id: string) {
     const tenantId = TenantContext.current().id;
     return this.plan.getPublished(id, tenantId);
+  }
+
+  /** GET /floors/:floorSpaceId/plan/availability — per-polygon booking state for a time window. */
+  @Get('availability')
+  async getAvailability(
+    @Param('floorSpaceId') id: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Req() req: Request,
+  ) {
+    const tenantId = TenantContext.current().id;
+    const userId = (req as { user?: { id: string } }).user?.id ?? '';
+    return this.plan.getAvailability(id, tenantId, userId, from, to);
   }
 
   /** GET /floors/:floorSpaceId/plan/draft — creates on first call if none exists. */
