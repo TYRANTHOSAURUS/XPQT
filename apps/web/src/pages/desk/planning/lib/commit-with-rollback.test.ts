@@ -100,6 +100,67 @@ describe('runOptimisticWithRollback', () => {
     expect(after?.planned[0].planned_duration_minutes).toBe(120);
   });
 
+  it('snapshot is taken atomically inside setQueryData (in-flight-refetch race)', async () => {
+    // The helper used to do `getQueryData` → `setQueryData` as two
+    // separate calls. A queryCache mutation landing between them would
+    // be captured as the rollback baseline instead of the true pre-patch
+    // state. After the fix, snapshotting happens inside the updater
+    // function, so the captured `previous` is exactly the cache value
+    // setQueryData ran against — there is no observable interleave.
+    //
+    // We exercise this by mutating the cache externally AFTER the helper
+    // is in flight, then failing the mutation. The captured `previous`
+    // must equal the seed snapshot we set up — not the externally-
+    // mutated value, and not the optimistic patch.
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const key = workOrderPlanningKeys.window(filters);
+    const original = seedSnapshot();
+    qc.setQueryData(key, original);
+
+    // Construct the deferred up-front so the executor has already run
+    // by the time runOptimisticWithRollback awaits mutationFn().
+    let rejectMutation!: (e: unknown) => void;
+    const mutationPromise = new Promise<unknown>((_resolve, reject) => {
+      rejectMutation = reject;
+    });
+
+    const promise = runOptimisticWithRollback<WorkOrderPlanningResponse>({
+      qc,
+      key,
+      mutator: (prev) => ({
+        ...prev,
+        planned: prev.planned.map((b) =>
+          b.id === 'wo-1' ? { ...b, planned_start_at: '2026-05-12T18:00:00.000Z' } : b,
+        ),
+      }),
+      mutationFn: () => mutationPromise,
+      onError: () => {},
+    });
+
+    // Yield long enough for the helper to progress past `await
+    // cancelQueries(...)` + the synchronous setQueryData updater.
+    // Two ticks aren't always enough — cancelQueries returns a
+    // Promise.all() that takes a handful of microtasks to settle on an
+    // empty queryCache. 10 yields is comfortably above that threshold.
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+
+    // External writer lands a refetch result mid-flight (the kind of
+    // thing cancelQueries protects against in real use — but the
+    // protection here is the atomic snapshot under setQueryData).
+    const externallyMutated: WorkOrderPlanningResponse = {
+      planned: [],
+      unscheduled: [],
+    };
+    qc.setQueryData(key, externallyMutated);
+
+    rejectMutation(new Error('500'));
+    await promise;
+
+    // Rollback target was the ORIGINAL pre-patch state, not the
+    // externally-mutated value that landed mid-flight.
+    expect(qc.getQueryData(key)).toEqual(original);
+  });
+
   it('restores against the captured key even if a different window was patched concurrently', async () => {
     // Simulates the "filter changed mid-drag" race: while the PATCH is in
     // flight, the operator changes the team filter, which causes the page

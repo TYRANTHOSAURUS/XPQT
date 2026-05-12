@@ -41,17 +41,31 @@ export async function runOptimisticWithRollback<TCache>(args: {
 }): Promise<void> {
   const { qc, key, mutator, mutationFn, onError, onSettled } = args;
 
-  // Snapshot BEFORE patching. `getQueryData` returns `undefined` when the
-  // cache slot is empty (e.g. query never ran, or was garbage-collected).
-  // `setQueryData(key, undefined)` is a no-op in TanStack Query, which is
-  // the behaviour we want on restore: revert to "no cached value" if that
-  // was the state at the start of the gesture.
-  const previous = qc.getQueryData<TCache>(key);
+  // Cancel any in-flight queries on this key. Without this a refetch
+  // landing mid-flight would overwrite the optimistic patch before the
+  // PATCH completes. Mirrors the cancelQueries discipline in
+  // useUpdateWorkOrder (apps/web/src/api/tickets/mutations.ts:302).
+  // Note: this cancels in-flight QUERIES; it does NOT serialize
+  // concurrent calls to this helper on the same key. Two overlapping
+  // gestures on the same key remain a known residual race — the
+  // planning page should not allow them (the drag controller's
+  // re-entrant guard handles this at gesture level).
+  await qc.cancelQueries({ queryKey: key });
 
-  // Patch optimistically. We only invoke the mutator when there's a
-  // previous value to derive from — matches the original page semantics
-  // (`prev ? mutator(prev) : prev`).
-  qc.setQueryData<TCache>(key, (prev) => (prev ? mutator(prev) : prev));
+  // Snapshot the pre-patch cache state ATOMICALLY with the optimistic
+  // patch. Reading via `getQueryData` THEN writing via `setQueryData`
+  // leaves a (smaller) interleave window where a second gesture could
+  // see our patched state as its baseline. The function form of
+  // `setQueryData` runs synchronously against the current cache value,
+  // so capturing `prev` inside the updater is the tightest snapshot
+  // we can do without a per-key serialization primitive.
+  // `setQueryData(key, undefined)` is a no-op, matching the "no
+  // cached value" baseline.
+  let previous: TCache | undefined;
+  qc.setQueryData<TCache>(key, (prev) => {
+    previous = prev;
+    return prev ? mutator(prev) : prev;
+  });
 
   try {
     await mutationFn();
