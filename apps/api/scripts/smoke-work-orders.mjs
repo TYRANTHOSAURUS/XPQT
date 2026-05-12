@@ -96,6 +96,22 @@ const ALT_TEAM = '94000000-0000-0000-0000-000000000005';
 const REAL_PERSON = 'b3a0aa30-3648-4783-92fa-973090877238';
 const GHOST_UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
+// Planning requester-only smoke (P0-3, codex finding follow-up to 5a689110).
+// Seeded by 00381_planning_smoke_requester_seed.sql — a user with zero
+// team memberships, zero role assignments, no read_all override. Paired
+// fixture WO has `requester_person_id` pointing at this seed's person,
+// so a leak in the operator-only predicate (00380) would surface the row.
+//
+// The auth.users entry is bootstrapped by the smoke script via
+// `auth.admin.createUser` (idempotent). The migration cannot create the
+// auth.users row directly — hand-rolled SQL inserts pass psql but fail
+// GoTrue's user-load path ("Database error loading user"). The fixed id
+// below is what the smoke script asks GoTrue to assign; the migration's
+// public.users.auth_uid is pinned to match.
+const PLANNING_REQUESTER_AUTH_UID = 'aa000000-0000-0000-0000-00000000a001';
+const PLANNING_REQUESTER_EMAIL = 'planning-smoke-requester@example.test';
+const PLANNING_REQUESTER_FIXTURE_WO_ID = 'aa000000-0000-0000-0000-0000000000b1';
+
 // ─────────────────────────────────────────────────────────────────────
 // Idempotency-key shape — kept in lockstep with @prequest/shared/idempotency
 // (packages/shared/src/idempotency.ts:34 + :60-66). The .mjs runtime can't
@@ -131,10 +147,10 @@ function supa() {
 // Auth — mint a real Admin JWT via Supabase auth.admin.generateLink
 // ─────────────────────────────────────────────────────────────────────
 
-async function mintAdminToken() {
+async function mintTokenFor(authUid) {
   const adm = supa();
-  const { data: u } = await adm.auth.admin.getUserById(ADMIN_AUTH_UID);
-  if (!u?.user) throw new Error(`admin auth uid ${ADMIN_AUTH_UID} not found`);
+  const { data: u } = await adm.auth.admin.getUserById(authUid);
+  if (!u?.user) throw new Error(`auth uid ${authUid} not found`);
 
   const { data: link, error: linkErr } = await adm.auth.admin.generateLink({
     type: 'magiclink',
@@ -151,6 +167,30 @@ async function mintAdminToken() {
   const m = loc?.match(/access_token=([^&]+)/);
   if (!m) throw new Error(`no access_token in verify redirect: ${loc}`);
   return m[1];
+}
+
+async function mintAdminToken() {
+  return mintTokenFor(ADMIN_AUTH_UID);
+}
+
+// Bootstrap the requester-only seed user's auth.users entry. Idempotent:
+// if the user exists, no-op; otherwise create with the fixed uuid the
+// migration's public.users.auth_uid is pinned to. See the comment on
+// PLANNING_REQUESTER_AUTH_UID for why this lives here, not in SQL.
+async function ensureRequesterAuthUser() {
+  const adm = supa();
+  const { data: existing } = await adm.auth.admin.getUserById(PLANNING_REQUESTER_AUTH_UID);
+  if (existing?.user) return;
+  const { error } = await adm.auth.admin.createUser({
+    id: PLANNING_REQUESTER_AUTH_UID,
+    email: PLANNING_REQUESTER_EMAIL,
+    email_confirm: true,
+  });
+  if (error) {
+    throw new Error(
+      `failed to bootstrap requester auth user: ${error.message}`,
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -711,6 +751,160 @@ async function runPlanningProbes(headers, probe) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// P0-3 — requester-only actor coverage for the planning surface.
+//
+// Codex (commit 5a689110) flagged that 00380's operator-only predicate
+// (`work_orders_planning_visible_for_actor`) shipped without end-to-end
+// exclusion coverage: every existing smoke probe runs as Admin (read_all
+// override), so the predicate's requester/watcher exclusion branch was
+// unverified against the live API. A regression that re-introduced the
+// requester branch would still see all smoke probes pass.
+//
+// This probe runs against the requester-only user seeded in
+// 00381_planning_smoke_requester_seed.sql:
+//   - No team memberships, no role assignments, no read_all permission.
+//   - Paired fixture WO `aa000000-…-0000b1` carries
+//     `requester_person_id` = the seed person, with `planned_start_at`
+//     inside today's planning window.
+//
+// Expected: `planned: []` AND `unscheduled: []`. The fixture WO must
+// be excluded because the requester has zero operator paths
+// (assignee / team-member / role-scope / vendor) into the row.
+//
+// Non-vacuous check: the probe also asserts the fixture WO exists at
+// the DB level (via the supabase admin client). If the fixture is
+// missing, the smoke would pass on an empty response for the wrong
+// reason — we want pass-on-exclusion, not pass-on-no-data.
+// ─────────────────────────────────────────────────────────────────────
+
+async function runPlanningRequesterProbe() {
+  console.log('\n=== Planning requester-only probe (P0-3 — operator-only predicate) ===');
+
+  // Pre-flight: confirm the fixture WO exists at the DB level so the
+  // assertion is non-vacuous. Without this, an empty planning response
+  // could mean either "predicate excluded correctly" or "seed missing".
+  const { data: fixture, error: fixtureErr } = await supa()
+    .from('work_orders')
+    .select('id, requester_person_id, planned_start_at, tenant_id')
+    .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID)
+    .maybeSingle();
+  if (fixtureErr || !fixture) {
+    results.fail += 1;
+    results.failed.push('Planning requester: fixture missing');
+    console.log(
+      `  ✗ fixture WO ${PLANNING_REQUESTER_FIXTURE_WO_ID} not found — run migration 00381 first`,
+    );
+    return;
+  }
+  if (fixture.tenant_id !== TENANT_ID) {
+    results.fail += 1;
+    results.failed.push('Planning requester: fixture wrong tenant');
+    console.log(`  ✗ fixture WO tenant mismatch: ${fixture.tenant_id}`);
+    return;
+  }
+  results.pass += 1;
+  console.log(`  ✓ fixture WO exists with requester_person_id set (non-vacuous)`);
+
+  // Bootstrap auth.users for the requester (idempotent — see comment on
+  // PLANNING_REQUESTER_AUTH_UID for why this isn't done in SQL).
+  try {
+    await ensureRequesterAuthUser();
+  } catch (e) {
+    results.fail += 1;
+    results.failed.push('Planning requester: auth bootstrap failed');
+    console.log(`  ✗ ${e.message}`);
+    return;
+  }
+
+  // Mint a JWT for the requester-only seed user.
+  let requesterToken;
+  try {
+    requesterToken = await mintTokenFor(PLANNING_REQUESTER_AUTH_UID);
+  } catch (e) {
+    results.fail += 1;
+    results.failed.push('Planning requester: token mint failed');
+    console.log(`  ✗ failed to mint JWT for requester seed: ${e.message}`);
+    return;
+  }
+  const reqHeaders = {
+    Authorization: `Bearer ${requesterToken}`,
+    'X-Tenant-Id': TENANT_ID,
+    'Content-Type': 'application/json',
+  };
+
+  // Build a planning window that covers the fixture's `planned_start_at`.
+  // Migration 00381 sets it to (date_trunc('day', now utc) + 12h), so a
+  // today→tomorrow UTC window always contains it.
+  const now = new Date();
+  const today00 = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+  const tomorrow00 = new Date(today00.getTime() + 24 * 60 * 60 * 1000);
+  const fromIso = today00.toISOString();
+  const toIso = tomorrow00.toISOString();
+
+  const url = `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`;
+  const resp = await fetch(url, { headers: reqHeaders });
+  if (resp.status !== 200) {
+    results.fail += 1;
+    results.failed.push('Planning requester: GET → non-200');
+    console.log(`  ✗ GET planning (requester) → HTTP ${resp.status}`);
+    console.log(`     ${(await resp.text()).slice(0, 240)}`);
+    return;
+  }
+
+  const body = await resp.json();
+  if (!body || !Array.isArray(body.planned) || !Array.isArray(body.unscheduled)) {
+    results.fail += 1;
+    results.failed.push('Planning requester: malformed response');
+    console.log(`  ✗ requester planning response missing planned[] / unscheduled[]`);
+    return;
+  }
+
+  // Core assertion — operator-only predicate must exclude the fixture
+  // (and every other row in the tenant, since the requester has zero
+  // operator paths).
+  const leakedPlanned = body.planned.find((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID);
+  const leakedUnsched = body.unscheduled.find((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID);
+  if (leakedPlanned || leakedUnsched) {
+    results.fail += 1;
+    results.failed.push('Planning requester: fixture WO leaked');
+    const where = leakedPlanned ? 'planned[]' : 'unscheduled[]';
+    console.log(
+      `  ✗ operator-only predicate LEAKED requester fixture in ${where} — 00380 broken`,
+    );
+    return;
+  }
+
+  // Stronger assertion — requester has no operator paths at all, so
+  // both arrays should be empty. A non-empty array implies the predicate
+  // is matching some non-operator branch (requester / watcher / unknown).
+  if (body.planned.length > 0 || body.unscheduled.length > 0) {
+    results.fail += 1;
+    results.failed.push('Planning requester: non-empty arrays');
+    console.log(
+      `  ✗ requester sees ${body.planned.length} planned + ${body.unscheduled.length} unscheduled — predicate leaks beyond fixture`,
+    );
+    return;
+  }
+
+  results.pass += 1;
+  console.log(`  ✓ requester sees planned: [] / unscheduled: [] — operator-only predicate excludes requester branch`);
+
+  // P1-1 forward-compat: if/when the planning endpoint returns `lanes`,
+  // assert it's also empty for the requester. Today the property doesn't
+  // exist; tolerate that until P1-1 ships.
+  if (Array.isArray(body.lanes)) {
+    if (body.lanes.length > 0) {
+      results.fail += 1;
+      results.failed.push('Planning requester: non-empty lanes');
+      console.log(`  ✗ requester sees ${body.lanes.length} lanes — predicate leaks via lanes`);
+    } else {
+      results.pass += 1;
+      console.log(`  ✓ requester sees lanes: [] (P1-1 forward-compat)`);
+    }
+  }
+}
+
 async function runDispatchProbe(headers, probe) {
   console.log('\n=== Dispatch (creating a child WO) ===');
 
@@ -778,6 +972,7 @@ async function main() {
   await runCaseMutations(headers, probe);
   await runValidationProbes(headers, probe);
   await runPlanningProbes(headers, probe);
+  await runPlanningRequesterProbe();
   await runDispatchProbe(headers, probe);
 
   console.log(`\n${'='.repeat(60)}`);
