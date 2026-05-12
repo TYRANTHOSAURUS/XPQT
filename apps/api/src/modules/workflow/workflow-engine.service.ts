@@ -3,6 +3,7 @@ import {
   buildWorkflowAssignmentIdempotencyKey,
   buildWorkflowUpdateTicketIdempotencyKey,
   UPDATE_TICKET_ALLOWED_FIELD_SET,
+  type KnownErrorCode,
 } from '@prequest/shared';
 import { AppError, mapRpcErrorToAppError } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
@@ -65,6 +66,36 @@ import { SlaService } from '../sla/sla.service';
  */
 const UPDATE_TICKET_ALLOWED_FIELDS = UPDATE_TICKET_ALLOWED_FIELD_SET;
 
+/**
+ * Phase 1.B (universal workflow architecture). The engine talks to three
+ * primary entity kinds polymorphically; this union is the canonical surface
+ * shape exported alongside the service.
+ *
+ * Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.1, §3.6.
+ */
+export type WorkflowEntityKind = 'case' | 'work_order' | 'booking';
+
+/** Depth limit for spawn-link chain walks. Locked at 10 per spec §3.6. */
+const SPAWN_LINK_DEPTH_LIMIT = 10;
+
+/**
+ * Map a polymorphic entity kind to the matching `<kind>_id` column on
+ * `workflow_instances`. The columns ship from migration 00369:
+ *   - `case_id` (was `ticket_id`; renamed per the post-00238 contract)
+ *   - `work_order_id`
+ *   - `booking_id` (added 00369:231-233)
+ *
+ * Each polymorphic row has exactly one of these set non-null, enforced by
+ * the `validate_workflow_instance_polymorphism` trigger (00369:399-418).
+ */
+function polymorphicIdColumn(kind: WorkflowEntityKind): 'case_id' | 'work_order_id' | 'booking_id' {
+  switch (kind) {
+    case 'case':       return 'case_id';
+    case 'work_order': return 'work_order_id';
+    case 'booking':    return 'booking_id';
+  }
+}
+
 interface WorkflowNode {
   id: string;
   type: string;
@@ -112,31 +143,564 @@ export class WorkflowEngineService {
   ) {}
 
   /**
-   * Cancel any active workflow_instances for a ticket. Idempotent —
-   * safe to call when no active instance exists. Used by reclassification
-   * (via the reclassify_ticket RPC which performs the same operation in-txn)
-   * and available for any future "cancel workflow" admin action.
+   * Project the polymorphic entity_kind to its legacy audit literal.
+   *
+   * Case-kind workflows EMIT `'ticket'` for `related_entity_type` /
+   * `target_entity_type` because ApprovalService.respond
+   * (apps/api/src/modules/approval/approval.service.ts:532) discriminates
+   * on the literal `'ticket'` to route to the §3.5 grant_ticket_approval
+   * RPC. Booking + work_order emit their kind directly — no consumer
+   * regression because those paths are new in Phase 1.A/1.B.
+   *
+   * Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.6 (Phase 1 polymorphization).
    */
-  async cancelInstanceForTicket(
-    ticketId: string,
+  private projectLegacyEntityType(kind: WorkflowEntityKind): string {
+    return kind === 'case' ? 'ticket' : kind;
+  }
+
+  /**
+   * Cancel any active workflow_instance for a `(entity_kind, entity_id)`
+   * pair, then cascade through `workflow_instance_links` to resolve any
+   * spawned children per the link's `on_parent_cancel` policy.
+   *
+   * Idempotent: safe to call when no active instance exists (no-op).
+   *
+   * Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.6
+   * (Cancellation propagation — full design).
+   *
+   * ── Cascade order (CRITICAL fold-in from self-review) ───────────────
+   *
+   * For each link with `on_parent_cancel='cancel_child'`:
+   *   1. Cancel the spawned ENTITY first.
+   *   2. ONLY THEN resolve the link row.
+   *   3. THEN recursively cancel the child workflow_instance.
+   *
+   * The previous order (resolve link → then cancel entity) led to the
+   * "link claims parent_cancelled but booking still alive" inconsistency
+   * — a partial-failure on entity-cancel left the link permanently
+   * marked resolved while the booking was still on the calendar. The
+   * new order keeps the link OPEN when entity-cancel fails or is
+   * deferred, so ops can finish the work.
+   *
+   * ── Visited-set defense ─────────────────────────────────────────────
+   *
+   * Defensive: `checkSpawnLinkSafety` prevents cycles at SPAWN time
+   * (cycle_detected/422). The cascade itself is a different code path
+   * — if a link row was already corrupt at cascade time (e.g. created
+   * before the safety check shipped), the visited-set short-circuits
+   * an infinite recursion.
+   *
+   * @param entityKind        Primary kind of the entity whose workflow we're cancelling.
+   * @param entityId          UUID of the entity row.
+   * @param tenantId          Tenant scope; passed explicitly per the project's
+   *                          tenant_id-as-#0-invariant rule.
+   * @param reason            Free-form text recorded on the workflow_instance +
+   *                          on the `instance_cancelled` audit event.
+   * @param cascadeContext    Set when called recursively from a parent cascade;
+   *                          carries the triggering link id + parent instance id
+   *                          for audit-trail visualisation.
+   * @param visitedSet        Internal recursion guard. Caller passes undefined;
+   *                          recursive calls inherit the accumulated set.
+   */
+  async cancelInstance(
+    entityKind: WorkflowEntityKind,
+    entityId: string,
     tenantId: string,
     reason: string,
-    actorUserId: string | null,
-  ): Promise<string[]> {
-    const { data } = await this.supabase.admin
+    cascadeContext?: {
+      triggeredByLinkId: string;
+      parentInstanceId: string;
+    },
+    visitedSet?: Set<string>,
+  ): Promise<void> {
+    const visitedKey = `${entityKind}:${entityId}`;
+    const visited = visitedSet ?? new Set<string>();
+    if (visited.has(visitedKey)) {
+      // Defensive: spawn-time cycle check (assertSpawnLinkSafe) should
+      // make this unreachable, but a corrupt link from before that check
+      // shipped could trigger it. Log + return rather than infinite-loop.
+      console.warn('[workflow] cancelInstance: visited-set short-circuit', {
+        visitedKey,
+        cascadeContext,
+      });
+      return;
+    }
+    visited.add(visitedKey);
+
+    const idColumn = polymorphicIdColumn(entityKind);
+
+    // Step 1: locate the active instance for this (kind, id, tenant). If
+    // none, no-op — nothing to cancel.
+    const { data: lookup } = await this.supabase.admin
+      .from('workflow_instances')
+      .select('id')
+      .eq('entity_kind', entityKind)
+      .eq(idColumn, entityId)
+      .eq('tenant_id', tenantId)
+      .in('status', ['active', 'waiting'])
+      .limit(1)
+      .maybeSingle();
+
+    if (!lookup) {
+      return;
+    }
+    const instanceId = (lookup as { id: string }).id;
+
+    // Step 2: atomic claim. UPDATE with the same status filter as the
+    // SELECT — exactly one caller flips the row; concurrent callers
+    // observe data=null and no-op (idempotent — same shape as resume()
+    // at line ~907 below).
+    const claim = await this.supabase.admin
       .from('workflow_instances')
       .update({
         status: 'cancelled',
         cancelled_at: new Date().toISOString(),
         cancelled_reason: reason,
-        cancelled_by: actorUserId,
       })
-      .eq('ticket_id', ticketId)
+      .eq('id', instanceId)
       .eq('tenant_id', tenantId)
       .in('status', ['active', 'waiting'])
-      .select('id');
+      .select('id')
+      .maybeSingle();
 
-    return (data ?? []).map((row: { id: string }) => row.id);
+    if (!claim.data) {
+      // Lost the race — another worker cancelled between our SELECT and
+      // UPDATE. They emit the audit event; we no-op.
+      return;
+    }
+
+    // Step 3: emit instance_cancelled. Carries triggered_by_link_id +
+    // parent_instance_id when this cancel was driven by a parent cascade
+    // (so the audit trail visualises the chain).
+    const cancelPayload: Record<string, unknown> = {
+      reason,
+      entity_kind: entityKind,
+      entity_id: entityId,
+    };
+    if (cascadeContext) {
+      cancelPayload.triggered_by_link_id = cascadeContext.triggeredByLinkId;
+      cancelPayload.parent_instance_id = cascadeContext.parentInstanceId;
+    }
+    await this.emit(instanceId, 'instance_cancelled', { payload: cancelPayload });
+
+    // Step 4: cascade through workflow_instance_links. Tenant-filtered
+    // (admin client bypasses RLS). Process every link individually with
+    // try/catch boundaries so one bad link doesn't abort the loop.
+    const { data: linkRows } = await this.supabase.admin
+      .from('workflow_instance_links')
+      .select(
+        'id, child_instance_id, child_entity_kind, child_entity_id, on_parent_cancel',
+      )
+      .eq('parent_instance_id', instanceId)
+      .eq('tenant_id', tenantId)
+      .is('resolved_at', null);
+
+    const links = (linkRows ?? []) as Array<{
+      id: string;
+      child_instance_id: string | null;
+      child_entity_kind: WorkflowEntityKind;
+      child_entity_id: string;
+      on_parent_cancel: 'cancel_child' | 'orphan_child';
+    }>;
+
+    for (const link of links) {
+      try {
+        if (link.on_parent_cancel === 'orphan_child') {
+          await this.resolveLinkRow(
+            link.id,
+            instanceId,
+            link.child_entity_kind,
+            link.child_entity_id,
+            tenantId,
+          );
+          continue;
+        }
+
+        // cancel_child: order matters — entity first, link second, child
+        // workflow third. See the method header for the full rationale.
+        let entityCancelOk = false;
+        let entityCancelDeferred = false;
+
+        if (link.child_entity_kind === 'booking') {
+          const outcome = await this.tryCancelBookingForCascade(
+            link.id,
+            instanceId,
+            link.child_entity_id,
+            tenantId,
+          );
+          entityCancelOk = outcome === 'ok';
+          // outcome 'pending' = link STAYS open; skip everything below.
+          if (outcome === 'pending') continue;
+        } else {
+          // case + work_order entity-level cancel deferred to a future
+          // Phase 1.B.x followup. Emit the deferred-cancel audit event but
+          // DO continue with link resolution + child workflow cancel — the
+          // workflow layer is owned now; the entity row stays alive for
+          // operator/owner action.
+          await this.emit(instanceId, 'link_pending_entity_cancel', {
+            payload: {
+              link_id: link.id,
+              parent_instance_id: instanceId,
+              child_entity_kind: link.child_entity_kind,
+              child_entity_id: link.child_entity_id,
+              reason: `phase_1b_${link.child_entity_kind}_entity_cancel_pending`,
+            },
+          });
+          entityCancelDeferred = true;
+        }
+
+        if (!entityCancelOk && !entityCancelDeferred) {
+          // Booking outcome was 'not_found' — already gone, treat as ok.
+          entityCancelOk = true;
+        }
+
+        // Step b: cancel child workflow_instance recursively.
+        if (link.child_instance_id) {
+          await this.cancelInstance(
+            link.child_entity_kind,
+            link.child_entity_id,
+            tenantId,
+            'parent_workflow_cancelled',
+            { triggeredByLinkId: link.id, parentInstanceId: instanceId },
+            visited,
+          );
+        }
+
+        // Step c: resolve the link row.
+        await this.resolveLinkRow(
+          link.id,
+          instanceId,
+          link.child_entity_kind,
+          link.child_entity_id,
+          tenantId,
+        );
+      } catch (err) {
+        // Per-link defense: one transient failure (DB blip, FK shake) must
+        // NOT abort the cascade. Log + emit pending-cancel marker so ops
+        // see the link in the audit feed and can finish manually.
+        console.error('[workflow] cancelInstance: link cascade error', {
+          link_id: link.id,
+          err,
+        });
+        try {
+          await this.emit(instanceId, 'link_pending_entity_cancel', {
+            payload: {
+              link_id: link.id,
+              parent_instance_id: instanceId,
+              child_entity_kind: link.child_entity_kind,
+              child_entity_id: link.child_entity_id,
+              reason: 'cascade_error',
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        } catch {
+          // Audit emit best-effort; if it also fails, just continue.
+        }
+      }
+    }
+  }
+
+  /**
+   * Try to cancel a child booking via `delete_booking_with_guard` (00292).
+   * Returns:
+   *   - 'ok'        — RPC returned `kind: 'rolled_back'`. Caller proceeds
+   *                   with link resolution + child workflow cancel.
+   *   - 'not_found' — RPC raised `booking.not_found` (P0002). Caller treats
+   *                   as success: the booking is already gone, link
+   *                   resolution can proceed.
+   *   - 'pending'   — RPC returned `kind: 'partial_failure'` (recurrence
+   *                   series alive) OR threw a non-'not_found' exception.
+   *                   Caller MUST skip link resolution so ops can finish.
+   *
+   * This helper emits `link_pending_entity_cancel` itself for the pending
+   * branches so the caller stays a clean dispatcher. Spec §3.6.
+   */
+  private async tryCancelBookingForCascade(
+    linkId: string,
+    parentInstanceId: string,
+    bookingId: string,
+    tenantId: string,
+  ): Promise<'ok' | 'not_found' | 'pending'> {
+    let data: unknown = null;
+    let error: { code?: string; message?: string } | null = null;
+    try {
+      const res = await this.supabase.admin.rpc('delete_booking_with_guard', {
+        p_booking_id: bookingId,
+        p_tenant_id: tenantId,
+      });
+      data = res.data;
+      error = res.error as { code?: string; message?: string } | null;
+    } catch (err) {
+      // Network / supabase-js client error — treat as transient; pending.
+      await this.emit(parentInstanceId, 'link_pending_entity_cancel', {
+        payload: {
+          link_id: linkId,
+          parent_instance_id: parentInstanceId,
+          child_entity_kind: 'booking',
+          child_entity_id: bookingId,
+          reason: 'booking_compensation_exception',
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+      return 'pending';
+    }
+
+    if (error) {
+      // 'booking.not_found' surfaces as a P0002 raise (00292:86); the
+      // supabase-js error.message carries the literal text.
+      const msg = String(error.message ?? '');
+      if (msg.includes('booking.not_found')) {
+        return 'not_found';
+      }
+      await this.emit(parentInstanceId, 'link_pending_entity_cancel', {
+        payload: {
+          link_id: linkId,
+          parent_instance_id: parentInstanceId,
+          child_entity_kind: 'booking',
+          child_entity_id: bookingId,
+          reason: 'booking_compensation_exception',
+          error: msg,
+        },
+      });
+      return 'pending';
+    }
+
+    const parsed = data as
+      | { kind: 'rolled_back' }
+      | { kind: 'partial_failure'; blocked_by?: string[] }
+      | null;
+
+    if (!parsed || typeof parsed !== 'object' || !('kind' in parsed)) {
+      // Malformed payload — treat as pending.
+      await this.emit(parentInstanceId, 'link_pending_entity_cancel', {
+        payload: {
+          link_id: linkId,
+          parent_instance_id: parentInstanceId,
+          child_entity_kind: 'booking',
+          child_entity_id: bookingId,
+          reason: 'booking_compensation_malformed_payload',
+        },
+      });
+      return 'pending';
+    }
+
+    if (parsed.kind === 'partial_failure') {
+      await this.emit(parentInstanceId, 'link_pending_entity_cancel', {
+        payload: {
+          link_id: linkId,
+          parent_instance_id: parentInstanceId,
+          child_entity_kind: 'booking',
+          child_entity_id: bookingId,
+          reason: 'booking_guard_partial_failure',
+          blocked_by: parsed.blocked_by ?? [],
+        },
+      });
+      return 'pending';
+    }
+
+    return 'ok';
+  }
+
+  /**
+   * Mark a workflow_instance_links row as resolved with
+   * `resolution_kind='parent_cancelled'` and emit the matching
+   * `link_resolved` audit event. Wraps the UPDATE in try/catch so a
+   * transient DB blip on the resolution doesn't abort the surrounding
+   * cascade — instead emits `link_pending_entity_cancel` with reason
+   * `link_resolve_update_failed` so ops can finish manually.
+   */
+  private async resolveLinkRow(
+    linkId: string,
+    parentInstanceId: string,
+    childEntityKind: WorkflowEntityKind,
+    childEntityId: string,
+    tenantId: string,
+  ): Promise<void> {
+    try {
+      const res = await this.supabase.admin
+        .from('workflow_instance_links')
+        .update({ resolved_at: new Date().toISOString(), resolution_kind: 'parent_cancelled' })
+        .eq('id', linkId)
+        .eq('tenant_id', tenantId);
+      const updateError = (res as { error?: unknown } | null)?.error;
+      if (updateError) {
+        throw updateError;
+      }
+      await this.emit(parentInstanceId, 'link_resolved', {
+        payload: {
+          link_id: linkId,
+          parent_instance_id: parentInstanceId,
+          child_entity_kind: childEntityKind,
+          child_entity_id: childEntityId,
+          resolution_kind: 'parent_cancelled',
+        },
+      });
+    } catch (err) {
+      console.error('[workflow] resolveLinkRow: UPDATE failed', { link_id: linkId, err });
+      await this.emit(parentInstanceId, 'link_pending_entity_cancel', {
+        payload: {
+          link_id: linkId,
+          parent_instance_id: parentInstanceId,
+          child_entity_kind: childEntityKind,
+          child_entity_id: childEntityId,
+          reason: 'link_resolve_update_failed',
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+  }
+
+  /**
+   * Legacy thin shim — preserves the pre-Phase-1.B call site shape used
+   * by ReclassifyService (and any future ticket-only caller). Routes to
+   * `cancelInstance('case', ...)` so the new cascade behaviour applies
+   * uniformly.
+   *
+   * Pre-Phase-1.B signature took `actorUserId: string | null` and returned
+   * `Promise<string[]>` (cancelled instance ids). Phase 1.B drops both:
+   *   - actorUserId: not surfaced on the polymorphic API; the
+   *     `cancelled_by` column was always null in production callers.
+   *     Restore via the `cascadeContext` audit-event payload if needed.
+   *   - return value: callers ignored it (verified via
+   *     `grep -r cancelInstanceForTicket apps/api/src/`).
+   */
+  async cancelInstanceForTicket(
+    ticketId: string,
+    tenantId: string,
+    reason: string,
+  ): Promise<void> {
+    return this.cancelInstance('case', ticketId, tenantId, reason);
+  }
+
+  /**
+   * Walk the spawn-link chain from `parentInstanceId` upwards, checking
+   * whether spawning a child of kind `childEntityKind` and id
+   * `childEntityId` would (a) attach to a terminated parent, (b) push
+   * the chain past the depth limit, or (c) re-enter an ancestor entity
+   * (cycle).
+   *
+   * Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.6
+   * (Cycle detection — visited-set, not just depth limit).
+   *
+   * ── Implementation ─────────────────────────────────────────────────
+   *
+   * Iterative walk on `workflow_instance_links` (TS-side; one round-trip
+   * per ancestor level). Phase 1 is single-spawn — a child has at most
+   * ONE inbound link, so `LIMIT 1` is correct on the per-step query.
+   *
+   * NOTE: there is NO RPC named `exec_spawn_link_chain_query`. The
+   * iterative walk is canonical. A future Phase 3 perf optimization
+   * might convert this to a recursive CTE RPC — until then, the TS
+   * walk is the source of truth and the only callable.
+   *
+   * @returns `{ ok: true }` when the spawn is safe; otherwise an
+   *          `{ ok: false, reason }` discriminator carrying the
+   *          violation kind (and `depth` when relevant).
+   */
+  async checkSpawnLinkSafety(
+    parentInstanceId: string,
+    tenantId: string,
+    childEntityKind: WorkflowEntityKind,
+    childEntityId: string,
+  ): Promise<
+    | { ok: true }
+    | { ok: false; reason: 'parent_terminated' | 'cycle_detected' | 'depth_exceeded'; depth?: number }
+  > {
+    // Step 1: parent must exist + be non-terminal.
+    const { data: parentRow } = await this.supabase.admin
+      .from('workflow_instances')
+      .select('status')
+      .eq('id', parentInstanceId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (!parentRow) {
+      // Missing or cross-tenant — treat as terminated for safety.
+      return { ok: false, reason: 'parent_terminated' };
+    }
+    const parentStatus = (parentRow as { status: string }).status;
+    if (parentStatus === 'cancelled' || parentStatus === 'completed' || parentStatus === 'failed') {
+      return { ok: false, reason: 'parent_terminated' };
+    }
+
+    // Step 2: walk ancestors. At each step, the parent's parent is found
+    // by querying workflow_instance_links for a row whose
+    // child_instance_id is the current node. Phase-1 single-spawn → at
+    // most one inbound link per node.
+    let depth = 0;
+    let cursorInstanceId: string | null = parentInstanceId;
+    while (cursorInstanceId) {
+      const { data: linkRow } = await this.supabase.admin
+        .from('workflow_instance_links')
+        .select('id, parent_instance_id, parent_entity_kind, parent_entity_id')
+        .eq('tenant_id', tenantId)
+        .eq('child_instance_id', cursorInstanceId)
+        .limit(1)
+        .maybeSingle();
+
+      if (!linkRow) {
+        // Reached the chain root — no ancestor link. Safe.
+        return { ok: true };
+      }
+      const ancestor = linkRow as {
+        id: string;
+        parent_instance_id: string;
+        parent_entity_kind: WorkflowEntityKind;
+        parent_entity_id: string;
+      };
+
+      // Cycle: would the candidate child re-enter this ancestor entity?
+      if (
+        ancestor.parent_entity_kind === childEntityKind &&
+        ancestor.parent_entity_id === childEntityId
+      ) {
+        return { ok: false, reason: 'cycle_detected', depth };
+      }
+
+      depth++;
+      if (depth >= SPAWN_LINK_DEPTH_LIMIT) {
+        return { ok: false, reason: 'depth_exceeded', depth };
+      }
+
+      cursorInstanceId = ancestor.parent_instance_id;
+    }
+
+    return { ok: true };
+  }
+
+  /**
+   * Throwing variant of `checkSpawnLinkSafety`. Maps the discriminated
+   * result into `AppError(spawn_link.*, 422)`. No callers today; ships
+   * for future Phase 3 spawn-RPC TS gates.
+   *
+   * Spec §3.12 lists the three Phase 1 codes:
+   *   - spawn_link.parent_terminated
+   *   - spawn_link.depth_exceeded
+   *   - spawn_link.cycle_detected
+   */
+  async assertSpawnLinkSafe(
+    parentInstanceId: string,
+    tenantId: string,
+    childEntityKind: WorkflowEntityKind,
+    childEntityId: string,
+  ): Promise<void> {
+    const res = await this.checkSpawnLinkSafety(
+      parentInstanceId,
+      tenantId,
+      childEntityKind,
+      childEntityId,
+    );
+    if (res.ok) return;
+    const detailParts: string[] = [];
+    if (res.depth !== undefined) detailParts.push(`depth=${res.depth}`);
+    detailParts.push(
+      `parent=${parentInstanceId}`,
+      `child=${childEntityKind}:${childEntityId}`,
+    );
+    throw new AppError(
+      `spawn_link.${res.reason}` as KnownErrorCode,
+      422,
+      { detail: detailParts.join(' ') },
+    );
   }
 
   async startForTicket(ticketId: string, workflowDefinitionId: string) {
@@ -392,11 +956,19 @@ export class WorkflowEngineService {
 
       case 'notification': {
         if (!ctx?.dryRun && tenant) {
+          // Phase 1.B polymorphization (spec §3.6). `related_entity_type`
+          // routes through projectLegacyEntityType so future booking /
+          // work_order workflows emit their kind literal while case-kind
+          // workflows stay on the legacy `'ticket'` literal expected by
+          // notification consumers. Kind is hardcoded 'case' until
+          // executeNode threads the polymorphic kind through (followup;
+          // executeNode is case-only today per ticketId param shape).
+          const entityKind: WorkflowEntityKind = 'case';
           await this.supabase.admin.from('notifications').insert({
             tenant_id: tenant.id,
             notification_type: (node.config.notification_type as string) ?? 'workflow_notification',
             target_channel: 'in_app',
-            related_entity_type: 'ticket',
+            related_entity_type: this.projectLegacyEntityType(entityKind),
             related_entity_id: ticketId,
             subject: (node.config.subject as string) ?? 'Workflow notification',
             body: (node.config.body as string) ?? '',
@@ -574,9 +1146,17 @@ export class WorkflowEngineService {
               { entityName: 'approver team' },
             );
           }
+          // Phase 1.B polymorphization (spec §3.6). target_entity_type
+          // routes through projectLegacyEntityType. Case-kind workflows
+          // emit `'ticket'` so ApprovalService.respond keeps routing to
+          // the §3.5 grant_ticket_approval RPC; booking / work_order
+          // emit their kind literal (no consumer regression — those
+          // paths are new in Phase 1.A/1.B). Kind hardcoded 'case'
+          // until executeNode threads polymorphism through.
+          const entityKind: WorkflowEntityKind = 'case';
           await this.supabase.admin.from('approvals').insert({
             tenant_id: tenant.id,
-            target_entity_type: 'ticket',
+            target_entity_type: this.projectLegacyEntityType(entityKind),
             target_entity_id: ticketId,
             approver_person_id: approverPersonId,
             approver_team_id: approverTeamId,
