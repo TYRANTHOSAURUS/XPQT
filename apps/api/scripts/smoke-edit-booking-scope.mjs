@@ -966,12 +966,14 @@ async function runScopeProbes(headers, probe, fixture) {
 async function main() {
   console.log(`Smoke-testing edit_booking_scope against ${API_BASE}`);
 
-  // Health check — fail loudly if API isn't running.
+  // Health check — fail loudly if API isn't running. fetch() throws
+  // on connection failure (caught below); the `>= 500` clause catches
+  // a running but broken server.
   try {
     const r = await fetch(`${API_BASE}/api/reservations?scope=upcoming&limit=1`, {
       method: 'HEAD',
     });
-    if (r.status === 0 || r.status >= 500) {
+    if (r.status >= 500) {
       throw new Error(`API health check failed: HTTP ${r.status}`);
     }
   } catch (e) {
@@ -980,27 +982,36 @@ async function main() {
     process.exit(2);
   }
 
-  console.log('Seeding recurring-booking fixture (5 occurrences, 1 week apart)…');
-  const fixture = seedRecurringFixture();
-  console.log(`  series ${fixture.seriesId.slice(0, 8)}… / pivot ${fixture.occurrences[PIVOT_INDEX].bookingId.slice(0, 8)}…`);
-
-  const accessToken = await mintAdminToken();
-  const headers = {
-    Authorization: `Bearer ${accessToken}`,
-    'X-Tenant-Id': TENANT_ID,
-    'Content-Type': 'application/json',
-  };
-  const probe = makeProber(headers);
-
+  // Self-review remediation (code-reviewer 2026-05-12 on the sibling
+  // smoke-edit-booking.mjs flagged the same pattern here): the fixture
+  // seed + mintAdminToken calls must live inside the try/finally so
+  // the cleanup fires even if token-minting throws after the fixture
+  // is on disk. Pre-fix, a Supabase auth outage between seeding and
+  // probing would leak the recurring fixture.
+  let fixture = null;
   try {
+    console.log('Seeding recurring-booking fixture (5 occurrences, 1 week apart)…');
+    fixture = seedRecurringFixture();
+    console.log(`  series ${fixture.seriesId.slice(0, 8)}… / pivot ${fixture.occurrences[PIVOT_INDEX].bookingId.slice(0, 8)}…`);
+
+    const accessToken = await mintAdminToken();
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      'X-Tenant-Id': TENANT_ID,
+      'Content-Type': 'application/json',
+    };
+    const probe = makeProber(headers);
+
     await runScopeProbes(headers, probe, fixture);
   } finally {
     // Always clean up the fixture, even on failure, so the next run
     // starts clean. The cleanup also sweeps any command_operations
     // rows the smoke wrote so they don't pollute future tenant-A
     // metrics.
-    console.log('\nCleaning up fixture…');
-    await deleteFixture(fixture.seriesId);
+    if (fixture) {
+      console.log('\nCleaning up fixture…');
+      await deleteFixture(fixture.seriesId);
+    }
   }
 
   console.log(`\n${'='.repeat(60)}`);

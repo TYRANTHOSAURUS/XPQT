@@ -91,6 +91,18 @@
  *      cascade pipeline is exercised by the assembler unit tests + the
  *      scope smoke; this probe focuses on the editOne / editSlot wire
  *      paths.
+ *   7. **Deliberately NOT covered:**
+ *      - Malformed-UUID path id ("not-a-uuid" on `/reservations/:id`) —
+ *        the Nest path-pipe rejects it before the controller runs; the
+ *        response shape is framework-defined, not service-defined, so
+ *        the probe yield is near zero. Established jest specs cover it.
+ *      - 422 `booking.edit_requires_notification_dispatch` — needs an
+ *        approval-rule-gated space; expensive fixture setup. Defer to
+ *        B.4.A.5 when the gate is lifted, then probe the lift.
+ *      - NUMERIC cost round-trip — editOne doesn't accept cost as a
+ *        field; cost is recomputed by the assembler from
+ *        `space.cost_per_hour`. The Slice 3.1 cost-float bug is in the
+ *        work-order surface, covered by `pnpm smoke:work-orders`.
  *
  * Citations:
  *   - apps/api/src/modules/reservations/reservation.controller.ts:301-320
@@ -987,7 +999,18 @@ async function runEditSlotProbes(probe, fixtureA, fixtureB) {
       opCount === 1,
       `count=${opCount}`,
     );
-    void auditCountBeforeReplay; // referenced for future-proofing; not asserted directly
+    // Self-review remediation (code-reviewer 2026-05-12): assert the
+    // audit-event delta is zero. Mirrors Scenario 3 (editOne replay)
+    // and locks the same idempotency contract on the editSlot path —
+    // if the slot RPC re-executes on replay, audits leak and this
+    // probe catches it. The editOne sibling already covered this;
+    // editSlot must too.
+    const auditCountAfterReplay = await countAuditEventsForBooking(fixtureB.bookingId);
+    passAssertion(
+      'Slot replay: no new audit events (RPC short-circuited on cached_result)',
+      auditCountAfterReplay === auditCountBeforeReplay,
+      `delta=${auditCountAfterReplay - auditCountBeforeReplay}`,
+    );
   }
 
   // ────────────────────────────────────────────────────────────────
@@ -1100,12 +1123,14 @@ async function runOpDiscriminationProbe(probe, fixtureA, fixtureB) {
 async function main() {
   console.log(`Smoke-testing editOne + editSlot against ${API_BASE}`);
 
-  // Health check — fail loudly if API isn't running.
+  // Health check — fail loudly if API isn't running. fetch() throws
+  // on connection failure (caught below); the `>= 500` clause catches
+  // a running but broken server.
   try {
     const r = await fetch(`${API_BASE}/api/reservations?scope=upcoming&limit=1`, {
       method: 'HEAD',
     });
-    if (r.status === 0 || r.status >= 500) {
+    if (r.status >= 500) {
       throw new Error(`API health check failed: HTTP ${r.status}`);
     }
   } catch (e) {
@@ -1114,31 +1139,41 @@ async function main() {
     process.exit(2);
   }
 
-  console.log('Seeding fixture A (single booking + 1 slot, +130d)…');
-  const fixtureA = seedFixtureA();
-  console.log(`  booking ${fixtureA.bookingId.slice(0, 8)}… / slot ${fixtureA.slotId.slice(0, 8)}…`);
-
-  console.log('Seeding fixture B (single booking + 2 slots, +131d)…');
-  const fixtureB = seedFixtureB();
-  console.log(
-    `  booking ${fixtureB.bookingId.slice(0, 8)}… / primary ${fixtureB.primarySlotId.slice(0, 8)}… / non-primary ${fixtureB.nonPrimarySlotId.slice(0, 8)}…`,
-  );
-
-  const accessToken = await mintAdminToken();
-  const headers = {
-    Authorization: `Bearer ${accessToken}`,
-    'X-Tenant-Id': TENANT_ID,
-    'Content-Type': 'application/json',
-  };
-  const probe = makeProber(headers);
-
+  // Self-review remediation (code-reviewer 2026-05-12): the seed +
+  // mintAdminToken calls must live inside the try/finally so the
+  // cleanup fires even if token-minting throws after fixtures are on
+  // disk. Pre-fix, a Supabase auth outage between seeding and probing
+  // would leak both fixtures.
+  let fixtureA = null;
+  let fixtureB = null;
   try {
+    console.log('Seeding fixture A (single booking + 1 slot, +130d)…');
+    fixtureA = seedFixtureA();
+    console.log(`  booking ${fixtureA.bookingId.slice(0, 8)}… / slot ${fixtureA.slotId.slice(0, 8)}…`);
+
+    console.log('Seeding fixture B (single booking + 2 slots, +131d)…');
+    fixtureB = seedFixtureB();
+    console.log(
+      `  booking ${fixtureB.bookingId.slice(0, 8)}… / primary ${fixtureB.primarySlotId.slice(0, 8)}… / non-primary ${fixtureB.nonPrimarySlotId.slice(0, 8)}…`,
+    );
+
+    const accessToken = await mintAdminToken();
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      'X-Tenant-Id': TENANT_ID,
+      'Content-Type': 'application/json',
+    };
+    const probe = makeProber(headers);
+
     await runEditOneProbes(probe, fixtureA, fixtureB);
     await runEditSlotProbes(probe, fixtureA, fixtureB);
     await runOpDiscriminationProbe(probe, fixtureA, fixtureB);
   } finally {
     console.log('\nCleaning up fixtures…');
-    await deleteFixtures([fixtureA.bookingId, fixtureB.bookingId]);
+    const idsToDelete = [fixtureA?.bookingId, fixtureB?.bookingId].filter(Boolean);
+    if (idsToDelete.length > 0) {
+      await deleteFixtures(idsToDelete);
+    }
   }
 
   console.log(`\n${'='.repeat(60)}`);
