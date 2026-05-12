@@ -1,0 +1,41 @@
+-- 00379_drop_edit_booking_slot_rpc.sql
+-- Phase 8.D — drop dead RPC.
+--
+-- 00291 (Phase 1.4 Bug #2: slot-first scheduler) created
+-- public.edit_booking_slot(uuid, jsonb, uuid) as the atomicity primitive
+-- for slot-level edits. Extended by:
+--   - 00293_edit_booking_slot_lock.sql (advisory lock around the slot row)
+--   - 00294_edit_booking_slot_validate_space.sql (in-RPC space_id tenant
+--     validation; final signature defined here at lines 1-7 of the CREATE)
+--
+-- Superseded by the unified `public.edit_booking` RPC family:
+--   - 00361_edit_booking_rpc.sql        (v1 skeleton)
+--   - 00362_edit_booking_rpc_v2.sql     (preserve-fields + narrow stale gate)
+--   - 00363_edit_booking_rpc_v3.sql     (codex P0 booking-scope + dest-room gate)
+--   - 00364_edit_booking_rpc_v4.sql     (approval reconciliation per §3.6.5;
+--                                         current live function)
+--
+-- All booking-edit paths (editOne / editSlot / editScope) now route
+-- through edit_booking or edit_booking_scope. Verified pre-drop:
+--   grep -rE "\.rpc\(\s*['\"]edit_booking_slot['\"]" apps/ packages/   -> 0 hits
+--   grep -nE "perform\s+(public\.)?edit_booking_slot|select\s+(public\.)?edit_booking_slot" \
+--     supabase/migrations/*.sql                                       -> 0 hits
+--   grep -rE "edit_booking_slot" --include="*.json" --include="*.sh" .  -> 0 hits
+-- (All remaining references in TS / migrations are docstrings / comments
+-- citing the legacy lineage; no live invocations.)
+--
+-- Closing-retro item (b4-closing-retro-2026-05-12.md §10 — what's next #2):
+-- "Migration 00291 is now dead code; callers all routed through
+--  edit_booking (00364). Add a smoke probe assertion before merge."
+-- The matching assertion lives in apps/api/scripts/smoke-edit-booking.mjs
+-- (pre-flight block) so a future migration that re-creates the RPC trips
+-- the manual smoke gate before merge.
+--
+-- DROP FUNCTION IF EXISTS is idempotent — safe to re-apply against an
+-- environment that already dropped the function (e.g. a local DB rebuilt
+-- from migrations after this lands). CASCADE is intentionally omitted:
+-- no dependent objects should exist (zero callers verified above); if any
+-- dependency snuck in unnoticed, the drop fails loudly here rather than
+-- silently nuking it.
+
+drop function if exists public.edit_booking_slot(uuid, jsonb, uuid);

@@ -72,6 +72,59 @@ describe('buildEditBookingIdempotencyKey', () => {
     // Defense-in-depth: the rendered shape has exactly 4 colon-segments.
     expect(sameActorAttempt.split(':').length).toBe(4);
   });
+
+  // B.4 Step 2F.3 — operation discriminator. Closes the cross-op-
+  // collision followup at docs/follow-ups/b4-followups.md by namespacing
+  // the key per editOne / editSlot / editScope. The discriminator is
+  // the THIRD argument and is optional only for backward-compat with
+  // pre-Step-2F.3 callers; every booking-edit producer route now passes
+  // it.
+  describe('op discriminator (Step 2F.3)', () => {
+    it('omits the op segment when op is undefined (backward-compat)', () => {
+      const key = buildEditBookingIdempotencyKey(bookingId, crid);
+      expect(key).toBe(`booking:edit:${bookingId}:${crid}`);
+      // Shape: 4 segments → no op.
+      expect(key.split(':').length).toBe(4);
+    });
+
+    it('inserts the op segment when op is provided', () => {
+      expect(buildEditBookingIdempotencyKey(bookingId, crid, 'one')).toBe(
+        `booking:edit:one:${bookingId}:${crid}`,
+      );
+      expect(buildEditBookingIdempotencyKey(bookingId, crid, 'slot')).toBe(
+        `booking:edit:slot:${bookingId}:${crid}`,
+      );
+      expect(buildEditBookingIdempotencyKey(bookingId, crid, 'scope')).toBe(
+        `booking:edit:scope:${bookingId}:${crid}`,
+      );
+    });
+
+    it('mints distinct keys for different ops with same (booking, crid)', () => {
+      // The exact collision class the followup documents: a frontend
+      // reusing the same crid across an editOne + editSlot must NOT
+      // collapse to a single command_operations row.
+      const oneKey = buildEditBookingIdempotencyKey(bookingId, crid, 'one');
+      const slotKey = buildEditBookingIdempotencyKey(bookingId, crid, 'slot');
+      const scopeKey = buildEditBookingIdempotencyKey(bookingId, crid, 'scope');
+      const keys = [oneKey, slotKey, scopeKey];
+      expect(new Set(keys).size).toBe(keys.length);
+    });
+
+    it('legacy (no op) and op-discriminated keys do not collide', () => {
+      // Migration safety: a deploy that goes from "every caller is op-less"
+      // to "every caller passes op" must not have a window where a
+      // pre-deploy `legacy` key collides with a post-deploy `op` key on
+      // the same (booking, crid). The op segment lives BEFORE the bookingId,
+      // not after, so the rendered strings can never alias.
+      const legacy = buildEditBookingIdempotencyKey(bookingId, crid);
+      const opOne = buildEditBookingIdempotencyKey(bookingId, crid, 'one');
+      const opSlot = buildEditBookingIdempotencyKey(bookingId, crid, 'slot');
+      const opScope = buildEditBookingIdempotencyKey(bookingId, crid, 'scope');
+      expect(legacy).not.toBe(opOne);
+      expect(legacy).not.toBe(opSlot);
+      expect(legacy).not.toBe(opScope);
+    });
+  });
 });
 
 describe('idempotency key prefixes are namespace-separated', () => {

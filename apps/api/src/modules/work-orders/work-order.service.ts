@@ -29,6 +29,12 @@ export type WorkOrderRow = Record<string, unknown> & {
   sla_id: string | null;
   planned_start_at: string | null;
   planned_duration_minutes: number | null;
+  // P1-2 (00382): optimistic-lock column. Bumped by
+  // tg_work_orders_plan_version_bump on any update of planned_start_at,
+  // planned_duration_minutes, or the three assignment columns. The PATCH
+  // endpoint returns the post-trigger value so callers can stage the next
+  // gesture against the new version.
+  plan_version: number;
 };
 
 /**
@@ -61,6 +67,25 @@ export interface UpdateWorkOrderDto {
   cost?: number | null;
   tags?: string[] | null;
   watchers?: string[] | null;
+  // P1-2 (00382): optimistic-lock token. When present AND any of the
+  // five trigger-tracked columns (planned_start_at,
+  // planned_duration_minutes, assigned_team_id/user_id/vendor_id) is in
+  // the patch, the service compares against the row's current
+  // plan_version and rejects with 409 planning.version_conflict on
+  // mismatch. Optional so non-planning-board callers (detail-page SLA
+  // edit, status flip, etc.) don't have to thread a version.
+  plan_version?: number;
+  // P1-4 (00383): audit-source provenance for the plan_changed activity
+  // row. When present and the plan branch fires, the value is stamped
+  // into `ticket_activities.metadata.source` so operators can tell where
+  // the change came from. Three allowed values: 'board' (drag/resize/
+  // keyboard nudge on /desk/planning), 'detail' (PlanField in the
+  // ticket detail panel), 'generator' (reserved for the Slice C PM
+  // generator). Omit when the patch doesn't touch the plan branch (the
+  // RPC ignores it). Validation happens both in the controller layer
+  // (work_order.field_invalid 400) and the RPC (invalid_source 400) so
+  // an unrecognised value cannot leak into the audit log.
+  _source?: 'board' | 'detail' | 'generator';
 }
 
 const PLAN_FIELDS = ['planned_start_at', 'planned_duration_minutes'] as const;
@@ -215,6 +240,49 @@ export class WorkOrderService {
       });
     }
 
+    // P1-2 — optimistic-lock check (00382). When the caller supplies
+    // `plan_version` AND any column the row-version trigger tracks is in
+    // this patch (plan branch + assignment branch are the trigger's full
+    // domain), compare against the row's current value before the RPC
+    // runs. Two dispatchers racing the same drag both started from
+    // version N; the loser's PATCH lands second with plan_version=N,
+    // reads back N+1, and 409s. The winner's `current_version` is
+    // surfaced via AppErrors.conflict's `serverVersion` so the FE can
+    // offer "keep mine" via a fresh re-fetch + retry. Mirrors the
+    // existing reservation.version_conflict pattern (booking edits).
+    //
+    // Why only when plan_version is supplied: detail-page edits
+    // (SLA flip, status, priority, title) don't pass plan_version and
+    // shouldn't pay the round-trip — only the planning board cares about
+    // racing-drag semantics. The DB trigger fires either way; non-board
+    // callers just don't see the version on the response (they don't
+    // read it).
+    if (
+      dto.plan_version !== undefined &&
+      dto.plan_version !== null &&
+      (hasPlan || hasAssignment)
+    ) {
+      const tenantForLock = TenantContext.current();
+      const { data: lockRow, error: lockErr } = await this.supabase.admin
+        .from('work_orders')
+        .select('plan_version')
+        .eq('id', workOrderId)
+        .eq('tenant_id', tenantForLock.id)
+        .maybeSingle();
+      if (lockErr) throw lockErr;
+      if (!lockRow) {
+        throw AppErrors.notFound('work_order', workOrderId);
+      }
+      const currentVersion = (lockRow as { plan_version: number }).plan_version;
+      if (currentVersion !== dto.plan_version) {
+        throw AppErrors.conflict('planning.version_conflict', {
+          detail: `plan_version ${dto.plan_version} is stale; current is ${currentVersion}`,
+          serverVersion: String(currentVersion),
+          clientVersion: String(dto.plan_version),
+        });
+      }
+    }
+
     // Pre-flight validation. Runs every check that could reject the
     // write (visibility, tenant-validation, permission RPCs, format / enum
     // / range) BEFORE the RPC is invoked. If it throws, the
@@ -247,6 +315,18 @@ export class WorkOrderService {
     // dto. Previously the plan-clear branch mutated `dto.planned_duration_minutes
     // = null` directly, which silently rewrote the caller's object.
     const dtoNormalized: UpdateWorkOrderDto = { ...dto };
+    // plan_version is a meta-field consumed by the optimistic-lock check
+    // above — strip from the column-patch clone so the payload builder
+    // can't accidentally treat it as a writable column on a future
+    // refactor that iterates dto keys generically.
+    delete dtoNormalized.plan_version;
+    // _source is a meta-field consumed by the RPC's p_activity_source
+    // arg (00383 v6) — strip from the column-patch clone for the same
+    // reason as plan_version above. The raw value is captured into
+    // `activitySource` below before stripping so the RPC call can
+    // forward it.
+    const activitySource = dto._source ?? null;
+    delete dtoNormalized._source;
 
     if (hasPlan) {
       let currentStart: string | null = null;
@@ -363,6 +443,22 @@ export class WorkOrderService {
       );
     }
 
+    // Codex remediation (00384): forward the caller's plan_version
+    // expectation into the RPC so the authoritative compare runs under
+    // `SELECT FOR UPDATE` (not just in the TS pre-check above, which is
+    // a fast-fail optimization but can lose the race when two PATCHes
+    // both miss each other's row lock). Null when the caller didn't
+    // supply a plan_version OR the patch doesn't touch a trigger column
+    // — the RPC then skips the compare and behaves identically to the
+    // pre-00384 v6 body. Only forward for work_order kind (the case
+    // table has no plan_version column).
+    const expectedPlanVersion =
+      dto.plan_version !== undefined &&
+      dto.plan_version !== null &&
+      (hasPlan || hasAssignment)
+        ? dto.plan_version
+        : null;
+
     const { error: rpcErr } = await this.supabase.admin.rpc(
       'update_entity_combined',
       {
@@ -373,6 +469,20 @@ export class WorkOrderService {
         p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
         p_idempotency_key: buildPatchIdempotencyKey('work_order', workOrderId, clientRequestId),
         p_patches: patches,
+        // P1-4 (00383): forward optional audit-source provenance. Null
+        // when the caller didn't supply `_source` — the RPC stamps no
+        // `source` key into the plan_changed metadata in that case
+        // (byte-identical to v5 behaviour). The RPC also re-validates
+        // the value (defense-in-depth) so an internal caller that
+        // bypasses the controller can't smuggle an unrecognised string.
+        // 00384 also folds `_source` into the idempotency hash so a
+        // replay with the same crid + same patches + different source
+        // surfaces as payload_mismatch.
+        p_activity_source: activitySource,
+        // 00384: authoritative plan_version compare INSIDE the RPC,
+        // after `SELECT FOR UPDATE`. Closes the race window where the
+        // TS pre-check (line 260-284) lets both racers through.
+        p_expected_plan_version: expectedPlanVersion,
       },
     );
     if (rpcErr) throw mapRpcErrorToAppError(rpcErr);

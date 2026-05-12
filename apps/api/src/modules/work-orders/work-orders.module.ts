@@ -1,5 +1,6 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { WorkOrderService } from './work-order.service';
+import { WorkOrderPlanningService } from './work-order-planning.service';
 import { WorkOrderController } from './work-order.controller';
 import { SlaModule } from '../sla/sla.module';
 import { TicketModule } from '../ticket/ticket.module';
@@ -12,7 +13,7 @@ import { TicketModule } from '../ticket/ticket.module';
     forwardRef(() => SlaModule),
     forwardRef(() => TicketModule),
   ],
-  providers: [WorkOrderService],
+  providers: [WorkOrderService, WorkOrderPlanningService],
   controllers: [WorkOrderController],
   exports: [WorkOrderService],
 })

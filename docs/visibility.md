@@ -38,6 +38,8 @@ A user can read a ticket if **any** tier matches. Can write if participant or (n
 
 `public.tickets_visible_for_actor(p_user_id uuid, p_tenant_id uuid, p_has_read_all boolean default false)` (migration 00187) wraps the predicate in a `SETOF tickets` RPC so the API can chain PostgREST filters/sort/pagination directly on visible rows. This is the preferred path for set-based reads (`TicketService.list`, `listDistinctTags`, `getChildTasks`) — it pushes the visibility join into Postgres instead of materializing the full visible-ticket-id set in Node and feeding it back as `.in('id', ids)`. The latter pattern is pathological for tenants with large visible sets (megabytes of UUIDs over the wire + a giant IN list for the planner). When `p_has_read_all = true` the wrapper short-circuits the predicate join entirely.
 
+`public.work_order_visibility_ids(p_user_id, p_tenant_id)` + `public.work_orders_visible_for_actor(p_user_id, p_tenant_id, p_has_read_all)` (migration 00374) — the work_orders siblings. Same six-path model as tickets. Used by `WorkOrderPlanningService.getWindow` for the planning-board read path (`GET /work-orders/planning`). When you add a new set-based read on `work_orders`, prefer this RPC over `.in('id', getVisibleIds(ctx))`; the planner uses it as a hash-join driver against the inner work_orders scan.
+
 `public.expand_space_closure(p_roots uuid[])` — recursive CTE over `spaces.parent_id`. Used both inside `ticket_visibility_ids` (for role location matches) and by the application (to precompute `role.location_scope_closure` on load).
 
 `public.user_has_permission(p_user_id, p_tenant_id, p_permission)` — checks the `roles.permissions` jsonb for any active role assigned to the user.

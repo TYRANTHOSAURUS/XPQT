@@ -79,6 +79,19 @@ export type KnownErrorCode =
   | 'render.failed'
   | 'unknown.server_error'
 
+  // ─── Slice B planning board ─────────────────────────────────────────────
+  // Validation codes for GET /work-orders/planning.
+  | 'planning.window_invalid'
+  | 'planning.window_too_wide'
+  | 'planning.status_invalid'
+  // Optimistic-lock conflict on PATCH /work-orders/:id when the caller's
+  // plan_version doesn't match the row's current plan_version (00382).
+  | 'planning.version_conflict'
+  // 403: requester / watcher / unknown actor tried to read the planning
+  // board. The endpoint is operator-scoped — lane rosters + vendor labels
+  // leak PII otherwise (full-review C1 finding).
+  | 'planning.operator_only'
+
   // ─── Phase 1 registered codes (per docs/follow-ups/phase-7-error-codes.md) ─
   | 'work_order.plan_invalid'
   | 'booking.slot_conflict'
@@ -92,6 +105,7 @@ export type KnownErrorCode =
   | 'booking.invalid_attendee_count'
   | 'booking.invalid_attendee_person_ids'
   | 'booking.invalid_window'
+  | 'booking.invalid_space_id'
   | 'reference.not_in_tenant'
   | 'reference.lookup_failed'
   | 'reference.invalid_uuid'
@@ -237,6 +251,7 @@ export type KnownErrorCode =
   | 'booking.scheduler_window_requires_range'
   | 'booking.no_primary_slot'
   | 'booking.edit_failed'
+  | 'booking.cascade_cross_tenant_batch'
   | 'booking.list_failed'
   | 'booking.cancel_failed'
   | 'booking.skip_failed'
@@ -493,6 +508,7 @@ export type KnownErrorCode =
   | 'update_entity_combined.invalid_cost'
   | 'update_entity_combined.invalid_watcher'
   | 'update_entity_combined.invalid_plan'
+  | 'update_entity_combined.invalid_source'
 
   // ─── B.2.A §3.4 dispatch_child_work_order RPC (00338 / 00339 — v2) ───────
   // `parent_not_case` removed in remediation pass: post step1c.10c
@@ -811,7 +827,74 @@ export type KnownErrorCode =
   | 'floor_plan.restore_failed'
   | 'floor_plan.availability.invalid_window'
   | 'floor_plan.availability.invalid_args'
-  | 'floor_plan.availability_failed';
+  | 'floor_plan.availability_failed'
+  // B.4 Step 2F.1 — edit_booking_scope RPC (00367). Series-scope edits
+  // fan out one EditPlan per occurrence; this RPC commits all-or-none.
+  // - invalid_plans (400): p_plans isn't an array, is empty, or an
+  //   element is malformed (missing booking_id/plan, wrong jsonb type,
+  //   duplicate booking_ids).
+  // - too_many_occurrences (422): N > 200 hard server cap (TS confirms
+  //   at 100 per §7.B.4.C; this is defense-in-depth for non-HTTP
+  //   callers or TS regressions).
+  // - booking_not_found (404): one of the booking_ids doesn't exist or
+  //   is cross-tenant. Caller refetches the scope-edit plan.
+  // - mixed_series (422): booking_ids don't all share the same non-null
+  //   recurrence_series_id. Caller's scope derivation is wrong (TS bug).
+  | 'edit_booking_scope.invalid_plans'
+  | 'edit_booking_scope.too_many_occurrences'
+  | 'edit_booking_scope.booking_not_found'
+  | 'edit_booking_scope.mixed_series'
+  // B.4 Step 2F.2 — assembleScopeEditPlan (TS plan-builder) defensive
+  // codes. Surface BEFORE the RPC sees the payload so the operator gets
+  // an actionable copy instead of the RPC's "invalid_plans" / generic 500.
+  // - time_shift_not_supported (422): patch carries start_at/end_at
+  //   (smuggled via non-TS caller — the typed union forbids them).
+  //   Series time-shift requires recurrence_rule mutation, not slot
+  //   UPDATE; would corrupt the projection. Caller picks per-occurrence
+  //   edit + iterates if a true time-shift is intended.
+  // - not_recurring (422): the pivot booking has no recurrence_series_id.
+  //   Caller routed a non-recurring booking through the scope path —
+  //   surface inline so operator picks the single-occurrence edit.
+  // - series_mismatch (500): the pivot booking's recurrence_series_id
+  //   does not equal the caller-supplied effectiveSeriesId. INTERNAL
+  //   consistency bug (controller computed effectiveSeriesId from pivot
+  //   then drifted) — 500 routes to ops; should never happen in the
+  //   happy path.
+  // - empty_scope (422): the effectiveSeriesId resolved to zero live
+  //   bookings. Possible if the series was wiped between the controller's
+  //   split and the assembler's read; caller refetches the scope picker.
+  // - primary_slot_not_found (500): one of the in-scope bookings has no
+  //   booking_slots row. Data corruption — every booking must have at
+  //   least one slot (00043 invariant). 500 surfaces to ops.
+  | 'edit_booking_scope.time_shift_not_supported'
+  | 'edit_booking_scope.not_recurring'
+  | 'edit_booking_scope.series_mismatch'
+  | 'edit_booking_scope.empty_scope'
+  | 'edit_booking_scope.primary_slot_not_found'
+  // B.4 Step 2F.3 self-review remediation (I1) — server-class fallback
+  // for unknown RPC errors from edit_booking_scope. Pre-fix the fallback
+  // in ReservationService.editScope was `edit_booking_scope.invalid_plans`
+  // (a 400 validation code), which miscategorised DB timeouts / missing
+  // columns / other server-class RPC failures as 4xx client errors. This
+  // 500 code mirrors `booking.edit_failed`'s role for editOne/editSlot
+  // (reservation.service.ts:1184-1191 + STATUS_BY_CODE entry at
+  // map-rpc-error.ts:349). Routes via the renderer to a server-class
+  // toast (retry + traceId + contact-support) instead of an inline
+  // validation surface that the operator can't action.
+  | 'edit_booking_scope.update_failed'
+  // ─── Phase 1.B universal workflow ───────────────────────────────────────
+  // Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.12
+  // (Phase 1 codes — three spawn-link safety guards raised by
+  // WorkflowEngineService.assertSpawnLinkSafe before a parent workflow
+  // node spawns a child entity). All 422: the payload is well-formed but
+  // the spawn would violate the chain invariants (terminated parent /
+  // depth limit / cycle). 422 routes through the web error renderer as
+  // class:'validation' — surfaces as an inline editor error rather than
+  // a server-class retry loop, which is the right shape (the operator
+  // re-authoring the workflow definition is the mitigation).
+  | 'spawn_link.parent_terminated'
+  | 'spawn_link.depth_exceeded'
+  | 'spawn_link.cycle_detected';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -856,6 +939,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'booking.invalid_attendee_count',
   'booking.invalid_attendee_person_ids',
   'booking.invalid_window',
+  'booking.invalid_space_id',
   'reference.not_in_tenant',
   'reference.lookup_failed',
   'reference.invalid_uuid',
@@ -978,6 +1062,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'booking.scheduler_window_requires_range',
   'booking.no_primary_slot',
   'booking.edit_failed',
+  'booking.cascade_cross_tenant_batch',
   'booking.list_failed',
   'booking.cancel_failed',
   'booking.skip_failed',
@@ -1352,6 +1437,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'update_entity_combined.invalid_cost',
   'update_entity_combined.invalid_watcher',
   'update_entity_combined.invalid_plan',
+  'update_entity_combined.invalid_source',
   'dispatch_child_work_order.parent_not_found',
   'dispatch_child_work_order.parent_not_dispatchable',
   'dispatch_child_work_order.invalid_payload',
@@ -1416,6 +1502,42 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'floor_plan.availability.invalid_window',
   'floor_plan.availability.invalid_args',
   'floor_plan.availability_failed',
+  // B.4 Step 2F.1 — edit_booking_scope RPC (00367). See KnownErrorCode
+  // union for per-code rationale.
+  'edit_booking_scope.invalid_plans',
+  'edit_booking_scope.too_many_occurrences',
+  'edit_booking_scope.booking_not_found',
+  'edit_booking_scope.mixed_series',
+  // B.4 Step 2F.2 — assembleScopeEditPlan defensive codes. See KnownErrorCode
+  // union for per-code rationale.
+  'edit_booking_scope.time_shift_not_supported',
+  'edit_booking_scope.not_recurring',
+  'edit_booking_scope.series_mismatch',
+  'edit_booking_scope.empty_scope',
+  'edit_booking_scope.primary_slot_not_found',
+  // B.4 Step 2F.3 self-review remediation (I1) — see KnownErrorCode union
+  // for rationale (500 server-class fallback for unknown RPC errors).
+  'edit_booking_scope.update_failed',
+  // ─── Phase 1.B universal workflow ───────────────────────────────────────
+  // See KnownErrorCode union for per-code rationale. All 422.
+  'spawn_link.parent_terminated',
+  'spawn_link.depth_exceeded',
+  'spawn_link.cycle_detected',
+  // ─── Slice B planning board (work-order planning read path) ─────────────
+  // Validation codes for `GET /work-orders/planning`. All 422.
+  'planning.window_invalid',
+  'planning.window_too_wide',
+  'planning.status_invalid',
+  // 409: PATCH /work-orders/:id refused because caller's plan_version
+  // is stale vs the row. Carries serverVersion (current_version on the
+  // row) + clientVersion (what the caller passed) per AppErrors.conflict
+  // wire-shape contract.
+  'planning.version_conflict',
+  // 403: GET /work-orders/planning rejected because the actor has no
+  // operator paths (full-review C1 — lane endpoint leaks team rosters
+  // + vendor identity to non-operators). Admin/operator override via
+  // tickets.read_all still bypasses.
+  'planning.operator_only',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

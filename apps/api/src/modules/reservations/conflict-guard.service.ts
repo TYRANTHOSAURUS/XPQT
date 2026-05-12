@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { TenantContext } from '../../common/tenant-context';
 
 /**
  * Conflict guard for booking slots.
@@ -46,14 +45,20 @@ export class ConflictGuardService {
    * embed `bookings(requester_person_id)`; in the new schema, slots don't
    * carry the requester directly. Returned shape is preserved (flat
    * `requester_person_id`) to keep callers unchanged.
+   *
+   * Phase 8 (Tier B follow-up #2): `tenant_id` is part of the args bundle
+   * so a missing/wrong tenant is a compile error, not a runtime
+   * cross-tenant leak through the admin client (matches the sibling
+   * `snapshotBuffersForBooking` threading).
    */
   async preCheck(args: {
+    tenant_id: string;
     space_id: string;
     effective_start_at: string;
     effective_end_at: string;
     exclude_ids?: string[];
   }): Promise<{ id: string; start_at: string; end_at: string; status: string; requester_person_id: string }[]> {
-    const tenantId = TenantContext.current().id;
+    const tenantId = args.tenant_id;
 
     // tstzrange overlap query against the active states the exclusion constraint covers.
     // PostgREST embed shape: `bookings(...)` resolves the FK booking_id -> bookings.id.
@@ -125,8 +130,13 @@ export class ConflictGuardService {
    * Returns the buffer minutes to actually persist on the new row.
    * If an immediately-prior or following booking on the same room belongs
    * to the same requester_person_id, the touching buffer is zeroed.
+   *
+   * Phase 8 (Tier B follow-up #2): `tenant_id` is part of the args bundle
+   * so a missing/wrong tenant is a compile error, not a runtime
+   * cross-tenant leak through the admin client.
    */
   async snapshotBuffersForBooking(args: {
+    tenant_id: string;
     space_id: string;
     requester_person_id: string;
     start_at: string;
@@ -135,7 +145,7 @@ export class ConflictGuardService {
     room_teardown_buffer_minutes: number;
     exclude_ids?: string[];
   }): Promise<{ setup_buffer_minutes: number; teardown_buffer_minutes: number }> {
-    const tenantId = TenantContext.current().id;
+    const tenantId = args.tenant_id;
 
     let setup = args.room_setup_buffer_minutes;
     let teardown = args.room_teardown_buffer_minutes;

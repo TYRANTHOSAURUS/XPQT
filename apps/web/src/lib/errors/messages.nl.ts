@@ -136,6 +136,28 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     detail: 'Probeer het opnieuw. Blijft dit gebeuren, neem dan contact op met support en geef het trace-ID door.',
   },
 
+  // ─── Slice B planning board ──────────────────────────────────────────────
+  'planning.window_invalid': {
+    title: 'Kon planbord niet laden',
+    detail: 'De datumreeks ontbreekt of is ongeldig.',
+  },
+  'planning.window_too_wide': {
+    title: 'Datumreeks is te breed',
+    detail: 'Kies een venster van maximaal twee weken.',
+  },
+  'planning.status_invalid': {
+    title: 'Kon niet filteren op die status',
+    detail: 'De gekozen status wordt niet herkend.',
+  },
+  'planning.version_conflict': {
+    title: 'Verplaatst door iemand anders',
+    detail: 'Een andere planner heeft deze werkorder zojuist verplaatst. Herlaad om hun wijziging te zien, of behoud je wijziging en overschrijf de hunne.',
+  },
+  'planning.operator_only': {
+    title: 'Je hebt geen toegang tot het planbord',
+    detail: 'Het planbord is alleen beschikbaar voor operators. Vraag een beheerder als je toegang nodig hebt.',
+  },
+
   // ─── work-orders ─────────────────────────────────────────────────────────
   'work_order.plan_invalid': {
     title: 'Kon werkbon niet aanmaken',
@@ -437,6 +459,10 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon niet bijwerken — ongeldig tijdvenster',
     detail: 'Controleer de start- en eindtijd.',
   },
+  'booking.invalid_space_id': {
+    title: 'Kon niet bijwerken — ongeldige ruimte',
+    detail: 'Kies een geldige ruimte of laat de ruimte ongewijzigd.',
+  },
   'booking.idempotency_payload_mismatch': {
     title: 'Kon niet opslaan — idempotentie-mismatch',
     detail: 'Een nieuwe poging stuurde een andere payload dan het oorspronkelijke verzoek.',
@@ -485,6 +511,7 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon niet wijzigen — geen primair slot',
   },
   'booking.edit_failed': { title: 'Kon de wijzigingen niet opslaan' },
+  'booking.cascade_cross_tenant_batch': { title: 'Serverfout' },
   'booking.list_failed': { title: 'Kon de reserveringen niet laden' },
   'booking.cancel_failed': { title: 'Kon de reservering niet annuleren' },
   'booking.skip_failed': { title: 'Kon dit moment niet overslaan' },
@@ -1508,6 +1535,10 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon niet bijwerken',
     detail: 'Plandata moeten een geldige ISO-tijdstempel zijn en duur moet een niet-negatief geheel getal zijn.',
   },
+  'update_entity_combined.invalid_source': {
+    title: 'Kon niet bijwerken',
+    detail: 'Bron van planwijziging moet board, detail of generator zijn.',
+  },
 
   // B.2.A §3.4 dispatch_child_work_order RPC (00338 / 00339)
   'dispatch_child_work_order.parent_not_found': { title: 'Case niet gevonden' },
@@ -1652,6 +1683,66 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Wijziging geblokkeerd — goedkeuringsregels kunnen nog niet worden opgeslagen',
     detail:
       'Deze wijziging verandert de goedkeuringsregels. Vraag de ruimte-beheerder om goedkeuring voor deze ruimte uit te zetten, of kies een andere ruimte.',
+  },
+  // B.4 Step 2F.1 — edit_booking_scope RPC (00367 + v2 00371). Series-scope edits.
+  // v2 N-2: "afspraken" → "reserveringen"; "seriewijziging" → "reeks-wijziging".
+  'edit_booking_scope.invalid_plans': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'De aanvraag voor de reeks-wijziging was ongeldig. Vernieuw de pagina en probeer het opnieuw.',
+  },
+  'edit_booking_scope.too_many_occurrences': {
+    title: 'Kon de reeks-wijziging niet opslaan — te groot',
+    detail: 'Deze wijziging raakt te veel reserveringen in de serie om in één keer op te slaan. Beperk de scope (bijv. "deze en volgende") of neem contact op met support.',
+  },
+  'edit_booking_scope.booking_not_found': {
+    title: 'Kon de reeks-wijziging niet opslaan — niet gevonden',
+    detail: 'Eén of meer reserveringen in de serie bestaan niet meer. Vernieuw de pagina en probeer het opnieuw.',
+  },
+  'edit_booking_scope.mixed_series': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'De geselecteerde reserveringen horen niet allemaal bij dezelfde serie. Vernieuw de pagina en kies de scope opnieuw.',
+  },
+  // B.4 Step 2F.2 — assembleScopeEditPlan defensive codes. NL voice:
+  // "reservering" family.
+  'edit_booking_scope.time_shift_not_supported': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'Het verschuiven van een hele reeks wordt niet ondersteund. Kies één reservering om de begin- of eindtijd aan te passen.',
+  },
+  'edit_booking_scope.not_recurring': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'Deze reservering hoort niet bij een terugkerende reeks. Gebruik de bewerking voor één reservering.',
+  },
+  'edit_booking_scope.series_mismatch': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'Er ging iets mis bij het koppelen van deze wijziging aan de reeks. Vernieuw de pagina en probeer het opnieuw.',
+  },
+  'edit_booking_scope.empty_scope': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'Er zijn geen reserveringen meer in deze reeks. Vernieuw de pagina en kies de scope opnieuw.',
+  },
+  'edit_booking_scope.primary_slot_not_found': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'Eén van de reserveringen in deze reeks staat in een inconsistente staat. Neem contact op met support als dit blijft gebeuren.',
+  },
+  // B.4 Step 2F.3 self-review remediation (I1) — server-class fallback. Web
+  // mirror van de api registry.
+  'edit_booking_scope.update_failed': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'Er ging iets mis bij het opslaan van deze reeks-wijziging. Probeer het over een moment opnieuw; neem contact op met support als dit blijft gebeuren.',
+  },
+  // ─── Phase 1.B universal workflow ───────────────────────────────────────
+  // Web NL-spiegel van de api nl-tabel.
+  'spawn_link.parent_terminated': {
+    title: 'Kon niet spawnen — bovenliggende workflow is beëindigd',
+    detail: 'Deze workflow is geannuleerd of voltooid. Nieuwe onderliggende entiteiten kunnen niet meer worden aangemaakt vanuit een beëindigde bovenliggende workflow.',
+  },
+  'spawn_link.depth_exceeded': {
+    title: 'Kon niet spawnen — workflow-keten te diep',
+    detail: 'De workflow-keten heeft de dieptelimiet van 10 niveaus bereikt. Herstructureer de workflow zodat er minder lagen worden gespawned.',
+  },
+  'spawn_link.cycle_detected': {
+    title: 'Kon niet spawnen — workflow-cyclus',
+    detail: 'Deze spawn zou een eerdere entiteit opnieuw aanroepen en een oneindige keten vormen. Pas de workflow aan zodat dezelfde entiteit niet opnieuw wordt bezocht.',
   },
 };
 

@@ -16,7 +16,7 @@ import {
 import { BookingCompensationService } from './booking-compensation.service';
 import type {
   ActorContext, Booking, CreateReservationInput, PolicySnapshot,
-  RecurrenceScope, Reservation,
+  Reservation,
 } from './dto/types';
 import type {
   AttachPlan,
@@ -145,10 +145,11 @@ export class BookingFlowService {
     }
 
     // 1+2. Load space + snapshot
-    const space = await this.loadSpace(input.space_id);
+    const space = await this.loadSpace(input.space_id, tenantId);
 
     // 3. Buffer collapse for same-requester back-to-back
     const buffers = await this.conflict.snapshotBuffersForBooking({
+      tenant_id: tenantId,
       space_id: input.space_id,
       requester_person_id: input.requester_person_id,
       start_at: input.start_at,
@@ -158,14 +159,17 @@ export class BookingFlowService {
     });
 
     // 4. Resolve rules
-    const ruleOutcome = await this.ruleResolver.resolve({
-      requester_person_id: input.requester_person_id,
-      space_id: input.space_id,
-      start_at: input.start_at,
-      end_at: input.end_at,
-      attendee_count: input.attendee_count ?? null,
-      criteria: {},
-    });
+    const ruleOutcome = await this.ruleResolver.resolve(
+      {
+        requester_person_id: input.requester_person_id,
+        space_id: input.space_id,
+        start_at: input.start_at,
+        end_at: input.end_at,
+        attendee_count: input.attendee_count ?? null,
+        criteria: {},
+      },
+      tenantId,
+    );
 
     // 5. Deny handling — service desk override gated by permission + reason
     if (ruleOutcome.final === 'deny') {
@@ -285,6 +289,7 @@ export class BookingFlowService {
         // rooms at the same time so the frontend can render a one-click
         // rebook list.
         const conflicts = await this.conflict.preCheck({
+          tenant_id: tenantId,
           space_id: input.space_id,
           effective_start_at: this.subtractMinutes(input.start_at, buffers.setup_buffer_minutes),
           effective_end_at: this.addMinutes(input.end_at, buffers.teardown_buffer_minutes),
@@ -504,7 +509,7 @@ export class BookingFlowService {
     );
 
     if (rpcError) {
-      throw await this.mapAttachPlanRpcError(rpcError, input, bookingInput, actor);
+      throw await this.mapAttachPlanRpcError(rpcError, input, bookingInput, actor, tenantId);
     }
 
     // RPC returns the cached_result jsonb. supabase-js surfaces it directly.
@@ -633,6 +638,7 @@ export class BookingFlowService {
     input: CreateReservationInput,
     bookingInput: BookingInput,
     actor: ActorContext,
+    tenantId: string,
   ): Promise<Error> {
     const code = rpcError.code ?? '';
     const message = rpcError.message ?? '';
@@ -642,6 +648,7 @@ export class BookingFlowService {
     // picker for 3 alternative rooms at the same time).
     if (this.conflict.isExclusionViolation(rpcError as never)) {
       const conflicts = await this.conflict.preCheck({
+        tenant_id: tenantId,
         space_id: input.space_id,
         effective_start_at: this.subtractMinutes(
           input.start_at,
@@ -786,10 +793,11 @@ export class BookingFlowService {
     const tenantId = TenantContext.current().id;
 
     // 1+2. Load space + verify
-    const space = await this.loadSpace(input.space_id);
+    const space = await this.loadSpace(input.space_id, tenantId);
 
     // 3. Buffer collapse for same-requester back-to-back
     const buffers = await this.conflict.snapshotBuffersForBooking({
+      tenant_id: tenantId,
       space_id: input.space_id,
       requester_person_id: input.requester_person_id,
       start_at: input.start_at,
@@ -799,14 +807,17 @@ export class BookingFlowService {
     });
 
     // 4. Resolve booking rules
-    const ruleOutcome = await this.ruleResolver.resolve({
-      requester_person_id: input.requester_person_id,
-      space_id: input.space_id,
-      start_at: input.start_at,
-      end_at: input.end_at,
-      attendee_count: input.attendee_count ?? null,
-      criteria: {},
-    });
+    const ruleOutcome = await this.ruleResolver.resolve(
+      {
+        requester_person_id: input.requester_person_id,
+        space_id: input.space_id,
+        start_at: input.start_at,
+        end_at: input.end_at,
+        attendee_count: input.attendee_count ?? null,
+        criteria: {},
+      },
+      tenantId,
+    );
 
     // 5. Deny gate — same shape as `create`
     if (ruleOutcome.final === 'deny') {
@@ -1030,146 +1041,17 @@ export class BookingFlowService {
     }
   }
 
-  /**
-   * Edit at series scope. The 'this' scope is handled by ReservationService.editOne
-   * directly. 'this_and_following' splits the series at this occurrence and
-   * applies the patch to the new series. 'series' re-materialises the entire
-   * series with the patch (cancels future occurrences and creates new ones).
-   *
-   * For v1 we implement the structural change (split) and leave the patch
-   * application as field-by-field updates. Time-shape changes (recurrence_rule
-   * itself) are out of scope for this seam — emit a warning and degrade.
-   */
-  async editScope(
-    reservationId: string,
-    scope: RecurrenceScope,
-    patch: {
-      space_id?: string;
-      start_at?: string;
-      end_at?: string;
-      attendee_count?: number;
-      attendee_person_ids?: string[];
-      // Self-review I-1 (2026-05-12): widened to `string | null` to
-      // match UpdateReservationDto + editOne. The body below uses
-      // `!== undefined`, so an explicit null lands as `null` on
-      // `bookingPatch.host_person_id` and clears the column. Mirrors
-      // editOne's clear semantics through edit_booking RPC; editScope
-      // routes through a direct UPDATE (multi-row recurrence fanout
-      // still on the legacy path until Step 2F).
-      host_person_id?: string | null;
-    },
-  ): Promise<{ scope: RecurrenceScope; new_series_id?: string; updated: number }> {
-    if (scope === 'this') {
-      // Caller should use ReservationService.editOne; we don't duplicate it here.
-      throw AppErrors.validationFailed('wrong_endpoint', { detail: "Use the regular edit endpoint for scope='this'." });
-    }
-    if (!this.recurrence) {
-      throw AppErrors.validationFailed('recurrence_unavailable', { detail: 'Recurrence service not configured.' });
-    }
-
-    const tenantId = TenantContext.current().id;
-
-    // Post-canonicalisation (2026-05-02):
-    //   - `recurrence_series_id` lives on `bookings` (00277:74), not slots
-    //   - `host_person_id` lives on `bookings` (00277:37)
-    //   - `space_id` / `attendee_count` / `attendee_person_ids` live on
-    //     `booking_slots` (00277:124, 138-139)
-    // The patch is split per-table accordingly. Multi-slot bookings get
-    // the slot-level update applied to ALL slots in the series — v1
-    // expects multi-room editScope to be rare; if a caller needs per-slot
-    // targeting they should use ReservationService.editOne with scope='this'.
-    const bookingPatch: Record<string, unknown> = {};
-    if (patch.host_person_id !== undefined) bookingPatch.host_person_id = patch.host_person_id;
-    const slotPatch: Record<string, unknown> = {};
-    if (patch.space_id) slotPatch.space_id = patch.space_id;
-    if (patch.attendee_count !== undefined) slotPatch.attendee_count = patch.attendee_count;
-    if (patch.attendee_person_ids !== undefined) slotPatch.attendee_person_ids = patch.attendee_person_ids;
-
-    if (scope === 'this_and_following') {
-      const newSeriesId = await this.recurrence.splitSeries(reservationId);
-
-      let updated = 0;
-      if (Object.keys(bookingPatch).length > 0) {
-        const { data, error } = await this.supabase.admin
-          .from('bookings')
-          .update(bookingPatch)
-          .eq('tenant_id', tenantId)
-          .eq('recurrence_series_id', newSeriesId)
-          .select('id');
-        if (error) throw AppErrors.server('edit_scope_failed', { cause: error });
-        updated = (data ?? []).length;
-      }
-      if (Object.keys(slotPatch).length > 0) {
-        // Resolve booking ids for the series, then update their slots.
-        const { data: bookingsRows, error: bErr } = await this.supabase.admin
-          .from('bookings')
-          .select('id')
-          .eq('tenant_id', tenantId)
-          .eq('recurrence_series_id', newSeriesId);
-        if (bErr) throw AppErrors.server('edit_scope_failed', { cause: bErr });
-        const bookingIds = ((bookingsRows ?? []) as Array<{ id: string }>).map((r) => r.id);
-        if (bookingIds.length > 0) {
-          const { data: slotsRows, error: sErr } = await this.supabase.admin
-            .from('booking_slots')
-            .update(slotPatch)
-            .eq('tenant_id', tenantId)
-            .in('booking_id', bookingIds)
-            .select('id');
-          if (sErr) throw AppErrors.server('edit_scope_failed', { cause: sErr });
-          updated = Math.max(updated, (slotsRows ?? []).length);
-        }
-      }
-      return { scope, new_series_id: newSeriesId, updated };
-    }
-
-    // 'series' — apply patch to all rows in the series, forward & past.
-    // Pull the source series id from the pivot booking.
-    const { data: pivot } = await this.supabase.admin
-      .from('bookings')
-      .select('recurrence_series_id')
-      .eq('id', reservationId)
-      .eq('tenant_id', tenantId)
-      .maybeSingle();
-    const seriesId = (pivot as { recurrence_series_id?: string } | null)?.recurrence_series_id;
-    if (!seriesId) {
-      throw AppErrors.validationFailed('not_recurring', { detail: 'Not part of a series.' });
-    }
-    if (Object.keys(bookingPatch).length === 0 && Object.keys(slotPatch).length === 0) {
-      return { scope, updated: 0 };
-    }
-
-    let updated = 0;
-    if (Object.keys(bookingPatch).length > 0) {
-      const { data, error } = await this.supabase.admin
-        .from('bookings')
-        .update(bookingPatch)
-        .eq('tenant_id', tenantId)
-        .eq('recurrence_series_id', seriesId)
-        .select('id');
-      if (error) throw AppErrors.server('edit_scope_failed', { cause: error });
-      updated = (data ?? []).length;
-    }
-    if (Object.keys(slotPatch).length > 0) {
-      const { data: bookingsRows, error: bErr } = await this.supabase.admin
-        .from('bookings')
-        .select('id')
-        .eq('tenant_id', tenantId)
-        .eq('recurrence_series_id', seriesId);
-      if (bErr) throw AppErrors.server('edit_scope_failed', { cause: bErr });
-      const bookingIds = ((bookingsRows ?? []) as Array<{ id: string }>).map((r) => r.id);
-      if (bookingIds.length > 0) {
-        const { data: slotsRows, error: sErr } = await this.supabase.admin
-          .from('booking_slots')
-          .update(slotPatch)
-          .eq('tenant_id', tenantId)
-          .in('booking_id', bookingIds)
-          .select('id');
-        if (sErr) throw AppErrors.server('edit_scope_failed', { cause: sErr });
-        updated = Math.max(updated, (slotsRows ?? []).length);
-      }
-    }
-    return { scope, updated };
-  }
+  // B.4 Step 2F.3 (2026-05-12) — `editScope` deleted. The legacy bare-
+  // UPDATE path (no rule eval, no conflict guard, no capacity check, no
+  // approval re-eval, no cost recompute — bug 6 in docs/follow-ups
+  // /b4-booking-edit-pipeline.md:98) was replaced by
+  // `ReservationService.editScope` which assembles N per-occurrence plans
+  // through `AssembleEditPlanService.assembleScopeEditPlan` and applies
+  // them atomically via the `edit_booking_scope` RPC (00371). The
+  // controller cutover lives at reservation.controller.ts:editScope.
+  //
+  // No caller of `BookingFlowService.editScope` remained outside the
+  // controller; the deletion is fully scoped to this method.
 
   /**
    * Same pipeline but no write — used by the picker preview, the desk
@@ -1185,15 +1067,19 @@ export class BookingFlowService {
     overridable: boolean;
   }> {
     this.assertValid(input);
+    const tenantId = TenantContext.current().id;
 
-    const ruleOutcome = await this.ruleResolver.resolve({
-      requester_person_id: input.requester_person_id,
-      space_id: input.space_id,
-      start_at: input.start_at,
-      end_at: input.end_at,
-      attendee_count: input.attendee_count ?? null,
-      criteria: {},
-    });
+    const ruleOutcome = await this.ruleResolver.resolve(
+      {
+        requester_person_id: input.requester_person_id,
+        space_id: input.space_id,
+        start_at: input.start_at,
+        end_at: input.end_at,
+        attendee_count: input.attendee_count ?? null,
+        criteria: {},
+      },
+      tenantId,
+    );
 
     return {
       outcome:
@@ -1236,8 +1122,12 @@ export class BookingFlowService {
    * Reference: docs/follow-ups/b4-booking-edit-pipeline.md §3.3 step 3
    * (cited at "loadSpace in booking-flow.service.ts:1264-1282" — re-anchored
    * after this exposure).
+   *
+   * Phase 8 (Tier B follow-up #2): `tenantId` is threaded explicitly so
+   * a missing/wrong tenant is a compile error, not a runtime cross-tenant
+   * leak through the admin client.
    */
-  async loadSpace(spaceId: string): Promise<{
+  async loadSpace(spaceId: string, tenantId: string): Promise<{
     id: string;
     type: string;
     reservable: boolean;
@@ -1248,7 +1138,6 @@ export class BookingFlowService {
     check_in_grace_minutes: number | null;
     cost_per_hour: string | null;
   }> {
-    const tenantId = TenantContext.current().id;
     const { data, error } = await this.supabase.admin
       .from('spaces')
       .select('id, type, reservable, capacity, setup_buffer_minutes, teardown_buffer_minutes, check_in_required, check_in_grace_minutes, cost_per_hour, active')

@@ -125,6 +125,54 @@ export async function waitForBlocker(
   );
 }
 
+/**
+ * Wait until `pg_stat_activity` reports that the given backend `pid` is
+ * blocked waiting on a row-level lock (`wait_event_type='Lock' AND
+ * wait_event IN ('transactionid', 'tuple')`). Used by tests where two
+ * RPC calls collide on `SELECT ... FOR UPDATE` (NOT advisory) — the
+ * advisory key differs but the row lock is contended.
+ *
+ * The 250ms sentinel race in the v1 spec was timing-fragile under
+ * loaded CI; this poll-the-actual-wait-state alternative is
+ * deterministic.
+ */
+export async function waitForRowLockBlocker(
+  pool: Pool,
+  pid: number,
+  { timeoutMs = 5_000, pollMs = 25 }: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const r = await pool.query<{ wait_event_type: string | null; wait_event: string | null }>(
+      `select wait_event_type, wait_event
+         from pg_stat_activity
+        where pid = $1`,
+      [pid],
+    );
+    if (
+      r.rows.length > 0 &&
+      r.rows[0].wait_event_type === 'Lock' &&
+      (r.rows[0].wait_event === 'transactionid' || r.rows[0].wait_event === 'tuple')
+    ) {
+      return;
+    }
+    await new Promise((res) => setTimeout(res, pollMs));
+  }
+  const final = await pool.query<{
+    state: string | null;
+    wait_event_type: string | null;
+    wait_event: string | null;
+  }>(
+    `select state, wait_event_type, wait_event
+       from pg_stat_activity
+      where pid = $1`,
+    [pid],
+  );
+  throw new Error(
+    `waitForRowLockBlocker timeout after ${timeoutMs}ms; pg_stat_activity for pid=${pid}: ${JSON.stringify(final.rows)}`,
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Connection helpers
 // ─────────────────────────────────────────────────────────────────────

@@ -52,6 +52,13 @@ export interface TicketDetail {
   sla_resolution_breached_at: string | null;
   planned_start_at: string | null;
   planned_duration_minutes: number | null;
+  /**
+   * Optimistic-lock version for work_orders (00382). Always 1+ on
+   * work_order rows; undefined on case rows (the column lives on
+   * work_orders only). Used by the detail-page PlanField to thread
+   * plan_version on PATCHes that touch planning columns.
+   */
+  plan_version?: number;
   created_at: string;
   requester?: TicketRequester;
   location?: TicketLocation;
@@ -145,4 +152,28 @@ export interface UpdateWorkOrderPayload {
   cost?: number | null;
   tags?: string[] | null;
   watchers?: string[] | null;
+  /**
+   * Optimistic-lock token (00382). Set by planning-board gestures
+   * (drag, resize, keyboard-nudge) AND the detail-page plan editor.
+   * Compared server-side against the row's current plan_version when
+   * the patch touches any of the trigger-tracked columns
+   * (planned_start_at, planned_duration_minutes, assigned_team_id /
+   * _user_id / _vendor_id). Mismatch → 409 planning.version_conflict.
+   * Omit on patches that don't touch planning columns (status, sla,
+   * priority, title) — the check is skipped.
+   */
+  plan_version?: number;
+  /**
+   * Audit-source provenance for the `plan_changed` activity row (00383
+   * v6). Three accepted values:
+   *  - `'board'` — drag, resize, or keyboard nudge on /desk/planning.
+   *  - `'detail'` — PlanField popover on the ticket detail panel.
+   *  - `'generator'` — reserved for the Slice C PM generator producer.
+   *
+   * Stamped into `ticket_activities.metadata.source` only when the
+   * plan branch fires. Omit on patches that don't touch the plan
+   * (sla / status / priority / metadata) — the RPC ignores it. The
+   * server validates the enum at both the controller and RPC layers.
+   */
+  _source?: 'board' | 'detail' | 'generator';
 }

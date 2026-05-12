@@ -29,6 +29,8 @@ XPQT/
 - `pnpm db:reset` — reset database and re-run migrations **(local only!)**
 - `pnpm db:push` — push migrations to the **remote** Supabase project
 - `pnpm smoke:work-orders` — live-API smoke test for the work-order + case command surface (see "Smoke gate" below)
+- `pnpm smoke:edit-booking-scope` — live-API smoke test for the recurrence-scope booking edit pipeline (see "Smoke gate" below)
+- `pnpm smoke:edit-booking` — live-API smoke test for the single-occurrence editOne + editSlot booking edit pipelines (see "Smoke gate" below)
 
 ## Smoke gate (mandatory before claiming WO/case-surface work shipped)
 
@@ -42,6 +44,49 @@ dispatch — plus 7 validation probes for ghost uuids, malformed uuids,
 oversized arrays, ghost assignees, empty title). Uses the
 current-row-XOR-sentinel pattern so every mutation actually exercises
 the write path (no phantom-success on a no-op fast path).
+
+**Run `pnpm --filter @prequest/api smoke:edit-booking-scope` (with the
+dev server running) before claiming any work touching
+`ReservationService.editScope` / `assembleScopeEditPlan` /
+`edit_booking_scope` RPC is complete.** This script lives at
+`apps/api/scripts/smoke-edit-booking-scope.mjs`. It seeds a
+recurrence_series + 5 occurrences directly via psql (bypassing the
+create-flow's rule resolver + conflict guard, which are out of scope
+for an edit-pipeline probe), mints a real Admin JWT, and exercises
+the `POST /reservations/:id/edit-scope` HTTP surface across the
+spec'd scenarios: scope='series' dry-run + commit + idempotent
+replay + payload-mismatch (409); scope='this_and_following' dry-run
+(splitSeries suppressed) + commit (splitSeries fires, new series
+minted, forward bookings move); validation gates (scope='this' →
+`wrong_endpoint`, `start_at` → `edit_booking_scope.time_shift_not_
+supported` (422), invalid scope + non-boolean dry_run →
+`edit_booking_scope.invalid_plans` (400), missing X-Client-Request-
+Id → guard fires). Fixture is dropped in `finally` so a failed run
+doesn't leave orphans.
+
+**Run `pnpm --filter @prequest/api smoke:edit-booking` (with the
+dev server running) before claiming any work touching
+`ReservationService.editOne` / `ReservationService.editSlot` /
+`assembleEditPlan` (kinds `'one'` + `'slot'`) / the `edit_booking`
+RPC (00364) is complete.** This script lives at
+`apps/api/scripts/smoke-edit-booking.mjs`. It seeds two fixtures
+directly via psql (Fixture A: single booking + 1 slot, +130d on
+ROOM_HUDDLE; Fixture B: single booking + 2 slots, +131d, primary
+on ROOM_HUDDLE + non-primary on ROOM_BOARD — `display_order` 0/1
+seeded explicitly), mints a real Admin JWT, and exercises both
+`PATCH /reservations/:id` (editOne) and `PATCH /reservations/
+:bookingId/slots/:slotId` (editSlot) across 20 scenarios: editOne
+mutation matrix (space_id move, geometry shift, idempotency replay,
+payload-mismatch, invalid_window for start>=end + parse-failure,
+invalid_space_id empty string, reference.not_in_tenant ghost-uuid,
+booking_not_found ghost-booking, missing X-Client-Request-Id);
+editSlot mutation matrix (non-primary slot space_id move, URL
+mismatch via Fixture A's slotId + Fixture B's bookingId, MIN(slots)
+rollup on start_at shift, idempotency replay, payload-mismatch,
+invalid_space_id, missing X-Client-Request-Id); op-discrimination
+(editOne + editSlot sharing one crid mint 2 distinct
+command_operations rows — Step 2F.3 contract). Fixtures are dropped
+in `finally` so a failed run doesn't leave orphans.
 
 This gate is the structural defense against the recurring failure
 mode that produced the 2026-05-01 P0 (mocked-Supabase tests pass +

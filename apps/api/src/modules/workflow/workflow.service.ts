@@ -48,7 +48,13 @@ export class WorkflowService {
       .insert({
         tenant_id: tenant.id,
         name: dto.name,
-        entity_type: dto.entity_type ?? 'ticket',
+        // Default to 'case' (NOT 'ticket'). Phase 0 migration 00369
+        // widens the entity_type CHECK to ('case','work_order','booking')
+        // and drops the column default of 'ticket' from 00009:8 — sending
+        // 'ticket' would violate the new CHECK. Phase 4 editor adds an
+        // explicit entity_type picker; until then, callers that omit
+        // entity_type get 'case' (the dominant historical use).
+        entity_type: dto.entity_type ?? 'case',
         graph_definition: dto.graph_definition ?? { nodes: [], edges: [] },
         status: 'draft',
         version: 1,

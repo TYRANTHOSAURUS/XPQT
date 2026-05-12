@@ -21,7 +21,7 @@ import { Public } from '../auth/public.decorator';
 import { TenantContext } from '../../common/tenant-context';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import {
-  CancelReservationDto, CreateReservationDto, FindTimeDto, MultiRoomBookingDto, PickerDto,
+  CancelReservationDto, CreateReservationDto, EditScopeDto, FindTimeDto, MultiRoomBookingDto, PickerDto,
   SchedulerDataDto, SchedulerWindowDto, UpdateReservationDto,
 } from './dto/dtos';
 import type { ActorContext, CreateReservationInput, PickerInput } from './dto/types';
@@ -398,38 +398,55 @@ export class ReservationController {
    * 'series'). Single-occurrence edits go through PATCH /:id (the regular
    * edit path).
    *
-   * Authorisation: must pass the same `canEdit` visibility check the
-   * single-occurrence edit applies. Without this check any authenticated
-   * user could mutate any series in their tenant by guessing a UUID
-   * because the underlying `BookingFlowService.editScope` uses the admin
-   * client (RLS bypass) and only filters by `recurrence_series_id`.
+   * Authorisation: visibility + `canEdit` checks live inside
+   * `ReservationService.editScope` (mirrors editOne / editSlot — service-
+   * layer gates, not controller-layer ones). Without these checks any
+   * authenticated user could mutate any series in their tenant by guessing
+   * a UUID, because the RPC uses the admin client (RLS bypass) and only
+   * filters by tenant_id + recurrence_series_id.
+   *
+   * B.4 Step 2F.3 — cutover. Pre-cutover the controller called
+   * `BookingFlowService.editScope` which ran bare `UPDATE bookings/booking
+   * _slots WHERE recurrence_series_id = ?` queries with zero rule eval,
+   * conflict guard, capacity check, approval re-eval, or cost recompute
+   * (bug 6 in docs/follow-ups/b4-booking-edit-pipeline.md:98). Post-
+   * cutover the call routes to `ReservationService.editScope` which builds
+   * per-occurrence plans via `assembleScopeEditPlan` and applies them
+   * atomically through the `edit_booking_scope` RPC (00371).
+   *
+   * Producer route — requires `X-Client-Request-Id` so the RPC's
+   * `command_operations` idempotency gate (00371:255-269) collapses retries
+   * onto a single committed result. Without the guard, a network blip
+   * mid-write would silently double-edit the series.
    */
   @Post(':id/edit-scope')
+  @UseGuards(RequireClientRequestIdGuard)
   async editScope(
     @Req() request: Request,
     @Param('id') id: string,
-    @Body() dto: { scope: 'this_and_following' | 'series' } & UpdateReservationDto,
+    @Body() body: EditScopeDto,
   ) {
     const actor = await this.actorFromRequest(request);
-    const tenantId = TenantContext.current().id;
-    // Loads the pivot reservation (asserts it's visible) and gates write.
-    // Resolves visibility against actor.user_id directly — passing it as
-    // an authUid would be a category mismatch (loadContext queries by
-    // auth_uid, returns an empty context for any user_id, and breaks
-    // every gate downstream).
-    const pivot = await this.service.findOneForActor(id, actor);
-    const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
-    if (!this.visibility.canEdit(pivot, ctx)) {
-      throw AppErrors.forbidden('reservation_not_editable', 'You cannot edit this booking.');
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    if (!clientRequestId) {
+      // Defense-in-depth — the guard already rejected the missing-header
+      // case, so reaching this branch means a programming error in the
+      // guard wiring, not a user mistake. Mirrors editOne (:310-317) and
+      // editSlot (:366-373); same `command_operations.unexpected_state`
+      // server-class code so ops investigates.
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail: 'editScope reached service layer with no clientRequestId despite RequireClientRequestIdGuard.',
+      });
     }
-    return this.bookingFlow.editScope(id, dto.scope, {
-      space_id: dto.space_id,
-      start_at: dto.start_at,
-      end_at: dto.end_at,
-      attendee_count: dto.attendee_count,
-      attendee_person_ids: dto.attendee_person_ids,
-      host_person_id: dto.host_person_id,
-    });
+    // dry_run shape guard at the controller boundary — the service does
+    // the same check (defense-in-depth) but rejecting here saves an
+    // actor-load round-trip when a buggy client sends a string.
+    if (body.dry_run !== undefined && typeof body.dry_run !== 'boolean') {
+      throw AppErrors.validationFailed('edit_booking_scope.invalid_plans', {
+        detail: 'dry_run must be a boolean if provided.',
+      });
+    }
+    return this.service.editScope(id, body, actor, clientRequestId);
   }
 
   @Post(':id/restore')

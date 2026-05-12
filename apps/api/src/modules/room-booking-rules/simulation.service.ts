@@ -39,6 +39,7 @@ export class SimulationService {
   ) {}
 
   async run(dto: SimulateDto): Promise<SimulationResult> {
+    const tenantId = TenantContext.current().id;
     if (dto.draft_rules && dto.draft_rules.length > 0) {
       // Mix saved + draft rules. We fetch all saved rules for the tenant
       // (active=true) and union with the drafts. The resolver path expects
@@ -46,7 +47,7 @@ export class SimulationService {
       const saved = await this.fetchActiveRulesAsRows();
       const drafts: RuleRow[] = dto.draft_rules.map((d, idx) => ({
         id: `draft-${idx}`,
-        tenant_id: TenantContext.current().id,
+        tenant_id: tenantId,
         name: d.name ?? `Draft ${idx + 1}`,
         target_scope: d.target_scope,
         target_id: d.target_id ?? null,
@@ -61,11 +62,12 @@ export class SimulationService {
       const outcome = await this.resolver.evaluateAdHoc(
         [...saved, ...drafts],
         dto.scenario,
+        tenantId,
       );
       return this.formatResult(outcome);
     }
 
-    const outcome = await this.resolver.resolve(dto.scenario);
+    const outcome = await this.resolver.resolve(dto.scenario, tenantId);
     return this.formatResult(outcome);
   }
 

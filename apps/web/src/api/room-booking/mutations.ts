@@ -146,23 +146,24 @@ export function useMultiRoomBooking() {
 /**
  * Booking-LEVEL edit. Use for fields that are not slot geometry —
  * `host_person_id`, `attendee_count`, `attendee_person_ids`. Routes to
- * the legacy `PATCH /reservations/:id` which only edits the booking's
- * PRIMARY slot (lowest display_order). For slot-geometry edits in a
- * multi-room context, use `useEditBookingSlot` below — that's the path
- * the desk scheduler drag/resize/move hits so a non-primary slot
- * actually moves the slot the operator clicked.
+ * `PATCH /reservations/:id` which edits the booking's PRIMARY slot
+ * (lowest display_order). For slot-geometry edits in a multi-room
+ * context, use `useEditBookingSlot` below — that's the path the desk
+ * scheduler drag/resize/move hits so a non-primary slot actually moves
+ * the slot the operator clicked.
  *
- * `requestId` — defense-in-depth (B.4 step 2D-D self-review P1).
- * The PATCH /:id (editOne) controller is NOT yet guarded by
- * RequireClientRequestIdGuard (Step 2E ships its own cutover), but
- * editOne's geometry path DELEGATES to editSlot (reservation.service.ts
- * :877, line `const delegateCrid = actor.client_request_id`). Without
- * a client-supplied header the middleware falls back to a fresh
- * server-generated UUID per request — cross-retry idempotency on the
- * delegated editSlot call is silently broken (the implementer's own
- * note at reservation.service.ts:870-876). Sending the header now
- * preserves at-most-once-per-attempt semantics through the delegation
- * AND lets Step 2E flip the controller guard with zero frontend churn.
+ * Producer route — REQUIRES `requestId`. Codex NIT-1e (2026-05-12):
+ * pre-cutover this hook's `requestId` was defense-in-depth because
+ * editOne delegated to editSlot under the hood. Post B.4 step 2E
+ * editOne is a producer route in its own right (assembleEditPlan +
+ * edit_booking RPC, sibling to editSlot — no cross-method delegation).
+ * The PATCH /:id controller is now guarded by RequireClientRequestIdGuard
+ * (same as multi-room and editSlot), so the header is mandatory: omit
+ * it and the request 400s with `client_request_id.required`. Caller
+ * generates `requestId` ONCE per attempt with `crypto.randomUUID()`
+ * inside the form-submit handler so React Query retries reuse the id
+ * and the backend's `command_operations` cached_result hits on the
+ * second attempt.
  */
 export interface EditBookingVariables {
   id: string;
@@ -239,6 +240,143 @@ export function useEditBookingSlot() {
       invalidateAfterWrite(queryClient);
     },
     ...withErrorHandling({ actionTitle: "Couldn't move booking" }),
+  });
+}
+
+/**
+ * B.4 Step 2F.3 — scope-edit hooks for `POST /reservations/:id/edit-scope`.
+ *
+ * Series edits run through the same `assembleScopeEditPlan` +
+ * `edit_booking_scope` RPC pipeline (atomic across N occurrences). Two
+ * hooks pair the wire shape:
+ *
+ *   - `useEditBookingScopeDryRun` sends `p_dry_run=true` and returns the
+ *     preview envelope (`would_succeed`, per-occurrence breakdown,
+ *     aggregated_follow_ups). NO commits — visitor cascade is skipped
+ *     on the backend; idempotency row not touched. Mainstream use case:
+ *     a "What will change?" panel before the operator clicks Commit.
+ *   - `useEditBookingScope` sends `p_dry_run=false` and commits across
+ *     every occurrence. Returns the commit envelope with `committed`,
+ *     `new_series_id` (when scope='this_and_following'), and the
+ *     per-occurrence diff for UI confirmation.
+ *
+ * Both producer routes require `X-Client-Request-Id` (the controller is
+ * guarded by `RequireClientRequestIdGuard`). Same Pattern A as every
+ * other producer hook: caller mints `requestId` once per attempt with
+ * `crypto.randomUUID()` so React Query retries reuse the id and the
+ * RPC's `command_operations` cached_result short-circuits. **dry-run +
+ * commit MAY share the same crid** by 00371 v2 design — dry-run is a
+ * stateless preview that does NOT touch `command_operations`, so a
+ * crid covering both phases of a "preview then commit" flow is valid.
+ */
+export interface EditBookingScopeVariables {
+  id: string;
+  body: {
+    scope: 'this_and_following' | 'series';
+    space_id?: string;
+    attendee_count?: number | null;
+    attendee_person_ids?: string[];
+    host_person_id?: string | null;
+  };
+  requestId: string;
+}
+
+/**
+ * Per-occurrence row in the RPC return envelope (commit shape +
+ * dry-run shape overlap; commit has `slots_updated`/`follow_ups`,
+ * dry-run has `would_succeed`/`follow_ups_preview` — both branches
+ * always carry the before/after diff fields).
+ *
+ * Mirrors the TS type on the service layer at
+ * `apps/api/src/modules/reservations/reservation.service.ts` and the
+ * RPC return shapes at `supabase/migrations/00371_edit_booking_scope
+ * _rpc_v2.sql:1114-1125` (commit) + `:808-822` (dry-run).
+ */
+export interface EditBookingScopeOccurrence {
+  booking_id: string;
+  space_id_before: string;
+  space_id_after: string;
+  start_at_before: string;
+  start_at_after: string;
+  // Commit branch.
+  slots_updated?: number;
+  assets_updated?: number;
+  orders_updated?: number;
+  wo_updated?: number;
+  follow_ups?: string[];
+  // Dry-run branch.
+  would_succeed?: boolean;
+  approval_action?: string;
+  follow_ups_preview?: string[];
+  slots_to_update?: number;
+  assets_to_update?: number;
+  orders_to_update?: number;
+  wo_to_update?: number;
+}
+
+export interface EditBookingScopeResult {
+  scope: 'this_and_following' | 'series';
+  new_series_id?: string;
+  dry_run: boolean;
+  // Commit-only.
+  committed?: number;
+  // Dry-run-only.
+  would_succeed?: boolean;
+  // Shared.
+  series_id?: string;
+  per_occurrence?: EditBookingScopeOccurrence[];
+  aggregated_follow_ups?: string[];
+}
+
+/**
+ * Dry-run preview. Same body shape as the commit hook except `dry_run`
+ * is forced to `true` on the wire. Returns the preview envelope with
+ * `would_succeed: true` + per-occurrence outcomes (or rejects with the
+ * RPC's structured error code on validation failure / capacity bust /
+ * approval-required at any single occurrence).
+ *
+ * Does NOT invalidate any queries — preview by definition mutates
+ * nothing. The mainstream "preview, then click Commit" flow re-uses
+ * the `useEditBookingScope` hook below for the actual write.
+ */
+export function useEditBookingScopeDryRun() {
+  return useMutation<EditBookingScopeResult, Error, EditBookingScopeVariables>({
+    mutationFn: ({ id, body, requestId }) =>
+      apiFetch<EditBookingScopeResult>(`/reservations/${id}/edit-scope`, {
+        method: 'POST',
+        body: JSON.stringify({ ...body, dry_run: true }),
+        headers: { 'X-Client-Request-Id': requestId },
+      }),
+    ...withErrorHandling({ actionTitle: "Couldn't preview series edit" }),
+  });
+}
+
+/**
+ * Commit. Fan-out atomic write across every occurrence in scope.
+ * Returns the commit envelope with `committed: N` + (when scope=
+ * `this_and_following`) the `new_series_id` minted by `splitSeries`.
+ *
+ * On success, invalidates the pivot booking's detail key + every
+ * key under `roomBookingKeys.lists()` / scheduler-data / etc. — same
+ * fan-out as `useEditBooking`, because we don't have a list of every
+ * affected booking_id at the client (the RPC return carries
+ * `per_occurrence[].booking_id` if a future iteration wants surgical
+ * invalidation).
+ */
+export function useEditBookingScope() {
+  const queryClient = useQueryClient();
+  return useMutation<EditBookingScopeResult, Error, EditBookingScopeVariables>({
+    mutationFn: ({ id, body, requestId }) =>
+      apiFetch<EditBookingScopeResult>(`/reservations/${id}/edit-scope`, {
+        method: 'POST',
+        body: JSON.stringify({ ...body, dry_run: false }),
+        headers: { 'X-Client-Request-Id': requestId },
+      }),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(vars.id) });
+      invalidateAfterWrite(queryClient);
+    },
+    ...withErrorHandling({ actionTitle: "Couldn't update series" }),
   });
 }
 

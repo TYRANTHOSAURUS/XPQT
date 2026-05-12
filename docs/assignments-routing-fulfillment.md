@@ -568,6 +568,20 @@ Explicitly **excluded**: requesters, watchers, and readonly cross-domain roles. 
 
 There is no generator for plandate yet. Setting it is always a deliberate edit by a service-desk operator, the assignee, or the assigned vendor on the WO detail. A future preventive-maintenance feature will populate `planned_start_at` automatically when a maintenance plan spawns a WO; the field, endpoint, and gate above are designed to compose with that without modification.
 
+### Planning board read path — `GET /work-orders/planning` (Slice B, 2026-05-12)
+
+Returns work orders with `planned_start_at` inside `[from, to)` and (separately) open work orders with `planned_start_at IS NULL` matching the same status/team filter (the dispatcher's drag-from rail).
+
+**Visibility / tenant predicate.** `work_orders_visible_for_actor(user_id, tenant_id, has_read_all)` (migration 00374) — the sibling of `tickets_visible_for_actor`. Same six paths. The planning service then loads dimension labels (users, teams, vendors, request_types) in separate per-table queries with explicit `.eq('tenant_id', …)` — no nested Supabase `.select('assigned_user(…)')` past the visibility gate (per `feedback_visibility_gate_lateral`).
+
+**Window cap.** 14 days (`PLANNING_WINDOW_MAX_DAYS` in `packages/shared`). Wider requests fail closed with `planning.window_too_wide`.
+
+**`can_plan` per block.** Parent-case `assigned_team_id` is batch-preloaded for the whole visible set in one query; `assertCanPlan`'s six paths are replayed in TypeScript against the loaded `VisibilityContext` + the preloaded map. No per-block round-trip.
+
+**Lane identifier.** Typed `{ kind: 'user' | 'team' | 'vendor' | 'unassigned', id, label }`. The FE keys lanes by `${kind}:${id}` so user/vendor UUIDs in different namespaces don't collide.
+
+**Audit.** Drag-driven plan changes go through `PATCH /work-orders/:id` — the same path as the detail-view edit. The `metadata.source: 'board' | 'detail' | 'generator'` differentiator on `plan_changed` activity rows shipped via migration 00383 (extended by 00384 to include `_source` in the idempotency hash so a replay with the same crid + different source rejects as `command_operations.payload_mismatch`). The planning board stamps `'board'`, the detail-view `PlanField` stamps `'detail'`, and the Slice C PM generator will stamp `'generator'` over the same RPC arg (`p_activity_source`) when it lands.
+
 ---
 
 ## 8d. Routing decision write path — tenant-validation contract

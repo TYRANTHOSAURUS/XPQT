@@ -331,25 +331,52 @@ export function buildApprovalGrantIdempotencyKey(
 export const EDIT_BOOKING_IDEMPOTENCY_KEY_PREFIX = 'booking:edit';
 
 /**
- * Build the outer idempotency key for `edit_booking`. Shape:
- *   `booking:edit:<booking_id>:<clientRequestId>`
+ * Operation discriminator for the booking-edit family of producer routes.
+ * The three values map to the three controller entry points + their
+ * underlying RPCs:
  *
- * Same booking + same clientRequestId ⇒ same key ⇒ `command_operations`
- * short-circuits the second call. **No actor in the key** — F-CRIT-2 /
- * plan-C1 (dispatch RPC) and the matching B.2.A.Step8 lesson: the
- * clientRequestId is the deduplication boundary. Tying it to actor
- * identity defeats the deduplication contract — same booking + same
- * client retry across a delegation switch (e.g. operator A retries,
- * operator B picks it up with the same crid) would mint different keys
- * and double-write.
+ *   - `'one'`   → `PATCH /reservations/:id`            (editOne → edit_booking)
+ *   - `'slot'`  → `PATCH /reservations/:id/slots/:sid` (editSlot → edit_booking)
+ *   - `'scope'` → `POST  /reservations/:id/edit-scope` (editScope → edit_booking_scope)
  *
- * Cross-actor collisions are the controller's concern: different
- * operations should mint different clientRequestIds client-side. That's
- * a request-shape contract, not a key-shape one.
+ * B.4 Step 2F.3 adds this discriminator (the helper was originally a
+ * 2-arg shape). Rationale: the docstring previously punted cross-
+ * operation deduplication to "client mints different crids per
+ * operation," but a buggy frontend reusing the same crid across an
+ * editOne + editSlot to the same booking would collapse to a single
+ * `command_operations` row and the second call would surface the first
+ * call's cached_result. The discriminator lifts that constraint —
+ * keys diverge by operation even when (bookingId, clientRequestId) match.
+ * Closes the cross-op-collision followup in `docs/follow-ups/b4-followups.md`.
+ */
+export type EditBookingOp = 'one' | 'slot' | 'scope';
+
+/**
+ * Build the outer idempotency key for the booking-edit RPC family. Shape:
+ *   - With op (current):       `booking:edit:<op>:<booking_id>:<clientRequestId>`
+ *   - Without op (legacy):     `booking:edit:<booking_id>:<clientRequestId>`
+ *
+ * Same booking + same clientRequestId + same op ⇒ same key ⇒
+ * `command_operations` short-circuits the second call. Different ops
+ * with the same (bookingId, clientRequestId) mint distinct keys — an
+ * editOne retry never collides with an editSlot retry. **No actor in the
+ * key** per F-CRIT-2 / plan-C1 (dispatch RPC): clientRequestId is the
+ * deduplication boundary; tying it to actor identity defeats the
+ * deduplication contract across delegation switches.
+ *
+ * `op` is the 3rd parameter (optional) to preserve backward compat for
+ * any caller that hasn't been migrated yet. Inside the booking-edit
+ * pipeline (editOne / editSlot / editScope), all call sites pass `op`.
+ * The 2-arg legacy shape is retained ONLY so historical fixtures and
+ * smoke probes that pre-date Step 2F.3 keep compiling; new callers must
+ * always supply `op`.
  */
 export function buildEditBookingIdempotencyKey(
   bookingId: string,
   clientRequestId: string,
+  op?: EditBookingOp,
 ): string {
-  return `${EDIT_BOOKING_IDEMPOTENCY_KEY_PREFIX}:${bookingId}:${clientRequestId}`;
+  return op
+    ? `${EDIT_BOOKING_IDEMPOTENCY_KEY_PREFIX}:${op}:${bookingId}:${clientRequestId}`
+    : `${EDIT_BOOKING_IDEMPOTENCY_KEY_PREFIX}:${bookingId}:${clientRequestId}`;
 }

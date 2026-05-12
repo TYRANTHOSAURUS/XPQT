@@ -96,6 +96,26 @@ const ALT_TEAM = '94000000-0000-0000-0000-000000000005';
 const REAL_PERSON = 'b3a0aa30-3648-4783-92fa-973090877238';
 const GHOST_UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
+// Planning requester-only smoke (P0-3, codex finding follow-up to 5a689110).
+// Seeded by 00381_planning_smoke_requester_seed.sql — a user with zero
+// team memberships, zero role assignments, no read_all override. Paired
+// fixture WO has `requester_person_id` pointing at this seed's person,
+// so a leak in the operator-only predicate (00380) would surface the row.
+//
+// The auth.users entry is bootstrapped by the smoke script via
+// `auth.admin.createUser` (idempotent). The migration cannot create the
+// auth.users row directly — hand-rolled SQL inserts pass psql but fail
+// GoTrue's user-load path ("Database error loading user"). The fixed id
+// below is what the smoke script asks GoTrue to assign; the migration's
+// public.users.auth_uid is pinned to match.
+const PLANNING_REQUESTER_AUTH_UID = 'aa000000-0000-0000-0000-00000000a001';
+const PLANNING_REQUESTER_EMAIL = 'planning-smoke-requester@example.test';
+const PLANNING_REQUESTER_FIXTURE_WO_ID = 'aa000000-0000-0000-0000-0000000000b1';
+// public.users.id for the seed requester. Used by the optional
+// DEBUG_NEGATIVE_REQUESTER_PROBE branch to insert + clean up a
+// team_members row that grants the requester an operator path.
+const PLANNING_REQUESTER_USER_ID = 'aa000000-0000-0000-0000-0000000000a2';
+
 // ─────────────────────────────────────────────────────────────────────
 // Idempotency-key shape — kept in lockstep with @prequest/shared/idempotency
 // (packages/shared/src/idempotency.ts:34 + :60-66). The .mjs runtime can't
@@ -131,10 +151,10 @@ function supa() {
 // Auth — mint a real Admin JWT via Supabase auth.admin.generateLink
 // ─────────────────────────────────────────────────────────────────────
 
-async function mintAdminToken() {
+async function mintTokenFor(authUid) {
   const adm = supa();
-  const { data: u } = await adm.auth.admin.getUserById(ADMIN_AUTH_UID);
-  if (!u?.user) throw new Error(`admin auth uid ${ADMIN_AUTH_UID} not found`);
+  const { data: u } = await adm.auth.admin.getUserById(authUid);
+  if (!u?.user) throw new Error(`auth uid ${authUid} not found`);
 
   const { data: link, error: linkErr } = await adm.auth.admin.generateLink({
     type: 'magiclink',
@@ -151,6 +171,30 @@ async function mintAdminToken() {
   const m = loc?.match(/access_token=([^&]+)/);
   if (!m) throw new Error(`no access_token in verify redirect: ${loc}`);
   return m[1];
+}
+
+async function mintAdminToken() {
+  return mintTokenFor(ADMIN_AUTH_UID);
+}
+
+// Bootstrap the requester-only seed user's auth.users entry. Idempotent:
+// if the user exists, no-op; otherwise create with the fixed uuid the
+// migration's public.users.auth_uid is pinned to. See the comment on
+// PLANNING_REQUESTER_AUTH_UID for why this lives here, not in SQL.
+async function ensureRequesterAuthUser() {
+  const adm = supa();
+  const { data: existing } = await adm.auth.admin.getUserById(PLANNING_REQUESTER_AUTH_UID);
+  if (existing?.user) return;
+  const { error } = await adm.auth.admin.createUser({
+    id: PLANNING_REQUESTER_AUTH_UID,
+    email: PLANNING_REQUESTER_EMAIL,
+    email_confirm: true,
+  });
+  if (error) {
+    throw new Error(
+      `failed to bootstrap requester auth user: ${error.message}`,
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -451,6 +495,429 @@ async function runWorkOrderMutations(headers, probe) {
     },
   }, TENANT_ID, 'work_order', WO_ID);
 
+  // ── P1-2 plan_version (optimistic-lock) probes ──────────────────────
+  // Migration 00382 adds plan_version + before-update trigger. The PATCH
+  // endpoint compares caller's plan_version against the row's current
+  // value when ANY trigger column is in the patch; mismatch → 409
+  // planning.version_conflict.
+  //
+  // Probe shape:
+  //   1. Read current plan_version (v0).
+  //   2. PATCH planned_start_at with plan_version=v0 → 200, row now at v0+1.
+  //   3. PATCH again with stale plan_version=v0 → 409 with
+  //      code=planning.version_conflict + serverVersion=v0+1 + clientVersion=v0.
+  //   4. PATCH with fresh plan_version=v0+1 → 200, row now at v0+2.
+  //   5. Restore start to a stable value at the end so subsequent probes
+  //      operate on a known plan.
+  const beforeVersion = await readWO(headers);
+  const v0 = beforeVersion.plan_version;
+  if (typeof v0 !== 'number') {
+    results.fail += 1;
+    results.failed.push('WO: plan_version present on response');
+    console.log(`  ✗ WO: plan_version present on response — got ${v0}`);
+  } else {
+    results.pass += 1;
+    console.log(`  ✓ WO: plan_version present on response (v${v0})`);
+  }
+
+  const planVersionStart1 = new Date(Date.now() + 4 * 86400000).toISOString();
+  const pvProbe1 = await probeAndAssertCommandOp(
+    probe,
+    'WO: plan_version match → 200',
+    {
+      url: `${API_BASE}/api/work-orders/${WO_ID}`,
+      body: { planned_start_at: planVersionStart1, plan_version: v0 },
+    },
+    TENANT_ID,
+    'work_order',
+    WO_ID,
+  );
+  let v1 = null;
+  if (pvProbe1.ok) {
+    const after1 = await readWO(headers);
+    v1 = after1.plan_version;
+    if (v1 === v0 + 1) {
+      results.pass += 1;
+      console.log(`  ✓ WO: plan_version bumped v${v0} → v${v1}`);
+    } else {
+      results.fail += 1;
+      results.failed.push('WO: plan_version bumped on planning UPDATE');
+      console.log(`  ✗ WO: plan_version expected v${v0 + 1}, got v${v1}`);
+    }
+  }
+
+  // Stale version → 409 with planning.version_conflict.
+  const planVersionStart2 = new Date(Date.now() + 5 * 86400000).toISOString();
+  const pvStale = await probe('WO: stale plan_version → 409', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: { planned_start_at: planVersionStart2, plan_version: v0 },
+    expect: 'conflict',
+  });
+  if (pvStale.ok) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(pvStale.body);
+    } catch {
+      // ignore
+    }
+    if (
+      parsed &&
+      parsed.code === 'planning.version_conflict' &&
+      parsed.serverVersion === String(v1) &&
+      parsed.clientVersion === String(v0)
+    ) {
+      results.pass += 1;
+      console.log(
+        `  ✓ WO: stale plan_version body (code+serverVersion=${parsed.serverVersion} clientVersion=${parsed.clientVersion})`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('WO: stale plan_version body shape');
+      console.log(
+        `  ✗ WO: stale plan_version body shape — got code=${parsed?.code} serverVersion=${parsed?.serverVersion} clientVersion=${parsed?.clientVersion}`,
+      );
+    }
+  }
+
+  // Fresh version → 200 again. Proves "Keep mine" path: re-read fresh
+  // plan_version then re-PATCH.
+  await probeAndAssertCommandOp(
+    probe,
+    'WO: fresh plan_version after conflict → 200',
+    {
+      url: `${API_BASE}/api/work-orders/${WO_ID}`,
+      body: { planned_start_at: planVersionStart2, plan_version: v1 },
+    },
+    TENANT_ID,
+    'work_order',
+    WO_ID,
+  );
+
+  // Restore a sensible plan again for downstream probes.
+  await probeAndAssertCommandOp(probe, 'WO: restore plan (post plan_version)', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: {
+      planned_start_at: new Date(Date.now() + 86400000).toISOString(),
+      planned_duration_minutes: 60,
+    },
+  }, TENANT_ID, 'work_order', WO_ID);
+
+  // ── 00384 codex remediation — concurrent-race authoritative gate ────
+  //
+  // The sequential stale-version probe above proves the *TS pre-check*
+  // path works. The race window codex flagged is when two PATCHes run
+  // SIMULTANEOUSLY and both pre-checks read the same version N — they
+  // both pass, both serialize through the RPC, last write wins. 00384
+  // moved the compare INSIDE the RPC under `SELECT FOR UPDATE`, making
+  // that authoritative. To actually exercise it, fire two PATCHes with
+  // the same starting plan_version via `Promise.all` and assert exactly
+  // one wins.
+  //
+  // Probe shape:
+  //   1. Read current plan_version (vStart).
+  //   2. Promise.all([PATCH1, PATCH2]) — both with plan_version=vStart,
+  //      different planned_start_at values (so both want to mutate),
+  //      different X-Client-Request-Ids (so command_operations doesn't
+  //      dedupe at the idempotency layer — we want the race, not the
+  //      idempotency-replay).
+  //   3. Assert: one returns 2xx, one returns 409.
+  //   4. Parse the 409 body, assert `code=planning.version_conflict`,
+  //      `serverVersion=vStart+1` (the winner's post-trigger value),
+  //      `clientVersion=vStart`.
+  //   5. Restore plan to a stable value.
+  //
+  // The race probe is the structural defense against the "all unit tests
+  // pass + production silently corrupts under concurrent load" failure
+  // mode. Mocked tests will never catch this — only a live concurrent
+  // call against a real Postgres will.
+  const raceStartV = await readWO(headers);
+  const vRaceStart = raceStartV.plan_version;
+  const raceStart1 = new Date(Date.now() + 100 * 86400000).toISOString();
+  const raceStart2 = new Date(Date.now() + 101 * 86400000).toISOString();
+  const raceCid1 = crypto.randomUUID();
+  const raceCid2 = crypto.randomUUID();
+  const fireRace = async (cid, planStart) => {
+    const r = await fetch(`${API_BASE}/api/work-orders/${WO_ID}`, {
+      method: 'PATCH',
+      headers: { ...headers, 'X-Client-Request-Id': cid },
+      body: JSON.stringify({
+        planned_start_at: planStart,
+        plan_version: vRaceStart,
+      }),
+    });
+    return { status: r.status, body: await r.text() };
+  };
+  const [race1, race2] = await Promise.all([
+    fireRace(raceCid1, raceStart1),
+    fireRace(raceCid2, raceStart2),
+  ]);
+  const okStatuses = [race1.status, race2.status].sort();
+  // Expected outcome: one wins (200), one loses (409). The race may
+  // also surface as one 200 + one TS-pre-check 409 if the loser's TS
+  // read landed AFTER the winner's RPC commit — both outcomes are
+  // correct (the RPC body always carries the same wire shape). The
+  // only failure is "both 200" (last-write-wins corruption) or any
+  // 5xx.
+  if (okStatuses[0] === 200 && okStatuses[1] === 409) {
+    results.pass += 1;
+    console.log(
+      `  ✓ WO: concurrent race — exactly one 200 + one 409 (00384 authoritative gate)`,
+    );
+    const losing = race1.status === 409 ? race1 : race2;
+    let parsed = null;
+    try {
+      parsed = JSON.parse(losing.body);
+    } catch {
+      // ignore
+    }
+    const expectedServer = String(vRaceStart + 1);
+    const expectedClient = String(vRaceStart);
+    if (
+      parsed &&
+      parsed.code === 'planning.version_conflict' &&
+      parsed.serverVersion === expectedServer &&
+      parsed.clientVersion === expectedClient
+    ) {
+      results.pass += 1;
+      console.log(
+        `  ✓ WO: concurrent loser body (serverVersion=${parsed.serverVersion} clientVersion=${parsed.clientVersion})`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('WO: concurrent loser body shape');
+      console.log(
+        `  ✗ WO: concurrent loser body shape — got code=${parsed?.code} serverVersion=${parsed?.serverVersion} clientVersion=${parsed?.clientVersion} (expected server=${expectedServer} client=${expectedClient})`,
+      );
+    }
+  } else {
+    results.fail += 1;
+    results.failed.push('WO: concurrent race outcome');
+    console.log(
+      `  ✗ WO: concurrent race — expected [200, 409], got [${race1.status}, ${race2.status}]`,
+    );
+    console.log(`     race1 body: ${race1.body.slice(0, 200)}`);
+    console.log(`     race2 body: ${race2.body.slice(0, 200)}`);
+  }
+  // Restore plan to a known value (use the post-race fresh version).
+  const afterRace = await readWO(headers);
+  await probeAndAssertCommandOp(probe, 'WO: restore plan (post race)', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: {
+      planned_start_at: new Date(Date.now() + 86400000).toISOString(),
+      planned_duration_minutes: 60,
+      plan_version: afterRace.plan_version,
+    },
+  }, TENANT_ID, 'work_order', WO_ID);
+
+  // ── 00384 codex remediation — _source in idempotency hash ───────────
+  //
+  // Pre-00384 the payload_hash was md5(p_patches::text) only. Two
+  // PATCHes with the same X-Client-Request-Id + same patches but
+  // different _source would silently dedupe (the audit row carried
+  // whatever source went first). 00384 includes p_activity_source in
+  // the hash; the second call now trips command_operations.payload_mismatch.
+  //
+  // Probe shape:
+  //   1. PATCH with crid=X + _source='board' + a fresh timestamp → 200.
+  //   2. PATCH with crid=X + same patches + _source='detail' → 409
+  //      command_operations.payload_mismatch.
+  const sourceCid = crypto.randomUUID();
+  const sourceStart = new Date(Date.now() + 200 * 86400000).toISOString();
+  const sourceFirst = await fetch(`${API_BASE}/api/work-orders/${WO_ID}`, {
+    method: 'PATCH',
+    headers: { ...headers, 'X-Client-Request-Id': sourceCid },
+    body: JSON.stringify({ planned_start_at: sourceStart, _source: 'board' }),
+  });
+  if (sourceFirst.status >= 200 && sourceFirst.status < 300) {
+    results.pass += 1;
+    console.log(`  ✓ WO: source-hash first PATCH (_source=board) → 200`);
+  } else {
+    results.fail += 1;
+    results.failed.push('WO: source-hash first PATCH');
+    console.log(
+      `  ✗ WO: source-hash first PATCH → ${sourceFirst.status} (expected 200)`,
+    );
+    console.log(`     ${(await sourceFirst.text()).slice(0, 200)}`);
+  }
+  const sourceReplay = await fetch(`${API_BASE}/api/work-orders/${WO_ID}`, {
+    method: 'PATCH',
+    headers: { ...headers, 'X-Client-Request-Id': sourceCid },
+    body: JSON.stringify({ planned_start_at: sourceStart, _source: 'detail' }),
+  });
+  const sourceReplayBody = await sourceReplay.text();
+  if (sourceReplay.status === 409) {
+    let parsedReplay = null;
+    try {
+      parsedReplay = JSON.parse(sourceReplayBody);
+    } catch {
+      // ignore
+    }
+    if (parsedReplay && parsedReplay.code === 'command_operations.payload_mismatch') {
+      results.pass += 1;
+      console.log(
+        `  ✓ WO: source-hash replay (same crid + different _source) → 409 payload_mismatch`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('WO: source-hash replay body shape');
+      console.log(
+        `  ✗ WO: source-hash replay body shape — got code=${parsedReplay?.code}`,
+      );
+    }
+  } else {
+    results.fail += 1;
+    results.failed.push('WO: source-hash replay status');
+    console.log(
+      `  ✗ WO: source-hash replay status → ${sourceReplay.status} (expected 409)`,
+    );
+    console.log(`     ${sourceReplayBody.slice(0, 240)}`);
+  }
+  // Restore plan to a stable value for downstream probes.
+  await probeAndAssertCommandOp(probe, 'WO: restore plan (post source-hash)', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: {
+      planned_start_at: new Date(Date.now() + 86400000).toISOString(),
+      planned_duration_minutes: 60,
+    },
+  }, TENANT_ID, 'work_order', WO_ID);
+
+  // ── P1-4 audit-source provenance probe (00383 v6) ───────────────────
+  // The combined-update RPC v6 adds an optional p_activity_source arg.
+  // When the plan branch fires, the value lands in ticket_activities.
+  // metadata->>source so operators can tell the planning board ('board')
+  // from the detail-page PlanField ('detail') from the Slice C PM
+  // generator ('generator'). Probe shape:
+  //   1. Read the current plan_version + planned_start_at for the WO.
+  //   2. PATCH planned_start_at with _source: 'board' (different value
+  //      from the restore probe above so the no-op fast path can't fire).
+  //   3. Query the most recent plan_changed activity row for the WO and
+  //      assert metadata->>'source' = 'board'.
+  // Audit rows are append-only by design — no teardown required.
+  const auditProbeStart = new Date(Date.now() + 7 * 86400000).toISOString();
+  const auditProbe = await probeAndAssertCommandOp(
+    probe,
+    'WO: plan PATCH with _source=board → 200',
+    {
+      url: `${API_BASE}/api/work-orders/${WO_ID}`,
+      body: { planned_start_at: auditProbeStart, _source: 'board' },
+    },
+    TENANT_ID,
+    'work_order',
+    WO_ID,
+  );
+  if (auditProbe.ok) {
+    // The RPC inserts the plan_changed row inside the same transaction
+    // as the work_orders UPDATE; by the time the HTTP response lands
+    // the row is committed + queryable by the admin client.
+    const { data: auditRows, error: auditErr } = await supa()
+      .from('ticket_activities')
+      .select('metadata, created_at')
+      .eq('tenant_id', TENANT_ID)
+      .eq('ticket_id', WO_ID)
+      .eq('activity_type', 'system_event')
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (auditErr) {
+      results.fail += 1;
+      results.failed.push('WO: audit row source=board (query error)');
+      console.log(`  ✗ WO: audit row source=board (query error: ${auditErr.message})`);
+    } else if (!auditRows || auditRows.length === 0) {
+      results.fail += 1;
+      results.failed.push('WO: audit row source=board (no row)');
+      console.log(`  ✗ WO: audit row source=board — no ticket_activities row after PATCH`);
+    } else {
+      const meta = auditRows[0].metadata ?? {};
+      if (meta.event === 'plan_changed' && meta.source === 'board') {
+        results.pass += 1;
+        console.log(`  ✓ WO: audit row metadata.source=board (event=plan_changed)`);
+      } else {
+        results.fail += 1;
+        results.failed.push('WO: audit row source=board (wrong shape)');
+        console.log(
+          `  ✗ WO: audit row source=board — got event=${meta.event} source=${meta.source}`,
+        );
+      }
+    }
+  }
+
+  // Full-review I5 (2026-05-12) — verify the 'detail' source path
+  // end-to-end. The previous probe only covered _source: 'board' via the
+  // planning-board surface; the detail-page surface (PlanField in
+  // ticket-detail.tsx:348) was wired but unverified. Probe shape mirrors
+  // the board probe — different timestamp so the no-op fast path can't
+  // mask a regression, audit row append-only so no teardown required.
+  const auditProbeDetailStart = new Date(Date.now() + 9 * 86400000).toISOString();
+  const auditProbeDetail = await probeAndAssertCommandOp(
+    probe,
+    'WO: plan PATCH with _source=detail → 200',
+    {
+      url: `${API_BASE}/api/work-orders/${WO_ID}`,
+      body: { planned_start_at: auditProbeDetailStart, _source: 'detail' },
+    },
+    TENANT_ID,
+    'work_order',
+    WO_ID,
+  );
+  if (auditProbeDetail.ok) {
+    const { data: detailAuditRows, error: detailAuditErr } = await supa()
+      .from('ticket_activities')
+      .select('metadata, created_at')
+      .eq('tenant_id', TENANT_ID)
+      .eq('ticket_id', WO_ID)
+      .eq('activity_type', 'system_event')
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (detailAuditErr) {
+      results.fail += 1;
+      results.failed.push('WO: audit row source=detail (query error)');
+      console.log(`  ✗ WO: audit row source=detail (query error: ${detailAuditErr.message})`);
+    } else if (!detailAuditRows || detailAuditRows.length === 0) {
+      results.fail += 1;
+      results.failed.push('WO: audit row source=detail (no row)');
+      console.log(`  ✗ WO: audit row source=detail — no ticket_activities row after PATCH`);
+    } else {
+      const meta = detailAuditRows[0].metadata ?? {};
+      if (meta.event === 'plan_changed' && meta.source === 'detail') {
+        results.pass += 1;
+        console.log(`  ✓ WO: audit row metadata.source=detail (event=plan_changed)`);
+      } else {
+        results.fail += 1;
+        results.failed.push('WO: audit row source=detail (wrong shape)');
+        console.log(
+          `  ✗ WO: audit row source=detail — got event=${meta.event} source=${meta.source}`,
+        );
+      }
+    }
+  }
+
+  // Invalid _source must reject at the controller layer before any RPC
+  // call lands. Defense in depth: even though the RPC re-validates,
+  // the controller's enum gate is what users hit first.
+  const badSource = await probe('WO: _source=invalid → 400', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: {
+      planned_start_at: new Date(Date.now() + 8 * 86400000).toISOString(),
+      _source: 'bogus',
+    },
+    expect: 'badrequest',
+  });
+  if (badSource.ok) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(badSource.body);
+    } catch {
+      // ignore
+    }
+    if (parsed && parsed.code === 'work_order.field_invalid') {
+      results.pass += 1;
+      console.log('  ✓ WO: invalid _source rejected (code=work_order.field_invalid)');
+    } else {
+      results.fail += 1;
+      results.failed.push('WO: invalid _source rejected (code check)');
+      console.log(`  ✗ WO: invalid _source rejected (code check) — got code=${parsed?.code}`);
+    }
+  }
+
   // sla: clear (null is XOR-different from any current sla_id)
   await probeAndAssertCommandOp(probe, 'WO: sla_id = null', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,
@@ -573,6 +1040,613 @@ async function runValidationProbes(headers, probe) {
   });
 }
 
+async function runPlanningProbes(headers, probe) {
+  console.log('\n=== Planning board read path (Slice B Chunk 1) ===');
+
+  const now = new Date();
+  const today00 = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+  const tomorrow00 = new Date(today00.getTime() + 24 * 60 * 60 * 1000);
+  const fromIso = today00.toISOString();
+  const toIso = tomorrow00.toISOString();
+
+  // Happy path.
+  const happyUrl = `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`;
+  const happyResp = await fetch(happyUrl, { headers });
+  if (happyResp.status !== 200) {
+    results.fail += 1;
+    results.failed.push('Planning: happy path');
+    console.log(`  ✗ GET planning happy → HTTP ${happyResp.status}`);
+    console.log(`     ${(await happyResp.text()).slice(0, 240)}`);
+  } else {
+    const body = await happyResp.json();
+    const ok = body && Array.isArray(body.planned) && Array.isArray(body.unscheduled);
+    if (!ok) {
+      results.fail += 1;
+      results.failed.push('Planning: happy shape');
+      console.log(`  ✗ GET planning happy — response missing planned[] / unscheduled[]`);
+    } else {
+      results.pass += 1;
+      console.log(
+        `  ✓ GET planning happy → 200 (${body.planned.length} planned, ${body.unscheduled.length} unscheduled)`,
+      );
+      const allRows = [...body.planned, ...body.unscheduled];
+      const malformed = allRows.find(
+        (b) => typeof b.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(b.id),
+      );
+      if (malformed) {
+        results.fail += 1;
+        results.failed.push('Planning: block shape');
+        console.log(`  ✗ Planning block has malformed id`);
+      } else if (allRows.length > 0) {
+        results.pass += 1;
+        console.log(`  ✓ Planning blocks have well-formed ids + lane shape`);
+      }
+    }
+  }
+
+  // Window too wide (>14 days) — 400.
+  const wideToIso = new Date(today00.getTime() + 15 * 24 * 60 * 60 * 1000).toISOString();
+  await probe('Planning: 15-day window → 400', {
+    url: `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(wideToIso)}`,
+    method: 'GET',
+    expect: 'badrequest',
+  });
+
+  // from == to — 400.
+  await probe('Planning: from == to → 400', {
+    url: `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(fromIso)}`,
+    method: 'GET',
+    expect: 'badrequest',
+  });
+
+  // Missing from — 400.
+  await probe('Planning: missing from → 400', {
+    url: `${API_BASE}/api/work-orders/planning?to=${encodeURIComponent(toIso)}`,
+    method: 'GET',
+    expect: 'badrequest',
+  });
+
+  // Unknown status — 400.
+  await probe('Planning: unknown status → 400', {
+    url: `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&status=bogus`,
+    method: 'GET',
+    expect: 'badrequest',
+  });
+
+  // Valid status filter — 200 and only matching categories on both
+  // planned[] AND unscheduled[]. Codex review 2026-05-12 flagged that the
+  // previous version inspected only planned[] and could pass vacuously on
+  // an empty seed. We now assert the unscheduled[] also obeys the filter
+  // (open-status floor + the requested filter union).
+  const statusUrl = `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&status=new&status=assigned`;
+  const statusResp = await fetch(statusUrl, { headers });
+  if (statusResp.status === 200) {
+    const body = await statusResp.json();
+    const allowed = new Set(['new', 'assigned']);
+    const plannedViolator = body.planned.find((b) => !allowed.has(b.status_category));
+    const unschedViolator = body.unscheduled.find((b) => !allowed.has(b.status_category));
+    if (plannedViolator || unschedViolator) {
+      results.fail += 1;
+      results.failed.push('Planning: status filter leak');
+      const v = plannedViolator ?? unschedViolator;
+      const where = plannedViolator ? 'planned[]' : 'unscheduled[]';
+      console.log(`  ✗ Planning status filter leaked: ${where} contains ${v.status_category}`);
+    } else {
+      results.pass += 1;
+      console.log(
+        `  ✓ Planning status filter — only new/assigned across ${body.planned.length} planned + ${body.unscheduled.length} unscheduled`,
+      );
+    }
+  } else {
+    results.fail += 1;
+    results.failed.push('Planning: valid status filter');
+    console.log(`  ✗ GET planning status filter → HTTP ${statusResp.status}`);
+  }
+
+  // Block shape probes — assert every block carries the typed lane and
+  // a boolean can_plan. Catches the next breaking regression in the wire
+  // shape without relying on seed counts.
+  const shapeUrl = `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`;
+  const shapeResp = await fetch(shapeUrl, { headers });
+  if (shapeResp.status === 200) {
+    const body = await shapeResp.json();
+    const allBlocks = [...body.planned, ...body.unscheduled];
+    if (allBlocks.length === 0) {
+      // No data is acceptable — but a stricter env should fail closed.
+      console.log(`  · Planning shape probe — empty result, skipped`);
+    } else {
+      const badLane = allBlocks.find(
+        (b) =>
+          !b.lane ||
+          typeof b.lane.kind !== 'string' ||
+          !['user', 'team', 'vendor', 'unassigned'].includes(b.lane.kind) ||
+          typeof b.lane.label !== 'string',
+      );
+      const badCanPlan = allBlocks.find((b) => typeof b.can_plan !== 'boolean');
+      const badUnschedPlanField = body.unscheduled.find((b) => b.planned_start_at !== null);
+      // P1-1: top-level `lanes: PlanningLaneId[]` is mandatory on the
+      // response. Asserted as an array (possibly empty); each entry must
+      // carry the same shape as `block.lane`. Catches a regression that
+      // drops or reshapes the field.
+      const badLanesShape =
+        !Array.isArray(body.lanes) ||
+        body.lanes.some(
+          (l) =>
+            !l ||
+            typeof l.kind !== 'string' ||
+            !['user', 'team', 'vendor', 'unassigned'].includes(l.kind) ||
+            typeof l.label !== 'string',
+        );
+      if (badLane || badCanPlan || badUnschedPlanField || badLanesShape) {
+        results.fail += 1;
+        results.failed.push('Planning: block shape probe');
+        if (badLane) console.log(`  ✗ Planning block has malformed lane: ${JSON.stringify(badLane.lane)}`);
+        if (badCanPlan) console.log(`  ✗ Planning block missing can_plan boolean`);
+        if (badUnschedPlanField) console.log(`  ✗ Unscheduled block has non-null planned_start_at`);
+        if (badLanesShape) console.log(`  ✗ Planning response missing or malformed lanes[] (P1-1): ${JSON.stringify(body.lanes)?.slice(0, 200)}`);
+      } else {
+        results.pass += 1;
+        console.log(`  ✓ Planning block shape — lane typed, can_plan boolean, unscheduled has null planned_start_at, lanes[] present`);
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// P0-3 — requester-only actor coverage for the planning surface.
+//
+// Codex (commit 5a689110) flagged that 00380's operator-only predicate
+// (`work_orders_planning_visible_for_actor`) shipped without end-to-end
+// exclusion coverage: every existing smoke probe runs as Admin (read_all
+// override), so the predicate's requester/watcher exclusion branch was
+// unverified against the live API. A regression that re-introduced the
+// requester branch would still see all smoke probes pass.
+//
+// This probe runs against the requester-only user seeded in
+// 00381_planning_smoke_requester_seed.sql:
+//   - No team memberships, no role assignments, no read_all permission.
+//   - Paired fixture WO `aa000000-…-0000b1` carries
+//     `requester_person_id` = the seed person, with `planned_start_at`
+//     inside today's planning window.
+//
+// Expected: `planned: []` AND `unscheduled: []`. The fixture WO must
+// be excluded because the requester has zero operator paths
+// (assignee / team-member / role-scope / vendor) into the row.
+//
+// Non-vacuous check: the probe also asserts the fixture WO exists at
+// the DB level (via the supabase admin client). If the fixture is
+// missing, the smoke would pass on an empty response for the wrong
+// reason — we want pass-on-exclusion, not pass-on-no-data.
+// ─────────────────────────────────────────────────────────────────────
+
+// Fetch the planning window for the given headers and return parsed body
+// (or null on error — the caller records the failure with the right
+// probe label). Optionally pass `teamId` to set the `?team_id=` query
+// param — used by the full-review C1 probe to assert the operator gate
+// also blocks the lane-roster leak path (requester + ?team_id).
+async function fetchPlanningWindow(headers, fromIso, toIso, teamId) {
+  const params = `from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}${
+    teamId ? `&team_id=${encodeURIComponent(teamId)}` : ''
+  }`;
+  const url = `${API_BASE}/api/work-orders/planning?${params}`;
+  const resp = await fetch(url, { headers });
+  if (resp.status !== 200) {
+    return { ok: false, status: resp.status, text: await resp.text() };
+  }
+  const body = await resp.json();
+  if (!body || !Array.isArray(body.planned) || !Array.isArray(body.unscheduled)) {
+    return { ok: false, status: 200, text: 'malformed response' };
+  }
+  return { ok: true, body };
+}
+
+// Hit the planning endpoint expecting a 403 + planning.operator_only code
+// (full-review C1). Returns { ok: true } when both checks pass; on any
+// mismatch returns a structured failure description that the caller logs
+// + counts.
+async function expectPlanningOperatorOnly(headers, fromIso, toIso, teamId) {
+  const params = `from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}${
+    teamId ? `&team_id=${encodeURIComponent(teamId)}` : ''
+  }`;
+  const url = `${API_BASE}/api/work-orders/planning?${params}`;
+  const resp = await fetch(url, { headers });
+  if (resp.status !== 403) {
+    return {
+      ok: false,
+      reason: `expected HTTP 403, got ${resp.status}`,
+      body: (await resp.text()).slice(0, 240),
+    };
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(await resp.text());
+  } catch {
+    return { ok: false, reason: 'response not JSON' };
+  }
+  if (parsed?.code !== 'planning.operator_only') {
+    return {
+      ok: false,
+      reason: `expected code=planning.operator_only, got code=${parsed?.code}`,
+    };
+  }
+  return { ok: true };
+}
+
+// To run the negative-control branch (which proves the probe is
+// non-vacuous): `DEBUG_NEGATIVE_REQUESTER_PROBE=1 pnpm smoke:work-orders`.
+// The branch inserts a temporary team_members row that grants the
+// requester an operator path, re-runs the probe, asserts it now sees
+// the fixture, then drops the membership. Run manually after any change
+// to the predicate or seed. The normal smoke run (env unset) is the
+// green path only.
+async function runPlanningRequesterProbe(adminHeaders) {
+  console.log('\n=== Planning requester-only probe (P0-3 — operator-only predicate) ===');
+
+  // Pre-flight: confirm the fixture WO exists at the DB level so the
+  // assertion is non-vacuous. Without this, an empty planning response
+  // could mean either "predicate excluded correctly" or "seed missing".
+  const { data: fixture, error: fixtureErr } = await supa()
+    .from('work_orders')
+    .select('id, requester_person_id, planned_start_at, tenant_id')
+    .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID)
+    .maybeSingle();
+  if (fixtureErr || !fixture) {
+    results.fail += 1;
+    results.failed.push('Planning requester: fixture missing');
+    console.log(
+      `  ✗ fixture WO ${PLANNING_REQUESTER_FIXTURE_WO_ID} not found — run migration 00381 first`,
+    );
+    return;
+  }
+  if (fixture.tenant_id !== TENANT_ID) {
+    results.fail += 1;
+    results.failed.push('Planning requester: fixture wrong tenant');
+    console.log(`  ✗ fixture WO tenant mismatch: ${fixture.tenant_id}`);
+    return;
+  }
+
+  // Bump the fixture's planned_start_at into today's UTC window. The
+  // migration sets this at migration time; on day N+1+ the value drifts
+  // out of the probe's today→tomorrow window and the empty-arrays
+  // assertion silently passes for the wrong reason (fixture filtered
+  // out by window, not by predicate). The bump lives here so the
+  // migration stays a pure seed.
+  const now = new Date();
+  const today00 = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+  const tomorrow00 = new Date(today00.getTime() + 24 * 60 * 60 * 1000);
+  const fixtureStart = new Date(today00.getTime() + 12 * 60 * 60 * 1000).toISOString();
+  const fromIso = today00.toISOString();
+  const toIso = tomorrow00.toISOString();
+
+  const { error: bumpErr } = await supa()
+    .from('work_orders')
+    .update({ planned_start_at: fixtureStart })
+    .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID);
+  if (bumpErr) {
+    results.fail += 1;
+    results.failed.push('Planning requester: fixture bump failed');
+    console.log(`  ✗ could not bump fixture into today's window: ${bumpErr.message}`);
+    return;
+  }
+  results.pass += 1;
+  console.log(`  ✓ fixture WO bumped to ${fixtureStart} (today's window)`);
+
+  // Positive control — Admin JWT (read_all override) MUST see the
+  // fixture in `planned`. If it doesn't, the fixture isn't actually
+  // in-window or isn't readable at all, and the requester's empty
+  // result downstream is meaningless. Both halves must pass for the
+  // probe to be non-vacuous.
+  const posBody = await fetchPlanningWindow(adminHeaders, fromIso, toIso);
+  if (!posBody.ok) {
+    results.fail += 1;
+    results.failed.push('Planning requester: positive-control GET non-200');
+    console.log(`  ✗ admin positive-control GET → HTTP ${posBody.status}`);
+    console.log(`     ${(posBody.text || '').slice(0, 240)}`);
+    return;
+  }
+  const adminSeesFixture =
+    posBody.body.planned.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID) ||
+    posBody.body.unscheduled.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID);
+  if (!adminSeesFixture) {
+    results.fail += 1;
+    results.failed.push('Planning requester: positive-control missed fixture');
+    console.log(
+      `  ✗ admin (read_all) does NOT see fixture WO — probe would be vacuous; verify window + fixture state`,
+    );
+    return;
+  }
+  results.pass += 1;
+  console.log(`  ✓ admin (read_all) sees fixture WO — predicate exclusion is the only remaining question`);
+
+  // Bootstrap auth.users for the requester (idempotent — see comment on
+  // PLANNING_REQUESTER_AUTH_UID for why this isn't done in SQL).
+  try {
+    await ensureRequesterAuthUser();
+  } catch (e) {
+    results.fail += 1;
+    results.failed.push('Planning requester: auth bootstrap failed');
+    console.log(`  ✗ ${e.message}`);
+    return;
+  }
+
+  // Mint a JWT for the requester-only seed user.
+  let requesterToken;
+  try {
+    requesterToken = await mintTokenFor(PLANNING_REQUESTER_AUTH_UID);
+  } catch (e) {
+    results.fail += 1;
+    results.failed.push('Planning requester: token mint failed');
+    console.log(`  ✗ failed to mint JWT for requester seed: ${e.message}`);
+    return;
+  }
+  const reqHeaders = {
+    Authorization: `Bearer ${requesterToken}`,
+    'X-Tenant-Id': TENANT_ID,
+    'Content-Type': 'application/json',
+  };
+
+  // Full-review C1 (2026-05-12) — the planning endpoint is now gated at
+  // the controller. A requester with zero operator paths must receive a
+  // 403 with code=planning.operator_only, not a 200 with empty arrays.
+  // The previous probe (200 + empty arrays) was insufficient: when
+  // `?team_id` was supplied, the service ran `loadTeamRoster` +
+  // `loadActiveTenantVendors` BEFORE applying the predicate, leaking the
+  // roster + vendor identities back to the requester. The controller gate
+  // closes that path; this probe verifies the gate fires.
+  const noTeamProbe = await expectPlanningOperatorOnly(reqHeaders, fromIso, toIso);
+  if (!noTeamProbe.ok) {
+    results.fail += 1;
+    results.failed.push('Planning requester: operator gate (no team_id)');
+    console.log(`  ✗ requester GET planning (no team_id) — ${noTeamProbe.reason}`);
+    if (noTeamProbe.body) console.log(`     ${noTeamProbe.body}`);
+    return;
+  }
+  results.pass += 1;
+  console.log(`  ✓ requester GET planning → 403 planning.operator_only (no team_id)`);
+
+  // C1 lane-roster leak — the more dangerous path. Without the
+  // controller gate, this request would pull `team_members` + tenant
+  // vendor labels into the response. The gate must block it identically.
+  const teamProbe = await expectPlanningOperatorOnly(reqHeaders, fromIso, toIso, REAL_TEAM);
+  if (!teamProbe.ok) {
+    results.fail += 1;
+    results.failed.push('Planning requester: operator gate (?team_id=…)');
+    console.log(`  ✗ requester GET planning (?team_id=${REAL_TEAM.slice(0, 8)}…) — ${teamProbe.reason}`);
+    if (teamProbe.body) console.log(`     ${teamProbe.body}`);
+    return;
+  }
+  results.pass += 1;
+  console.log(`  ✓ requester GET planning (?team_id) → 403 planning.operator_only (lane-roster leak closed)`);
+
+  // Negative-control branch — env-gated. Codifies the "did I manually
+  // verify the probe goes red when an operator path is granted?" check.
+  // Skipped on the green path; run after any predicate or seed change.
+  if (process.env.DEBUG_NEGATIVE_REQUESTER_PROBE === '1') {
+    await runRequesterNegativeControl(reqHeaders, fromIso, toIso);
+  }
+}
+
+// Three sub-scenarios — each independently grants the seed requester an
+// operator path through ONE of the three branches `isOperatorContext`
+// checks (team_members + role_assignment + read_all override is admin-
+// only; assigned_user_id is technically a participant path but flips
+// can_plan into "yes"). Each scenario inserts the operator grant,
+// re-runs the planning probe (now expecting 200 because the controller
+// gate passes), asserts the fixture is visible, then cleans up in
+// `finally`. Full-review I2 (2026-05-12) — extends the prior single-
+// scenario coverage so a future regression in either the role or
+// assignee branch doesn't slip through.
+async function runRequesterNegativeControl(reqHeaders, fromIso, toIso) {
+  console.log('\n=== Planning requester NEGATIVE control (DEBUG_NEGATIVE_REQUESTER_PROBE=1) ===');
+
+  // ── Scenario A: team_members grant ──────────────────────────────────
+  await runNegativeControlScenarioTeamMembership(reqHeaders, fromIso, toIso);
+
+  // ── Scenario B: user_role_assignments grant ─────────────────────────
+  // The role_assignments branch of isOperatorContext is exercised here.
+  // Uses the seeded Agent role (`91000000-0000-0000-0000-000000000002`,
+  // migration 00102) with an empty domain_scope + location_scope (= all
+  // domains / all locations) so the predicate flips for any fixture row.
+  await runNegativeControlScenarioRoleAssignment(reqHeaders, fromIso, toIso);
+
+  // ── Scenario C: assigned_user_id (planning predicate sees the
+  //    requester as the assignee). This isn't an "operator" path in
+  //    `isOperatorContext` BUT the SQL predicate `work_orders_planning_
+  //    visible_for_actor` also includes the assignee branch. The
+  //    controller gate fires FIRST though — so this scenario must STILL
+  //    return 403 even though the seed is the assignee. That confirms
+  //    the controller gate is the structural defense; assignee status
+  //    alone doesn't unlock planning-board access.
+  await runNegativeControlScenarioAssignedUser(reqHeaders, fromIso, toIso);
+}
+
+async function runNegativeControlScenarioTeamMembership(reqHeaders, fromIso, toIso) {
+  console.log('\n  — Scenario A: team_members grant');
+  const teamMemberId = crypto.randomUUID();
+  let inserted = false;
+  let reassigned = false;
+  try {
+    // tenant_id is invariant #0 — pin it explicitly on the insert.
+    const { error: insErr } = await supa().from('team_members').insert({
+      id: teamMemberId,
+      tenant_id: TENANT_ID,
+      team_id: REAL_TEAM,
+      user_id: PLANNING_REQUESTER_USER_ID,
+    });
+    if (insErr) {
+      results.fail += 1;
+      results.failed.push('Negative-control A: team_members insert failed');
+      console.log(`    ✗ could not grant operator path: ${insErr.message}`);
+      return;
+    }
+    inserted = true;
+
+    // Re-assign the fixture to REAL_TEAM for the duration of the control
+    // so the team-membership branch of the SQL predicate matches.
+    const { error: assignErr } = await supa()
+      .from('work_orders')
+      .update({ assigned_team_id: REAL_TEAM })
+      .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID);
+    if (assignErr) {
+      results.fail += 1;
+      results.failed.push('Negative-control A: fixture team-assign failed');
+      console.log(`    ✗ could not assign fixture to REAL_TEAM: ${assignErr.message}`);
+      return;
+    }
+    reassigned = true;
+
+    const probe = await fetchPlanningWindow(reqHeaders, fromIso, toIso);
+    if (!probe.ok) {
+      results.fail += 1;
+      results.failed.push('Negative-control A: GET non-200');
+      console.log(`    ✗ GET → HTTP ${probe.status}`);
+      return;
+    }
+    const seesFixture =
+      probe.body.planned.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID) ||
+      probe.body.unscheduled.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID);
+    if (!seesFixture) {
+      results.fail += 1;
+      results.failed.push('Negative-control A: probe empty with team membership');
+      console.log(`    ✗ team membership + fixture re-assigned STILL sees no rows`);
+      return;
+    }
+    results.pass += 1;
+    console.log(`    ✓ team-membership scenario non-vacuous`);
+  } finally {
+    if (reassigned) {
+      const { error: unassignErr } = await supa()
+        .from('work_orders')
+        .update({ assigned_team_id: null })
+        .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID);
+      if (unassignErr) {
+        console.log(`    ! cleanup warn: fixture unassign failed: ${unassignErr.message}`);
+      }
+    }
+    if (inserted) {
+      const { error: delErr } = await supa().from('team_members').delete().eq('id', teamMemberId);
+      if (delErr) {
+        console.log(`    ! cleanup warn: team_members delete failed: ${delErr.message}`);
+      } else {
+        console.log(`    ✓ cleanup: scenario A teardown clean`);
+      }
+    }
+  }
+}
+
+async function runNegativeControlScenarioRoleAssignment(reqHeaders, fromIso, toIso) {
+  console.log('\n  — Scenario B: user_role_assignments grant');
+  const uraId = crypto.randomUUID();
+  const AGENT_ROLE_ID = '91000000-0000-0000-0000-000000000002';
+  let inserted = false;
+  try {
+    // Agent role + empty scope = matches any domain + any location.
+    // The role_assignments branch of isOperatorContext checks
+    // `role_assignments.length > 0` — granting an active row flips it.
+    const { error: insErr } = await supa().from('user_role_assignments').insert({
+      id: uraId,
+      tenant_id: TENANT_ID,
+      user_id: PLANNING_REQUESTER_USER_ID,
+      role_id: AGENT_ROLE_ID,
+      domain_scope: [],
+      location_scope: [],
+      read_only_cross_domain: false,
+      active: true,
+    });
+    if (insErr) {
+      // If user_role_assignments grant fails for shape reasons, log + skip
+      // rather than fail the whole smoke. team_members + assigned_user_id
+      // cover the bulk of the operator-path matrix.
+      console.log(
+        `    ! skipped: user_role_assignments insert failed (${insErr.message}) — team-member + assignee scenarios still cover the matrix`,
+      );
+      return;
+    }
+    inserted = true;
+
+    const probe = await fetchPlanningWindow(reqHeaders, fromIso, toIso);
+    if (!probe.ok) {
+      results.fail += 1;
+      results.failed.push('Negative-control B: GET non-200');
+      console.log(`    ✗ GET → HTTP ${probe.status}`);
+      return;
+    }
+    const seesFixture =
+      probe.body.planned.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID) ||
+      probe.body.unscheduled.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID);
+    if (!seesFixture) {
+      results.fail += 1;
+      results.failed.push('Negative-control B: probe empty with role assignment');
+      console.log(`    ✗ role assignment STILL sees no rows`);
+      return;
+    }
+    results.pass += 1;
+    console.log(`    ✓ role-assignment scenario non-vacuous`);
+  } finally {
+    if (inserted) {
+      const { error: delErr } = await supa().from('user_role_assignments').delete().eq('id', uraId);
+      if (delErr) {
+        console.log(`    ! cleanup warn: user_role_assignments delete failed: ${delErr.message}`);
+      } else {
+        console.log(`    ✓ cleanup: scenario B teardown clean`);
+      }
+    }
+  }
+}
+
+async function runNegativeControlScenarioAssignedUser(reqHeaders, fromIso, toIso) {
+  console.log('\n  — Scenario C: assigned_user_id (participant path, NOT operator)');
+  let assigned = false;
+  try {
+    // The seed user is now the assignee. The SQL predicate
+    // `work_orders_planning_visible_for_actor` includes the assignee
+    // branch, so without the controller gate the fixture would surface.
+    // With the gate in place, the request must still 403 because
+    // assignee status alone isn't an operator path per
+    // isOperatorContext (no team_ids, no role_assignments,
+    // no read_all).
+    const { error: assignErr } = await supa()
+      .from('work_orders')
+      .update({ assigned_user_id: PLANNING_REQUESTER_USER_ID })
+      .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID);
+    if (assignErr) {
+      results.fail += 1;
+      results.failed.push('Negative-control C: assignee update failed');
+      console.log(`    ✗ could not set assigned_user_id: ${assignErr.message}`);
+      return;
+    }
+    assigned = true;
+
+    // Critical assertion — the controller gate fires FIRST, so even
+    // though the SQL predicate would include the fixture for the
+    // assignee, the requester still gets 403. This is the gate's
+    // defense-in-depth value: the predicate alone is not enough.
+    const probe = await expectPlanningOperatorOnly(reqHeaders, fromIso, toIso);
+    if (!probe.ok) {
+      results.fail += 1;
+      results.failed.push('Negative-control C: assignee bypassed operator gate');
+      console.log(
+        `    ✗ assignee bypassed controller gate — ${probe.reason} (defense-in-depth broken)`,
+      );
+      return;
+    }
+    results.pass += 1;
+    console.log(`    ✓ assignee STILL receives 403 — controller gate not bypassed by participant paths`);
+  } finally {
+    if (assigned) {
+      const { error: clearErr } = await supa()
+        .from('work_orders')
+        .update({ assigned_user_id: null })
+        .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID);
+      if (clearErr) {
+        console.log(`    ! cleanup warn: assignee clear failed: ${clearErr.message}`);
+      } else {
+        console.log(`    ✓ cleanup: scenario C teardown clean`);
+      }
+    }
+  }
+}
+
 async function runDispatchProbe(headers, probe) {
   console.log('\n=== Dispatch (creating a child WO) ===');
 
@@ -639,6 +1713,8 @@ async function main() {
   await runWorkOrderMutations(headers, probe);
   await runCaseMutations(headers, probe);
   await runValidationProbes(headers, probe);
+  await runPlanningProbes(headers, probe);
+  await runPlanningRequesterProbe(headers);
   await runDispatchProbe(headers, probe);
 
   console.log(`\n${'='.repeat(60)}`);

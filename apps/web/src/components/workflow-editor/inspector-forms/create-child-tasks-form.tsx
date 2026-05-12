@@ -5,7 +5,7 @@ import { useSlaPolicies } from '@/api/sla-policies';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
-  Field, FieldGroup, FieldLabel, FieldLegend, FieldSet,
+  Field, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet,
 } from '@/components/ui/field';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Plus, Trash2 } from 'lucide-react';
@@ -53,6 +53,9 @@ export function CreateChildTasksForm({ node, readOnly }: { node: WorkflowNode; r
     <FieldGroup>
       <FieldSet>
         <FieldLegend variant="label" className="text-xs">Child tasks</FieldLegend>
+        <FieldDescription>
+          All-or-nothing: if any task fails to dispatch, no tasks are created and the workflow halts at this node.
+        </FieldDescription>
         {tasks.map((t, i) => (
           <div key={i} className="grid gap-2 border rounded p-2">
             <Field>

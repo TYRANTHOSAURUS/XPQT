@@ -138,6 +138,28 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     detail: 'Try again. If it keeps happening, contact support with the trace ID.',
   },
 
+  // ─── Slice B planning board ──────────────────────────────────────────────
+  'planning.window_invalid': {
+    title: "Couldn't load the planning board",
+    detail: 'The date range is missing or invalid.',
+  },
+  'planning.window_too_wide': {
+    title: 'Date range is too wide',
+    detail: 'Pick a window of two weeks or less.',
+  },
+  'planning.status_invalid': {
+    title: "Couldn't filter by that status",
+    detail: 'The selected status is not recognised.',
+  },
+  'planning.version_conflict': {
+    title: 'Moved by someone else',
+    detail: 'Another dispatcher just moved this work order. Reload to see their change, or keep yours and overwrite theirs.',
+  },
+  'planning.operator_only': {
+    title: "You don't have access to the planning board",
+    detail: 'The planning board is available to operators only. Ask an administrator if you need access.',
+  },
+
   // ─── Phase 1 registered codes ────────────────────────────────────────────
   'work_order.plan_invalid': {
     title: "Couldn't create work order",
@@ -182,6 +204,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'booking.invalid_window': {
     title: "Couldn't update — invalid time window",
     detail: 'Check the start and end times.',
+  },
+  'booking.invalid_space_id': {
+    title: "Couldn't update — invalid room",
+    detail: 'Pick a valid room or leave the room unchanged.',
   },
   'reference.not_in_tenant': {
     title: "Couldn't save — referenced item not available",
@@ -448,6 +474,9 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   },
   'booking.edit_failed': {
     title: "Couldn't save the changes",
+  },
+  'booking.cascade_cross_tenant_batch': {
+    title: 'Server error',
   },
   'booking.list_failed': {
     title: "Couldn't load the bookings",
@@ -1606,6 +1635,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't update",
     detail: 'Plan dates must be a valid ISO timestamp and duration must be a non-negative integer.',
   },
+  'update_entity_combined.invalid_source': {
+    title: "Couldn't update",
+    detail: 'Plan change source must be one of board, detail, or generator.',
+  },
 
   // B.2.A §3.4 dispatch_child_work_order RPC (00338 / 00339)
   // parent_not_case removed (F-IMP-2 / plan-I2): post step1c.10c
@@ -1875,6 +1908,72 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'floor_plan.availability_failed': {
     title: "Couldn't load availability",
     detail: "Floor availability couldn't be loaded. Try again in a moment.",
+  },
+  // B.4 Step 2F.1 — edit_booking_scope RPC (00367). Series-scope edits
+  // fan out one EditPlan per occurrence; failures here surface with the
+  // same operator-actionable voice as the single-occurrence edit codes.
+  'edit_booking_scope.invalid_plans': {
+    title: "Couldn't save the series edit",
+    detail: 'The series edit request was malformed. Refresh the page and try again.',
+  },
+  'edit_booking_scope.too_many_occurrences': {
+    title: "Couldn't save the series edit — too large",
+    detail: 'This edit affects too many occurrences to commit in one step. Narrow the scope (e.g. "this and following") or contact support.',
+  },
+  'edit_booking_scope.booking_not_found': {
+    title: "Couldn't save the series edit — not found",
+    detail: 'One or more occurrences in the series no longer exist. Refresh the page and try again.',
+  },
+  'edit_booking_scope.mixed_series': {
+    title: "Couldn't save the series edit",
+    detail: 'The selected occurrences are not all part of the same series. Refresh the page and pick the scope again.',
+  },
+  // B.4 Step 2F.2 — TS-side defensive raises (assembleScopeEditPlan).
+  // 422 codes route to inline validation surface; 500 codes route to a
+  // generic server-error toast with traceId (the renderer handles that).
+  'edit_booking_scope.time_shift_not_supported': {
+    title: "Couldn't save the series edit",
+    detail: 'Series time-shift edits are not supported. Pick a single occurrence to change the start or end time.',
+  },
+  'edit_booking_scope.not_recurring': {
+    title: "Couldn't save the series edit",
+    detail: 'This booking is not part of a recurring series. Use the single-occurrence edit instead.',
+  },
+  'edit_booking_scope.series_mismatch': {
+    title: "Couldn't save the series edit",
+    detail: "Something went wrong matching this edit to the series. Refresh the page and try again.",
+  },
+  'edit_booking_scope.empty_scope': {
+    title: "Couldn't save the series edit",
+    detail: 'No occurrences were found in this series. Refresh the page and pick the scope again.',
+  },
+  'edit_booking_scope.primary_slot_not_found': {
+    title: "Couldn't save the series edit",
+    detail: "One of the occurrences is in an inconsistent state. Contact support if this persists.",
+  },
+  // B.4 Step 2F.3 self-review remediation (I1) — 500 server-class fallback
+  // for unknown RPC errors. Voice mirrors `booking.edit_failed`'s
+  // "Couldn't save the changes" — a transient platform problem the operator
+  // can retry, not an inline validation message.
+  'edit_booking_scope.update_failed': {
+    title: "Couldn't save the series edit",
+    detail: "Something went wrong saving this series edit. Try again in a moment; contact support if this persists.",
+  },
+  // ─── Phase 1.B universal workflow ───────────────────────────────────────
+  // Spec §3.6 + §3.12. Three guards that block invalid spawn-link writes
+  // before the engine commits. 422 surfaces as inline editor copy — the
+  // operator's fix is to restructure the workflow definition, not to retry.
+  'spawn_link.parent_terminated': {
+    title: "Couldn't spawn — parent workflow ended",
+    detail: "This workflow has been cancelled or completed. New child entities can't be spawned from a terminated parent.",
+  },
+  'spawn_link.depth_exceeded': {
+    title: "Couldn't spawn — workflow chain too deep",
+    detail: 'The workflow chain has reached the 10-level depth limit. Restructure the workflow to spawn fewer layers.',
+  },
+  'spawn_link.cycle_detected': {
+    title: "Couldn't spawn — workflow cycle",
+    detail: 'This spawn would re-enter an ancestor entity, creating an infinite chain. Refactor the workflow to avoid revisiting the same entity.',
   },
 };
 

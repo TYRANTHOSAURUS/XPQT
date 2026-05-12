@@ -68,6 +68,13 @@ apps/web/src/api/orders/types.ts:16:  /** Renamed from `linked_reservation_id` p
 apps/web/src/api/orders/types.ts:17:   *  (00278:115 — orders.linked_reservation_id → orders.linked_slot_id).
 apps/web/src/api/orders/types.ts:45:  linked_asset_reservation_id: string | null;
 apps/web/src/api/room-booking-rules/types.ts:171:    reservation_id: string;
+# KEEP_WIRE_SHAPE — URL path string for the edit-scope producer route. The
+# backend route still lives under /reservations/* (Phase 8 frontend rename
+# was column-only; HTTP routes are renamed in a later phase). Test spec
+# references the canonical wire path it exercises.
+apps/web/src/api/room-booking/__tests__/edit-booking-scope-hooks.spec.ts:170:    it('POSTs to /reservations/:id/edit-scope', async () => {
+apps/web/src/api/room-booking/__tests__/edit-booking-scope-hooks.spec.ts:191:      expect(url).toBe(`/api/reservations/${RESERVATION_ID}/edit-scope`);
+apps/web/src/api/room-booking/__tests__/edit-booking-scope-hooks.spec.ts:92:      apiFetch<EditBookingScopeResult>(`/reservations/${id}/edit-scope`, {
 apps/web/src/api/room-booking/keys.ts:103:  // Unified scheduler-data bucket. One round-trip returns rooms + reservations.
 apps/web/src/api/room-booking/keys.ts:132:  /** Cap on reservations payload (default 2000). Truncation surfaces in the response. */
 apps/web/src/api/room-booking/mutations.ts:113:      // `{ group_id, reservations[] }` where `group_id` is the booking
@@ -75,6 +82,7 @@ apps/web/src/api/room-booking/mutations.ts:116:      // Each `reservations[i].id
 apps/web/src/api/room-booking/mutations.ts:118:      apiFetch<{ group_id: string; reservations: Reservation[] }>(
 apps/web/src/api/room-booking/mutations.ts:119:        '/reservations/multi-room',
 apps/web/src/api/room-booking/mutations.ts:133: * the legacy `PATCH /reservations/:id` which only edits the booking's
+apps/web/src/api/room-booking/mutations.ts:149: * `PATCH /reservations/:id` which edits the booking's PRIMARY slot
 apps/web/src/api/room-booking/mutations.ts:148:      apiFetch<Reservation>(`/reservations/${id}`, {
 apps/web/src/api/room-booking/mutations.ts:164: * to `PATCH /reservations/:bookingId/slots/:slotId` so a non-primary
 apps/web/src/api/room-booking/mutations.ts:184:      apiFetch<Reservation>(`/reservations/${bookingId}/slots/${slotId}`, {
@@ -175,3 +183,9 @@ apps/web/src/pages/portal/book-room/hooks/use-realtime-availability.ts:9: * Subs
 apps/web/src/pages/portal/me-bookings/components/bookings-list.tsx:205: * Bucket reservations into calendar-friendly day groups for the Upcoming
 apps/web/src/pages/portal/me-bookings/components/bookings-list.tsx:44:  // reservations"), so we dedup by `booking_id`, keeping the first
 packages/shared/src/error-codes.ts:192:  // ─── reservations module migration (Phase 7.A.2.c.ii) ────────────────────
+apps/web/src/api/room-booking/mutations.ts:345:      apiFetch<EditBookingScopeResult>(`/reservations/${id}/edit-scope`, {
+apps/web/src/api/room-booking/mutations.ts:247: * B.4 Step 2F.3 — scope-edit hooks for `POST /reservations/:id/edit-scope`.
+apps/web/src/api/room-booking/mutations.ts:251: * `apps/api/src/modules/reservations/reservation.service.ts` and the
+packages/shared/src/idempotency.ts:340: *   - `'scope'` → `POST  /reservations/:id/edit-scope` (editScope → edit_booking_scope)
+packages/shared/src/idempotency.ts:338: *   - `'one'`   → `PATCH /reservations/:id`            (editOne → edit_booking)
+packages/shared/src/idempotency.ts:339: *   - `'slot'`  → `PATCH /reservations/:id/slots/:sid` (editSlot → edit_booking)

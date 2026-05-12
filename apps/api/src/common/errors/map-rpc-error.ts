@@ -92,6 +92,12 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // _resolution_at string, etc.). TS plan-build mints these via a Zod
   // schema; the raise is defense-in-depth for non-HTTP callers.
   'edit_booking.invalid_plan_shape': 400,
+  // B.4 Step 2F.1 — edit_booking_scope.invalid_plans (00367). Caller
+  // passed a non-array, empty array, or malformed {booking_id, plan}
+  // element. Same 400 shape as edit_booking.invalid_plan_shape — defense-
+  // in-depth for non-HTTP callers; TS plan-build mints these via a Zod
+  // schema.
+  'edit_booking_scope.invalid_plans': 400,
 
   // ── 404 not_found ────────────────────────────────────────────────
   'transition_entity_status.not_found': 404,
@@ -156,6 +162,12 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'edit_booking.work_order_not_in_booking': 404,
   'edit_booking.order_not_in_booking': 404,
   'edit_booking.asset_reservation_not_in_booking': 404,
+  // B.4 Step 2F.1 — edit_booking_scope.booking_not_found (00367). One
+  // of the booking_ids in p_plans doesn't exist or belongs to a
+  // different tenant. 404 mirrors edit_booking.not_found shape — from
+  // the caller's perspective the row is invisible inside this edit's
+  // scope. Caller refetches the scope-edit plan and retries.
+  'edit_booking_scope.booking_not_found': 404,
 
   // ── 409 conflict ─────────────────────────────────────────────────
   // payload_mismatch: the client reused the same X-Client-Request-Id
@@ -167,6 +179,13 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'transition_entity_status.has_open_children': 409,
   'command_operations.payload_mismatch': 409,
   'dispatch_child_work_order.parent_not_dispatchable': 409,
+  // Codex remediation (00384) — authoritative plan_version race gate. The
+  // RPC raises this AFTER `SELECT FOR UPDATE` on the work_orders row,
+  // carrying `detail = jsonb_build_object('current_version', N+1,
+  // 'client_version', N)::text`. Parsed below into AppErrors.conflict's
+  // serverVersion/clientVersion so the wire body matches the TS pre-check
+  // shape (work-order.service.ts:278-282) byte-for-byte.
+  'planning.version_conflict': 409,
   // B.2.A.Step10 reland §3.5 — grant_ticket_approval CAS race.
   // CAS update missed despite advisory lock + FOR UPDATE; bug in the
   // lock code, not a normal user race. Surface as 409 + log so ops can
@@ -229,6 +248,26 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // status=422; this entry is defense-in-depth for any future RPC raise of
   // the same code (none today; the gate is exclusively TS-side).
   'edit_booking.rule_missing_approvers': 422,
+  // B.4 Step 2F.1 — edit_booking_scope RPC (00367) 422 raises.
+  // - too_many_occurrences: N > 200 hard cap. Request payload is valid;
+  //   the system can't safely commit an unbounded all-or-none batch in
+  //   one transaction. Operator must split the edit OR pass a chunk
+  //   confirmation (TS UX in §7.B.4.C handles this above 100).
+  // - mixed_series: booking_ids don't all share the same non-null
+  //   recurrence_series_id. Request payload is valid jsonb; the
+  //   scope-derivation in the caller is wrong (TS bug or non-HTTP
+  //   smuggling). 422 routes to the validation surface so the operator
+  //   sees the actionable detail ("retry from the scope picker") rather
+  //   than a generic 500 retry-loop.
+  'edit_booking_scope.too_many_occurrences': 422,
+  'edit_booking_scope.mixed_series': 422,
+  // B.4 Step 2F.2 — TS-side defensive raises (assembleScopeEditPlan).
+  // 422 for caller-fixable problems (operator picks a different path /
+  // refetches scope); 500 for internal-consistency bugs (controller
+  // computed effectiveSeriesId then drifted; data corruption).
+  'edit_booking_scope.time_shift_not_supported': 422,
+  'edit_booking_scope.not_recurring': 422,
+  'edit_booking_scope.empty_scope': 422,
   // B.2.A semantic re-derivation gates — RPCs raise these when the
   // TS-side plan disagrees with the server's recomputation at write time
   // (workflow/SLA/scope-override changed, effective location resolved
@@ -258,6 +297,23 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // constructs AppError with status=500 via AppErrors.server; this entry
   // is defense-in-depth for any future RPC raise of the same code.
   'approval.read_failed': 500,
+  // B.4 Step 2F.2 — assembleScopeEditPlan defense-in-depth 500s.
+  // series_mismatch: pivot booking's recurrence_series_id != caller's
+  // effectiveSeriesId. Internal consistency bug; should never happen post
+  // controller computes effectiveSeriesId from pivot. primary_slot_not_found:
+  // an in-scope booking has zero slot rows — data corruption (every booking
+  // must have ≥1 slot per 00043 invariant).
+  'edit_booking_scope.series_mismatch': 500,
+  'edit_booking_scope.primary_slot_not_found': 500,
+  // B.4 Step 2F.3 self-review remediation (I1) — server-class fallback for
+  // unknown RPC errors out of edit_booking_scope (DB timeout, missing column,
+  // any unrecognised raise). Mirrors `booking.edit_failed`'s role for editOne
+  // (line 349 below). Pre-fix the fallback was `edit_booking_scope.invalid_plans`
+  // (a 400), which routed server-class failures through the validation surface
+  // — operator saw an inline "request was malformed" inline error for what was
+  // actually a transient platform problem.
+  'edit_booking_scope.update_failed': 500,
+  // B.4 Step 2F.2 codex remediation — tenant context drift guard.
   // B.4 step 2D-D — controller-vs-notification gate. The TS layer in
   // ReservationService.editSlot pre-flight-rejects any edit whose plan
   // would emit `booking.approval_required` (rows 2/7/8 of §3.6.5) until
@@ -296,6 +352,15 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // api/web message tables); making it explicit here keeps the
   // (fallback, STATUS_BY_CODE) tuple consistent.
   'booking.edit_failed': 500,
+  'booking.cascade_cross_tenant_batch': 500,
+  // ─── Phase 1.B universal workflow ───────────────────────────────────────
+  // Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.12
+  // (Phase 1 codes). All 422 — TS-only raises today (engine.assertSpawnLinkSafe);
+  // listed here as defense-in-depth in case any future spawn RPC raises the
+  // same code (Phase 3 spawn_*_with_link RPCs are the natural candidates).
+  'spawn_link.parent_terminated': 422,
+  'spawn_link.depth_exceeded': 422,
+  'spawn_link.cycle_detected': 422,
 };
 
 /**
@@ -361,8 +426,44 @@ export function mapRpcErrorToAppError(
       // alias on the wire is `<namespace>.<specifier>`, not the standard
       // `<entity>.not_found` shape.
       return AppErrors.notFoundWithCode(code, undefined, { cause: error });
-    case 409:
+    case 409: {
+      // Codex remediation (00384) — surface plan_version conflict details
+      // on the wire. The RPC raises `planning.version_conflict` with
+      // `using detail = jsonb_build_object('current_version', N,
+      // 'client_version', M)::text`. supabase-js puts that on
+      // `PostgrestError.details`; parse and forward into AppErrors.conflict
+      // so the FE sees the same `serverVersion`/`clientVersion` body the
+      // TS pre-check produces (work-order.service.ts:278-282). Defensive
+      // try/catch — if the detail isn't parseable JSON the conflict
+      // surfaces without versions but doesn't crash.
+      if (code === 'planning.version_conflict') {
+        const rawDetail = (error as PostgrestErrorLike).details ?? null;
+        let serverVersion: string | undefined;
+        let clientVersion: string | undefined;
+        if (typeof rawDetail === 'string' && rawDetail.length > 0) {
+          try {
+            const parsed = JSON.parse(rawDetail) as {
+              current_version?: number | string;
+              client_version?: number | string;
+            };
+            if (parsed.current_version !== undefined && parsed.current_version !== null) {
+              serverVersion = String(parsed.current_version);
+            }
+            if (parsed.client_version !== undefined && parsed.client_version !== null) {
+              clientVersion = String(parsed.client_version);
+            }
+          } catch {
+            // fall through with undefined versions
+          }
+        }
+        return AppErrors.conflict(code, {
+          cause: error,
+          serverVersion,
+          clientVersion,
+        });
+      }
       return AppErrors.conflict(code, { cause: error });
+    }
     case 422:
       // 422 unprocessable entity — used for cross-tenant FK rejections
       // that need to differ from generic 400 validation failures. No

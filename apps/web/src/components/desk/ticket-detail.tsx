@@ -331,11 +331,21 @@ export function TicketDetail({ ticketId, onClose, onOpenTicket, onExpand }: { ti
     // the toast-retry callback re-enters handlePlanChange and gets a new id
     // (new logical attempt). See spec §3.9.1.
     const requestId = crypto.randomUUID();
+    // P1-2 (00382): plan_version stages this edit against the row's
+    // current version. The detail page is single-user-ish but a parallel
+    // planning-board drag on the same WO would race this PATCH; passing
+    // plan_version lets the server reject the loser with 409 instead of
+    // silently overwriting.
     updateWorkOrder.mutate(
       {
         payload: {
           planned_start_at: next.startsAt,
           planned_duration_minutes: next.durationMinutes,
+          plan_version: displayedTicket?.plan_version,
+          // P1-4 (00383): the detail-page PlanField is the only plan
+          // editor outside the planning board canvas. Stamp 'detail'
+          // so the audit log can tell a popover edit from a board drag.
+          _source: 'detail',
         },
         requestId,
       },

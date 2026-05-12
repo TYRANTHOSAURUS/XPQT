@@ -130,6 +130,8 @@ public.edit_booking(
 ) returns jsonb
 ```
 
+**Sister RPC for series/this-and-following — `public.edit_booking_scope`.** Lives at `supabase/migrations/00367_edit_booking_scope_rpc.sql` (v1), superseded by `00371_edit_booking_scope_rpc_v2.sql`. Accepts an array of `{ booking_id, plan }` envelopes (one EditPlan per occurrence) + the same tenant/actor/idempotency triple; loops over occurrences inside one transaction. The v2 contract treats dry-run as a stateless preview (no `command_operations` interaction; `payload_hash` excludes `p_dry_run`), so a TS caller can issue dry-run + commit with the SAME idempotency key without tripping `payload_mismatch`. Return shape carries `space_id_before/after` + `start_at_before/after` per occurrence so Step 2F.3's visitor cascade fan-out reads the diff directly instead of N re-reads.
+
 **Return shape (v2 — 6 keys, doc-synced 2026-05-12 self-review Fix 8 in 00362):**
 
 | Key | Type | Description |
@@ -223,10 +225,12 @@ The shape compared by TS mirrors the create-time `approval_config` consumed by `
 
 | # | File | Purpose |
 |---|---|---|
-| 00339 | `edit_booking_rpc.sql` | The combined RPC. **Hard-replaces** 00291's `edit_booking_slot` — see §7 cutover. |
+| 00339 | `edit_booking_rpc.sql` | The combined RPC. **Hard-replaces** 00291's `edit_booking_slot` — see §7 cutover. (Final slot landed at 00364.) |
 | 00340 | `bookings_calendar_etag_bump_helper.sql` (optional) | If the etag bump becomes a hot path. Defer until smoke shows latency. |
+| 00367 | `edit_booking_scope_rpc.sql` | Step 2F.1 — series/this-and-following sister RPC, accepts an EditPlan array. v1 contract. |
+| 00371 | `edit_booking_scope_rpc_v2.sql` | Step 2F.1 self-review remediation. Supersedes 00367: dry-run is stateless w.r.t. command_operations; payload_hash excludes p_dry_run; booking_not_found error is bounded (count + first missing id); per-occurrence before/after fields in return shape; recurrence_overridden rejected from scope-mode plans. |
 
-2 migrations. **No enum extension** — the approvals.status `'expired'` value already supports the supersede semantics (see §3.6.5).
+4 migrations. **No enum extension** — the approvals.status `'expired'` value already supports the supersede semantics (see §3.6.5).
 
 `validate_entity_in_tenant` and `command_operations` are NOT B.4 migrations — they're B.2 dependencies. B.4 starts AFTER B.2.A foundation lands; if B.2.A delays past B.4's planned start, B.4 can ship with stub helpers (rejecting any non-tenant-scoped FK) and switch to B.2's once it lands.
 
@@ -236,13 +240,18 @@ The shape compared by TS mirrors the create-time `approval_config` consumed by `
 - One `*.spec.ts` per RPC code path: geometry-only edit, location change, attendee resize, approval gate flip in each direction (allow→require_approval, require→allow same-chain, require→allow different-chain, require→deny), cost delta, recurrence scope, idempotency replay, semantic-mismatch gate.
 - ~70-90 specs.
 
-**Live-API smoke probe** (`pnpm smoke:edit-booking`):
-- Plain time edit (no recompute beyond mirror).
-- Location to bigger room (rules allow).
-- Location to smaller room (capacity rule denies → 422).
-- Location to room with approval rule → status flips, approvals row inserted.
-- Time change with linked catering → `orders.requested_for_start_at` updates, `delivery_location_id` updates if room changed.
-- Idempotency replay: same key → cached_result.
+**Live-API smoke probes:**
+
+- **`pnpm --filter @prequest/api smoke:edit-booking-scope` (shipped Step 2F.4, 2026-05-12)** — covers `POST /reservations/:id/edit-scope` end-to-end with a real Admin JWT against a psql-seeded recurrence_series + 5 occurrences. 13 scenarios: setup verification; scope='series' dry-run (no writes, no command_operations row) + commit (5 slots moved, 5 audit_events, 1 command_operations row) + idempotent replay (byte-identical response, no new writes) + payload-mismatch (409 `command_operations.payload_mismatch`); scope='this_and_following' dry-run (splitSeries suppressed; all 5 still on original series) + commit (3 forward bookings on new series, 2 backward on original, slots on new room); validation gates (scope='this' → `wrong_endpoint`, `start_at` → 422 `edit_booking_scope.time_shift_not_supported`, garbage scope + string `dry_run` → 400 `edit_booking_scope.invalid_plans`, missing `X-Client-Request-Id` → 400 `client_request_id.required`).
+- **`pnpm smoke:edit-booking` (NOT YET SHIPPED, deferred)** — would cover the single-occurrence `editOne` path (Step 2E cutover) and the slot-edit `editSlot` path (Step 2D cutover):
+  - Plain time edit (no recompute beyond mirror).
+  - Location to bigger room (rules allow).
+  - Location to smaller room (capacity rule denies → 422).
+  - Location to room with approval rule → status flips, approvals row inserted.
+  - Time change with linked catering → `orders.requested_for_start_at` updates, `delivery_location_id` updates if room changed.
+  - Idempotency replay: same key → cached_result.
+
+  Sibling to the scope smoke (same fixture pattern, same Admin JWT mint, same psql cleanup-in-`finally`). Open as a future Step under the B.4 workstream.
 
 **Real-DB concurrency probes** (extend `apps/api/test/concurrency/`):
 - Two concurrent edits on the same booking → second blocks via advisory lock, then commits or returns `cached_result` if same idempotency_key.
@@ -264,7 +273,7 @@ The shape compared by TS mirrors the create-time `approval_config` consumed by `
 
 1. **B.4.A foundation.** Migration 00339 (the RPC), TS `assembleEditPlan` helper, mocked-jest specs covering all six rows of §3.6.5. Cutover `editSlot` only (geometry-only edits use the RPC).
 2. **B.4.B `editOne` cutover.** All booking-level patches now route through the combined RPC. Hard-cut: `edit_booking_slot` (00291) callers go to `edit_booking` in the same migration. No transition wrapper (the wrapper would have to skip the new recomputes, defeating the point — see v1 review finding #12).
-3. **B.4.C `editScope` two-phase cutover.** Recurrence-series fan-out is the hardest case. **Two-phase:** (1) dry-run all occurrences through TS plan-build + PG semantic gate (no writes); aggregate failures. (2) If all dry-runs pass, run the commit phase across N occurrences inside one tx. If any fail at commit, abort all (rollback). User sees one atomic result: "all 52 occurrences moved" OR "none moved + here's the conflict on occurrence 14." This violates the "max single tx duration" rule for very large series — define a series-size threshold (e.g. >100) above which we explicitly chunk + surface "this edit will commit in 3 batches; partial state is possible if interrupted" in the UI, and require explicit user confirmation.
+3. **B.4.C `editScope` two-phase cutover.** Recurrence-series fan-out is the hardest case. **Two-phase:** (1) dry-run all occurrences through TS plan-build + PG semantic gate (no writes); aggregate failures. (2) If all dry-runs pass, run the commit phase across N occurrences inside one tx. If any fail at commit, abort all (rollback). User sees one atomic result: "all 52 occurrences moved" OR "none moved + here's the conflict on occurrence 14." This violates the "max single tx duration" rule for very large series — define a series-size threshold (**shipped at N=200**, RPC v2 cap at `supabase/migrations/00371_edit_booking_scope_rpc_v2.sql` + TS pre-flight in `apps/api/src/modules/reservations/assemble-edit-plan.service.ts`) above which we explicitly chunk + surface "this edit will commit in 3 batches; partial state is possible if interrupted" in the UI, and require explicit user confirmation. **Controller cutover shipped at Step 2F.3 (2026-05-12)** — `POST /reservations/:id/edit-scope` now routes through `assembleScopeEditPlan` + `edit_booking_scope` RPC via `ReservationService.editScope`; the legacy bare-UPDATE path in `BookingFlowService.editScope` was deleted.
 4. **B.4.D smoke + concurrency probes.**
 
 **B.4.A.5 dependency (producer-before-consumer invariant — partially closed 2026-05-12).** The `booking.approval_required` outbox handler is now registered as a v1 STUB (commit `d285bc32`, `BookingApprovalRequiredHandler`). The dead-letter shape (`no_handler_registered`) is closed. The remaining gap is the **controller-before-dispatch invariant**: until B.4.A.5 ships notification dispatch (email approvers + in-app inbox), any TS controller call that triggers a §3.6.5 row 2/7/8 emit will commit the chain rows but no approver will be notified. Editing controllers (Step 2D-D editSlot, 2E editOne, 2F editScope) MUST gate their cutovers on B.4.A.5 landing OR pre-flight-reject when `plan.approval.new_outcome === 'require_approval'` until then. Tracked in `docs/follow-ups/b4-followups.md`.
@@ -280,7 +289,7 @@ The shape compared by TS mirrors the create-time `approval_config` consumed by `
 
 1. **Deny on edit.** The rule resolver returns `final='deny'` for an attempted edit. Reject 422 (no override)? Allow with `actor.has_override_rules`? Recommend: 422 unless override; mirror CREATE.
 2. **Approval-chain semantics.** **Addressed in §3.6.5.** Decision table covers all 10 (old, new, state) combinations including the dangerous `terminal_approved → require_approval (different config)` gap. Implementation must mirror the table exactly. Open sub-question for product: should the requester be notified when a previously-approved booking re-enters approval after an edit? Recommend yes; new approval-required event needs a notification template.
-3. **Recurrence-scope failure aggregation.** **Addressed in §7 step B.4.C.** Two-phase plan-then-commit, all-or-nothing for series ≤100; explicit chunked confirmation for larger series. Open sub-question for product: should the chunked-commit threshold be 100 (a guess) or computed from session timeout? Defer to first real customer with >100-occurrence series.
+3. **Recurrence-scope failure aggregation.** **Addressed in §7 step B.4.C.** Two-phase plan-then-commit, all-or-nothing for series ≤200 (shipped cap, RPC v2); larger series rejected at `edit_booking_scope.too_many_occurrences` (422). Open sub-question for product: chunked-commit UX for >200-occurrence series. Defer to first real customer with that pattern.
 4. **`config_release_id` re-pin on edit.** Decision needed before implementation. Recommend: re-pin to current release on every edit (matches "edit = new commit" semantics). Implications for replay/audit.
 5. **EDIT-vs-CANCEL race lock key.** Verify `delete_booking_with_guard` (00292) takes the same `(tenant_id, booking_id)` advisory lock key. If not, the edit and cancel locks don't serialize; one could fire while the other is mid-write.
 6. **Calendar sync push timing.** Bump `calendar_etag` immediately (forces next read to refetch from Outlook), or also trigger a push to Outlook from the RPC? Latency impact on user.

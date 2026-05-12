@@ -5,6 +5,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -16,8 +17,14 @@ import {
   WorkOrderService,
   type UpdateWorkOrderDto,
 } from './work-order.service';
+import { WorkOrderPlanningService } from './work-order-planning.service';
 import { AppErrors } from '../../common/errors';
 import { RequireClientRequestIdGuard } from '../../common/guards/require-client-request-id.guard';
+import {
+  TicketVisibilityService,
+  isOperatorContext,
+} from '../ticket/ticket-visibility.service';
+import { TenantContext } from '../../common/tenant-context';
 
 interface UpdateWorkOrderAssignmentDto {
   assigned_team_id?: string | null;
@@ -52,7 +59,66 @@ const ASSIGNMENT_FIELDS = ['assigned_team_id', 'assigned_user_id', 'assigned_ven
  */
 @Controller('work-orders')
 export class WorkOrderController {
-  constructor(private readonly workOrderService: WorkOrderService) {}
+  constructor(
+    private readonly workOrderService: WorkOrderService,
+    private readonly planningService: WorkOrderPlanningService,
+    private readonly visibility: TicketVisibilityService,
+  ) {}
+
+  /**
+   * Planning-board read path. Returns work orders with `planned_start_at`
+   * inside `[from, to)` (the "planned" set) and unscheduled work orders
+   * matching the same status / team filter (the "unscheduled" rail).
+   *
+   * Visibility: filtered by `work_orders_visible_for_actor` (migration
+   * 00374), the work_orders sibling of `tickets_visible_for_actor`.
+   * Tenant isolation: `TenantContext.current()` + per-query
+   * `.eq('tenant_id', …)`.
+   *
+   * The window is capped at `PLANNING_WINDOW_MAX_DAYS` (14) so accidental
+   * wide ranges fail closed with a 400 rather than fetching thousands of
+   * rows. `status` accepts repeated values; `team_id` is an exact match.
+   *
+   * Operator-only — full-review C1 (2026-05-12). The block-level predicate
+   * (`work_orders_planning_visible_for_actor`) correctly drops requester /
+   * watcher branches from `planned[]` + `unscheduled[]`, but the service's
+   * lane derivation pulls `team_members` + tenant vendors when `team_id`
+   * is set. A requester JWT with `?team_id=<uuid>` would get back the
+   * team roster and vendor identities. Gate the entire endpoint at the
+   * controller — requesters have zero use cases for the planning board.
+   * `tickets.read_all` (admin override) still passes, since it's an
+   * operator path per `isOperatorContext`.
+   */
+  @Get('planning')
+  async getPlanning(
+    @Req() request: Request,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('status') status?: string | string[],
+    @Query('team_id') teamId?: string,
+  ) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
+    const tenant = TenantContext.current();
+    const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+    if (!isOperatorContext(ctx)) {
+      throw AppErrors.forbidden('planning.operator_only');
+    }
+    const statusList = status === undefined
+      ? undefined
+      : Array.isArray(status)
+        ? status
+        : [status];
+    return this.planningService.getWindow(
+      {
+        from: from ?? '',
+        to: to ?? '',
+        status: statusList,
+        team_id: teamId === 'null' || teamId === '' ? null : teamId ?? null,
+      },
+      actorAuthUid,
+    );
+  }
 
   /** B.2.A I1 — producer route, requires X-Client-Request-Id (spec §3.9.1). */
   @Patch(':id')
@@ -152,6 +218,23 @@ export class WorkOrderController {
     ) {
       throw AppErrors.validationFailed('work_order.watchers_invalid', {
         detail: 'watchers must be an array of strings (person UUIDs) or null',
+      });
+    }
+    // P1-4 (00383): audit-source enum gate. Three accepted values
+    // (board / detail / generator); anything else is rejected at the
+    // HTTP boundary. The service layer also strips this meta-field from
+    // the column-patch clone, and the RPC re-validates as defense in
+    // depth, so an internal caller bypassing the controller can't
+    // smuggle a bad value into ticket_activities either.
+    if (
+      Object.prototype.hasOwnProperty.call(dto, '_source') &&
+      dto._source !== undefined &&
+      dto._source !== 'board' &&
+      dto._source !== 'detail' &&
+      dto._source !== 'generator'
+    ) {
+      throw AppErrors.validationFailed('work_order.field_invalid', {
+        detail: '_source must be one of board, detail, or generator',
       });
     }
 

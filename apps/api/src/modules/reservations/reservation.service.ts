@@ -552,6 +552,7 @@ export class ReservationService {
     const slotIdToExclude = (slotRow as { id: string } | null)?.id ?? null;
 
     const conflicts = await this.conflict.preCheck({
+      tenant_id: tenantId,
       space_id: r.space_id,
       effective_start_at: r.effective_start_at,
       effective_end_at: r.effective_end_at,
@@ -741,19 +742,59 @@ export class ReservationService {
         detail: 'attendee_person_ids must be an array of person ids.',
       });
     }
+    // Codex IMPORTANT-2 (2026-05-12): per-side parseability before the
+    // pairwise ordering check. Pre-fix, `{ start_at: 'invalid-date' }`
+    // (single side) slipped past the gated `start_at && end_at` block,
+    // landed in the assembler, and then died in conflict-guard's
+    // `new Date(args.start_at).toISOString()` (conflict-guard.service.ts
+    // :155-160) with `RangeError: Invalid time value` — a 500 server
+    // error instead of a deterministic 400. Validate each side
+    // independently first; only run the pairwise check when both are
+    // present AND parseable.
+    if (patch.start_at !== undefined) {
+      const s = new Date(patch.start_at).getTime();
+      if (!Number.isFinite(s)) {
+        throw AppErrors.validationFailed('booking.invalid_window', {
+          detail: 'start_at must be an ISO timestamp.',
+        });
+      }
+    }
+    if (patch.end_at !== undefined) {
+      const e = new Date(patch.end_at).getTime();
+      if (!Number.isFinite(e)) {
+        throw AppErrors.validationFailed('booking.invalid_window', {
+          detail: 'end_at must be an ISO timestamp.',
+        });
+      }
+    }
     if (patch.start_at !== undefined && patch.end_at !== undefined) {
       const s = new Date(patch.start_at).getTime();
       const e = new Date(patch.end_at).getTime();
-      if (!Number.isFinite(s) || !Number.isFinite(e)) {
-        throw AppErrors.validationFailed('booking.invalid_window', {
-          detail: 'start_at and end_at must be ISO timestamps.',
-        });
-      }
       if (s >= e) {
         throw AppErrors.validationFailed('booking.invalid_window', {
           detail: 'start_at must be strictly before end_at.',
         });
       }
+    }
+
+    // Codex IMPORTANT-1 (2026-05-12): reject `space_id: null` and
+    // `space_id: ''` explicitly. Pre-fix, the legacy pre-cutover editOne
+    // used a truthy check (`if (patch.space_id && patch.space_id !==
+    // r.space_id)`) so both values were silent no-ops. Post-cutover the
+    // no-op predicate is `patch.space_id !== undefined && patch.space_id
+    // !== r.space_id`; null and '' BOTH pass that gate (they're
+    // !==undefined AND !==r.space_id which is a real uuid), so they
+    // reach the assembler and either die in tenant-validation (`''`,
+    // tenant-validation.ts:107 UUID_RE.test fails → reference.invalid_uuid)
+    // or propagate further (null, since this method's assertTenantOwned
+    // guard at :798 explicitly skips null). Either failure mode is
+    // unclear to operators. Reject deterministically here with a
+    // dedicated code so the UX message can say "pass undefined to
+    // preserve the current room."
+    if (patch.space_id === null || patch.space_id === '') {
+      throw AppErrors.validationFailed('booking.invalid_space_id', {
+        detail: 'space_id must be a non-empty uuid; pass undefined to preserve the current room.',
+      });
     }
 
     // Plan A.2 / gap map §reservation.service.ts:745-746 — close the
@@ -834,24 +875,28 @@ export class ReservationService {
     // catch bad payloads BEFORE the DB round-trip and produce friendlier
     // error codes than the RPC's defense-in-depth raises.
     //
-    // Citation discipline: every line cited below was Read this session.
-    // Self-review NIT-5 (2026-05-12): refreshed to match actual lines.
-    //   - editSlot B.4.A.5 gate (comment block start): reservation.service.ts:1189
-    //   - editSlot B.4.A.5 gate (predicate):           reservation.service.ts:1227-1230
-    //   - editSlot idempotency-key build:              reservation.service.ts:1244
-    //   - editSlot RPC call:                           reservation.service.ts:1246-1252
-    //   - editSlot visitor cascade (block start):      reservation.service.ts:1283
-    //   - assembleEditPlan kind='one' (wrapper):       assemble-edit-plan.service.ts:253-266
-    //   - assembleEditPlan kind='one' (shared core):   assemble-edit-plan.service.ts:278-512
-    //   - RPC booking-patch shape:                     00364:340-355
-    //   - RPC host_person_id apply:                    00364:763-767
-    //   - RPC recurrence_overridden apply:             00364:768-773
+    // Citation discipline: mirrors editSlot's full RPC call sequence
+    // below — DI guard → assembler call (kind='one') → B.4.A.5 gate →
+    // idempotency-key build → edit_booking RPC → 23P01 GiST mapping →
+    // visitor cascade emit. Codex NIT-1 (2026-05-12): line-numbered
+    // citations were drifting per commit; generalised to symbol/section
+    // references so future edits don't silently break the citation
+    // contract. Symbols + section names below are stable; line numbers
+    // are not.
+    //   - assembleEditPlan kind='one' wrapper:  assemble-edit-plan.service.ts
+    //                                           (assembleOneEditPlan)
+    //   - assembleEditPlan shared core:         assemble-edit-plan.service.ts
+    //                                           (buildSingleSlotPlan)
+    //   - RPC booking-patch shape:              00364 §3.0 (edit_booking)
+    //   - RPC host_person_id apply:             00364 §host_person_id apply
+    //   - RPC recurrence_overridden apply:      00364 §recurrence_overridden apply
 
     if (!this.assembleEditPlan) {
       // Defense-in-depth — DI wiring in the parent module provides the
       // dep, but a malformed test harness could miss it. Surface as 500
-      // so the failure is loud, not silent. Mirrors editSlot at
-      // reservation.service.ts:1150-1157.
+      // so the failure is loud, not silent. Mirrors editSlot's DI guard
+      // below (same pattern: assembleEditPlan absence → command_operations
+      // .unexpected_state).
       throw AppErrors.server('command_operations.unexpected_state', {
         detail: 'editOne: AssembleEditPlanService is not wired into ReservationService.',
       });
@@ -943,14 +988,16 @@ export class ReservationService {
       },
     });
 
-    // B.4.A.5 sequencing gate. Mirrors editSlot at reservation.service.ts
-    // :1209-1224 — same predicate, same 422 + booking.edit_requires_
-    // notification_dispatch code. This is the 4th producer-side emit
-    // site documented at docs/follow-ups/b4-followups.md (alongside
-    // create / multi-room / editSlot). Lift mechanism when B.4.A.5
-    // ships notification dispatch: delete the gate predicate +
-    // optionally retire the error code (or leave registered for
-    // defense-in-depth across all four sites).
+    // B.4.A.5 sequencing gate. Mirrors editSlot's gate below — same
+    // predicate, same 422 + booking.edit_requires_notification_dispatch
+    // code. This is the 4th producer-side emit site documented at
+    // docs/follow-ups/b4-followups.md (alongside create / multi-room /
+    // editSlot). Lift mechanism when B.4.A.5 ships notification
+    // dispatch: delete the gate predicate + optionally retire the
+    // error code (or leave registered for defense-in-depth across all
+    // four sites). Codex NIT-1 (2026-05-12): line-number citation
+    // generalised — predicate symbol `wouldEmitApprovalRequired` is
+    // stable, line numbers drift.
     const wouldEmitApprovalRequired =
       plan.approval.new_outcome === 'require_approval' &&
       (plan.approval.old_outcome !== 'require_approval' ||
@@ -962,7 +1009,13 @@ export class ReservationService {
       });
     }
 
-    const idempotencyKey = buildEditBookingIdempotencyKey(id, clientRequestId);
+    // B.4 Step 2F.3 — op discriminator. The 3rd arg ('one') namespaces
+    // the idempotency key so a frontend that buggily reuses a
+    // clientRequestId across editOne + editSlot + editScope mints distinct
+    // command_operations rows instead of collapsing onto the first call's
+    // cached result. See idempotency.ts:333-358 for the key shape; closes
+    // the cross-op-collision followup in docs/follow-ups/b4-followups.md.
+    const idempotencyKey = buildEditBookingIdempotencyKey(id, clientRequestId, 'one');
 
     const { error: rpcErr } = await this.supabase.admin.rpc('edit_booking', {
       p_booking_id: id,
@@ -972,23 +1025,22 @@ export class ReservationService {
       p_idempotency_key: idempotencyKey,
     });
     if (rpcErr) {
-      // GiST exclusion (booking_slots_no_overlap, 00277:211-217) → 409.
-      // Mirror editSlot at reservation.service.ts:1240-1244 — the
-      // constraint fires inside the RPC's UPDATE before any RAISE has
-      // a chance to translate it.
+      // GiST exclusion (booking_slots_no_overlap, migration 00277) → 409.
+      // Mirrors editSlot's exclusion-violation branch — the constraint
+      // fires inside the RPC's UPDATE before any RAISE has a chance to
+      // translate it.
       if (this.conflict.isExclusionViolation(rpcErr)) {
         throw AppErrors.conflict('booking.slot_conflict', {
           detail: 'Slot conflicts with another booking.',
         });
       }
       // booking.edit_failed is the booking-scoped fallback (registered
-      // at packages/shared/src/error-codes.ts:239 + 960; api+web copy
-      // at messages.en.ts:449 ("Couldn't save the changes")). Under
-      // mapRpcErrorToAppError this routes through AppErrors.server →
-      // 500 — same shape as editSlot's slot_update_failed fallback at
-      // reservation.service.ts:1255 (which is also a 500 server-class
-      // per map-rpc-error.ts:289). Honest framing: an unrecognised
-      // RPC raise is a server bug, not a payload bug.
+      // in packages/shared/src/error-codes.ts; api+web copy in
+      // messages.en.ts / messages.nl.ts). Under mapRpcErrorToAppError
+      // this routes through AppErrors.server → 500 — same shape as
+      // editSlot's slot_update_failed fallback (also a 500 server-class
+      // per map-rpc-error.ts). Honest framing: an unrecognised RPC
+      // raise is a server bug, not a payload bug.
       throw mapRpcErrorToAppError(rpcErr, { fallbackCode: 'booking.edit_failed' });
     }
 
@@ -1001,12 +1053,12 @@ export class ReservationService {
     const updated = await this.findByIdOrThrowAtSlot(primarySlotId, tenantId);
     if (this.notifications) void this.notifications.onCreated(updated);
 
-    // Visitor cascade emit on geometry change. Mirrors editSlot at
-    // reservation.service.ts:1265-1306 — same target-pre/post comparison
-    // pattern. editOne edits target the primary slot, so cascading from
-    // the primary slot's diff is correct here. The RPC doesn't know
-    // about the visitors module; cascade stays a TS responsibility per
-    // the existing pattern.
+    // Visitor cascade emit on geometry change. Mirrors editSlot's
+    // cascade block (same target-pre/post comparison pattern, same
+    // `emitVisitorCascadeForBundle` call shape). editOne edits target
+    // the primary slot, so cascading from the primary slot's diff is
+    // correct here. The RPC doesn't know about the visitors module;
+    // cascade stays a TS responsibility per the existing pattern.
     const movedTime = updated.start_at !== targetSlotPre.start_at;
     const changedRoom = updated.space_id !== targetSlotPre.space_id;
     if ((movedTime || changedRoom) && updated.id && this.bundleEventBus) {
@@ -1055,9 +1107,11 @@ export class ReservationService {
    *     active slot already covers the requested window on the target space.
    *   - `booking.slot_update_failed` (400) — any other RPC failure.
    *
-   * Existing `editOne` (`PATCH /reservations/:id`) stays as the booking-
-   * level edit path for fields that aren't slot geometry (host_person_id,
-   * attendee_count). Frontend callers are expected to use:
+   * `editOne` (`PATCH /reservations/:id`) is the sibling producer
+   * route for booking-level edits (host_person_id, attendee_count, and
+   * primary-slot geometry). Post B.4 step 2E both routes call the
+   * edit_booking RPC directly — there is no cross-method delegation.
+   * Frontend callers split by intent:
    *   - `useEditBooking` for booking-level edits
    *   - `useEditBookingSlot` for slot-geometry edits (drag/resize/move)
    */
@@ -1141,6 +1195,51 @@ export class ReservationService {
     // space_id for the cascade diff anymore.
     const targetSlotPre = await this.findByIdOrThrowAtSlot(slotId, tenantId);
 
+    // Codex IMPORTANT-2 (2026-05-12): per-side parseability + space_id
+    // shape validation BEFORE the RPC. Pre-fix editSlot had no
+    // timestamp preflight at all — a patch like `{ start_at:
+    // 'invalid-date' }` reached the assembler and died inside
+    // conflict-guard at `new Date(...).toISOString()`
+    // (conflict-guard.service.ts:155-160) with `RangeError: Invalid time
+    // value`, surfacing as 500 server-class. Mirrors the editOne
+    // preflight above (reservation.service.ts:744-792).
+    if (patch.start_at !== undefined) {
+      const s = new Date(patch.start_at).getTime();
+      if (!Number.isFinite(s)) {
+        throw AppErrors.validationFailed('booking.invalid_window', {
+          detail: 'start_at must be an ISO timestamp.',
+        });
+      }
+    }
+    if (patch.end_at !== undefined) {
+      const e = new Date(patch.end_at).getTime();
+      if (!Number.isFinite(e)) {
+        throw AppErrors.validationFailed('booking.invalid_window', {
+          detail: 'end_at must be an ISO timestamp.',
+        });
+      }
+    }
+    if (patch.start_at !== undefined && patch.end_at !== undefined) {
+      const s = new Date(patch.start_at).getTime();
+      const e = new Date(patch.end_at).getTime();
+      if (s >= e) {
+        throw AppErrors.validationFailed('booking.invalid_window', {
+          detail: 'start_at must be strictly before end_at.',
+        });
+      }
+    }
+    // Codex IMPORTANT-1 (2026-05-12): symmetric with editOne — reject
+    // `space_id: null` and `space_id: ''` deterministically. The
+    // assertTenantOwned guard below would either skip (null) or surface
+    // an unclear `reference.invalid_uuid` (empty string fails UUID_RE
+    // at tenant-validation.ts:107). A dedicated code lets the UX
+    // message say "pass undefined to preserve the current room."
+    if (patch.space_id === null || patch.space_id === '') {
+      throw AppErrors.validationFailed('booking.invalid_space_id', {
+        detail: 'space_id must be a non-empty uuid; pass undefined to preserve the current room.',
+      });
+    }
+
     // Plan A.4 / Commit 7 (I3) / round-4 codex flag
     // reservation.service.ts:1027-1036. editOne already runs an
     // assertTenantOwned pre-flight on patch.space_id (commit ec055f1,
@@ -1157,7 +1256,7 @@ export class ReservationService {
     //   mapRpcErrorToAppError (404), but the TS pre-flight surfaces a
     //   curated error before any DB round-trip and avoids polluting
     //   command_operations with a known-bad attempt.
-    if (patch.space_id !== undefined && patch.space_id !== null) {
+    if (patch.space_id !== undefined) {
       await assertTenantOwned(
         this.supabase,
         'spaces',
@@ -1280,7 +1379,8 @@ export class ReservationService {
       });
     }
 
-    const idempotencyKey = buildEditBookingIdempotencyKey(bookingId, clientRequestId);
+    // B.4 Step 2F.3 — op discriminator (see editOne above; same rationale).
+    const idempotencyKey = buildEditBookingIdempotencyKey(bookingId, clientRequestId, 'slot');
 
     const { error: rpcErr } = await this.supabase.admin.rpc('edit_booking', {
       p_booking_id: bookingId,
@@ -1328,7 +1428,8 @@ export class ReservationService {
     // (no host alert / email / cancel decision).
     //
     // /full-review v3 closure I1 — compare TARGET slot's pre/post, not
-    // primary's pre. `targetSlotPre` (loaded ~890 above) is the slot-
+    // primary's pre. `targetSlotPre` (loaded above via
+    // findByIdOrThrowAtSlot) is the slot-
     // pinned projection of the slot we just edited; `updated` is the
     // post-RPC slot-pinned projection. Both project through
     // findByIdOrThrowAtSlot so .start_at / .space_id on each are the
@@ -1336,9 +1437,13 @@ export class ReservationService {
     // `reservation` (booking-level / primary-slot projection), which
     // for non-primary edits made the diff fire wrong/missing events.
     //
-    // Decision: editSlot is the canonical write path for geometry post-C2.
-    // editOne now delegates to it, so the cascade emission belongs HERE,
-    // exactly once per geometry edit.
+    // Decision: editSlot and editOne are sibling producer routes post
+    // B.4 step 2E — both call assembleEditPlan + the edit_booking RPC
+    // directly, no cross-method delegation. The cascade emission lives
+    // in BOTH methods (mirror block in editOne above), each firing
+    // exactly once per geometry edit on its own write. Codex NIT-1c
+    // (2026-05-12): pre-2E this comment said "editOne now delegates to
+    // it" — that framing is stale; both routes are siblings now.
     //
     // The fields that drive the cascade come from the SLOT (per-resource):
     //   - start_at: when the edited slot's start changes, that slot's
@@ -1363,6 +1468,496 @@ export class ReservationService {
     }
 
     return updated;
+  }
+
+  /**
+   * B.4 Step 2F.3 — recurring booking series-scope edit.
+   *
+   * Cuts over `POST /reservations/:id/edit-scope` from the legacy bare-
+   * UPDATE path (`BookingFlowService.editScope` at booking-flow.service
+   * .ts:1043, NOW DELETED) to the unified `assembleScopeEditPlan` +
+   * `edit_booking_scope` RPC (00371). The RPC is atomic across N
+   * occurrences inside one transaction — bug 6 in the spec
+   * (`docs/follow-ups/b4-booking-edit-pipeline.md:98`) was that the
+   * legacy path had ZERO rule eval / conflict guard / capacity check /
+   * approval re-eval / cost recompute. One tenant could shift a 52-week
+   * series into a smaller room and break every occurrence's capacity
+   * invariant. This cutover closes that.
+   *
+   * `scope='this_and_following'` semantics differ for commit vs. dry-run:
+   *   - commit: call `RecurrenceService.splitSeries(pivot)` first (writes
+   *     a new recurrence_series row + UPDATEs forward bookings'
+   *     recurrence_series_id). Then `effectiveSeriesId = newSeriesId` and
+   *     the scope-rows read sees only forward occurrences by construction.
+   *   - dry-run: splitSeries is non-idempotent (a retry mints a new
+   *     series). For a preview we keep the current series_id and pass
+   *     `forwardOnlyFromStartAt = pivot.start_at` to the assembler so the
+   *     scope-rows query filters to the forward subset. Zero side effects.
+   *
+   * `scope='series'` is symmetric: preview/commit both use the pivot's
+   * current `recurrence_series_id`; no split needed.
+   *
+   * Idempotency: key is built from (bookingId, clientRequestId, 'scope'),
+   * NOT from (newSeriesId, clientRequestId). Rationale: splitSeries is
+   * non-idempotent on retry (a network failure between splitSeries and
+   * the RPC mints a fresh series each time), and the pivot bookingId is
+   * stable across retries. Keying on the pivot lets the RPC's
+   * `command_operations` cached_result short-circuit a retry to the same
+   * response, even if a second splitSeries would otherwise mint a second
+   * series. The dry-run + commit paths can share an idempotency key
+   * (00371 v2 contract — dry-run does NOT touch command_operations).
+   *
+   * IDEMPOTENCY MITIGATION (C1 fix, Step 2F.3 self-review remediation,
+   * codex-revised 2026-05-12): the retry hazard from splitSeries non-
+   * idempotency is mitigated by a `command_operations` cached_result
+   * pre-check that sets a `skipSplitSeries` flag — it does NOT short-
+   * circuit return. The full assembler + RPC flow still runs; the RPC
+   * owns the cached_result return (00371:266-267) AND the payload_hash
+   * vs. payload_mismatch check (00371:268-274). The TS pre-check's only
+   * job is to prevent `splitSeries` from re-firing on a retry — that
+   * function commits side effects OUTSIDE the RPC transaction (new
+   * recurrence_series row + UPDATEs forward bookings' series_id) and
+   * is non-idempotent.
+   *
+   * The pre-check is GATED on commit mode (`if (!dryRun)`). Dry-run is
+   * a stateless preview per the 00371 v2 contract (00371:247-258) and
+   * MUST NOT read or write command_operations — a previous codex
+   * remediation (CRITICAL C1) caught a bug where dry-run replayed a
+   * prior commit's cached envelope; this revision fixes it. A second
+   * codex finding (CRITICAL C2) caught that the old short-circuit
+   * bypassed the RPC's payload_hash check, allowing a same-crid /
+   * different-body retry to silently return the FIRST attempt's
+   * response. Both are resolved by delegating cache-return + mismatch
+   * detection to the RPC; the TS layer only suppresses splitSeries.
+   *
+   * Visitor cascade emission: walks the RPC's `per_occurrence[]` return
+   * shape (`00371:1114-1125` — each row carries `space_id_before/after` +
+   * `start_at_before/after`) and fans out to `emitVisitorCascadeForBundle`
+   * per occurrence whose primary slot moved time OR changed room. Dry-run
+   * skips the emit entirely (nothing committed → nothing to cascade).
+   *
+   * Errors mirror editOne (`reservation.service.ts:1011-1037`):
+   *   - `booking.slot_conflict` (409) on GiST exclusion.
+   *   - `edit_booking_scope.update_failed` (500) as the RPC fallback —
+   *     mapRpcErrorToAppError routes recognised raises to their canonical
+   *     codes (see `common/errors/map-rpc-error.ts`).
+   *   - `command_operations.payload_mismatch` (409) when a retry with
+   *     the same crid carries a different assembled-plans payload —
+   *     mapped via `map-rpc-error.ts:180`.
+   *   - `wrong_endpoint` (422) when caller sends `scope='this'` here
+   *     instead of `PATCH /reservations/:id`.
+   *   - `edit_booking_scope.not_recurring` (422) if the pivot booking
+   *     has no recurrence_series_id.
+   */
+  async editScope(
+    bookingId: string,
+    body: import('./dto/dtos').EditScopeDto,
+    actor: ActorContext,
+    clientRequestId: string,
+  ): Promise<{
+    scope: 'this_and_following' | 'series';
+    new_series_id?: string;
+    dry_run: boolean;
+    // RPC return shape — v2 contract at 00371:1131-1148.
+    committed?: number;
+    would_succeed?: boolean;
+    series_id?: string;
+    per_occurrence?: Array<{
+      booking_id: string;
+      // Commit branch (00371:1114-1125).
+      slots_updated?: number;
+      assets_updated?: number;
+      orders_updated?: number;
+      wo_updated?: number;
+      follow_ups?: string[];
+      // Dry-run branch (00371:808-822).
+      would_succeed?: boolean;
+      approval_action?: string;
+      follow_ups_preview?: string[];
+      slots_to_update?: number;
+      assets_to_update?: number;
+      orders_to_update?: number;
+      wo_to_update?: number;
+      // Shared (both branches).
+      space_id_before: string;
+      space_id_after: string;
+      start_at_before: string;
+      start_at_after: string;
+    }>;
+    aggregated_follow_ups?: string[];
+  }> {
+    const tenantId = TenantContext.current().id;
+
+    // Defense-in-depth UUID validation (mirrors editOne at
+    // reservation.service.ts:677-681; same rationale: catch non-controller
+    // callers that build a malformed clientRequestId).
+    if (!UUID_RE.test(clientRequestId)) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail: `editScope received malformed clientRequestId (length=${clientRequestId.length}).`,
+      });
+    }
+
+    // Body shape guard: dry_run must be strictly boolean if present.
+    // Pre-fix a string 'true' would coerce to truthy on the `??` later,
+    // committing a write when the caller asked for a preview — the
+    // exact failure mode the assembler's gate A defends against, lifted
+    // up to the service boundary for a cleaner error.
+    if (body.dry_run !== undefined && typeof body.dry_run !== 'boolean') {
+      throw AppErrors.validationFailed('edit_booking_scope.invalid_plans', {
+        detail: 'dry_run must be a boolean if provided.',
+      });
+    }
+    const dryRun = body.dry_run ?? false;
+
+    // Reject scope='this' (mirrors legacy editScope at booking-flow.service
+    // .ts:1062-1064). The single-occurrence edit path is `PATCH /reservations
+    // /:id` → editOne.
+    if ((body.scope as unknown as string) === 'this') {
+      throw AppErrors.validationFailed('wrong_endpoint', {
+        detail: "Use the regular edit endpoint (PATCH /reservations/:id) for scope='this'.",
+      });
+    }
+
+    // Self-review remediation C2-plan-rev (2026-05-12) — reject smuggled
+    // start_at / end_at fields. The TS interface `EditScopeDto` deliberately
+    // omits these (series time-shift requires recurrence_rule mutation,
+    // not slot UPDATE). The patch construction below explicitly picks only
+    // space_id / attendee_count / attendee_person_ids / host_person_id, so
+    // a non-TS caller smuggling `{ scope: 'series', start_at: '...' }` would
+    // have those fields silently dropped — operator's intent (time-shift)
+    // lost, no error. Surface the existing `edit_booking_scope.time_shift_
+    // not_supported` (422) code at the service boundary so the caller gets
+    // an actionable inline error and the assembler's own gate-A defence
+    // remains reachable via the typed path.
+    if (
+      (body as { start_at?: unknown }).start_at !== undefined ||
+      (body as { end_at?: unknown }).end_at !== undefined
+    ) {
+      throw new AppError('edit_booking_scope.time_shift_not_supported', 422, {
+        detail: 'Series time-shift requires recurrence_rule edit; not supported on scope edits.',
+      });
+    }
+
+    // Self-review remediation C2-code-rev (2026-05-12) — allowlist scope
+    // values. Pre-fix only `'this'` was rejected explicitly; `'garbage'`,
+    // `null`, `undefined`, or any other non-allowlist value fell through
+    // to the `else` branch and silently executed as `'series'`. Surface
+    // the existing `edit_booking_scope.invalid_plans` (400) code so the
+    // caller gets a clear validation error instead of silent re-routing.
+    if (body.scope !== 'series' && body.scope !== 'this_and_following') {
+      throw AppErrors.validationFailed('edit_booking_scope.invalid_plans', {
+        detail: `scope must be 'series' or 'this_and_following' (received ${JSON.stringify(body.scope)}).`,
+      });
+    }
+
+    // RecurrenceService is required for split-series; surface the DI
+    // miswiring as a clean 500 rather than letting the optional access
+    // throw later. Mirrors editOne's assembleEditPlan DI guard at
+    // reservation.service.ts:893-902.
+    if (!this.recurrence) {
+      throw AppErrors.server('booking.recurrence_not_injected', {
+        detail: 'editScope: RecurrenceService is not wired into ReservationService.',
+      });
+    }
+    if (!this.assembleEditPlan) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail: 'editScope: AssembleEditPlanService is not wired into ReservationService.',
+      });
+    }
+
+    // Type the RPC return shape per 00371 v2:
+    //   - commit (00371:1143-1148):  { committed, series_id, per_occurrence, aggregated_follow_ups }
+    //   - dry_run (00371:1131-1140): { dry_run, would_succeed, series_id, per_occurrence, aggregated_follow_ups }
+    //   - retry  (00371:266-267):    the RPC reads cached_result and returns
+    //                                the FIRST attempt's envelope verbatim
+    //                                (so TS sees the same shape).
+    type RpcEditBookingScopeResult = {
+      committed?: number;
+      dry_run?: boolean;
+      would_succeed?: boolean;
+      series_id: string;
+      per_occurrence: Array<{
+        booking_id: string;
+        space_id_before: string;
+        space_id_after: string;
+        start_at_before: string;
+        start_at_after: string;
+        slots_updated?: number;
+        assets_updated?: number;
+        orders_updated?: number;
+        wo_updated?: number;
+        follow_ups?: string[];
+        would_succeed?: boolean;
+        approval_action?: string;
+        follow_ups_preview?: string[];
+        slots_to_update?: number;
+        assets_to_update?: number;
+        orders_to_update?: number;
+        wo_to_update?: number;
+      }>;
+      aggregated_follow_ups: string[];
+    };
+
+    // Idempotency key — built EARLY (before the optional pre-check + before
+    // splitSeries) so the codex C1+C2 fix below can reuse it for the
+    // commit-mode pre-check AND we pass the same value to the RPC. Keyed
+    // on (pivot bookingId, crid, 'scope') because the pivot id is stable
+    // across retries; dry_run is NOT in the key (00371 v2 contract).
+    const idempotencyKey = buildEditBookingIdempotencyKey(
+      bookingId,
+      clientRequestId,
+      'scope',
+    );
+
+    // Codex C1+C2 remediation (2026-05-12) — pre-check command_operations
+    // to detect a successful prior attempt, but ONLY to suppress the
+    // non-idempotent splitSeries call. We do NOT short-circuit return.
+    //
+    // The original (now reverted) implementation read the cached row,
+    // returned its `cached_result` verbatim, and skipped the rest of the
+    // flow. That had two bugs codex flagged as CRITICAL:
+    //
+    //   C1 (dry-run replays a commit cache): the pre-check fired on
+    //       every call. A dry-run preview made after a successful commit
+    //       with the same crid would hit the cached row and return the
+    //       commit envelope — violating the 00371 v2 contract that
+    //       dry-run is stateless (00371:247-258).
+    //
+    //   C2 (payload_mismatch bypass): the pre-check returned the cached
+    //       envelope WITHOUT comparing the request's assembled-plans
+    //       payload_hash to the cached row's payload_hash. A retry that
+    //       reused the same crid but carried a DIFFERENT body silently
+    //       returned the FIRST attempt's response — the operator believed
+    //       their second edit landed, but it never did. The RPC owns the
+    //       payload_hash check (00371:268-274 raises
+    //       command_operations.payload_mismatch); short-circuiting in TS
+    //       bypassed it.
+    //
+    // The fix: the pre-check is gated on commit mode AND only sets a
+    // flag. The full assembler + RPC pipeline runs. On retry the RPC
+    // itself returns cached_result (00371:266-267) verbatim, or raises
+    // payload_mismatch if the assembled plans differ. The TS layer is
+    // responsible only for the side effect the RPC cannot undo:
+    // RecurrenceService.splitSeries commits a new recurrence_series row
+    // + UPDATEs forward bookings OUTSIDE the RPC transaction. A second
+    // splitSeries on retry would mint an orphan series whose id never
+    // appears in the cached_result the RPC replays.
+    //
+    // Schema reference: 00316_command_operations_table.sql — columns are
+    // (tenant_id, idempotency_key, payload_hash, outcome, cached_result).
+    // outcome is enum('in_progress', 'success'). RLS uses
+    // current_tenant_id(); we use supabase.admin to bypass and tenant-
+    // scope explicitly.
+    let skipSplitSeries = false;
+    if (!dryRun) {
+      const { data: cachedRow, error: cachedErr } = await this.supabase.admin
+        .from('command_operations')
+        .select('outcome')
+        .eq('tenant_id', tenantId)
+        .eq('idempotency_key', idempotencyKey)
+        .maybeSingle();
+      if (cachedErr) {
+        // A DB error reading command_operations is itself server-class.
+        // Bail before splitSeries fires — we'd otherwise risk a second
+        // splitSeries if the cached row exists but the read transiently
+        // failed (orphan-series hazard).
+        throw AppErrors.server('command_operations.unexpected_state', {
+          detail: `editScope retry-detection read failed for tenant=${tenantId}.`,
+        });
+      }
+      if (
+        cachedRow !== null &&
+        (cachedRow as { outcome: string }).outcome === 'success'
+      ) {
+        skipSplitSeries = true;
+      }
+    }
+
+    // Load pivot booking. `findByIdOrThrow` enforces tenant scope +
+    // returns the legacy Reservation projection (primary-slot embed).
+    const pivot = await this.findByIdOrThrow(bookingId, tenantId);
+
+    // Visibility check — same shape as the legacy controller used
+    // (reservation.controller.ts:420-424 pre-cutover).
+    const ctx = await this.visibility.loadContextByUserId(actor.user_id, tenantId);
+    this.visibility.assertVisible(pivot, ctx);
+    if (!this.visibility.canEdit(pivot, ctx)) {
+      throw AppErrors.forbidden('reservation_not_editable', 'You cannot edit this booking.');
+    }
+
+    // Pivot must be part of a recurring series. Same predicate + same
+    // 422 shape as the assembler at assemble-edit-plan.service.ts:478;
+    // we check here first so split / no-split decisions below are well-
+    // defined. Raw AppError(422) — `AppErrors.validationFailed` defaults
+    // to 400 which doesn't match the assembler's contract and the spec's
+    // 422 routing class.
+    if (!pivot.recurrence_series_id) {
+      throw new AppError('edit_booking_scope.not_recurring', 422, {
+        detail: 'Pivot booking is not part of a recurring series.',
+      });
+    }
+
+    // Resolve effectiveSeriesId + (dry-run-only) forwardOnlyFromStartAt.
+    let effectiveSeriesId: string;
+    let newSeriesId: string | undefined;
+    let forwardOnlyFromStartAt: string | undefined;
+    if (body.scope === 'this_and_following') {
+      if (dryRun) {
+        // Dry-run preview: do NOT splitSeries (it commits side effects).
+        // Filter scope-rows to the forward subset of the CURRENT series.
+        effectiveSeriesId = pivot.recurrence_series_id;
+        forwardOnlyFromStartAt = pivot.start_at;
+      } else if (skipSplitSeries) {
+        // Retry path (codex C1+C2 fix): the FIRST attempt's splitSeries
+        // already ran and moved the pivot to the new series. The pivot
+        // we just loaded therefore sits on the post-split series id —
+        // pivot.recurrence_series_id IS the new series id. Using it as
+        // both `effectiveSeriesId` AND `newSeriesId` lets the assembler
+        // re-derive the same plans the first attempt assembled, and the
+        // RPC then returns cached_result (matching payload_hash) or
+        // raises payload_mismatch (differing payload). No
+        // forwardOnlyFromStartAt: the post-split series only contains
+        // forward occurrences by construction (splitSeries put them
+        // there), so no extra filter is needed.
+        effectiveSeriesId = pivot.recurrence_series_id;
+        newSeriesId = pivot.recurrence_series_id;
+      } else {
+        // Commit, first attempt: split the series at the pivot. Forward
+        // occurrences move to a fresh recurrence_series_id; the assembler
+        // then sees only forward rows by construction (no filter needed).
+        newSeriesId = await this.recurrence.splitSeries(bookingId);
+        effectiveSeriesId = newSeriesId;
+      }
+    } else {
+      // scope='series' — preview + commit both walk the current series.
+      // skipSplitSeries is irrelevant here (no split was ever called).
+      effectiveSeriesId = pivot.recurrence_series_id;
+    }
+
+    // Assemble N per-occurrence plans. The assembler's runtime gates
+    // (time-shift, series-mismatch, empty-scope, too-many, B.4.A.5
+    // approval-notification) fire here BEFORE the RPC call.
+    const { rpc_plans } = await this.assembleEditPlan.assembleScopeEditPlan({
+      bookingId,
+      tenantId,
+      effectiveSeriesId,
+      patch: {
+        kind: 'scope',
+        space_id: body.space_id,
+        attendee_count: body.attendee_count,
+        attendee_person_ids: body.attendee_person_ids,
+        host_person_id: body.host_person_id,
+      },
+      forwardOnlyFromStartAt,
+    });
+
+    // Idempotency key was built earlier (before the commit-mode pre-check
+    // + splitSeries) so the pre-check could detect a retry and set
+    // skipSplitSeries without re-firing the non-idempotent splitSeries
+    // side effect. We reuse the same key here so the RPC's own
+    // command_operations advisory-lock + cached_result path is keyed
+    // consistently across attempts. The RPC owns cached return (00371:
+    // 266-267) and payload_mismatch detection (00371:268-274) — TS does
+    // NOT short-circuit on the pre-check.
+    //
+    // Cascade re-emission on retry: this loop is fire-and-forget through
+    // BundleEventBus (in-process Subject). On retry the RPC replays the
+    // FIRST attempt's per_occurrence verbatim, so the same diffs are
+    // observed and the cascade re-fires. This is the same accepted
+    // hazard as editOne/editSlot retries — fixing it requires a domain
+    // outbox keyed on (idempotency_key, occurrence_id) which is tracked
+    // separately. Mentioned here for visibility, not blocking C1/C2.
+
+    const { data: rpcData, error: rpcErr } = await this.supabase.admin.rpc(
+      'edit_booking_scope',
+      {
+        p_plans: rpc_plans as unknown as Record<string, unknown>[],
+        p_tenant_id: tenantId,
+        p_actor_user_id: actor.user_id,
+        p_idempotency_key: idempotencyKey,
+        p_dry_run: dryRun,
+      },
+    );
+    if (rpcErr) {
+      // GiST exclusion → 409 (mirrors editOne at reservation.service.ts:
+      // 1025-1029). One occurrence colliding with an existing booking on
+      // the target space rolls the whole transaction back; the RPC
+      // surfaces it as a raise that mapRpcErrorToAppError translates.
+      if (this.conflict.isExclusionViolation(rpcErr)) {
+        throw AppErrors.conflict('booking.slot_conflict', {
+          detail: 'Slot conflicts with another booking in the series.',
+        });
+      }
+      // Self-review remediation I1 (2026-05-12) — server-class fallback.
+      // Pre-fix fallback was `edit_booking_scope.invalid_plans` (a 400
+      // validation code), which misclassified unknown server-class RPC
+      // failures (DB timeout, missing column, OOM, etc.) as 4xx
+      // validation. mapRpcErrorToAppError still routes recognised raises
+      // to their canonical codes; this fallback only fires when the
+      // raise is unregistered. Mirrors editOne's `booking.edit_failed`
+      // (line 1184-1191) — see STATUS_BY_CODE entry at map-rpc-error.ts.
+      throw mapRpcErrorToAppError(rpcErr, {
+        fallbackCode: 'edit_booking_scope.update_failed',
+      });
+    }
+
+    // RpcEditBookingScopeResult type declared above. On retry the RPC
+    // returns cached_result (00371:266-267) verbatim, which matches this
+    // shape; the same destructure works for fresh-commit + replay paths.
+    const result = rpcData as unknown as RpcEditBookingScopeResult;
+
+    // Visitor cascade fan-out (commit only — dry-run has no committed
+    // moves to cascade). The RPC returns per-occurrence before/after on
+    // every row; we diff time + room and emit per occurrence whose
+    // primary slot moved. Mirrors editOne's cascade block at
+    // reservation.service.ts:1054-1066 but loops over N occurrences.
+    //
+    // Tier B followup #6 (2026-05-12) — batched via
+    // emitVisitorCascadesForBundles: one .in('booking_id', [...]) query
+    // instead of N sequential .eq('booking_id', _) reads. Caps the
+    // post-RPC round-trip cost at 1 regardless of series size.
+    if (!dryRun && this.bundleEventBus && result.per_occurrence) {
+      const cascadeItems = result.per_occurrence
+        .filter((occ) => {
+          const movedTime =
+            occ.start_at_after !== undefined &&
+            occ.start_at_after !== occ.start_at_before;
+          const changedRoom =
+            occ.space_id_after !== undefined &&
+            occ.space_id_after !== occ.space_id_before;
+          return movedTime || changedRoom;
+        })
+        .map((occ) => {
+          const movedTime =
+            occ.start_at_after !== undefined &&
+            occ.start_at_after !== occ.start_at_before;
+          const changedRoom =
+            occ.space_id_after !== undefined &&
+            occ.space_id_after !== occ.space_id_before;
+          return {
+            tenantId,
+            bundleId: occ.booking_id,
+            oldStartAt: movedTime ? occ.start_at_before : null,
+            newStartAt: movedTime ? occ.start_at_after : null,
+            oldSpaceId: changedRoom ? occ.space_id_before : null,
+            newSpaceId: changedRoom ? occ.space_id_after : null,
+          };
+        });
+      if (cascadeItems.length > 0) {
+        await this.emitVisitorCascadesForBundles(cascadeItems);
+      }
+    }
+
+    return {
+      scope: body.scope,
+      new_series_id: newSeriesId,
+      dry_run: dryRun,
+      committed: result.committed,
+      would_succeed: result.would_succeed,
+      series_id: result.series_id,
+      per_occurrence: result.per_occurrence,
+      aggregated_follow_ups: result.aggregated_follow_ups,
+    };
   }
 
   /**
@@ -1396,8 +1991,25 @@ export class ReservationService {
    *
    * Walks `visitors.booking_id` (00278:41 — column renamed from
    * `booking_bundle_id`).
+   *
+   * B.4 Step 2F.3 — relaxed from `private` to `public` because `editScope`
+   * fans out the cascade for N occurrences using the per-occurrence
+   * before/after fields from the `edit_booking_scope` RPC return shape
+   * (`00371:1113-1125`). Single new caller; no shared-service refactor.
+   *
+   * @internal — public ONLY so the editScope path inside this same service
+   * can fan out per-occurrence cascades. Do NOT import or call this from
+   * another service. Cross-service fan-out belongs in a shared
+   * `BundleEventEmitter` (planned but not built); when that exists,
+   * relax this back to `private`. Tier C followup #8 closure
+   * (b4-followups.md).
+   *
+   * Retained for editOne / editSlot — they only have one bundle to emit
+   * per call, so the batching benefit of the plural sibling
+   * `emitVisitorCascadesForBundles` doesn't apply. The plural is for
+   * editScope's N-occurrence fan-out (Tier B followup #6 closure).
    */
-  private async emitVisitorCascadeForBundle(args: {
+  async emitVisitorCascadeForBundle(args: {
     tenantId: string;
     bundleId: string;
     oldStartAt: string | null;
@@ -1419,38 +2031,180 @@ export class ReservationService {
         return;
       }
       const visitorIds = ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
-      const now = new Date().toISOString();
-
-      for (const vid of visitorIds) {
-        if (args.newStartAt && args.newStartAt !== args.oldStartAt) {
-          this.bundleEventBus.emit({
-            kind: 'bundle.line.moved',
-            tenant_id: args.tenantId,
-            bundle_id: args.bundleId,
-            line_id: vid,
-            line_kind: 'visitor',
-            old_expected_at: args.oldStartAt,
-            new_expected_at: args.newStartAt,
-            occurred_at: now,
-          });
-        }
-        if (args.newSpaceId && args.newSpaceId !== args.oldSpaceId) {
-          this.bundleEventBus.emit({
-            kind: 'bundle.line.room_changed',
-            tenant_id: args.tenantId,
-            bundle_id: args.bundleId,
-            line_id: vid,
-            line_kind: 'visitor',
-            old_room_id: args.oldSpaceId,
-            new_room_id: args.newSpaceId,
-            occurred_at: now,
-          });
-        }
-      }
+      this.emitVisitorCascadeEvents(args, visitorIds, new Date().toISOString());
     } catch (err) {
       this.log.warn(
         `visitor cascade emit failed for booking ${args.bundleId}: ${(err as Error).message}`,
       );
+    }
+  }
+
+  /**
+   * Batched sibling of `emitVisitorCascadeForBundle` — one .in('booking_id',
+   * [...]) query for N bundles instead of N sequential single-bundle reads.
+   * For a 200-occurrence series scope edit, replaces up to 200 round-trips
+   * with one. Wire-shape identical (same per-visitor emit payloads); visitor
+   * consumers see no difference.
+   *
+   * Used by `editScope` (reservation.service.ts:~1909-1933) where the RPC
+   * returns `per_occurrence[]` (00371:1113-1125) and the TS layer fans out
+   * cascades for every row whose primary slot moved time OR changed room.
+   *
+   * Tenant-isolation: items must share a single `tenant_id`. The plural
+   * doesn't read TenantContext — each item carries its own (caller's
+   * responsibility, consistent with the singular method's contract and the
+   * Phase 8 tenant-thread-through pattern at commit e1b47cae). Mixed-tenant
+   * batches throw — there's no defensible reason for one editScope call to
+   * span tenants, and silently splitting would muddy the invariant.
+   *
+   * Error handling mirrors the singular: a failed .in() lookup logs a
+   * warning and returns (no throw); a thrown emit on a single bundle is
+   * caught per-bundle so one bad subscriber doesn't tank the rest.
+   *
+   * @internal — same rationale as `emitVisitorCascadeForBundle`. Caller
+   * lives in the same service.
+   */
+  async emitVisitorCascadesForBundles(
+    items: Array<{
+      tenantId: string;
+      bundleId: string;
+      oldStartAt: string | null;
+      newStartAt: string | null;
+      oldSpaceId: string | null;
+      newSpaceId: string | null;
+    }>,
+  ): Promise<void> {
+    if (!this.bundleEventBus) return;
+    if (items.length === 0) return;
+
+    // Single-tenant assertion. Both editOne/editSlot/editScope establish
+    // tenant from TenantContext before constructing items; mixed-tenant
+    // batches would indicate a programmer error worth surfacing loudly.
+    // Self-review remediation (code-reviewer 2026-05-12 #1): raise an
+    // AppError, not a raw Error — this module is migrated (per
+    // pnpm errors:check-app-errors). The code reaches the filter's
+    // STATUS_BY_CODE map (500) and traceId-tags the response if the
+    // assertion ever escapes the service boundary.
+    const tenantIds = new Set(items.map((i) => i.tenantId));
+    if (tenantIds.size !== 1) {
+      throw AppErrors.server('booking.cascade_cross_tenant_batch', {
+        detail: `items span ${tenantIds.size} tenants; per-call batches must be per-tenant`,
+      });
+    }
+    const tenantId = items[0].tenantId;
+    // Self-review remediation (code-reviewer 2026-05-12 #2): deduplicate
+    // by bundleId to prevent double-emit if a future caller passes the
+    // same bundleId twice. editScope today derives items from
+    // result.per_occurrence (unique booking_ids per RPC contract), so
+    // this is defense-in-depth — but the method's public contract
+    // shouldn't depend on caller-side uniqueness.
+    const seenBundleIds = new Set<string>();
+    const dedupedItems = items.filter((item) => {
+      if (seenBundleIds.has(item.bundleId)) return false;
+      seenBundleIds.add(item.bundleId);
+      return true;
+    });
+    const bundleIds = dedupedItems.map((i) => i.bundleId);
+
+    let data: Array<{ id: string; booking_id: string }> | null = null;
+    try {
+      const res = await this.supabase.admin
+        .from('visitors')
+        .select('id, booking_id')
+        .eq('tenant_id', tenantId)
+        .in('booking_id', bundleIds);
+      if (res.error) {
+        this.log.warn(
+          `visitor cascade batch lookup failed for ${bundleIds.length} bundles: ${res.error.message}`,
+        );
+        return;
+      }
+      data = (res.data ?? []) as Array<{ id: string; booking_id: string }>;
+    } catch (err) {
+      // Defense — supabase-js generally returns errors via `{ error }`, but
+      // network-layer throws are possible. Mirror the singular's outer catch.
+      this.log.warn(
+        `visitor cascade batch lookup threw for ${bundleIds.length} bundles: ${(err as Error).message}`,
+      );
+      return;
+    }
+
+    // Group visitor ids by booking_id so we can iterate items once and emit
+    // per-bundle without re-scanning the flat result.
+    const visitorIdsByBundle = new Map<string, string[]>();
+    for (const v of data) {
+      const list = visitorIdsByBundle.get(v.booking_id) ?? [];
+      list.push(v.id);
+      visitorIdsByBundle.set(v.booking_id, list);
+    }
+
+    const now = new Date().toISOString();
+    for (const item of dedupedItems) {
+      const visitorIds = visitorIdsByBundle.get(item.bundleId) ?? [];
+      if (visitorIds.length === 0) continue;
+      try {
+        this.emitVisitorCascadeEvents(item, visitorIds, now);
+      } catch (err) {
+        // Per-bundle isolation: a thrown subscriber on one bundle's emit
+        // mustn't poison the rest. Same posture as the singular's outer
+        // try/catch — log and continue.
+        this.log.warn(
+          `visitor cascade emit failed for booking ${item.bundleId}: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Shared per-bundle emit body. Given a bundle's cascade args + the
+   * visitor ids attached to it, fires the (movedTime → bundle.line.moved)
+   * + (changedRoom → bundle.line.room_changed) emits per visitor. Called by
+   * both `emitVisitorCascadeForBundle` and `emitVisitorCascadesForBundles`
+   * so the wire shape stays byte-identical between the singular and plural
+   * paths. The args object's null/non-null contract for each axis (the
+   * singular method passes nulls for the unchanged axis; plural inherits
+   * the same convention from editScope's diff construction at
+   * reservation.service.ts:~1923-1929) is the gate that suppresses emits
+   * for the unchanged dimension.
+   */
+  private emitVisitorCascadeEvents(
+    args: {
+      tenantId: string;
+      bundleId: string;
+      oldStartAt: string | null;
+      newStartAt: string | null;
+      oldSpaceId: string | null;
+      newSpaceId: string | null;
+    },
+    visitorIds: string[],
+    occurredAt: string,
+  ): void {
+    if (!this.bundleEventBus) return;
+    for (const vid of visitorIds) {
+      if (args.newStartAt && args.newStartAt !== args.oldStartAt) {
+        this.bundleEventBus.emit({
+          kind: 'bundle.line.moved',
+          tenant_id: args.tenantId,
+          bundle_id: args.bundleId,
+          line_id: vid,
+          line_kind: 'visitor',
+          old_expected_at: args.oldStartAt,
+          new_expected_at: args.newStartAt,
+          occurred_at: occurredAt,
+        });
+      }
+      if (args.newSpaceId && args.newSpaceId !== args.oldSpaceId) {
+        this.bundleEventBus.emit({
+          kind: 'bundle.line.room_changed',
+          tenant_id: args.tenantId,
+          bundle_id: args.bundleId,
+          line_id: vid,
+          line_kind: 'visitor',
+          old_room_id: args.oldSpaceId,
+          new_room_id: args.newSpaceId,
+          occurred_at: occurredAt,
+        });
+      }
     }
   }
 }

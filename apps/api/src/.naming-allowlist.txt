@@ -249,6 +249,7 @@ apps/api/src/modules/reservations/recurrence.service.ts:954:      .from('recurre
 apps/api/src/modules/reservations/recurrence.service.ts:957:      .eq('id', p.recurrence_series_id);
 apps/api/src/modules/reservations/recurrence.service.ts:964:        entity_type: 'recurrence_series',
 apps/api/src/modules/reservations/recurrence.service.ts:965:        entity_id: p.recurrence_series_id,
+apps/api/src/modules/reservations/reservation-edit-scope.spec.ts:9: *   1. `scope='this'` → 400 wrong_endpoint (use PATCH /reservations/:id).
 apps/api/src/modules/reservations/reservation-edit-slot.spec.ts:106:      recurrence_series_id: null,
 apps/api/src/modules/reservations/reservation-edit-slot.spec.ts:602:        recurrence_series_id: null,
 apps/api/src/modules/reservations/reservation-edit-tenant-validation.spec.ts:168:    recurrence_series_id: null,
@@ -983,6 +984,7 @@ apps/api/src/modules/reservations/reservation.service.ts:27: * Booking-canonical
 apps/api/src/modules/reservations/reservation.service.ts:509:        reservation_id: updated.id,                   // = booking id under canonicalisation
 apps/api/src/modules/reservations/reservation.service.ts:925:   * The desk scheduler PATCHed `/reservations/:id` with `id = booking.id`,
 apps/api/src/modules/reservations/reservation.service.ts:954:   * Existing `editOne` (`PATCH /reservations/:id`) stays as the booking-
+apps/api/src/modules/reservations/reservation.service.ts:1103:   * `editOne` (`PATCH /reservations/:id`) is the sibling producer
 apps/api/src/modules/reservations/reservation.service.ts:887:      // unguarded editOne path. PATCH /reservations/:id has no
 apps/api/src/modules/reservations/reservations.module.ts:103:    // Sub-project 2: when a master reservation has a booking_bundle, the
 apps/api/src/modules/reservations/reservations.module.ts:1:// Reservations module — owns the reservations table lifecycle.
@@ -1019,3 +1021,33 @@ apps/api/src/modules/outbox/handlers/booking-approval-required.handler.ts:2:impo
 apps/api/src/modules/outbox/handlers/booking-approval-required.handler.ts:15: * Event type literal: apps/api/src/modules/reservations/event-types.ts:51
 apps/api/src/modules/outbox/handlers/booking-approval-required.handler.ts:129:    //       apps/api/src/modules/reservations/event-types.ts:40-51.
 apps/api/src/modules/outbox/handlers/__tests__/booking-approval-required.handler.spec.ts:12: * Event literal: apps/api/src/modules/reservations/event-types.ts:51
+
+# === Universal Workflow Architecture Phase 1.A — workflow-spawn-wake handler ===
+# Same KEEP_LIVE_IMPORT rationale as the booking-approval-required handler
+# above. `BookingLifecycleEventType` (and its `Created`/`Cancelled`/
+# `StatusChanged` literals) lives in apps/api/src/modules/reservations/event-types.ts
+# alongside the existing `BookingEditEventType` SoT. The path will move
+# when the `reservations/` directory is renamed to `bookings/` per
+# docs/follow-ups/phase-8-naming-audit.md.
+apps/api/src/modules/outbox/handlers/workflow-spawn-wake.handler.ts:8:} from '../../reservations/event-types';
+apps/api/src/modules/outbox/handlers/__tests__/workflow-spawn-wake.handler.spec.ts:9:import { BookingLifecycleEventType } from '../../../reservations/event-types';
+apps/api/src/modules/reservations/dto/dtos.ts:80: * B.4 Step 2F.3 — DTO for `POST /reservations/:id/edit-scope`.
+apps/api/src/modules/reservations/reservation.service.ts:1590:        detail: "Use the regular edit endpoint (PATCH /reservations/:id) for scope='this'.",
+apps/api/src/modules/reservations/reservation.service.ts:1586:    // .ts:1062-1064). The single-occurrence edit path is `PATCH /reservations
+apps/api/src/modules/reservations/reservation.service.ts:1521:   *     instead of `PATCH /reservations/:id`.
+apps/api/src/modules/reservations/reservation.service.ts:1470:   * Cuts over `POST /reservations/:id/edit-scope` from the legacy bare-
+
+# === Tier B followup #6 (2026-05-12) — emitVisitorCascadesForBundles ===
+# KEEP_WIRE_SHAPE — `bundle_id` is the canonical field name on the in-process
+# BundleEvent payload (BundleEventBase.bundle_id in bundle-event-bus.ts).
+# Mirrors the existing entries for `bundle-cascade.adapter.ts` higher up
+# in this file. The new dedicated spec for the batched plural method asserts
+# against this same wire field.
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:200:      bundle_id: BUNDLE_1,
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:274:    expect(events.filter((e) => e.bundle_id === BUNDLE_1)).toHaveLength(4);
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:275:    expect(events.filter((e) => e.bundle_id === BUNDLE_2)).toHaveLength(1);
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:276:    expect(events.filter((e) => e.bundle_id === BUNDLE_3)).toHaveLength(0);
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:279:    const bundle2Events = events.filter((e) => e.bundle_id === BUNDLE_2);
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:415:        if (e.bundle_id === BUNDLE_1) {
+apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:445:    expect(captured.some((e) => e.bundle_id === BUNDLE_2)).toBe(true);
+apps/api/src/modules/reservations/reservation.service.ts:2171:          bundle_id: args.bundleId,

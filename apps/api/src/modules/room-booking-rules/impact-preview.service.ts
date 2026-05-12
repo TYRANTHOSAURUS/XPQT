@@ -124,13 +124,17 @@ export class ImpactPreviewService {
       // Evaluate THIS rule alone against the reservation. We use the
       // resolver's evaluateAdHoc but pass only this rule so we attribute
       // effects cleanly to it.
-      const outcome = await this.resolver.evaluateAdHoc([rule], {
-        requester_person_id: r.requester_person_id,
-        space_id: r.space_id,
-        start_at: r.start_at,
-        end_at: r.end_at,
-        attendee_count: r.attendee_count,
-      });
+      const outcome = await this.resolver.evaluateAdHoc(
+        [rule],
+        {
+          requester_person_id: r.requester_person_id,
+          space_id: r.space_id,
+          start_at: r.start_at,
+          end_at: r.end_at,
+          attendee_count: r.attendee_count,
+        },
+        tenant.id,
+      );
 
       if (outcome.matchedRules.length === 0) continue;
 

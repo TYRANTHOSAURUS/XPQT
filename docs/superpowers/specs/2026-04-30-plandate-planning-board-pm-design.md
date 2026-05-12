@@ -1,8 +1,28 @@
 # Plandate, Planning Board, and Preventive Maintenance — design
 
-**Status:** Slice A shipped on `main`. Slice B (planning board) and Slice C (preventive maintenance) designed; not started. This doc is the source of truth for sequencing and open questions.
+**Status:** Slice A + **Slice B shipped on `main` (2026-05-12)**. Slice C (preventive maintenance) designed; not started. This doc is the source of truth for sequencing and open questions.
 
-**Last updated:** 2026-04-30
+**Last updated:** 2026-05-12
+
+## Slice B — shipped journal
+
+| Commit | What |
+|---|---|
+| `9c5fb5e2` | docs: lock decisions post-full-review |
+| `4a6f48b9` | chunk 0 — `apps/web/src/lib/scheduler-time.ts` DST-correct helpers + 19 tests |
+| `b691953d` | chunk 1 — backend `GET /work-orders/planning` + migration 00374 |
+| `6aa2823c` | chunk 2 — page scaffold + read |
+| `f552e3fd` | chunk 3 — `<PlanningBlock>` + click-through |
+| `a9c22989` | chunk 4 — drag-to-move + past-slot confirm dialog |
+| `956d8718` | chunk 5 — unscheduled rail + drag-onto-lane |
+| `7afd875a` | chunk 6 — smoke gate + doc sync |
+| `a67c7a1c` | fix: full-review remediation (parent_ticket_id rename, requestId per gesture, ticketKeys.lists() invalidation) |
+| `5a689110` | fix: codex remediation (migration 00377 — vendor predicate dormant + planned-window indexes; lane seed from unscheduled blocks; smoke probe strengthened) |
+| _(2026-05-12 v1.1)_ | feat: drag-to-resize — right-edge handle on every `can_plan` block; duration-only PATCH; same idempotency contract as commitDrop |
+| _(2026-05-12 P1-4)_ | feat: `metadata.source` on `plan_changed` audit rows — migration 00383 adds optional `p_activity_source` to `update_entity_combined` (now 7-arg, v5 6-arg dropped); FE stamps `'board'` from drag/resize/keyboard nudge on `/desk/planning`, `'detail'` from `PlanField` popover; smoke gate asserts `ticket_activities.metadata.source='board'` after a real PATCH. Slice C's PM generator can now stamp `'generator'` via the same path — RPC is ready. |
+| _(2026-05-12 codex)_ | fix: codex remediation — (1) plan_version compare moved INSIDE the RPC after `SELECT FOR UPDATE` via new optional `p_expected_plan_version` arg (migration 00384, now 8-arg); TS pre-check stays as a fast-fail path but the RPC is the authority — closes the race window where two PATCHes both pre-check version N and both pass. (2) `p_activity_source` folded into the idempotency `payload_hash` so a replay with the same crid + same patches + different `_source` rejects as `command_operations.payload_mismatch` instead of silently deduping the audit-row source. (3) `request_types` join inside `work_orders_visible_to_operator` now filters by tenant_id explicitly (migration 00385) — defense-in-depth consistent with the other six tenant_id filters in the predicate. (4) Smoke gate extended: true concurrent-race probe via `Promise.all` (two PATCHes from the same version → exactly one 200 + one 409 with `serverVersion=N+1`/`clientVersion=N`) + source-hash dedupe probe. Pushed back on codex's rolling-deploy concern: a single-transaction DDL takes ACCESS EXCLUSIVE on the function, so concurrent calls wait — no in-flight gap exists. |
+
+**Tests at ship:** API 1855 pass · Web 266 pass · Smoke 87/87 (concurrent race stable across 4 consecutive runs). **Migrations on remote:** 00374 + 00377 + 00383 + 00384 + 00385. **Codex verdict:** hold → ship after the three fixes above landed.
 
 ---
 

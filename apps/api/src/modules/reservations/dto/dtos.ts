@@ -65,6 +65,44 @@ export interface UpdateReservationDto {
   host_person_id?: string | null;
 }
 
+/**
+ * B.4 Step 2F.3 — DTO for `POST /reservations/:id/edit-scope`.
+ *
+ * Distinct from `UpdateReservationDto` because scope edits are NOT
+ * symmetric with single-occurrence edits: `start_at` / `end_at` are
+ * REJECTED — a series time-shift requires recurrence_rule mutation,
+ * not slot UPDATE (`edit_booking_scope.time_shift_not_supported`,
+ * surfaced both at the assembler's runtime gate at
+ * `assemble-edit-plan.service.ts:430-439` and the RPC v2 contract at
+ * `00371:217-220`). The DTO drops them entirely; clients that need a
+ * series time-shift use a different endpoint (recurrence-rule edit,
+ * out-of-scope here).
+ *
+ * `dry_run` is a preview-mode flag. When `true`, the RPC runs the full
+ * validation + plan pipeline and returns predicted outcomes WITHOUT
+ * touching any row (no command_operations row, no audit events, no
+ * approval inserts). v2 dry-run contract: `00371:1131-1140`. The
+ * controller layer cuts the split-series side effect for dry-runs too —
+ * `RecurrenceService.splitSeries` is not called on a dry-run path
+ * (see reservation.service.ts:editScope).
+ */
+export interface EditScopeDto {
+  scope: 'this_and_following' | 'series';
+  /** Slot-level: target room (applied to PRIMARY slot of each occurrence). */
+  space_id?: string;
+  /** Slot-level: attendee headcount per occurrence's primary slot. */
+  attendee_count?: number | null;
+  /** Slot-level: attendee person ids per occurrence's primary slot. */
+  attendee_person_ids?: string[];
+  /** Booking-level: host_person_id. Applied to every booking in scope.
+   * `null` = clear; `string` = set; `undefined` = preserve. */
+  host_person_id?: string | null;
+  /** Preview mode (default false). RPC returns predicted outcomes
+   * without writes. Visitor cascade emission + idempotency-row writes
+   * are skipped on dry-run paths. */
+  dry_run?: boolean;
+}
+
 export interface CancelReservationDto {
   scope?: 'this' | 'this_and_following' | 'series';
   reason?: string;
