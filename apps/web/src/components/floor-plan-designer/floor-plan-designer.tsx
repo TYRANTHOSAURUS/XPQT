@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft } from 'lucide-react';
 import { useFloorPlanDraft } from '@/api/floor-plans/hooks';
 import { useDesignerState } from './use-designer-state';
+import { useImageUpload } from './use-image-upload';
 import { SpacesTree } from './spaces-tree';
 import { ToolDock } from './tool-dock';
 import { PolygonInspector } from './polygon-inspector';
 import { DesignerCanvas } from './designer-canvas';
 import { PublishDialog } from './publish-dialog';
 import { Button } from '@/components/ui/button';
+import { toast } from '@/lib/toast';
 import type { ToolKind } from './types';
 
 type Props = { floorSpaceId: string; floorName: string; backTo: string };
@@ -17,6 +19,43 @@ export function FloorPlanDesigner({ floorSpaceId, floorName, backTo }: Props) {
   const draft = useFloorPlanDraft(floorSpaceId);
   const { state, dispatch, isSaving } = useDesignerState(floorSpaceId, draft.data);
   const [publishOpen, setPublishOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Tenant ID comes from the loaded draft (already tenant-scoped)
+  const tenantId = draft.data?.tenant_id ?? '';
+  const { upload } = useImageUpload(tenantId, floorSpaceId);
+
+  // Trigger file input when image-upload tool is activated
+  useEffect(() => {
+    if (state.activeTool === 'image-upload') {
+      fileInputRef.current?.click();
+    }
+  }, [state.activeTool]);
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset input so the same file can be re-selected if needed
+    e.target.value = '';
+    // Switch back to select tool whether upload succeeds or not
+    dispatch({ type: 'set-tool', tool: 'select' });
+    if (!file) return;
+
+    const result = await upload(file);
+    if (!result) return;
+
+    if (state.polygons.length > 0) {
+      toast.warning('Image replaced', {
+        description: 'Verify polygon positions before publishing.',
+      });
+    }
+    dispatch({
+      type: 'set-image',
+      imagePath: result.path,
+      previewUrl: result.previewUrl,
+      widthPx: result.widthPx,
+      heightPx: result.heightPx,
+    });
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -49,14 +88,16 @@ export function FloorPlanDesigner({ floorSpaceId, floorName, backTo }: Props) {
       ) {
         dispatch({ type: 'remove-polygon', index: state.selectedPolygonIndex });
       }
-      // Cmd-Z / Cmd-Shift-Z stubs — real undo lands in B.12
-      if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
+      // Undo / redo (B.12)
+      if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
         e.preventDefault();
-        // TODO B.12: undo
-      }
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'z') {
+        dispatch({ type: 'undo' });
+      } else if (
+        (e.metaKey || e.ctrlKey) &&
+        (e.key === 'Z' || (e.key === 'z' && e.shiftKey))
+      ) {
         e.preventDefault();
-        // TODO B.12: redo
+        dispatch({ type: 'redo' });
       }
     };
     window.addEventListener('keydown', onKey);
@@ -72,6 +113,14 @@ export function FloorPlanDesigner({ floorSpaceId, floorName, backTo }: Props) {
 
   return (
     <div className="flex h-screen w-screen flex-col bg-background">
+      {/* Hidden file input for image upload (B.10) */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/svg+xml"
+        className="sr-only"
+        onChange={handleFileChange}
+      />
       {/* custom topbar — designer is shell-exempt per CLAUDE.md */}
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-3">
         <div className="flex items-center gap-3">

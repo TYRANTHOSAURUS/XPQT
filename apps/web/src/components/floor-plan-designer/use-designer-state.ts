@@ -1,6 +1,6 @@
 import { useReducer, useEffect, useRef } from 'react';
 import type { DesignerState, ToolKind } from './types';
-import type { DraftResponse, Polygon } from '@/api/floor-plans/types';
+import type { DraftResponse, Label, Polygon } from '@/api/floor-plans/types';
 import { useUpdateDraft } from '@/api/floor-plans/hooks';
 import { toast } from '@/lib/toast';
 
@@ -15,12 +15,55 @@ type Action =
   | { type: 'start-drawing'; polygon: Polygon }
   | { type: 'commit-drawing' }
   | { type: 'cancel-drawing' }
-  | { type: 'server-sync'; updatedAt: string };
+  | { type: 'server-sync'; updatedAt: string }
+  | { type: 'undo' }
+  | { type: 'redo' };
 
-function reducer(state: DesignerState, action: Action): DesignerState {
+/** The subset of DesignerState tracked in the undo/redo history. */
+type HistoryEntry = {
+  polygons: Polygon[];
+  labels: Label[];
+  imageUrl: string | null;
+  previewUrl: string | null;
+  widthPx: number | null;
+  heightPx: number | null;
+};
+
+type StateWithHistory = DesignerState & {
+  _history: HistoryEntry[];
+  _historyIndex: number;
+};
+
+const HISTORY_MAX = 50;
+
+function snapshotEntry(s: DesignerState): HistoryEntry {
+  return {
+    polygons: s.polygons,
+    labels: s.labels,
+    imageUrl: s.imageUrl,
+    previewUrl: s.previewUrl,
+    widthPx: s.widthPx,
+    heightPx: s.heightPx,
+  };
+}
+
+function pushHistory(state: StateWithHistory): { _history: HistoryEntry[]; _historyIndex: number } {
+  // Truncate forward branch if re-doing after undos
+  const trimmed = state._history.slice(0, state._historyIndex + 1);
+  const entry = snapshotEntry(state);
+  const next = [...trimmed, entry].slice(-HISTORY_MAX);
+  return { _history: next, _historyIndex: next.length - 1 };
+}
+
+function applyEntry(state: StateWithHistory, entry: HistoryEntry): StateWithHistory {
+  return { ...state, ...entry };
+}
+
+function reducer(state: StateWithHistory, action: Action): StateWithHistory {
   switch (action.type) {
     case 'hydrate':
       return {
+        ...state,
         draftId: action.draft.id,
         updatedAt: action.draft.updated_at,
         imageUrl: action.draft.image_url,
@@ -32,32 +75,63 @@ function reducer(state: DesignerState, action: Action): DesignerState {
         selectedPolygonIndex: null,
         activeTool: 'select',
         inProgressPolygon: null,
+        _history: [],
+        _historyIndex: -1,
       };
     case 'select-polygon': return { ...state, selectedPolygonIndex: action.index };
     case 'set-tool':       return { ...state, activeTool: action.tool, inProgressPolygon: null };
-    case 'add-polygon':    return { ...state, polygons: [...state.polygons, action.polygon] };
-    case 'update-polygon': return {
-      ...state,
-      polygons: state.polygons.map((p, i) => i === action.index ? { ...p, ...action.patch } : p),
-    };
-    case 'remove-polygon': return {
-      ...state,
-      polygons: state.polygons.filter((_, i) => i !== action.index),
-      selectedPolygonIndex: state.selectedPolygonIndex === action.index ? null : state.selectedPolygonIndex,
-    };
-    case 'set-image':
+    case 'add-polygon': {
+      const hist = pushHistory(state);
+      return { ...state, ...hist, polygons: [...state.polygons, action.polygon] };
+    }
+    case 'update-polygon': {
+      const hist = pushHistory(state);
+      return {
+        ...state,
+        ...hist,
+        polygons: state.polygons.map((p, i) => i === action.index ? { ...p, ...action.patch } : p),
+      };
+    }
+    case 'remove-polygon': {
+      const hist = pushHistory(state);
+      return {
+        ...state,
+        ...hist,
+        polygons: state.polygons.filter((_, i) => i !== action.index),
+        selectedPolygonIndex: state.selectedPolygonIndex === action.index ? null : state.selectedPolygonIndex,
+      };
+    }
+    case 'set-image': {
+      const hist = pushHistory(state);
       // imagePath is persisted to server; previewUrl is local-only signed URL for display
-      return { ...state, imageUrl: action.imagePath, previewUrl: action.previewUrl, widthPx: action.widthPx, heightPx: action.heightPx };
+      return { ...state, ...hist, imageUrl: action.imagePath, previewUrl: action.previewUrl, widthPx: action.widthPx, heightPx: action.heightPx };
+    }
     case 'start-drawing':  return { ...state, inProgressPolygon: action.polygon };
-    case 'commit-drawing': return state.inProgressPolygon
-      ? { ...state, polygons: [...state.polygons, state.inProgressPolygon], inProgressPolygon: null }
-      : state;
+    case 'commit-drawing': {
+      if (!state.inProgressPolygon) return state;
+      const hist = pushHistory(state);
+      return { ...state, ...hist, polygons: [...state.polygons, state.inProgressPolygon], inProgressPolygon: null };
+    }
     case 'cancel-drawing': return { ...state, inProgressPolygon: null };
     case 'server-sync':    return { ...state, updatedAt: action.updatedAt };
+    case 'undo': {
+      if (state._historyIndex < 0) return state;
+      const entry = state._history[state._historyIndex];
+      if (!entry) return state;
+      return applyEntry({ ...state, _historyIndex: state._historyIndex - 1 }, entry);
+    }
+    case 'redo': {
+      const nextIndex = state._historyIndex + 1;
+      if (nextIndex >= state._history.length) return state;
+      // Move forward to the entry after current
+      const entry = state._history[nextIndex];
+      if (!entry) return state;
+      return applyEntry({ ...state, _historyIndex: nextIndex }, entry);
+    }
   }
 }
 
-const INITIAL: DesignerState = {
+const INITIAL: StateWithHistory = {
   draftId: '',
   updatedAt: '',
   imageUrl: null,
@@ -69,6 +143,8 @@ const INITIAL: DesignerState = {
   selectedPolygonIndex: null,
   activeTool: 'select',
   inProgressPolygon: null,
+  _history: [],
+  _historyIndex: -1,
 };
 
 export function useDesignerState(floorSpaceId: string, draft: DraftResponse | undefined) {
@@ -120,5 +196,8 @@ export function useDesignerState(floorSpaceId: string, draft: DraftResponse | un
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [state.polygons, state.labels, state.imageUrl, state.widthPx, state.heightPx, state.draftId, state.updatedAt, updateDraft]);
 
-  return { state, dispatch, isSaving: updateDraft.isPending } as const;
+  const canUndo = state._historyIndex >= 0;
+  const canRedo = state._historyIndex + 1 < state._history.length;
+
+  return { state, dispatch, isSaving: updateDraft.isPending, canUndo, canRedo } as const;
 }
