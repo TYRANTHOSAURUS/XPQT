@@ -84,6 +84,7 @@ Goal: ship `/portal/book/floor` and the live map. End state: a requester can ope
 -- (gated) for booking details if needed.
 
 create or replace function public.floor_availability(
+  p_tenant_id uuid,
   p_floor_space_id uuid,
   p_window_start timestamptz,
   p_window_end timestamptz,
@@ -95,12 +96,17 @@ security definer
 set search_path = pg_catalog, public, pg_temp
 as $$
 declare
-  v_tenant_id uuid := public.current_tenant_id();
+  v_tenant_id uuid := p_tenant_id;
   v_caller_person_id uuid;
   v_spaces jsonb;
   v_heatmap jsonb;
   v_day_start timestamptz;
 begin
+  -- Tenant is passed from the API layer (server-side TenantContext). The RPC is
+  -- granted only to service_role, so callers can't forge p_tenant_id or p_user_id.
+  if p_tenant_id is null or p_floor_space_id is null then
+    raise exception 'floor_plan.availability.invalid_args' using errcode = '22023';
+  end if;
   if p_window_start >= p_window_end then
     raise exception 'floor_plan.availability.invalid_window' using errcode = '22023';
   end if;
@@ -121,6 +127,9 @@ begin
        and s.floor_plan_polygon is not null
   ),
   overlapping as (
+    -- Slot-level status is the canonical holding predicate (codex C6).
+    -- 'confirmed' + 'checked_in' + 'pending_approval' hold space; everything
+    -- else (draft/cancelled/released/completed) does not.
     select bs.space_id,
            b.id as booking_id,
            bs.start_at, bs.end_at,
@@ -131,7 +140,7 @@ begin
      where b.tenant_id = v_tenant_id
        and bs.tenant_id = v_tenant_id
        and bs.time_range && tstzrange(p_window_start, p_window_end, '[)')
-       and b.status not in ('draft', 'cancelled')
+       and bs.status in ('confirmed', 'checked_in', 'pending_approval')
   )
   select coalesce(jsonb_agg(jsonb_build_object(
     'id',           cs.id,
@@ -191,7 +200,7 @@ begin
                              v_day_start + ((h.h + 7) || ' hours')::interval,
                              v_day_start + ((h.h + 8) || ' hours')::interval,
                              '[)')
-                         and b.status not in ('draft', 'cancelled')
+                         and bs.status in ('confirmed', 'checked_in', 'pending_approval')
                     ) then 1.0 else 0.0 end) / count(*)
                   )
              end
@@ -213,13 +222,16 @@ begin
 end;
 $$;
 
-revoke all on function public.floor_availability(uuid, timestamptz, timestamptz, uuid) from public;
-grant execute on function public.floor_availability(uuid, timestamptz, timestamptz, uuid) to authenticated;
+-- Grant to service_role only (codex C7). The API must call via admin/service-role
+-- client with server-side resolved tenant_id + user_id. authenticated users CANNOT
+-- forge p_tenant_id or p_user_id.
+revoke all on function public.floor_availability(uuid, uuid, timestamptz, timestamptz, uuid) from public, authenticated;
+grant execute on function public.floor_availability(uuid, uuid, timestamptz, timestamptz, uuid) to service_role;
 
 notify pgrst, 'reload schema';
 ```
 
-Note: this assumes `reservations` has columns `(space_id, start_at, end_at, status, requester_user_id, title, tenant_id)`. Verify with `\d public.reservations` before applying. If column names differ, adjust the JOIN.
+Note: queries `bookings` + `booking_slots` (canonical post-00277). Verified column set: `users.person_id`, `bookings.{title, description, requester_person_id, host_person_id, booked_by_user_id, status}`, `booking_slots.{tenant_id NOT NULL, space_id, time_range, status, ...}`. The time_range conflict guard uses the existing `booking_slots_no_overlap` GiST exclusion index.
 
 - [ ] **Step 2: Apply locally + push to remote**
 
@@ -236,7 +248,10 @@ In `floor-plan.service.ts`:
 ```ts
 async getAvailability(floorSpaceId: string, tenantId: string, userId: string, windowStart: string, windowEnd: string) {
   const client = this.supabase.admin;
+  // p_tenant_id is server-resolved (TenantContext); RPC trusts the param because
+  // it's granted only to service_role (codex C5 + C7).
   const { data, error } = await client.rpc('floor_availability', {
+    p_tenant_id: tenantId,
     p_floor_space_id: floorSpaceId,
     p_window_start: windowStart,
     p_window_end: windowEnd,
@@ -277,7 +292,7 @@ async getAvailability(
 }
 ```
 
-Add `@Public()` if needed to match the `getPublished` pattern (visibility filter is applied at the SQL layer for reservations).
+Add `@Public()` only if anonymous reads are needed. For an authenticated portal, leave it gated — the page primary `useFloorPlanPublished` already requires auth. Availability is a secondary call from an authenticated session.
 
 - [ ] **Step 4: Register error code**
 
@@ -745,6 +760,18 @@ Resize the browser to 320px. Verify:
 - Bottom sheet half-height fits content.
 - Primary CTA stays in safe-area-inset-bottom.
 
+**Mobile click-to-book acceptance path** (the core user flow):
+1. Open `/portal/book/floor` at 375×667 viewport.
+2. See the building/floor switcher, time scrubber with crowd heatmap, and a floor plan with at least one **available** (green) polygon.
+3. Tap the available polygon.
+4. Bottom sheet slides up: status dot + room name + amenity icons + Quick pills (Now/in 30m/this PM/Custom) + window readout.
+5. Tap "Book Aurora" (or whatever the room is).
+6. Toast appears: "Booking created — View".
+7. Sheet closes. The polygon flips from green → blue (`mine` state) within 2s (realtime invalidation).
+8. Tap the polygon again → sheet shows "Your booking · 14:30–15:30" with a "Cancel" action.
+
+This flow is non-negotiable for shipping Plan 2. If any step breaks, file a bug and fix before claiming F.4 done.
+
 - [ ] **Step 3: Commit**
 
 ```bash
@@ -817,7 +844,20 @@ If PR #13 is still open (Plan 1 wasn't merged yet), edit its description to note
 
 ## Plan-review delta (what changed pre-code)
 
-Plan-review skill (Claude adversarial agent) found 4 CRITICAL + 11 IMPORTANT + 8 NIT issues before code:
+Two adversarial rounds (full-review skill + codex) caught 7 CRITICAL + 17 IMPORTANT issues before any task touched code:
+
+### Round 2 — codex (post-/full-review fixes)
+
+| # | Severity | Fix |
+|---|---|---|
+| codex-C5 | CRITICAL | RPC takes `p_tenant_id` as a parameter, server-resolved from `TenantContext`. Avoids the empty-result bug where `current_tenant_id()` returned NULL because the admin client bypassed JWT context. |
+| codex-C6 | CRITICAL | Status filter is **slot-level** (`bs.status in ('confirmed','checked_in','pending_approval')`), not booking-level. Released and completed slots no longer hold space. |
+| codex-C7 | CRITICAL | RPC grants EXECUTE only to `service_role`, not `authenticated`. Prevents forging `p_user_id` to infer other users' bookings. The TS service uses `this.supabase.admin` which already runs as service_role. |
+| codex-I1 | IMPORTANT | Stale C1-era guidance removed (the "verify `\d public.reservations`" note that contradicted the bookings-based SQL). |
+| codex-I-mobile | IMPORTANT | Mobile click-to-book acceptance criteria added: tap available polygon → bottom sheet → create booking → toast → polygon turns `mine`. |
+| codex-NIT | NIT | Verified schema: `users.person_id` exists, `booking_slots.tenant_id NOT NULL`, `bookings.title/description` exist, `time_range` covered by `booking_slots_no_overlap` GiST exclusion (not a separate index). |
+
+### Round 1 — /full-review (initial draft)
 
 | # | Severity | Fix |
 |---|---|---|
