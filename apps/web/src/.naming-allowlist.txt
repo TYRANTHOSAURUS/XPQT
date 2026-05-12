@@ -68,6 +68,13 @@ apps/web/src/api/orders/types.ts:16:  /** Renamed from `linked_reservation_id` p
 apps/web/src/api/orders/types.ts:17:   *  (00278:115 — orders.linked_reservation_id → orders.linked_slot_id).
 apps/web/src/api/orders/types.ts:45:  linked_asset_reservation_id: string | null;
 apps/web/src/api/room-booking-rules/types.ts:171:    reservation_id: string;
+# KEEP_WIRE_SHAPE — URL path string for the edit-scope producer route. The
+# backend route still lives under /reservations/* (Phase 8 frontend rename
+# was column-only; HTTP routes are renamed in a later phase). Test spec
+# references the canonical wire path it exercises.
+apps/web/src/api/room-booking/__tests__/edit-booking-scope-hooks.spec.ts:170:    it('POSTs to /reservations/:id/edit-scope', async () => {
+apps/web/src/api/room-booking/__tests__/edit-booking-scope-hooks.spec.ts:191:      expect(url).toBe(`/api/reservations/${RESERVATION_ID}/edit-scope`);
+apps/web/src/api/room-booking/__tests__/edit-booking-scope-hooks.spec.ts:92:      apiFetch<EditBookingScopeResult>(`/reservations/${id}/edit-scope`, {
 apps/web/src/api/room-booking/keys.ts:103:  // Unified scheduler-data bucket. One round-trip returns rooms + reservations.
 apps/web/src/api/room-booking/keys.ts:132:  /** Cap on reservations payload (default 2000). Truncation surfaces in the response. */
 apps/web/src/api/room-booking/mutations.ts:113:      // `{ group_id, reservations[] }` where `group_id` is the booking
