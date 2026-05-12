@@ -66,6 +66,12 @@ export function useKeyboardNudge(opts: UseKeyboardNudgeOpts): KeyboardNudgeApi {
 
   const accumRef = useRef<Accumulator | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Stable ref so the unmount cleanup can call the LATEST onCommit
+  // without re-running the effect on every render. The useEffect cleanup
+  // closure captures whatever onCommit was at mount time otherwise,
+  // which goes stale fast across filter changes.
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
 
   const filtersKey = workOrderPlanningKeys.window(filters);
 
@@ -177,14 +183,36 @@ export function useKeyboardNudge(opts: UseKeyboardNudgeOpts): KeyboardNudgeApi {
     [beginOrContinue, patchOptimistic, scheduleCommit],
   );
 
-  // Unmount: flush so a half-typed burst commits rather than vanishing.
+  // Unmount: flush pending burst so a half-typed nudge commits rather
+  // than vanishing. The previous implementation cleared accumRef without
+  // firing onCommit — ArrowRight + click-away within debounceMs (300ms)
+  // committed an optimistic cache patch but no server-side PATCH ever
+  // fired. Truth refetched on next mount → silent data loss
+  // (full-review C2, 2026-05-12).
+  //
+  // onCommit is async; useEffect cleanups can't await, so we fire it
+  // synchronously and let React Query track the mutation. The route
+  // change has already torn down the page, so the rollback dialog can't
+  // render — but the mutation completes and the cache is correct for
+  // the next visit. This trades a missed rollback affordance (when
+  // navigating away mid-burst) for not silently losing the edit. The
+  // explicit choice: silent data loss > missed rollback UI.
   useEffect(() => {
     return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      // Synchronous flush at unmount — no commit fires from a hook that's
-      // already torn down; we just clear local state. The query cache
-      // patch already painted; the truth refetches on next mount.
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      const acc = accumRef.current;
       accumRef.current = null;
+      if (!acc) return;
+      if (acc.deltaStartMinutes === 0 && acc.deltaDurationMinutes === 0) return;
+      const nextStartIso = shiftIsoByMinutes(acc.baselineStartIso, acc.deltaStartMinutes);
+      const nextDuration =
+        acc.deltaDurationMinutes !== 0
+          ? Math.max(15, acc.baselineDurationMinutes + acc.deltaDurationMinutes)
+          : null;
+      onCommitRef.current(acc.block, nextStartIso, nextDuration);
     };
   }, []);
 

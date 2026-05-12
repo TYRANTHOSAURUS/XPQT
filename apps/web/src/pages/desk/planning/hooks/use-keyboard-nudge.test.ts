@@ -180,6 +180,42 @@ describe('useKeyboardNudge', () => {
     expect(onCommit).not.toHaveBeenCalled();
   });
 
+  it('unmount with a pending burst flushes the PATCH (full-review C2 — no silent data loss)', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedCache(qc);
+    const onCommit = vi.fn();
+    const { result, unmount } = renderHook(() =>
+      useKeyboardNudge({ qc, filters, onCommit, debounceMs: 300 }),
+    );
+
+    // Start a burst — the optimistic patch lands, but the debounced
+    // commit is still pending when the component unmounts (route change
+    // / click-away within 300ms).
+    act(() => result.current.nudgeStart(makeBlock(), 30));
+    expect(onCommit).not.toHaveBeenCalled();
+
+    // Unmount BEFORE the debounce fires. Pre-C2, the cleanup nulled
+    // accumRef without calling onCommit → silent data loss.
+    unmount();
+
+    // The cleanup must have fired onCommit with the accumulated delta.
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    const [, nextStartIso, nextDuration] = onCommit.mock.calls[0];
+    expect(nextStartIso).toBe('2026-05-12T10:30:00.000Z');
+    expect(nextDuration).toBeNull();
+  });
+
+  it('unmount with NO pending burst is a no-op (no spurious commit)', () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedCache(qc);
+    const onCommit = vi.fn();
+    const { unmount } = renderHook(() =>
+      useKeyboardNudge({ qc, filters, onCommit, debounceMs: 300 }),
+    );
+    unmount();
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
   it('duration floor at 15 min: a burst that would drive duration below 15 stops accumulating', () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     seedCache(qc);
