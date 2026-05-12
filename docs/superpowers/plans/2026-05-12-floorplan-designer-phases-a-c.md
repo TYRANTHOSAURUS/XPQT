@@ -229,15 +229,15 @@ The RPC uses the **actual** `audit_events` schema: `(tenant_id, event_type, enti
 ```sql
 -- 00370_publish_floor_plan_draft_rpc.sql
 -- Atomic publish flow per CLAUDE.md ("multi-step writes via PL/pgSQL").
--- Writes a snapshot to floor_plan_publish_history first (for rollback), then
--- updates floor_plans + spaces.floor_plan_polygon, then deletes the draft.
--- Spec §6.2.
+-- Single-execution guarantee via DELETE ... RETURNING * at the start (codex CRITICAL #1).
+-- Writes a snapshot to floor_plan_publish_history (for rollback), updates floor_plans
+-- + spaces.floor_plan_polygon, deletes the draft. Spec §6.2.
 
 create or replace function public.publish_floor_plan_draft(p_draft_id uuid)
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public, pg_temp
 as $$
 declare
   v_draft public.floor_plan_drafts%rowtype;
@@ -251,8 +251,14 @@ declare
   v_prev_h int;
   v_prev_labels jsonb;
   v_prev_polygons jsonb;
+  v_invalid_count int;
 begin
-  select * into v_draft from public.floor_plan_drafts where id = p_draft_id;
+  -- Single-execution claim: DELETE atomically locks + removes the draft. A concurrent
+  -- caller for the same draft_id sees 0 rows and the not_found branch fires.
+  delete from public.floor_plan_drafts
+   where id = p_draft_id
+  returning * into v_draft;
+
   if v_draft.id is null then
     raise exception 'floor_plan.draft.not_found' using errcode = 'P0002';
   end if;
@@ -262,6 +268,43 @@ begin
 
   if v_tenant_id <> public.current_tenant_id() then
     raise exception 'floor_plan.draft.cross_tenant' using errcode = '42501';
+  end if;
+
+  -- Required-fields preflight: floor_plans canonical columns are NOT NULL in 00127.
+  if v_draft.image_url is null or v_draft.width_px is null or v_draft.height_px is null then
+    raise exception 'floor_plan.publish.image_required' using errcode = '23502';
+  end if;
+
+  -- Validate every polygon: non-empty uuid + child-of-floor + same tenant + non-duplicate.
+  select count(*) into v_invalid_count
+    from jsonb_array_elements(v_draft.polygons) p
+   where (p->>'space_id') is null
+      or (p->>'space_id') = ''
+      or not (p->>'space_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+      or (p->'points') is null
+      or jsonb_typeof(p->'points') <> 'array'
+      or jsonb_array_length(p->'points') < 3;
+  if v_invalid_count > 0 then
+    raise exception 'floor_plan.publish.invalid_polygons' using errcode = '22023';
+  end if;
+
+  -- Duplicate space_id check at the RPC layer (DTO catches it client-side too)
+  if (select count(distinct (p->>'space_id')) <> count(*)
+        from jsonb_array_elements(v_draft.polygons) p) then
+    raise exception 'floor_plan.publish.duplicate_space_id' using errcode = '22023';
+  end if;
+
+  -- Verify every space_id is a child of this floor in this tenant
+  if exists (
+    select 1 from jsonb_array_elements(v_draft.polygons) p
+     where not exists (
+       select 1 from public.spaces s
+        where s.id = (p->>'space_id')::uuid
+          and s.tenant_id = v_tenant_id
+          and s.parent_id = v_floor_id
+     )
+  ) then
+    raise exception 'floor_plan.publish.polygon_not_child' using errcode = '22023';
   end if;
 
   -- 1. Snapshot the current published state (for rollback)
@@ -337,8 +380,7 @@ begin
        'polygon_count', jsonb_array_length(v_draft.polygons)
      ));
 
-  -- 7. Delete the draft
-  delete from public.floor_plan_drafts where id = p_draft_id;
+  -- 7. Draft already deleted at the top via DELETE ... RETURNING *.
 
   return jsonb_build_object('history_id', v_history_id);
 end;
@@ -387,8 +429,11 @@ create table if not exists public.floor_plan_publish_history (
 
 alter table public.floor_plan_publish_history enable row level security;
 
+-- READ-ONLY policy for authenticated users. INSERTs come from the security-definer
+-- publish RPC, which bypasses RLS. No tenant role should write directly to history.
 drop policy if exists "tenant_isolation" on public.floor_plan_publish_history;
-create policy "tenant_isolation" on public.floor_plan_publish_history
+create policy "tenant_isolation_read" on public.floor_plan_publish_history
+  for select
   using (tenant_id = public.current_tenant_id());
 
 create index if not exists idx_floor_plan_publish_history_floor
@@ -598,8 +643,9 @@ export const PolygonPointSchema = z.object({
   y: z.number().finite(),
 });
 
+// space_id may be empty for unlinked polygons in a draft. Publish RPC rejects empty.
 export const PolygonSchema = z.object({
-  space_id: z.string().uuid(),
+  space_id: z.union([z.string().uuid(), z.literal('')]),
   points: z.array(PolygonPointSchema).min(3).max(200),
   render_hint: z.enum(['default', 'seat', 'parking']).optional(),
 });
@@ -626,10 +672,11 @@ export const UpdateDraftSchema = z.object({
   polygons: z.array(PolygonSchema).max(2000).optional(),
   labels: z.array(LabelSchema).max(200).optional(),
 }).superRefine((val, ctx) => {
-  // duplicate space_id rejection
+  // Duplicate space_id rejection (only checks non-empty space_ids; '' is allowed for unlinked drafts).
   if (val.polygons) {
     const seen = new Set<string>();
     for (const p of val.polygons) {
+      if (!p.space_id) continue;
       if (seen.has(p.space_id)) {
         ctx.addIssue({ code: 'custom', path: ['polygons'], message: `Duplicate space_id: ${p.space_id}` });
         return;
@@ -752,8 +799,22 @@ export class FloorPlanDraftService {
       }
     }
 
-    // Optimistic lock: read current updated_at, compare to caller's If-Match.
-    if (ifMatch) {
+    // Atomic CAS: single UPDATE with updated_at filter. If ifMatch is provided
+    // and doesn't match, the WHERE matches 0 rows → we know it's stale.
+    // Without ifMatch (rare — only initial seed callers should skip it), we
+    // unconditionally update and accept last-writer-wins for that one call.
+    let query = client
+      .from('floor_plan_drafts')
+      .update({ ...parsed.data })
+      .eq('floor_space_id', floorSpaceId)
+      .eq('tenant_id', tenantId);
+    if (ifMatch) query = query.eq('updated_at', ifMatch);
+
+    const { data, error } = await query.select('*').maybeSingle();
+    if (error) throw AppErrors.server('floor_plan.draft.update_failed');
+
+    if (!data) {
+      // Either the row doesn't exist OR our ifMatch was stale. Disambiguate.
       const { data: current } = await client
         .from('floor_plan_drafts')
         .select('updated_at')
@@ -761,23 +822,10 @@ export class FloorPlanDraftService {
         .eq('tenant_id', tenantId)
         .maybeSingle();
       if (!current) throw AppErrors.notFoundWithCode('floor_plan.draft.not_found');
-      if (current.updated_at !== ifMatch) {
-        throw AppErrors.conflict('floor_plan.draft.stale_update', {
-          serverVersion: current.updated_at,
-        });
-      }
+      throw AppErrors.conflict('floor_plan.draft.stale_update', {
+        serverVersion: current.updated_at,
+      });
     }
-
-    const { data, error } = await client
-      .from('floor_plan_drafts')
-      .update({ ...parsed.data })
-      .eq('floor_space_id', floorSpaceId)
-      .eq('tenant_id', tenantId)
-      .select('*')
-      .single();
-
-    if (error) throw AppErrors.server('floor_plan.draft.update_failed');
-    if (!data) throw AppErrors.notFoundWithCode('floor_plan.draft.not_found');
     return data as DraftResponse;
   }
 
@@ -824,21 +872,54 @@ export class FloorPlanService {
       .eq('tenant_id', tenantId)
       .not('floor_plan_polygon', 'is', null);
 
-    return { floor, spaces: spaces ?? [] };
+    // floor.image_url is a STORAGE PATH (not a URL). Resolve to a fresh signed URL
+    // here so consumers don't see stale signatures. 1h TTL is plenty for a page load
+    // + reasonable user session; clients re-fetch via React Query on revisit.
+    const signedImageUrl = await this.signFloorPlanImage(floor.image_url);
+
+    return { floor: { ...floor, image_url: signedImageUrl }, spaces: spaces ?? [] };
+  }
+
+  /** Resolve a storage path stored in floor_plans.image_url into a fresh signed URL. */
+  private async signFloorPlanImage(pathOrNull: string | null): Promise<string | null> {
+    if (!pathOrNull) return null;
+    // If somehow a full URL is stored (legacy), pass through.
+    if (pathOrNull.startsWith('http://') || pathOrNull.startsWith('https://')) return pathOrNull;
+    const client = this.supabase.client();
+    const { data } = await client.storage.from('floor-plans').createSignedUrl(pathOrNull, 3600);
+    return data?.signedUrl ?? null;
   }
 
   async publish(floorSpaceId: string, tenantId: string) {
     const client = this.supabase.client();
     const { data: draft } = await client
       .from('floor_plan_drafts')
-      .select('id')
+      .select('id, image_url, width_px, height_px, polygons')
       .eq('floor_space_id', floorSpaceId)
       .eq('tenant_id', tenantId)
       .maybeSingle();
     if (!draft) throw AppErrors.notFoundWithCode('floor_plan.draft.not_found');
 
+    // Server-side preflight — fail fast with structured errors before invoking RPC.
+    if (!draft.image_url || !draft.width_px || !draft.height_px) {
+      throw AppErrors.validationFailed('floor_plan.publish.image_required');
+    }
+    const polygons = draft.polygons as Array<{ space_id: string }>;
+    const unlinked = polygons.filter((p) => !p.space_id);
+    if (unlinked.length > 0) {
+      throw AppErrors.validationFailed('floor_plan.publish.unlinked_polygons', { count: unlinked.length });
+    }
+
     const { data, error } = await client.rpc('publish_floor_plan_draft', { p_draft_id: draft.id });
-    if (error) throw AppErrors.server('floor_plan.publish_failed');
+    if (error) {
+      // Translate known PG error codes; everything else is server-class.
+      const code = (error as any).code ?? '';
+      if (code === '23502') throw AppErrors.validationFailed('floor_plan.publish.image_required');
+      if (code === '22023') throw AppErrors.validationFailed('floor_plan.publish.invalid_polygons');
+      if (code === '42501') throw AppErrors.forbidden('floor_plan.publish.cross_tenant');
+      if (code === 'P0002') throw AppErrors.notFoundWithCode('floor_plan.draft.not_found');
+      throw AppErrors.server('floor_plan.publish_failed');
+    }
     return data as { history_id: string };
   }
 
@@ -1036,26 +1117,29 @@ cat apps/api/scripts/smoke-work-orders.mjs
 ```
 Match its style: mint Admin JWT, hit live API, exit non-zero on regression.
 
-- [ ] **Step 2: Write the script with 17 probes**
+- [ ] **Step 2: Write the script with 20 probes**
 
 Required probes (number → behavior):
 1. `GET /api/floors/<fake-uuid>/plan` → 404 / null.
 2. `GET /api/floors/<real-floor>/plan/draft` → 200 (creates draft).
 3. `PATCH /api/floors/<real-floor>/plan/draft` with valid polygon → 200.
 4. `POST /api/floors/<real-floor>/plan/draft/publish` → 200 with `{history_id}`.
-5. `GET /api/floors/<real-floor>/plan` → 200, includes polygon in canonical `{points:[…]}` shape.
+5. `GET /api/floors/<real-floor>/plan` → 200; `floor.image_url` is a fresh signed URL (starts with `https://*.supabase.co`), polygon in canonical `{points:[…]}` shape.
 6. `GET /api/floors/<real-floor>/plan/history` → 200 with one row.
 7. Validation: PATCH polygon with 1 point → 422.
-8. Validation: PATCH polygon with empty `space_id` → 422.
+8. PATCH polygon with empty `space_id` → 200 (draft tolerates unlinked); publish with same draft → 422 `floor_plan.publish.unlinked_polygons`.
 9. Cross-tenant: tenant B reads tenant A's draft → 404 / RLS hides.
 10. Permission: user without `floor_plans.admin` calls PATCH → 403.
-11. PATCH polygon with `space_id` from another tenant → 422 (preflight catches).
+11. PATCH polygon with `space_id` from another tenant → 422 (preflight).
 12. PATCH polygon with `space_id` not a child of this floor → 422.
 13. PATCH with duplicate `space_id` → 422 (DTO superRefine).
-14. Publish when one polygon's `space_id` was just hard-deleted → 200, polygon silently dropped (document, do not error).
-15. Publish twice in quick succession → first 200, second 404.
-16. Concurrent PATCH: client A reads (updated_at=T0), client B PATCHes (now T1), client A PATCHes with `If-Match: T0` → 409.
-17. PATCH with polygon points outside image bounds (negative x or > width_px) → 422 (add a `superRefine` that requires image_url+width_px+height_px to be set before polygons land, then bound-checks points).
+14. Publish when one polygon's `space_id` was just hard-deleted → 422 `polygon_not_child` (RPC validation, codex IMPORTANT — was silently dropped in v1).
+15. Publish twice in quick succession on the same draft_id → first 200, second 404. Verified by hitting `/publish` twice with the same draft from two clients in parallel.
+16. Concurrent PATCH atomic CAS: client A reads (updated_at=T0), client B PATCHes (server now T1), client A PATCHes with `If-Match: T0` → 409.
+17. PATCH with polygon points outside image bounds → 422 (DTO superRefine requires image dimensions set, bound-checks points).
+18. Publish with no image uploaded (image_url=null) → 422 `image_required` (codex IMPORTANT).
+19. Storage signed URL refresh: GET plan immediately, save the signed URL, wait 3700s (or override TTL to 5s for the test), GET plan again — the returned URL differs and resolves (codex CRITICAL #4).
+20. `floor_plan_publish_history`: authenticated user attempts INSERT directly via REST → 403/RLS-blocked (history is RPC-write only).
 
 Exit 0 on all-pass, exit 1 on any regression.
 
@@ -1075,10 +1159,10 @@ Exit 0.
 
 ```bash
 git add apps/api/scripts/smoke-floor-plans.mjs package.json CLAUDE.md
-git commit -m "test(floor-plan): smoke harness with 17 probes (gate before claim-done)"
+git commit -m "test(floor-plan): smoke harness with 20 probes (gate before claim-done)"
 ```
 
-**Phase A done.** Backend draft CRUD + publish RPC works end-to-end against the real DB. No frontend yet. 17 smoke probes green. Cross-tenant harness covers two new tables.
+**Phase A done.** Backend draft CRUD + publish RPC works end-to-end against the real DB. No frontend yet. 20 smoke probes green. Cross-tenant harness covers two new tables.
 
 ---
 
@@ -2265,7 +2349,7 @@ const SIGNED_URL_TTL_SECONDS = 3600;
 export function useImageUpload(tenantId: string, floorSpaceId: string) {
   const [uploading, setUploading] = useState(false);
 
-  async function upload(file: File): Promise<{ url: string; widthPx: number; heightPx: number } | null> {
+  async function upload(file: File): Promise<{ path: string; previewUrl: string | null; widthPx: number; heightPx: number } | null> {
     if (file.size > MAX_BYTES) {
       toastError("Image too large", { description: 'Max 10 MB.' });
       return null;
@@ -2284,9 +2368,11 @@ export function useImageUpload(tenantId: string, floorSpaceId: string) {
       const path = `${tenantId}/${floorSpaceId}/${sha}.${ext}`;
       const { error: upErr } = await supabaseClient.storage.from(BUCKET).upload(path, file, { upsert: true });
       if (upErr) throw upErr;
-      const { data: signed, error: signErr } = await supabaseClient.storage.from(BUCKET).createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
-      if (signErr || !signed) throw signErr ?? new Error('No signed URL');
-      return { url: signed.signedUrl, widthPx, heightPx };
+      // Return the storage PATH, not a signed URL. Backend stores the path in
+      // floor_plans.image_url and resolves to a signed URL at every GET (codex CRITICAL #4).
+      // The hook also returns a one-time signed URL for the designer's immediate preview.
+      const { data: signed } = await supabaseClient.storage.from(BUCKET).createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
+      return { path, previewUrl: signed?.signedUrl ?? null, widthPx, heightPx };
     } catch (err) {
       toastError("Couldn't upload image", { error: err });
       return null;
@@ -2309,7 +2395,17 @@ Note: signed URLs expire in 1h. For the designer that's fine (session is shorter
 
 - [ ] **Step 2: Trigger from tool**
 
-In `floor-plan-designer.tsx`, mount a hidden `<input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" />` ref. When `state.activeTool === 'image-upload'`, click the input. On change, call `upload()`, then dispatch `{ type: 'set-image', imageUrl, widthPx, heightPx }`. Show a banner if `state.polygons.length > 0`: "Image replaced. Verify polygon positions before publishing."
+In `floor-plan-designer.tsx`, mount a hidden `<input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" />` ref. When `state.activeTool === 'image-upload'`, click the input. On change:
+
+1. Call `upload(file)` → returns `{ path, previewUrl, widthPx, heightPx }`.
+2. Dispatch `{ type: 'set-image', imagePath: path, previewUrl, widthPx, heightPx }`.
+3. The reducer stores `imagePath` (canonical, persisted to draft) and `previewUrl` (in-memory, for the current designer session render only).
+4. Autosave PATCH sends `image_url: imagePath` to the backend.
+5. Backend stores the path in `floor_plans.image_url` on publish. On GET, the path is signed → returned as the `image_url` for renderer use.
+
+The `set-image` action type must be updated accordingly in `use-designer-state.ts`. The `DesignerState` type adds a `previewUrl: string | null` field (non-persisted).
+
+Show a banner if `state.polygons.length > 0`: "Image replaced. Verify polygon positions before publishing."
 
 - [ ] **Step 3: Commit**
 
@@ -2761,7 +2857,7 @@ create or replace function public.restore_floor_plan_publish(p_history_id uuid)
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = pg_catalog, public, pg_temp
 as $$
 declare
   v_h public.floor_plan_publish_history%rowtype;
@@ -2773,9 +2869,10 @@ declare
   v_current_floor public.floor_plans%rowtype;
   v_new_history uuid;
 begin
-  select * into v_h from public.floor_plan_publish_history where id = p_history_id;
-  if v_h.id is null then raise exception 'floor_plan.history.not_found'; end if;
-  if v_h.tenant_id <> public.current_tenant_id() then raise exception 'floor_plan.history.cross_tenant'; end if;
+  -- Lock the history row to serialize concurrent restores of the same snapshot.
+  select * into v_h from public.floor_plan_publish_history where id = p_history_id for update;
+  if v_h.id is null then raise exception 'floor_plan.history.not_found' using errcode = 'P0002'; end if;
+  if v_h.tenant_id <> public.current_tenant_id() then raise exception 'floor_plan.history.cross_tenant' using errcode = '42501'; end if;
 
   v_tenant_id := v_h.tenant_id;
   v_floor_id  := v_h.floor_space_id;
@@ -3123,7 +3220,23 @@ EOF
 
 ## Plan-review delta (what changed from v1)
 
-Applied from the full-review skill output (2026-05-12):
+Applied in two rounds: (1) full-review skill (Claude adversarial agent), (2) codex review (different training, catches Postgres semantics gaps). 2026-05-12.
+
+### Round 2 — codex review (Postgres semantics)
+
+| # | Severity | Fix |
+|---|---|---|
+| codex-C1 | CRITICAL | Publish RPC uses `DELETE ... RETURNING *` to atomically claim the draft — two concurrent calls cannot both succeed. |
+| codex-C2 | CRITICAL | PATCH uses atomic CAS: single `UPDATE ... WHERE updated_at = $ifMatch RETURNING *`, not read-then-write. |
+| codex-C3 | CRITICAL | Autosave race resolved by codex-C2's atomic CAS at the server. Out-of-order client requests with stale `updated_at` reject. |
+| codex-C4 | CRITICAL | `floor_plans.image_url` stores the **storage path**, not the signed URL. Backend resolves to a fresh signed URL at every GET. Designer carries `previewUrl` (in-memory) for immediate session render only. Published plans no longer break after 1h. |
+| codex-I1 | IMPORTANT | DTO accepts `space_id: ''` for unlinked polygons during draft; publish-time preflight + RPC validation reject empties. |
+| codex-I2 | IMPORTANT | Publish RPC validates each polygon: non-empty UUID, child-of-floor, no duplicates. Hardened against direct table writes / future bugs. |
+| codex-I3 | IMPORTANT | Publish RPC raises `floor_plan.publish.image_required` (errcode `23502`) when image_url/width/height are null. Server-side preflight catches it before invoking RPC. |
+| codex-I4 | IMPORTANT | `floor_plan_publish_history` policy narrowed to `FOR SELECT`. INSERTs come only from security-definer RPCs. New smoke probe verifies REST writes are blocked. |
+| codex-I5 | IMPORTANT | Both RPCs use `search_path = pg_catalog, public, pg_temp` and explicit qualified references. |
+
+### Round 1 — full-review skill (CLAUDE.md compliance + plan integrity)
 
 | # | Severity | Fix |
 |---|---|---|
