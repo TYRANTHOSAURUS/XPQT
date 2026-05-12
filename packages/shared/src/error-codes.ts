@@ -244,6 +244,7 @@ export type KnownErrorCode =
   | 'booking.scheduler_window_requires_range'
   | 'booking.no_primary_slot'
   | 'booking.edit_failed'
+  | 'booking.cascade_cross_tenant_batch'
   | 'booking.list_failed'
   | 'booking.cancel_failed'
   | 'booking.skip_failed'
@@ -1033,6 +1034,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'booking.scheduler_window_requires_range',
   'booking.no_primary_slot',
   'booking.edit_failed',
+  'booking.cascade_cross_tenant_batch',
   'booking.list_failed',
   'booking.cancel_failed',
   'booking.skip_failed',

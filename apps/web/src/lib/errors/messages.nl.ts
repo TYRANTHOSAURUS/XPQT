@@ -503,6 +503,7 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon niet wijzigen — geen primair slot',
   },
   'booking.edit_failed': { title: 'Kon de wijzigingen niet opslaan' },
+  'booking.cascade_cross_tenant_batch': { title: 'Serverfout' },
   'booking.list_failed': { title: 'Kon de reserveringen niet laden' },
   'booking.cancel_failed': { title: 'Kon de reservering niet annuleren' },
   'booking.skip_failed': { title: 'Kon dit moment niet overslaan' },

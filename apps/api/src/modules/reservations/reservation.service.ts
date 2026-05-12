@@ -2080,14 +2080,31 @@ export class ReservationService {
     // Single-tenant assertion. Both editOne/editSlot/editScope establish
     // tenant from TenantContext before constructing items; mixed-tenant
     // batches would indicate a programmer error worth surfacing loudly.
+    // Self-review remediation (code-reviewer 2026-05-12 #1): raise an
+    // AppError, not a raw Error — this module is migrated (per
+    // pnpm errors:check-app-errors). The code reaches the filter's
+    // STATUS_BY_CODE map (500) and traceId-tags the response if the
+    // assertion ever escapes the service boundary.
     const tenantIds = new Set(items.map((i) => i.tenantId));
     if (tenantIds.size !== 1) {
-      throw new Error(
-        `emitVisitorCascadesForBundles: items span ${tenantIds.size} tenants; per-call batches must be per-tenant`,
-      );
+      throw AppErrors.server('booking.cascade_cross_tenant_batch', {
+        detail: `items span ${tenantIds.size} tenants; per-call batches must be per-tenant`,
+      });
     }
     const tenantId = items[0].tenantId;
-    const bundleIds = items.map((i) => i.bundleId);
+    // Self-review remediation (code-reviewer 2026-05-12 #2): deduplicate
+    // by bundleId to prevent double-emit if a future caller passes the
+    // same bundleId twice. editScope today derives items from
+    // result.per_occurrence (unique booking_ids per RPC contract), so
+    // this is defense-in-depth — but the method's public contract
+    // shouldn't depend on caller-side uniqueness.
+    const seenBundleIds = new Set<string>();
+    const dedupedItems = items.filter((item) => {
+      if (seenBundleIds.has(item.bundleId)) return false;
+      seenBundleIds.add(item.bundleId);
+      return true;
+    });
+    const bundleIds = dedupedItems.map((i) => i.bundleId);
 
     let data: Array<{ id: string; booking_id: string }> | null = null;
     try {
@@ -2122,7 +2139,7 @@ export class ReservationService {
     }
 
     const now = new Date().toISOString();
-    for (const item of items) {
+    for (const item of dedupedItems) {
       const visitorIds = visitorIdsByBundle.get(item.bundleId) ?? [];
       if (visitorIds.length === 0) continue;
       try {

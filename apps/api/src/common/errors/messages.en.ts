@@ -467,6 +467,9 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'booking.edit_failed': {
     title: "Couldn't save the changes",
   },
+  'booking.cascade_cross_tenant_batch': {
+    title: 'Server error',
+  },
   'booking.list_failed': {
     title: "Couldn't load the bookings",
   },

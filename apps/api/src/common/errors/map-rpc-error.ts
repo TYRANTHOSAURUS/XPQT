@@ -345,6 +345,7 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // api/web message tables); making it explicit here keeps the
   // (fallback, STATUS_BY_CODE) tuple consistent.
   'booking.edit_failed': 500,
+  'booking.cascade_cross_tenant_batch': 500,
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.12
   // (Phase 1 codes). All 422 — TS-only raises today (engine.assertSpawnLinkSafe);

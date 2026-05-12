@@ -467,6 +467,9 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'booking.edit_failed': {
     title: 'Kon de wijzigingen niet opslaan',
   },
+  'booking.cascade_cross_tenant_batch': {
+    title: 'Serverfout',
+  },
   'booking.list_failed': {
     title: 'Kon de reserveringen niet laden',
   },

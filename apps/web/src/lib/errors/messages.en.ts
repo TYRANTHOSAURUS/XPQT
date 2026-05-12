@@ -524,6 +524,7 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't edit — no primary slot",
   },
   'booking.edit_failed': { title: "Couldn't save the changes" },
+  'booking.cascade_cross_tenant_batch': { title: 'Server error' },
   'booking.list_failed': { title: "Couldn't load the bookings" },
   'booking.cancel_failed': { title: "Couldn't cancel the booking" },
   'booking.skip_failed': { title: "Couldn't skip the occurrence" },

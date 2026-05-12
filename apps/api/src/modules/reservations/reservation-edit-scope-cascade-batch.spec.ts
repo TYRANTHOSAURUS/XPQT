@@ -371,8 +371,12 @@ describe('ReservationService.emitVisitorCascadesForBundles (Tier B followup #6)'
     const bus = new BundleEventBus();
     const svc = buildService({ supabase, bundleEventBus: bus });
 
-    await expect(
-      svc.emitVisitorCascadesForBundles([
+    // Self-review remediation: assertion target is the AppError code, not
+    // the message string. `booking.cascade_cross_tenant_batch` is the
+    // registered code (error-codes.ts + messages.{en,nl}.ts + map-rpc-error.ts).
+    let caughtCode: string | undefined;
+    try {
+      await svc.emitVisitorCascadesForBundles([
         {
           tenantId: TENANT_A,
           bundleId: BUNDLE_1,
@@ -389,8 +393,11 @@ describe('ReservationService.emitVisitorCascadesForBundles (Tier B followup #6)'
           oldSpaceId: null,
           newSpaceId: null,
         },
-      ]),
-    ).rejects.toThrow(/2 tenants/);
+      ]);
+    } catch (err) {
+      caughtCode = (err as { code?: string }).code;
+    }
+    expect(caughtCode).toBe('booking.cascade_cross_tenant_batch');
 
     // .in() must NOT fire — we threw before reaching the read.
     expect(supabase.calls.selectIn).toHaveLength(0);
