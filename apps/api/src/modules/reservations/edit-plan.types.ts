@@ -65,14 +65,14 @@ export interface EditPlanBookingPatch {
   start_at: string;
   /** REQUIRED. Booking-level end (typically MAX(slot.end_at)). ISO. */
   end_at: string;
-  /** Cost snapshot string (NUMERIC(10,2) in storage). NULL when the target
-   * room has no cost_per_hour. N-CODE-3 — typed as optional (the RPC
-   * accepts absence; 00364:738 coerces empty/missing → NULL). The
-   * orchestrator at AssembleEditPlanService.assembleSlotEditPlan ALWAYS
-   * sets it (computed via computeCostFromHours), so callers consuming
-   * the orchestrator's output can rely on it being present. Direct
-   * plan-builders may omit it. */
-  cost_amount_snapshot?: string | null;
+  /** REQUIRED. Cost snapshot string (NUMERIC(10,2) in storage). NULL when
+   * the target room has no cost_per_hour. The RPC at 00364:352-354
+   * REJECTS absence with `edit_booking.invalid_plan_shape`; the
+   * KEY MUST BE PRESENT, value may be the literal `null`. (Codex 2026-05-12
+   * IMPORTANT: prior `?` typed it as omittable, contradicting the RPC
+   * contract.) Producers compute via `computeCostFromHours`; pass `null`
+   * when the room has no `cost_per_hour`. */
+  cost_amount_snapshot: string | null;
 
   // Optional preserve-or-overwrite fields (00364:740-778):
   policy_snapshot?: Record<string, unknown>;

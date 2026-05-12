@@ -202,12 +202,18 @@ export class AssembleEditPlanService {
     const { booking, slot } = await this.loadBookingAndSlot(args.bookingId, args.slotId, args.tenantId);
 
     // ── 2. Apply patch → target state ────────────────────────────────
+    // Codex 2026-05-12 IMPORTANT: distinguish `undefined` (preserve) from
+    // explicit `null` (clear). The RPC at 00364:802-805 honors a present
+    // key with null value as "clear the column"; nullish-coalescing (`??`)
+    // would silently demote explicit-null to "preserve". Use
+    // `=== undefined` so explicit null clears.
     const target: TargetState = {
-      spaceId: patch.space_id ?? slot.space_id,
-      startAt: patch.start_at ?? slot.start_at,
-      endAt: patch.end_at ?? slot.end_at,
-      attendeeCount: patch.attendee_count ?? slot.attendee_count,
-      attendeePersonIds: patch.attendee_person_ids ?? slot.attendee_person_ids,
+      spaceId: patch.space_id !== undefined ? patch.space_id : slot.space_id,
+      startAt: patch.start_at !== undefined ? patch.start_at : slot.start_at,
+      endAt: patch.end_at !== undefined ? patch.end_at : slot.end_at,
+      attendeeCount: patch.attendee_count !== undefined ? patch.attendee_count : slot.attendee_count,
+      attendeePersonIds:
+        patch.attendee_person_ids !== undefined ? patch.attendee_person_ids : slot.attendee_person_ids,
       requesterPersonId: booking.requester_person_id,
     };
 

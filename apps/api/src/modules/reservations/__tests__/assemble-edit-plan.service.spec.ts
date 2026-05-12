@@ -168,15 +168,32 @@ function makeSupabase(opts: {
     if (table === 'approvals') {
       // approvals: select → eq*3 → in → order*2 → await. Mirror the
       // helper's exact builder shape after CODE-C2 + I-CODE-1.
+      // Codex 2026-05-12 NIT: tighten predicate honoring to match the
+      // bookings + booking_slots mocks (which DO assert tenant_id +
+      // identity). Capture eq filters; predicate-fail returns empty
+      // array so a tenant_id mismatch correctly surfaces as no live
+      // chain (= old_outcome 'allow' downstream).
+      const filters: Record<string, unknown> = {};
       const builder: Record<string, jest.Mock> = {
         select: jest.fn().mockReturnThis(),
-        eq: jest.fn().mockReturnThis(),
+        eq: jest.fn((col: string, val: unknown) => {
+          filters[col] = val;
+          return builder as unknown;
+        }) as unknown as jest.Mock,
         in: jest.fn().mockReturnThis(),
         order: jest.fn().mockReturnThis(),
       };
       (builder as unknown as PromiseLike<unknown>).then = (
         resolve: (v: unknown) => unknown,
-      ) => Promise.resolve(resolve({ data: opts.approvals, error: null }));
+      ) => {
+        const matches =
+          filters.tenant_id === expectedTenant &&
+          filters.target_entity_type === 'booking' &&
+          filters.target_entity_id === expectedBookingId;
+        return Promise.resolve(
+          resolve({ data: matches ? opts.approvals : [], error: null }),
+        );
+      };
       return builder;
     }
     throw new Error(`unexpected table: ${table}`);
