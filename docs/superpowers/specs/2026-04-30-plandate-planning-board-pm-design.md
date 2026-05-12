@@ -18,8 +18,13 @@
 | `7afd875a` | chunk 6 — smoke gate + doc sync |
 | `a67c7a1c` | fix: full-review remediation (parent_ticket_id rename, requestId per gesture, ticketKeys.lists() invalidation) |
 | `5a689110` | fix: codex remediation (migration 00377 — vendor predicate dormant + planned-window indexes; lane seed from unscheduled blocks; smoke probe strengthened) |
+| _(2026-05-12 v1.1)_ | feat: drag-to-resize — right-edge handle on every `can_plan` block; duration-only PATCH; same idempotency contract as commitDrop |
 
 **Tests at ship:** API 1826 pass · Web 208 pass · Smoke 57/57. **Migrations on remote:** 00374 + 00377. **Codex verdict:** hold → ship after the three fixes above landed.
+
+### Genuine MVP gap deferred — `metadata.source` on `plan_changed`
+
+The spec called for a `source: 'board' | 'detail' | 'generator'` field on every `plan_changed` activity row so the audit log can answer "who moves things via the board". Skipped this round because the emit lives in SQL RPC `update_entity_combined_v5` (migration 00335). Adding the field properly requires a new RPC version (~00378_update_entity_combined_v6) + TS DTO + FE pass-through. Not blocking the audit story today — every plan change still emits a row with `previous` / `next` — but the differentiator is missing. Pick this up when Slice C (PM generator) lands; the generator needs the same source plumbing.
 
 ---
 
