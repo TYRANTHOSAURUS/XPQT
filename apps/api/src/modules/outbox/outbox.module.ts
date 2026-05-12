@@ -4,6 +4,7 @@ import { RoutingModule } from '../routing/routing.module';
 import { ServiceRoutingModule } from '../service-routing/service-routing.module';
 import { SlaModule } from '../sla/sla.module';
 import { WorkflowModule } from '../workflow/workflow.module';
+import { BookingApprovalRequiredHandler } from './handlers/booking-approval-required.handler';
 import { RoutingEvaluationHandler } from './handlers/routing-evaluation.handler';
 import { SetupWorkOrderHandler } from './handlers/setup-work-order.handler';
 import { SlaTimerHandler } from './handlers/sla-timer-recompute.handler';
@@ -49,6 +50,13 @@ import { OutboxWorker } from './outbox.worker';
  *     `routing_decisions` audit row (including `unassigned` outcomes).
  *     Sets `tickets.routing_status='idle'` on success or `'failed'` on
  *     resolver / RPC errors. B.2.A.Step11 commit 1.
+ *   - BookingApprovalRequiredHandler — drains `booking.approval_required`
+ *     events emitted by `edit_booking` (00364:1059-1080) when a §3.6.5
+ *     row 2/7/8 outcome flipped a booking to require_approval. v1 is a
+ *     registration STUB (validates payload + tenant boundary, logs);
+ *     notification dispatch lands in B.4.A.5. Required pre-cutover per
+ *     event-types.ts:40-51 — without it, edit-driven approval flips
+ *     stall silently. B.4.A.4.
  *
  * Schema/RLS dependencies (DbModule + SupabaseModule are @Global, so no
  * explicit imports needed):
@@ -86,6 +94,7 @@ import { OutboxWorker } from './outbox.worker';
     SlaTimerRepointHandler,
     WorkflowStartHandler,
     RoutingEvaluationHandler,
+    BookingApprovalRequiredHandler,
   ],
   exports: [OutboxService, OutboxHandlerRegistry],
 })

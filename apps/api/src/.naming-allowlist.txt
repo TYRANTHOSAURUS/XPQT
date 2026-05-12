@@ -990,3 +990,15 @@ apps/api/src/modules/room-booking-rules/impact-preview.service.ts:17: * We bound
 apps/api/src/modules/room-booking-rules/impact-preview.service.ts:38:    reservation_id: string;
 apps/api/src/modules/room-booking-rules/room-booking-rules.module.ts:20: *   - impact preview (replay against last 30 days of reservations)
 apps/api/src/modules/visitors/approval-integration.spec.ts:23: *     booking_bundle) — `target_entity_type='visitor_invite'` is the
+
+# === B.4 — outbox handler for booking edit pipeline ===
+# `apps/api/src/modules/reservations/event-types.ts` is the canonical home
+# of `BookingEditEventType` (see file's own doc-comment on the legacy
+# `reservations/` directory pending the eventual rename to `bookings/`).
+# These four refs are: one current import, three docstring/code-comment
+# citations of the file path. Classify as KEEP_HISTORICAL_COMMENT until
+# the directory itself is renamed in a future Phase 8 sweep.
+apps/api/src/modules/outbox/handlers/booking-approval-required.handler.ts:2:import { BookingEditEventType } from '../../reservations/event-types';
+apps/api/src/modules/outbox/handlers/booking-approval-required.handler.ts:15: * Event type literal: apps/api/src/modules/reservations/event-types.ts:51
+apps/api/src/modules/outbox/handlers/booking-approval-required.handler.ts:129:    //       apps/api/src/modules/reservations/event-types.ts:40-51.
+apps/api/src/modules/outbox/handlers/__tests__/booking-approval-required.handler.spec.ts:12: * Event literal: apps/api/src/modules/reservations/event-types.ts:51
