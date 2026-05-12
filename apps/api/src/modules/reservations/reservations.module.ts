@@ -24,6 +24,7 @@ import {
   InProcessBookingTransactionBoundary,
 } from './booking-transaction-boundary';
 import { BookingCompensationService } from './booking-compensation.service';
+import { AssembleEditPlanService } from './assemble-edit-plan.service';
 import { RoomBookingRulesModule } from '../room-booking-rules/room-booking-rules.module';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
 import { NotificationModule } from '../notification/notification.module';
@@ -61,6 +62,9 @@ import type { ActorContext, CreateReservationInput } from './dto/types';
     // via the BOOKING_TX_BOUNDARY token so Phase 6 can swap the in-process
     // impl for a durable-outbox runner without touching call sites.
     BookingCompensationService,
+    // B.4 step 2D-C — TS-side EditPlan builder for the edit_booking RPC.
+    // Step 2D-D will wire it into the editSlot controller path.
+    AssembleEditPlanService,
     {
       provide: BOOKING_TX_BOUNDARY,
       useClass: InProcessBookingTransactionBoundary,
@@ -80,6 +84,7 @@ import type { ActorContext, CreateReservationInput } from './dto/types';
     MultiAttendeeFinder,
     BookingNotificationsService,
     BookingCompensationService,
+    AssembleEditPlanService,
     BOOKING_TX_BOUNDARY,
   ],
 })
