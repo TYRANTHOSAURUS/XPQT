@@ -56,6 +56,7 @@
 import { Injectable } from '@nestjs/common';
 import { AppError, AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { TenantContext } from '../../common/tenant-context';
 import { ConflictGuardService } from './conflict-guard.service';
 import { BookingFlowService } from './booking-flow.service';
 import { RuleResolverService } from '../room-booking-rules/rule-resolver.service';
@@ -263,6 +264,46 @@ export class AssembleEditPlanService {
   }
 
   /**
+   * Codex remediation 2026-05-12 — hard-assert that the ALS-stored
+   * TenantContext matches the explicit `args.tenantId` BEFORE any plan-
+   * builder DB I/O. The pivot/scope reads in this service filter by
+   * `args.tenantId`, but helpers reached via `buildSingleSlotPlan`
+   * (BookingFlowService.loadSpace at booking-flow.service.ts:1251,
+   * RuleResolverService.resolve at rule-resolver.service.ts:88,
+   * ConflictGuardService.snapshotBuffersForBooking at
+   * conflict-guard.service.ts:138) read tenant from `TenantContext.
+   * current().id`. A drift (ALS not set, programmatic caller mismatch,
+   * async context loss) would silently route those reads to the WRONG
+   * tenant via the supabase.admin client (which bypasses RLS). Pivot +
+   * slot rows tagged with args.tenantId would join against another
+   * tenant's rules/spaces/conflict-windows — silent cross-tenant leak.
+   *
+   * The proper fix is to thread `tenantId` explicitly through every
+   * helper so they don't read from TenantContext at all (Phase 8
+   * refactor — see docs/follow-ups/b4-followups.md "Plan-builder helpers
+   * read tenant from ALS"). Until then, this assertion at every entry
+   * point catches the mismatch before any helper runs.
+   *
+   * Caller convention: `TenantMiddleware` sets TenantContext from the
+   * request's tenant resolution; service callers that build args.
+   * tenantId from the same source will never trip this. The mismatch
+   * surface is programmatic callers (tests, jobs) that forget to wrap
+   * in `TenantContext.run()`.
+   */
+  private assertTenantContextMatch(expectedTenantId: string): void {
+    const ctx = TenantContext.currentOrNull();
+    if (!ctx || ctx.id !== expectedTenantId) {
+      throw AppErrors.server('edit_booking.tenant_context_mismatch', {
+        detail:
+          `TenantContext.current()=${ctx?.id ?? 'null'} != args.tenantId=${expectedTenantId}. ` +
+          `Helpers in buildSingleSlotPlan rely on TenantContext; mismatch would leak cross-tenant ` +
+          `reads via the admin client. Caller must set TenantContext.run() before invoking the ` +
+          `plan-builder.`,
+      });
+    }
+  }
+
+  /**
    * Step 2D-C body — the single-slot, geometry-only edit pipeline.
    * Mirrors the §3.3 sequence in the file header. Now a thin wrapper
    * around `buildSingleSlotPlan` (the shared core also used by
@@ -272,6 +313,7 @@ export class AssembleEditPlanService {
     args: AssembleEditPlanArgs,
     patch: AssembleEditPlanSlotPatch,
   ): Promise<EditPlan> {
+    this.assertTenantContextMatch(args.tenantId);
     return this.buildSingleSlotPlan(args, {
       space_id: patch.space_id,
       start_at: patch.start_at,
@@ -305,6 +347,7 @@ export class AssembleEditPlanService {
     args: AssembleEditPlanArgs,
     patch: AssembleEditPlanOnePatch,
   ): Promise<EditPlan> {
+    this.assertTenantContextMatch(args.tenantId);
     return this.buildSingleSlotPlan(args, {
       space_id: patch.space_id,
       start_at: patch.start_at,
@@ -365,6 +408,14 @@ export class AssembleEditPlanService {
     effectiveSeriesId: string;
     patch: AssembleEditPlanScopePatch;
   }): Promise<AssembleScopeEditPlanResult> {
+    // Codex remediation 2026-05-12: hard-assert tenant context match BEFORE
+    // any DB I/O. The per-occurrence loop fans out to helpers (loadSpace /
+    // ruleResolver.resolve / conflictGuard.snapshotBuffersForBooking) that
+    // read tenant from TenantContext.current(); a drift between ALS context
+    // and args.tenantId would silently leak cross-tenant reads. See
+    // assertTenantContextMatch() for the full rationale.
+    this.assertTenantContextMatch(args.tenantId);
+
     // ── A. Runtime gate on start_at/end_at ────────────────────────────
     // Belt-and-suspenders: the typed union doesn't admit these keys
     // (AssembleEditPlanScopePatch is space_id + attendee_* +
@@ -427,6 +478,16 @@ export class AssembleEditPlanService {
     // (00371:458-462) — a cancelled occurrence in the series would
     // raise booking.cancelled_cannot_edit at the per-occurrence loop;
     // filtering here keeps the dry-run path clean.
+    //
+    // Codex remediation 2026-05-12: read-to-commit race. Between this TS
+    // read and the RPC's row lock, a concurrent operator could cancel an
+    // in-scope occurrence. The RPC's per-occurrence cancelled-state guard
+    // at 00371_edit_booking_scope_rpc_v2.sql:457 is the authoritative
+    // catch — the whole transaction rolls back with
+    // `booking.cancelled_cannot_edit` surfacing the offending booking_id.
+    // The TS filter here is best-effort: it keeps the dry-run path clean
+    // and avoids sending plans we already know would fail at commit. The
+    // race itself is intentionally covered downstream, not here.
     const scopeRes = await this.supabase.admin
       .from('bookings')
       .select('id')

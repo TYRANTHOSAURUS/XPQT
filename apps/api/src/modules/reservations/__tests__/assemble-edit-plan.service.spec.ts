@@ -30,6 +30,7 @@
  */
 
 import { AppError } from '../../../common/errors';
+import { TenantContext } from '../../../common/tenant-context';
 import {
   AssembleEditPlanService,
   type AssembleEditPlanArgs,
@@ -265,13 +266,70 @@ function approvalConfig(...approvers: Array<{ type: 'person' | 'team'; id: strin
   return { required_approvers: approvers, threshold: 'all' };
 }
 
+/**
+ * Codex remediation 2026-05-12: the production AssembleEditPlanService
+ * hard-asserts that `TenantContext.current()?.id === args.tenantId` at
+ * every plan-builder entry point. In production this is guaranteed by
+ * `TenantMiddleware` wrapping every request in `TenantContext.run(...)`;
+ * in this unit-test file, callers invoke `svc.assembleEditPlan(args)`
+ * directly with no ALS context. Wrap the returned service in a Proxy
+ * that auto-routes the public entry points through `TenantContext.run`
+ * using the args' tenantId — equivalent to what the middleware would
+ * have done in a real request stack.
+ *
+ * Tests that intentionally want to test the assertion (mismatch
+ * between ALS context and args.tenantId) bypass this helper by
+ * calling `TenantContext.run(...)` themselves around the raw service
+ * instance.
+ */
 function makeService(deps: {
   supabase: ReturnType<typeof makeSupabase>;
   bookingFlow: ReturnType<typeof makeBookingFlow>;
   ruleResolver: ReturnType<typeof makeRuleResolver>;
   conflict: ReturnType<typeof makeConflict>;
 }) {
-  return new AssembleEditPlanService(deps.supabase, deps.bookingFlow, deps.ruleResolver, deps.conflict);
+  const svc = new AssembleEditPlanService(
+    deps.supabase,
+    deps.bookingFlow,
+    deps.ruleResolver,
+    deps.conflict,
+  );
+  return new Proxy(svc, {
+    get(target, prop, receiver) {
+      const orig = Reflect.get(target, prop, receiver) as unknown;
+      if (typeof orig !== 'function') return orig;
+      // Wrap the public entry points so callers' implicit "I'm in tenant
+      // X" intent (encoded as args.tenantId) becomes the ALS-stored
+      // tenant for the duration of the call.
+      if (prop === 'assembleEditPlan' || prop === 'assembleScopeEditPlan') {
+        return function (this: unknown, ...callArgs: unknown[]) {
+          const argsArg = callArgs[0] as { tenantId?: string } | undefined;
+          const tenantId = argsArg?.tenantId ?? TENANT;
+          return TenantContext.run(
+            { id: tenantId, slug: tenantId, tier: 'standard' },
+            () => (orig as Function).apply(target, callArgs),
+          );
+        };
+      }
+      return (orig as Function).bind(target);
+    },
+  });
+}
+
+/** Raw service (no TenantContext proxy) — used by tests that explicitly
+ * exercise the `edit_booking.tenant_context_mismatch` assertion firing. */
+function makeServiceRaw(deps: {
+  supabase: ReturnType<typeof makeSupabase>;
+  bookingFlow: ReturnType<typeof makeBookingFlow>;
+  ruleResolver: ReturnType<typeof makeRuleResolver>;
+  conflict: ReturnType<typeof makeConflict>;
+}) {
+  return new AssembleEditPlanService(
+    deps.supabase,
+    deps.bookingFlow,
+    deps.ruleResolver,
+    deps.conflict,
+  );
 }
 
 function baseBooking(overrides: Partial<BookingRow> = {}): BookingRow {
@@ -326,6 +384,15 @@ function baseArgs(
 // ─────────────────────────────────────────────────────────────────────
 
 describe('AssembleEditPlanService.assembleEditPlan', () => {
+  // Codex remediation 2026-05-12: tests call svc.assembleEditPlan(args)
+  // directly with no ALS context. The makeService Proxy auto-wraps every
+  // call in TenantContext.run({ id: args.tenantId, ... }), simulating
+  // what TenantMiddleware does in production. The hard-assert at the
+  // service entry point (asserting TenantContext.current()?.id ===
+  // args.tenantId) therefore passes for the happy-path tests below.
+  // Tests that intentionally exercise the assertion firing use
+  // makeServiceRaw + TenantContext.run with a deliberately-wrong tenant.
+
   it('builds a plan for a geometry-only patch (same room, no rule change)', async () => {
     const supabase = makeSupabase({
       booking: baseBooking(),
@@ -1902,5 +1969,100 @@ describe('AssembleEditPlanService.assembleScopeEditPlan (Step 2F.2)', () => {
     );
     expect(result.rpc_plans).toHaveLength(200);
     expect(result.series_id).toBe(SCOPE_SERIES);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// B.4 Step 2F.2 codex remediation — tenant context drift hard-assert.
+//
+// The service's `assertTenantContextMatch` fires at every plan-builder
+// entry point when `TenantContext.current()?.id !== args.tenantId`. The
+// three entry points share the same vulnerability: `buildSingleSlotPlan`
+// helpers (BookingFlowService.loadSpace, RuleResolverService.resolve,
+// ConflictGuardService.snapshotBuffersForBooking) read tenant from the
+// ALS store; a drift would silently leak cross-tenant reads via the
+// supabase.admin client.
+//
+// These tests use `makeServiceRaw` (no Proxy auto-wrap) + an explicit
+// `TenantContext.run` with a DELIBERATELY-WRONG tenant so the
+// assertion's predicate can fire. The Proxy in `makeService` would mask
+// the assertion by auto-rewriting the ALS context to match args.
+// ─────────────────────────────────────────────────────────────────────
+
+describe('AssembleEditPlanService — tenant context drift hard-assert', () => {
+  it('assembleScopeEditPlan: throws edit_booking.tenant_context_mismatch (500) when ALS tenant != args.tenantId', async () => {
+    // args.tenantId = TENANT ('t1'); ALS pinned to OTHER_TENANT ('t2').
+    // The assertion fires BEFORE any DB I/O (no pivot read, no scope
+    // read, no helper call). Fixtures don't matter — none are reached.
+    const supabase = { admin: { from: jest.fn() } } as never;
+    const svc = makeServiceRaw({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    await expect(
+      TenantContext.run(
+        { id: OTHER_TENANT, slug: OTHER_TENANT, tier: 'standard' },
+        () => svc.assembleScopeEditPlan(scopeArgs()),
+      ),
+    ).rejects.toMatchObject({
+      code: 'edit_booking.tenant_context_mismatch',
+      status: 500,
+    });
+
+    // Defense-in-depth: the assertion fires BEFORE any DB I/O. The
+    // supabase.admin.from spy must NOT have been called.
+    expect((supabase as unknown as { admin: { from: jest.Mock } }).admin.from)
+      .not.toHaveBeenCalled();
+  });
+
+  it('assembleEditPlan (kind="slot"): throws edit_booking.tenant_context_mismatch (500) when ALS tenant != args.tenantId', async () => {
+    // The kind='slot' dispatch flows through assembleSlotEditPlan which
+    // asserts at the top. args.tenantId = TENANT, ALS pinned to OTHER_TENANT.
+    const supabase = { admin: { from: jest.fn() } } as never;
+    const svc = makeServiceRaw({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    await expect(
+      TenantContext.run(
+        { id: OTHER_TENANT, slug: OTHER_TENANT, tier: 'standard' },
+        () => svc.assembleEditPlan(baseArgs()),
+      ),
+    ).rejects.toMatchObject({
+      code: 'edit_booking.tenant_context_mismatch',
+      status: 500,
+    });
+    expect((supabase as unknown as { admin: { from: jest.Mock } }).admin.from)
+      .not.toHaveBeenCalled();
+  });
+
+  it('assembleEditPlan (kind="one"): throws edit_booking.tenant_context_mismatch (500) when ALS tenant != args.tenantId', async () => {
+    // The kind='one' dispatch flows through assembleOneEditPlan which
+    // asserts at the top. Same pattern as the kind='slot' test.
+    const supabase = { admin: { from: jest.fn() } } as never;
+    const svc = makeServiceRaw({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    await expect(
+      TenantContext.run(
+        { id: OTHER_TENANT, slug: OTHER_TENANT, tier: 'standard' },
+        () => svc.assembleEditPlan(oneArgs()),
+      ),
+    ).rejects.toMatchObject({
+      code: 'edit_booking.tenant_context_mismatch',
+      status: 500,
+    });
+    expect((supabase as unknown as { admin: { from: jest.Mock } }).admin.from)
+      .not.toHaveBeenCalled();
   });
 });

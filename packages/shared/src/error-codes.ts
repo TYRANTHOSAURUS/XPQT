@@ -835,7 +835,21 @@ export type KnownErrorCode =
   | 'edit_booking_scope.not_recurring'
   | 'edit_booking_scope.series_mismatch'
   | 'edit_booking_scope.empty_scope'
-  | 'edit_booking_scope.primary_slot_not_found';
+  | 'edit_booking_scope.primary_slot_not_found'
+  // B.4 Step 2F.2 codex remediation — tenant context drift guard.
+  // Thrown by AssembleEditPlanService at every plan-builder entry point
+  // (assembleSlotEditPlan / assembleOneEditPlan / assembleScopeEditPlan)
+  // when `TenantContext.current()?.id !== args.tenantId`. Without this
+  // guard, helpers reached from buildSingleSlotPlan (BookingFlowService.
+  // loadSpace, RuleResolverService.resolve, ConflictGuardService.
+  // snapshotBuffersForBooking) read tenant from ALS via TenantContext.
+  // current() — a drift between the ALS context and args.tenantId would
+  // leak cross-tenant reads via the admin client (which bypasses RLS).
+  // The proper long-term fix is to thread tenantId explicitly through
+  // every helper (Phase 8 refactor — see docs/follow-ups/b4-followups.md
+  // "Plan-builder helpers read tenant from ALS"); this 500 catches the
+  // mismatch at the entry point so the wrong-tenant read never happens.
+  | 'edit_booking.tenant_context_mismatch';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1435,6 +1449,9 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'edit_booking_scope.series_mismatch',
   'edit_booking_scope.empty_scope',
   'edit_booking_scope.primary_slot_not_found',
+  // B.4 Step 2F.2 codex remediation — see KnownErrorCode union for
+  // rationale (tenant context drift guard at plan-builder entry points).
+  'edit_booking.tenant_context_mismatch',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

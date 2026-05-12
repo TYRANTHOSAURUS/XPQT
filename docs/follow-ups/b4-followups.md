@@ -324,3 +324,64 @@ implement the hoist with:
   && weekday count === 1` → hoist; else per-occurrence)
 - Mock test fidelity: include both hoist-eligible and non-eligible
   series fixtures, with diverging per-occurrence rules
+
+### Plan-builder helpers read tenant from ALS — Phase 8 refactor
+
+**Vulnerability surface.** `AssembleEditPlanService.buildSingleSlotPlan`
+fans out to three helpers that read the active tenant from
+`TenantContext.current()` (AsyncLocalStorage), NOT from the explicit
+`args.tenantId` flowing through the plan-builder:
+
+- `BookingFlowService.loadSpace` —
+  `apps/api/src/modules/reservations/booking-flow.service.ts:1251`
+  (`const tenantId = TenantContext.current().id`).
+- `RuleResolverService.resolve` —
+  `apps/api/src/modules/room-booking-rules/rule-resolver.service.ts:88`
+  (reads tenant from TenantContext at every entry).
+- `ConflictGuardService.snapshotBuffersForBooking` —
+  `apps/api/src/modules/reservations/conflict-guard.service.ts:138`.
+
+A fourth helper —
+`edit-plan-helpers.ts::loadCurrentApprovalChain` — already accepts
+`tenantId` explicitly (its call site at `assemble-edit-plan.service.ts:
+674` passes `args.tenantId`), so it's NOT part of this surface.
+
+**Failure mode.** If `TenantContext.current()?.id !== args.tenantId`
+(ALS not set, async context loss, programmatic caller mismatch — e.g.,
+a job or test that builds args.tenantId from a different source than
+the ALS-stored tenant), the helpers route their reads to the wrong
+tenant via the `supabase.admin` client. The admin client bypasses RLS,
+so the wrong-tenant rows return as if they were the right ones — silent
+cross-tenant leak through rules/spaces/conflict-window reads. The pivot
+booking + scope-rows reads in `assembleScopeEditPlan` (lines 425-487 in
+the v3 file) filter by `args.tenantId` and are safe; the leak is in the
+per-occurrence helpers.
+
+**Step 2F.2 mitigation (shipped 2026-05-12).** A hard-assert at every
+plan-builder entry point — `assembleSlotEditPlan` (Step 2D-C),
+`assembleOneEditPlan` (Step 2E), `assembleScopeEditPlan` (Step 2F.2) —
+raises `edit_booking.tenant_context_mismatch` (500) when
+`TenantContext.current()?.id !== args.tenantId`. The assertion fires
+BEFORE any DB I/O, so a drift can never reach the helpers. Tests at
+`apps/api/src/modules/reservations/__tests__/
+assemble-edit-plan.service.spec.ts` cover all three entry points.
+
+**Proper long-term fix (Phase 8).** Thread `tenantId` explicitly
+through every helper signature so they don't depend on `TenantContext`
+for data-plane queries:
+
+- `BookingFlowService.loadSpace(tenantId: string, spaceId: string)`
+- `RuleResolverService.resolve(tenantId: string, input: ResolveInput)`
+- `ConflictGuardService.snapshotBuffersForBooking(tenantId: string,
+  input: ConflictGuardInput)`
+
+This makes the tenant scope a typed argument the caller MUST provide
+(can't be silently absent), and removes the ALS dependency from the
+data-plane query path entirely. The TenantContext stays for
+audit-event tagging, outbox emission, and middleware concerns where
+ambient context is the right shape.
+
+**If mitigation is bypassed.** Removing the hard-assert without
+threading tenantId through the helpers re-introduces the silent
+cross-tenant leak. The assertion is the load-bearing structural
+defense until Phase 8 lands.

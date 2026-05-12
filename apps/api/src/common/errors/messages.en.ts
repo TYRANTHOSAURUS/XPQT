@@ -1848,6 +1848,15 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save the series edit",
     detail: "One of the occurrences is in an inconsistent state. Contact support if this persists.",
   },
+  // B.4 Step 2F.2 codex remediation — tenant context drift guard.
+  // 500 server-class. Generic voice — this is a programmer error (ALS
+  // missing or programmatic caller mismatch), not something the operator
+  // can mitigate. The traceId attached by the filter routes ops to the
+  // underlying tenant-id mismatch in the request stack.
+  'edit_booking.tenant_context_mismatch': {
+    title: "Couldn't process the booking edit",
+    detail: "We hit an internal consistency error while saving this edit. Try again in a moment, or contact support if this persists.",
+  },
 };
 
 /**
