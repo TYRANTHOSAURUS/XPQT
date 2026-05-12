@@ -4,6 +4,18 @@ Deferred / known-issue index for the B.4 booking-edit-pipeline workstream.
 Items here are intentional non-fixes, documented so future readers don't
 re-discover them as bugs. Sibling to `docs/follow-ups/b2-followups.md`.
 
+## Workstream status — COMPLETE (2026-05-12)
+
+B.4 is shipped to `origin/main` at HEAD `71618510`. Steps 1, 2A, 2B,
+2C, 2D, 2E, 2F.1, 2F.2, 2F.3, 2F.4 all live. All CI gates 0-violation.
+
+**Closing retrospective:** `docs/follow-ups/b4-closing-retro-2026-05-12.md`.
+
+This file is now an **open-items index**. Each section below is either:
+- Marked **CLOSED** with a date — preserved for audit history.
+- **OPEN** — deferred to a future Step / Phase. The closing retro §10
+  cross-references the open list.
+
 ## Step 2F.4 — shipped (2026-05-12)
 
 Live-API smoke probe for the recurrence-scope edit pipeline is live at `apps/api/scripts/smoke-edit-booking-scope.mjs`, exposed as `pnpm --filter @prequest/api smoke:edit-booking-scope` (also wired at the workspace root). Covers all 13 scenarios spec'd in `docs/follow-ups/b4-booking-edit-pipeline.md` §5: setup verification + scope='series' dry-run + commit + idempotent replay + payload-mismatch (409); scope='this_and_following' dry-run (splitSeries suppressed) + commit (splitSeries fires, new series minted, forward bookings move, backward bookings preserved); validation gates (scope='this' → `wrong_endpoint`, `start_at` → 422 `edit_booking_scope.time_shift_not_supported`, invalid scope + non-boolean `dry_run` → 400 `edit_booking_scope.invalid_plans`, missing `X-Client-Request-Id` → 400 `client_request_id.required`).
