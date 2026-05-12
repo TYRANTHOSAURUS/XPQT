@@ -783,11 +783,14 @@ export type KnownErrorCode =
   // inbox), TS controllers MUST pre-flight-reject any edit whose plan
   // would emit `booking.approval_required` (rows 2/7/8 of §3.6.5). The
   // reject prevents an approval chain from being committed without any
-  // approver being notified — a silent stall worse than a clean 503.
-  // Service-class 503 (retry-later semantics): the system isn't ready
-  // yet; the user payload is fine.
-  // Reference: docs/follow-ups/b4-followups.md "Sequencing — controller
-  // cutover MUST land in or after notification dispatch (B.4.A.5)".
+  // approver being notified — a silent stall worse than a clean 422.
+  // Validation-class 422 (not 503) routes through the web classifier as
+  // class:'validation' — surfaces inline as a form-level error with
+  // concrete operator guidance, not as a retry-loop + contact-support
+  // toast (which is what >=500 classes get). Reviewer-driven flip from
+  // 503 → 422 in commit `fb7b163f`. Reference:
+  // docs/follow-ups/b4-followups.md "Sequencing — controller cutover
+  // MUST land in or after notification dispatch (B.4.A.5)".
   | 'booking.edit_requires_notification_dispatch';
 
 /**

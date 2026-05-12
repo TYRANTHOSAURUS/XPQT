@@ -764,10 +764,16 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
         },
         slot_patches: [
           {
+            // Codex 2026-05-12 IMPORTANT — mirror the full shape
+            // assemble-edit-plan.service.ts:310-318 emits.
             slot_id: args.slotId,
             space_id: args.patch.space_id ?? 'space-orig',
             start_at: args.patch.start_at ?? '2026-05-01T09:00:00Z',
             end_at: args.patch.end_at ?? '2026-05-01T10:00:00Z',
+            setup_buffer_minutes: 0,
+            teardown_buffer_minutes: 0,
+            attendee_count: null,
+            attendee_person_ids: [],
           },
         ],
         asset_reservation_patches: [],

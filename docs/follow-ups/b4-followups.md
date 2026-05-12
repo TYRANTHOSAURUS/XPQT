@@ -31,11 +31,19 @@ Until B.4.A.5 ships:
   flip, attendee resize across capacity threshold, etc).
 - Most editSlot calls (geometry-only edits within the same room and
   rule outcome) will NOT trigger an emit and are safe.
-- A pre-flight gate at the controller level could skip the cutover when
-  the plan's `approval.new_outcome === 'require_approval'`, falling back
-  to a 422 with `booking.edit_requires_notification_dispatch_unavailable`
-  until B.4.A.5 ships. Decision: defer that gate to Step 2D-D's
-  implementation phase; not load-bearing for the handler commit.
+- **Implemented (commit `a7ba1cf6` + remediation `fb7b163f`):** the
+  pre-flight gate lives in `apps/api/src/modules/reservations/reservation.service.ts:1213`
+  (the `editSlot` body, post-`assembleEditPlan`). It throws **422**
+  `booking.edit_requires_notification_dispatch` when the assembled plan
+  has `new_outcome='require_approval' AND (old_outcome != 'require_approval'
+  OR chain_config_changed=true)`. 422 (not 503) routes to the
+  `validation` class in the web error classifier — surfaces as inline
+  form-level guidance, not the retry-loop bait + contact-support of a
+  500-class toast. Operator copy gives a concrete action ("Ask the
+  rooms admin to remove approval from this room, or pick a different
+  room"). Lift mechanism when B.4.A.5 ships notification dispatch:
+  delete the gate predicate at `reservation.service.ts:1171-1213` +
+  retire the error code (or leave registered for defense-in-depth).
 
 ## UUID_RE consolidation — pre-existing tech debt + intentional strict copy
 

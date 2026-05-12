@@ -363,8 +363,13 @@ export function mapRpcErrorToAppError(
       return AppErrors.server(code, { cause: error });
     case 503:
       // 503 service-unavailable. No dedicated factory; construct AppError
-      // directly. Used today only for B.4 step 2D-D's
-      // `booking.edit_requires_notification_dispatch` controller gate.
+      // directly. Defense-in-depth — no current registered code maps to
+      // 503 (B.4 Step 2D-D's `booking.edit_requires_notification_dispatch`
+      // gate originally landed as 503 but was reviewer-flipped to 422 in
+      // commit `fb7b163f` so it surfaces as a validation-class inline
+      // error, not a retry-loop + contact-support toast). Kept registered
+      // for any future RPC raise that genuinely means "platform isn't
+      // ready, retry later."
       return new AppError(code, 503, { cause: error });
     case 400:
     default:

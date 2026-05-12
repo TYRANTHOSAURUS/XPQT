@@ -1168,7 +1168,7 @@ export class ReservationService {
       },
     });
 
-    // B.4.A.5 sequencing gate. Surface 503 BEFORE the RPC call to:
+    // B.4.A.5 sequencing gate. Surface 422 BEFORE the RPC call to:
     //   (a) avoid producing the very `booking.approval_required` event
     //       this gate is trying to suppress (the RPC commits chain rows +
     //       emits in one tx — even if we drop the result, the row + emit

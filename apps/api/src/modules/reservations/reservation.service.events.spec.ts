@@ -363,10 +363,16 @@ function makeService(opts: {
       },
       slot_patches: [
         {
+          // Codex 2026-05-12 IMPORTANT — mirror the full shape
+          // assemble-edit-plan.service.ts:310-318 emits.
           slot_id: args.slotId,
           space_id: args.patch.space_id ?? SPACE_OLD,
           start_at: args.patch.start_at ?? baseSlot.start_at,
           end_at: args.patch.end_at ?? baseSlot.end_at,
+          setup_buffer_minutes: 0,
+          teardown_buffer_minutes: 0,
+          attendee_count: null,
+          attendee_person_ids: [],
         },
       ],
       asset_reservation_patches: [],
@@ -913,10 +919,16 @@ describe('ReservationService.editSlot — I1 target-slot cascade', () => {
         },
         slot_patches: [
           {
+            // Codex 2026-05-12 IMPORTANT — mirror the full shape
+            // assemble-edit-plan.service.ts:310-318 emits.
             slot_id: args.slotId,
             space_id: args.patch.space_id ?? slotBPre.space_id,
             start_at: args.patch.start_at ?? slotBPre.start_at,
             end_at: args.patch.end_at ?? slotBPre.end_at,
+            setup_buffer_minutes: 0,
+            teardown_buffer_minutes: 0,
+            attendee_count: null,
+            attendee_person_ids: [],
           },
         ],
         asset_reservation_patches: [],
