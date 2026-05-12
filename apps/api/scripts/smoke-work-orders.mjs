@@ -602,6 +602,185 @@ async function runWorkOrderMutations(headers, probe) {
     },
   }, TENANT_ID, 'work_order', WO_ID);
 
+  // ── 00384 codex remediation — concurrent-race authoritative gate ────
+  //
+  // The sequential stale-version probe above proves the *TS pre-check*
+  // path works. The race window codex flagged is when two PATCHes run
+  // SIMULTANEOUSLY and both pre-checks read the same version N — they
+  // both pass, both serialize through the RPC, last write wins. 00384
+  // moved the compare INSIDE the RPC under `SELECT FOR UPDATE`, making
+  // that authoritative. To actually exercise it, fire two PATCHes with
+  // the same starting plan_version via `Promise.all` and assert exactly
+  // one wins.
+  //
+  // Probe shape:
+  //   1. Read current plan_version (vStart).
+  //   2. Promise.all([PATCH1, PATCH2]) — both with plan_version=vStart,
+  //      different planned_start_at values (so both want to mutate),
+  //      different X-Client-Request-Ids (so command_operations doesn't
+  //      dedupe at the idempotency layer — we want the race, not the
+  //      idempotency-replay).
+  //   3. Assert: one returns 2xx, one returns 409.
+  //   4. Parse the 409 body, assert `code=planning.version_conflict`,
+  //      `serverVersion=vStart+1` (the winner's post-trigger value),
+  //      `clientVersion=vStart`.
+  //   5. Restore plan to a stable value.
+  //
+  // The race probe is the structural defense against the "all unit tests
+  // pass + production silently corrupts under concurrent load" failure
+  // mode. Mocked tests will never catch this — only a live concurrent
+  // call against a real Postgres will.
+  const raceStartV = await readWO(headers);
+  const vRaceStart = raceStartV.plan_version;
+  const raceStart1 = new Date(Date.now() + 100 * 86400000).toISOString();
+  const raceStart2 = new Date(Date.now() + 101 * 86400000).toISOString();
+  const raceCid1 = crypto.randomUUID();
+  const raceCid2 = crypto.randomUUID();
+  const fireRace = async (cid, planStart) => {
+    const r = await fetch(`${API_BASE}/api/work-orders/${WO_ID}`, {
+      method: 'PATCH',
+      headers: { ...headers, 'X-Client-Request-Id': cid },
+      body: JSON.stringify({
+        planned_start_at: planStart,
+        plan_version: vRaceStart,
+      }),
+    });
+    return { status: r.status, body: await r.text() };
+  };
+  const [race1, race2] = await Promise.all([
+    fireRace(raceCid1, raceStart1),
+    fireRace(raceCid2, raceStart2),
+  ]);
+  const okStatuses = [race1.status, race2.status].sort();
+  // Expected outcome: one wins (200), one loses (409). The race may
+  // also surface as one 200 + one TS-pre-check 409 if the loser's TS
+  // read landed AFTER the winner's RPC commit — both outcomes are
+  // correct (the RPC body always carries the same wire shape). The
+  // only failure is "both 200" (last-write-wins corruption) or any
+  // 5xx.
+  if (okStatuses[0] === 200 && okStatuses[1] === 409) {
+    results.pass += 1;
+    console.log(
+      `  ✓ WO: concurrent race — exactly one 200 + one 409 (00384 authoritative gate)`,
+    );
+    const losing = race1.status === 409 ? race1 : race2;
+    let parsed = null;
+    try {
+      parsed = JSON.parse(losing.body);
+    } catch {
+      // ignore
+    }
+    const expectedServer = String(vRaceStart + 1);
+    const expectedClient = String(vRaceStart);
+    if (
+      parsed &&
+      parsed.code === 'planning.version_conflict' &&
+      parsed.serverVersion === expectedServer &&
+      parsed.clientVersion === expectedClient
+    ) {
+      results.pass += 1;
+      console.log(
+        `  ✓ WO: concurrent loser body (serverVersion=${parsed.serverVersion} clientVersion=${parsed.clientVersion})`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('WO: concurrent loser body shape');
+      console.log(
+        `  ✗ WO: concurrent loser body shape — got code=${parsed?.code} serverVersion=${parsed?.serverVersion} clientVersion=${parsed?.clientVersion} (expected server=${expectedServer} client=${expectedClient})`,
+      );
+    }
+  } else {
+    results.fail += 1;
+    results.failed.push('WO: concurrent race outcome');
+    console.log(
+      `  ✗ WO: concurrent race — expected [200, 409], got [${race1.status}, ${race2.status}]`,
+    );
+    console.log(`     race1 body: ${race1.body.slice(0, 200)}`);
+    console.log(`     race2 body: ${race2.body.slice(0, 200)}`);
+  }
+  // Restore plan to a known value (use the post-race fresh version).
+  const afterRace = await readWO(headers);
+  await probeAndAssertCommandOp(probe, 'WO: restore plan (post race)', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: {
+      planned_start_at: new Date(Date.now() + 86400000).toISOString(),
+      planned_duration_minutes: 60,
+      plan_version: afterRace.plan_version,
+    },
+  }, TENANT_ID, 'work_order', WO_ID);
+
+  // ── 00384 codex remediation — _source in idempotency hash ───────────
+  //
+  // Pre-00384 the payload_hash was md5(p_patches::text) only. Two
+  // PATCHes with the same X-Client-Request-Id + same patches but
+  // different _source would silently dedupe (the audit row carried
+  // whatever source went first). 00384 includes p_activity_source in
+  // the hash; the second call now trips command_operations.payload_mismatch.
+  //
+  // Probe shape:
+  //   1. PATCH with crid=X + _source='board' + a fresh timestamp → 200.
+  //   2. PATCH with crid=X + same patches + _source='detail' → 409
+  //      command_operations.payload_mismatch.
+  const sourceCid = crypto.randomUUID();
+  const sourceStart = new Date(Date.now() + 200 * 86400000).toISOString();
+  const sourceFirst = await fetch(`${API_BASE}/api/work-orders/${WO_ID}`, {
+    method: 'PATCH',
+    headers: { ...headers, 'X-Client-Request-Id': sourceCid },
+    body: JSON.stringify({ planned_start_at: sourceStart, _source: 'board' }),
+  });
+  if (sourceFirst.status >= 200 && sourceFirst.status < 300) {
+    results.pass += 1;
+    console.log(`  ✓ WO: source-hash first PATCH (_source=board) → 200`);
+  } else {
+    results.fail += 1;
+    results.failed.push('WO: source-hash first PATCH');
+    console.log(
+      `  ✗ WO: source-hash first PATCH → ${sourceFirst.status} (expected 200)`,
+    );
+    console.log(`     ${(await sourceFirst.text()).slice(0, 200)}`);
+  }
+  const sourceReplay = await fetch(`${API_BASE}/api/work-orders/${WO_ID}`, {
+    method: 'PATCH',
+    headers: { ...headers, 'X-Client-Request-Id': sourceCid },
+    body: JSON.stringify({ planned_start_at: sourceStart, _source: 'detail' }),
+  });
+  const sourceReplayBody = await sourceReplay.text();
+  if (sourceReplay.status === 409) {
+    let parsedReplay = null;
+    try {
+      parsedReplay = JSON.parse(sourceReplayBody);
+    } catch {
+      // ignore
+    }
+    if (parsedReplay && parsedReplay.code === 'command_operations.payload_mismatch') {
+      results.pass += 1;
+      console.log(
+        `  ✓ WO: source-hash replay (same crid + different _source) → 409 payload_mismatch`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('WO: source-hash replay body shape');
+      console.log(
+        `  ✗ WO: source-hash replay body shape — got code=${parsedReplay?.code}`,
+      );
+    }
+  } else {
+    results.fail += 1;
+    results.failed.push('WO: source-hash replay status');
+    console.log(
+      `  ✗ WO: source-hash replay status → ${sourceReplay.status} (expected 409)`,
+    );
+    console.log(`     ${sourceReplayBody.slice(0, 240)}`);
+  }
+  // Restore plan to a stable value for downstream probes.
+  await probeAndAssertCommandOp(probe, 'WO: restore plan (post source-hash)', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: {
+      planned_start_at: new Date(Date.now() + 86400000).toISOString(),
+      planned_duration_minutes: 60,
+    },
+  }, TENANT_ID, 'work_order', WO_ID);
+
   // ── P1-4 audit-source provenance probe (00383 v6) ───────────────────
   // The combined-update RPC v6 adds an optional p_activity_source arg.
   // When the plan branch fires, the value lands in ticket_activities.
