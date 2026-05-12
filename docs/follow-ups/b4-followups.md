@@ -4,6 +4,14 @@ Deferred / known-issue index for the B.4 booking-edit-pipeline workstream.
 Items here are intentional non-fixes, documented so future readers don't
 re-discover them as bugs. Sibling to `docs/follow-ups/b2-followups.md`.
 
+## Step 2F.4 — shipped (2026-05-12)
+
+Live-API smoke probe for the recurrence-scope edit pipeline is live at `apps/api/scripts/smoke-edit-booking-scope.mjs`, exposed as `pnpm --filter @prequest/api smoke:edit-booking-scope` (also wired at the workspace root). Covers all 13 scenarios spec'd in `docs/follow-ups/b4-booking-edit-pipeline.md` §5: setup verification + scope='series' dry-run + commit + idempotent replay + payload-mismatch (409); scope='this_and_following' dry-run (splitSeries suppressed) + commit (splitSeries fires, new series minted, forward bookings move, backward bookings preserved); validation gates (scope='this' → `wrong_endpoint`, `start_at` → 422 `edit_booking_scope.time_shift_not_supported`, invalid scope + non-boolean `dry_run` → 400 `edit_booking_scope.invalid_plans`, missing `X-Client-Request-Id` → 400 `client_request_id.required`).
+
+Fixture seed bypasses `POST /reservations` and writes the recurrence_series + 5 booking + slot rows via psql with `session_replication_role='replica'` (same pattern as the concurrency tests at `apps/api/test/concurrency/edit_booking_scope.spec.ts:97-159`). The create-flow's rule resolver + conflict guard are out of scope for an edit-pipeline probe; going through the public create path adds enough flake (any pre-existing booking on the target room in the chosen window kills the fixture) to be net-negative. Cleanup runs in `finally` (LIFO: audit_events → domain_events → outbox.events → approvals → command_operations → booking_slots → bookings → recurrence_series) so a failed run never leaves orphans.
+
+CLAUDE.md "Smoke gate" section updated to mandate the probe before claiming any work touching `ReservationService.editScope` / `assembleScopeEditPlan` / `edit_booking_scope` RPC is complete.
+
 ## Step 2F.3 — shipped (2026-05-12)
 
 `POST /reservations/:id/edit-scope` cut over from `BookingFlowService.editScope` (bare-UPDATE, deleted) to `ReservationService.editScope` → `assembleScopeEditPlan` → `edit_booking_scope` RPC (00371 v2).

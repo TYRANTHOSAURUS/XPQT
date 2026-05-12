@@ -29,6 +29,7 @@ XPQT/
 - `pnpm db:reset` — reset database and re-run migrations **(local only!)**
 - `pnpm db:push` — push migrations to the **remote** Supabase project
 - `pnpm smoke:work-orders` — live-API smoke test for the work-order + case command surface (see "Smoke gate" below)
+- `pnpm smoke:edit-booking-scope` — live-API smoke test for the recurrence-scope booking edit pipeline (see "Smoke gate" below)
 
 ## Smoke gate (mandatory before claiming WO/case-surface work shipped)
 
@@ -42,6 +43,25 @@ dispatch — plus 7 validation probes for ghost uuids, malformed uuids,
 oversized arrays, ghost assignees, empty title). Uses the
 current-row-XOR-sentinel pattern so every mutation actually exercises
 the write path (no phantom-success on a no-op fast path).
+
+**Run `pnpm --filter @prequest/api smoke:edit-booking-scope` (with the
+dev server running) before claiming any work touching
+`ReservationService.editScope` / `assembleScopeEditPlan` /
+`edit_booking_scope` RPC is complete.** This script lives at
+`apps/api/scripts/smoke-edit-booking-scope.mjs`. It seeds a
+recurrence_series + 5 occurrences directly via psql (bypassing the
+create-flow's rule resolver + conflict guard, which are out of scope
+for an edit-pipeline probe), mints a real Admin JWT, and exercises
+the `POST /reservations/:id/edit-scope` HTTP surface across the
+spec'd scenarios: scope='series' dry-run + commit + idempotent
+replay + payload-mismatch (409); scope='this_and_following' dry-run
+(splitSeries suppressed) + commit (splitSeries fires, new series
+minted, forward bookings move); validation gates (scope='this' →
+`wrong_endpoint`, `start_at` → `edit_booking_scope.time_shift_not_
+supported` (422), invalid scope + non-boolean dry_run →
+`edit_booking_scope.invalid_plans` (400), missing X-Client-Request-
+Id → guard fires). Fixture is dropped in `finally` so a failed run
+doesn't leave orphans.
 
 This gate is the structural defense against the recurring failure
 mode that produced the 2026-05-01 P0 (mocked-Supabase tests pass +

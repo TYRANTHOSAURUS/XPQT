@@ -240,13 +240,18 @@ The shape compared by TS mirrors the create-time `approval_config` consumed by `
 - One `*.spec.ts` per RPC code path: geometry-only edit, location change, attendee resize, approval gate flip in each direction (allow→require_approval, require→allow same-chain, require→allow different-chain, require→deny), cost delta, recurrence scope, idempotency replay, semantic-mismatch gate.
 - ~70-90 specs.
 
-**Live-API smoke probe** (`pnpm smoke:edit-booking`):
-- Plain time edit (no recompute beyond mirror).
-- Location to bigger room (rules allow).
-- Location to smaller room (capacity rule denies → 422).
-- Location to room with approval rule → status flips, approvals row inserted.
-- Time change with linked catering → `orders.requested_for_start_at` updates, `delivery_location_id` updates if room changed.
-- Idempotency replay: same key → cached_result.
+**Live-API smoke probes:**
+
+- **`pnpm --filter @prequest/api smoke:edit-booking-scope` (shipped Step 2F.4, 2026-05-12)** — covers `POST /reservations/:id/edit-scope` end-to-end with a real Admin JWT against a psql-seeded recurrence_series + 5 occurrences. 13 scenarios: setup verification; scope='series' dry-run (no writes, no command_operations row) + commit (5 slots moved, 5 audit_events, 1 command_operations row) + idempotent replay (byte-identical response, no new writes) + payload-mismatch (409 `command_operations.payload_mismatch`); scope='this_and_following' dry-run (splitSeries suppressed; all 5 still on original series) + commit (3 forward bookings on new series, 2 backward on original, slots on new room); validation gates (scope='this' → `wrong_endpoint`, `start_at` → 422 `edit_booking_scope.time_shift_not_supported`, garbage scope + string `dry_run` → 400 `edit_booking_scope.invalid_plans`, missing `X-Client-Request-Id` → 400 `client_request_id.required`).
+- **`pnpm smoke:edit-booking` (NOT YET SHIPPED, deferred)** — would cover the single-occurrence `editOne` path (Step 2E cutover) and the slot-edit `editSlot` path (Step 2D cutover):
+  - Plain time edit (no recompute beyond mirror).
+  - Location to bigger room (rules allow).
+  - Location to smaller room (capacity rule denies → 422).
+  - Location to room with approval rule → status flips, approvals row inserted.
+  - Time change with linked catering → `orders.requested_for_start_at` updates, `delivery_location_id` updates if room changed.
+  - Idempotency replay: same key → cached_result.
+
+  Sibling to the scope smoke (same fixture pattern, same Admin JWT mint, same psql cleanup-in-`finally`). Open as a future Step under the B.4 workstream.
 
 **Real-DB concurrency probes** (extend `apps/api/test/concurrency/`):
 - Two concurrent edits on the same booking → second blocks via advisory lock, then commits or returns `cached_result` if same idempotency_key.
