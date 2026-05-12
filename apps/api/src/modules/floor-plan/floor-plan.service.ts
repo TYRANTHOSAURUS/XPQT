@@ -150,6 +150,24 @@ export class FloorPlanService {
     return { ...(data as object), floor: floorMeta };
   }
 
+  /** GET /api/buildings/:buildingId/floors — list floor spaces for a building. */
+  async listBuildingFloors(buildingId: string, tenantId: string): Promise<{ id: string; name: string; code: string | null }[]> {
+    const client = this.supabase.admin;
+    const { data, error } = await client
+      .from('spaces')
+      .select('id, name, code')
+      .eq('parent_id', buildingId)
+      .eq('tenant_id', tenantId)
+      .eq('type', 'floor')
+      .order('name');
+    if (error) throw AppErrors.server('floor_plan.list_failed');
+    return (data ?? []).map((row) => ({
+      id: row.id as string,
+      name: row.name as string,
+      code: (row as { code?: string | null }).code ?? null,
+    }));
+  }
+
   async listPublishHistory(floorSpaceId: string, tenantId: string) {
     const client = this.supabase.admin;
     const { data } = await client

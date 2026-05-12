@@ -36,6 +36,44 @@ export type PublishedFloorPlan = {
   }>;
 };
 
+// ---------------------------------------------------------------------------
+// Availability types (D.2)
+// ---------------------------------------------------------------------------
+
+export type AvailabilityState =
+  | 'available'
+  | 'partial'
+  | 'booked'
+  | 'mine'
+  | 'pending'
+  | 'not_bookable';
+
+export type SpaceAvailability = {
+  space_id: string;
+  name: string;
+  capacity: number | null;
+  state: AvailabilityState;
+};
+
+export type CrowdHeatmapBucket = {
+  /** ISO timestamp for the start of the bucket (e.g. hourly or 15-min). */
+  bucket: string;
+  /** 0–1 occupancy ratio for this floor at this time bucket. */
+  occupancy: number;
+};
+
+export type FloorAvailability = {
+  spaces: SpaceAvailability[];
+  heatmap: CrowdHeatmapBucket[];
+  floor: {
+    image_url: string | null;
+    width_px: number | null;
+    height_px: number | null;
+  } | null;
+};
+
+// ---------------------------------------------------------------------------
+
 export type PublishHistoryEntry = {
   id: string;
   published_at: string;

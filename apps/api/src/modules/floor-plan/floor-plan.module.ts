@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { FloorPlanController } from './floor-plan.controller';
 import { FloorPlanAdminController } from './floor-plan-admin.controller';
+import { BuildingsController } from './buildings.controller';
 import { FloorPlanService } from './floor-plan.service';
 import { FloorPlanDraftService } from './floor-plan-draft.service';
 import { SupabaseModule } from '../../common/supabase/supabase.module';
@@ -9,7 +10,7 @@ import { PermissionGuard } from '../../common/permission-guard';
 
 @Module({
   imports: [SupabaseModule, AuthModule],
-  controllers: [FloorPlanController, FloorPlanAdminController],
+  controllers: [FloorPlanController, FloorPlanAdminController, BuildingsController],
   providers: [FloorPlanService, FloorPlanDraftService, PermissionGuard],
   exports: [FloorPlanService],
 })
