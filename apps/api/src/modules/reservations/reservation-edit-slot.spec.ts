@@ -407,8 +407,10 @@ describe('ReservationService.editSlot', () => {
     // string shape — if the helper changes prefix or separator, this
     // assertion still passes (and the wider contract tests for the
     // helper itself catch the format change in one place).
+    // B.4 Step 2F.3 — `'slot'` op discriminator (cross-op-collision
+    // followup closure). editSlot mints the slot-namespaced key.
     expect(args.p_idempotency_key).toBe(
-      buildEditBookingIdempotencyKey(BOOKING_ID, CLIENT_REQUEST_ID),
+      buildEditBookingIdempotencyKey(BOOKING_ID, CLIENT_REQUEST_ID, 'slot'),
     );
     const plan = args.p_plan as EditPlan;
     expect(plan.slot_patches).toHaveLength(1);
@@ -1095,8 +1097,10 @@ describe('ReservationService.editOne — patch flows through edit_booking RPC (C
     // instead of inlining the format. Couples the test to the public
     // helper API rather than the internal `booking:edit:<bookingId>:<crid>`
     // string shape.
+    // B.4 Step 2F.3 — `'one'` op discriminator (cross-op-collision
+    // followup closure). editOne mints the one-namespaced key.
     expect(args.p_idempotency_key).toBe(
-      buildEditBookingIdempotencyKey(BOOKING_ID, CLIENT_REQUEST_ID),
+      buildEditBookingIdempotencyKey(BOOKING_ID, CLIENT_REQUEST_ID, 'one'),
     );
     const plan = args.p_plan as EditPlan;
     expect(plan.slot_patches[0]).toMatchObject({

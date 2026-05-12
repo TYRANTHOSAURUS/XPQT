@@ -1214,7 +1214,10 @@ function makeScopeSupabase(fx: ScopeFixture) {
     if (table === 'bookings') {
       const filters: Record<string, unknown> = {};
       const notFilters: Record<string, unknown> = {};
-      let lastOp: 'select' | 'eq' | 'neq' | 'order' | null = null;
+      // B.4 Step 2F.3 — capture `.gte('start_at', ...)` for the
+      // forwardOnlyFromStartAt filter on dry-run scope='this_and_following'.
+      const gteFilters: Record<string, unknown> = {};
+      let lastOp: 'select' | 'eq' | 'neq' | 'gte' | 'order' | null = null;
       const chain: Record<string, jest.Mock | Function> = {};
 
       chain.select = jest.fn((cols: string) => {
@@ -1230,6 +1233,11 @@ function makeScopeSupabase(fx: ScopeFixture) {
       chain.neq = jest.fn((col: string, val: unknown) => {
         notFilters[col] = val;
         lastOp = 'neq';
+        return chain as unknown;
+      }) as never;
+      chain.gte = jest.fn((col: string, val: unknown) => {
+        gteFilters[col] = val;
+        lastOp = 'gte';
         return chain as unknown;
       }) as never;
       chain.order = jest.fn(() => {
@@ -1268,9 +1276,21 @@ function makeScopeSupabase(fx: ScopeFixture) {
           typeof filters.recurrence_series_id === 'string' &&
           notFilters.status === 'cancelled'
         ) {
-          const rows = fx.scopeRows
+          let rows = fx.scopeRows
             ? fx.scopeRows()
             : fx.bookingIds.map((id) => ({ id }));
+          // B.4 Step 2F.3 — forwardOnlyFromStartAt filter. When the
+          // caller passed `.gte('start_at', threshold)` on the scope-list
+          // query, simulate the DB-side filter by dropping rows whose
+          // booking start_at < threshold. fx.booking(id).start_at is the
+          // authoritative per-occurrence time.
+          const startAtThreshold = gteFilters.start_at;
+          if (typeof startAtThreshold === 'string') {
+            rows = rows.filter((row) => {
+              const booking = fx.booking(row.id);
+              return booking.start_at >= startAtThreshold;
+            });
+          }
           return Promise.resolve(resolve({ data: rows, error: null }));
         }
         // Unrecognised awaitable path — surface as error for test
@@ -1969,6 +1989,97 @@ describe('AssembleEditPlanService.assembleScopeEditPlan (Step 2F.2)', () => {
     );
     expect(result.rpc_plans).toHaveLength(200);
     expect(result.series_id).toBe(SCOPE_SERIES);
+  });
+
+  // ───────────────────────────────────────────────────────────────────
+  // B.4 Step 2F.3 — `forwardOnlyFromStartAt` filter.
+  //
+  // Used by the controller's dry-run path on `scope='this_and_following'`:
+  // splitSeries can't run on a preview (it commits side effects), so the
+  // assembler is asked to filter to the FORWARD SUBSET of the CURRENT
+  // series. The committed path doesn't need the filter (the new series
+  // id only has forward rows by construction).
+  // ───────────────────────────────────────────────────────────────────
+
+  it('forwardOnlyFromStartAt: filters scope rows to those at-or-after the pivot start_at', async () => {
+    // Fixture: 5 daily occurrences 2026-05-12 .. 2026-05-16. Pivot is
+    // index 2 (2026-05-14). The filter should drop 2026-05-12 +
+    // 2026-05-13 from the scope-list, leaving 3 occurrences for the
+    // per-occurrence loop.
+    const fx = fiveOccurrenceFixture();
+    const supabase = makeScopeSupabase(fx);
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    const result = await svc.assembleScopeEditPlan({
+      bookingId: SCOPE_PIVOT,
+      tenantId: TENANT,
+      effectiveSeriesId: SCOPE_SERIES,
+      patch: { kind: 'scope', space_id: SPACE_NEW },
+      forwardOnlyFromStartAt: '2026-05-14T09:00:00Z',
+    });
+
+    // 3 forward occurrences (05-14, 05-15, 05-16) — id-sorted.
+    expect(result.rpc_plans).toHaveLength(3);
+    // Defense-in-depth: every plan's start_at is >= threshold.
+    for (const { plan } of result.rpc_plans) {
+      expect(plan.booking.start_at >= '2026-05-14T09:00:00Z').toBe(true);
+    }
+  });
+
+  it('forwardOnlyFromStartAt: undefined (the default) walks every live occurrence', async () => {
+    // No filter passed — every occurrence in the series flows through
+    // the per-occurrence loop (committed `this_and_following` path post-
+    // splitSeries + every `series` path).
+    const fx = fiveOccurrenceFixture();
+    const supabase = makeScopeSupabase(fx);
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    const result = await svc.assembleScopeEditPlan({
+      bookingId: SCOPE_PIVOT,
+      tenantId: TENANT,
+      effectiveSeriesId: SCOPE_SERIES,
+      patch: { kind: 'scope', space_id: SPACE_NEW },
+      // forwardOnlyFromStartAt deliberately omitted.
+    });
+
+    expect(result.rpc_plans).toHaveLength(5);
+  });
+
+  it('forwardOnlyFromStartAt: filtering to zero rows trips empty_scope (422)', async () => {
+    // The threshold is past every occurrence, so the filter empties the
+    // scope. The assembler's existing empty_scope guard
+    // (assemble-edit-plan.service.ts:505-508) fires.
+    const fx = fiveOccurrenceFixture();
+    const supabase = makeScopeSupabase(fx);
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    await expect(
+      svc.assembleScopeEditPlan({
+        bookingId: SCOPE_PIVOT,
+        tenantId: TENANT,
+        effectiveSeriesId: SCOPE_SERIES,
+        patch: { kind: 'scope', space_id: SPACE_NEW },
+        forwardOnlyFromStartAt: '2030-01-01T00:00:00Z',
+      }),
+    ).rejects.toMatchObject({
+      code: 'edit_booking_scope.empty_scope',
+      status: 422,
+    });
   });
 });
 

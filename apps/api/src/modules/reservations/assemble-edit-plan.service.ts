@@ -407,6 +407,25 @@ export class AssembleEditPlanService {
     tenantId: string;
     effectiveSeriesId: string;
     patch: AssembleEditPlanScopePatch;
+    /**
+     * B.4 Step 2F.3 — forward-only scope-rows filter.
+     *
+     * When set, the in-scope booking query adds `.gte('start_at', ...)`
+     * so only occurrences starting at-or-after the pivot are planned.
+     * Used by `scope='this_and_following'` on the DRY-RUN path: we cannot
+     * call `RecurrenceService.splitSeries(pivot)` for a preview (it
+     * commits side effects — writes a new recurrence_series row + UPDATEs
+     * forward bookings' recurrence_series_id), so the dry-run previews
+     * the FORWARD SUBSET of the CURRENT series instead.
+     *
+     * Undefined = current default (every live occurrence in the series).
+     * That covers:
+     *   - `scope='series'` (preview + commit both)
+     *   - `scope='this_and_following'` on COMMIT (splitSeries already ran,
+     *     the new series id is the effectiveSeriesId, and every row under
+     *     it is forward-only by construction).
+     */
+    forwardOnlyFromStartAt?: string;
   }): Promise<AssembleScopeEditPlanResult> {
     // Codex remediation 2026-05-12: hard-assert tenant context match BEFORE
     // any DB I/O. The per-occurrence loop fans out to helpers (loadSpace /
@@ -488,13 +507,21 @@ export class AssembleEditPlanService {
     // The TS filter here is best-effort: it keeps the dry-run path clean
     // and avoids sending plans we already know would fail at commit. The
     // race itself is intentionally covered downstream, not here.
-    const scopeRes = await this.supabase.admin
+    // B.4 Step 2F.3 — `forwardOnlyFromStartAt` filters the dry-run
+    // preview of `scope='this_and_following'` to the FORWARD subset of
+    // the CURRENT series, without committing a split. The committed
+    // path (no filter, post-split) only sees the new series id and is
+    // forward-only by construction.
+    let scopeQuery = this.supabase.admin
       .from('bookings')
       .select('id')
       .eq('tenant_id', args.tenantId)
       .eq('recurrence_series_id', args.effectiveSeriesId)
-      .neq('status', 'cancelled')
-      .order('id', { ascending: true });
+      .neq('status', 'cancelled');
+    if (args.forwardOnlyFromStartAt !== undefined) {
+      scopeQuery = scopeQuery.gte('start_at', args.forwardOnlyFromStartAt);
+    }
+    const scopeRes = await scopeQuery.order('id', { ascending: true });
     if (scopeRes.error) {
       throw AppErrors.server('edit_booking.not_found', {
         detail: `scope-row read failed: ${scopeRes.error.message}`,

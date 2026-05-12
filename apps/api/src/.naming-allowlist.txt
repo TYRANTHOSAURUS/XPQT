@@ -249,6 +249,7 @@ apps/api/src/modules/reservations/recurrence.service.ts:954:      .from('recurre
 apps/api/src/modules/reservations/recurrence.service.ts:957:      .eq('id', p.recurrence_series_id);
 apps/api/src/modules/reservations/recurrence.service.ts:964:        entity_type: 'recurrence_series',
 apps/api/src/modules/reservations/recurrence.service.ts:965:        entity_id: p.recurrence_series_id,
+apps/api/src/modules/reservations/reservation-edit-scope.spec.ts:9: *   1. `scope='this'` → 400 wrong_endpoint (use PATCH /reservations/:id).
 apps/api/src/modules/reservations/reservation-edit-slot.spec.ts:106:      recurrence_series_id: null,
 apps/api/src/modules/reservations/reservation-edit-slot.spec.ts:602:        recurrence_series_id: null,
 apps/api/src/modules/reservations/reservation-edit-tenant-validation.spec.ts:168:    recurrence_series_id: null,

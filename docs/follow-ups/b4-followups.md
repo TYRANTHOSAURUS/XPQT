@@ -4,6 +4,16 @@ Deferred / known-issue index for the B.4 booking-edit-pipeline workstream.
 Items here are intentional non-fixes, documented so future readers don't
 re-discover them as bugs. Sibling to `docs/follow-ups/b2-followups.md`.
 
+## Step 2F.3 — shipped (2026-05-12)
+
+`POST /reservations/:id/edit-scope` cut over from `BookingFlowService.editScope` (bare-UPDATE, deleted) to `ReservationService.editScope` → `assembleScopeEditPlan` → `edit_booking_scope` RPC (00371 v2).
+
+Key shape changes:
+- **Dry-run support** via `EditScopeDto.dry_run` (default false). Dry-run path skips `splitSeries` (the assembler's new `forwardOnlyFromStartAt` arg filters scope-rows to the forward subset of the current series) and the visitor cascade emit (nothing committed → nothing to cascade).
+- **Idempotency op discriminator** — closes the cross-op-collision followup (below). editOne/editSlot/editScope mint distinct keys.
+- **Idempotency keyed on PIVOT bookingId**, not new series id, so a retry after `splitSeries` succeeds still hits the cached `command_operations` row (splitSeries is non-idempotent across retries).
+- **Frontend hooks** at `apps/web/src/api/room-booking/mutations.ts`: `useEditBookingScopeDryRun` + `useEditBookingScope` (Pattern A — caller mints `requestId` once per attempt; dry-run + commit share the crid by 00371 v2 design).
+
 ## Sequencing — `edit_booking` controller cutover MUST land in or after notification dispatch (B.4.A.5)
 
 Self-review on commit `d285bc32` (the `booking.approval_required` handler
@@ -192,18 +202,17 @@ chain-config-not-status semantics make the window safe in practice.
 Documented in code at `loadCurrentApprovalChain`'s docstring + this
 followup so the contract decision is auditable.
 
-## Idempotency key cross-operation collision — accepted contract, hardening followup
+## Idempotency key cross-operation collision — CLOSED (Step 2F.3, 2026-05-12)
 
-Code review on Step 2E flagged that `buildEditBookingIdempotencyKey(bookingId, clientRequestId)` at `packages/shared/src/idempotency.ts:350-355` has no operation discriminator. If a frontend reuses a `clientRequestId` across an `editOne` and an `editSlot` call to the same booking (deliberately or via a buggy retry handler), the second call short-circuits on `command_operations` and returns the first call's cached result.
+**Shipped in Step 2F.3.** `buildEditBookingIdempotencyKey` now takes an optional 3rd parameter `op: 'one' | 'slot' | 'scope'`. Every booking-edit producer route passes its discriminator:
 
-Decision: ACCEPT for now. The docstring at idempotency.ts:346-348 explicitly punts cross-operation deduplication to the controller: "different operations should mint different clientRequestIds client-side." React Query's `useMutation` mints a fresh UUID per call in the current frontend (verified at `apps/web/src/api/room-booking/mutations.ts`), so in practice this is unreachable.
+- `editOne` → `'one'`
+- `editSlot` → `'slot'`
+- `editScope` → `'scope'`
 
-Hardening (when worth the engineering cost):
-- Add an `operation` discriminator to `buildEditBookingIdempotencyKey` (e.g., `'edit_one' | 'edit_slot' | 'edit_scope'`). editOne, editSlot, editScope each pass their own kind.
-- Update the docstring + all 3 call sites.
-- Migration impact: `command_operations.idempotency_key` is a free-form text column; in-flight retries with the old key shape would still find their cached result, but new calls would mint new key shapes. Safe.
+Key shape with op: `booking:edit:<op>:<booking_id>:<crid>`. Tests at `apps/api/src/common/idempotency.spec.ts` lock the contract (deterministic, distinct per op, distinct from the legacy no-op shape). Helper at `packages/shared/src/idempotency.ts`.
 
-Tracked here so the next time a cross-mutation collision surfaces in a bug report, the fix is unambiguous.
+The 2-arg legacy shape is retained for backward compat (historical fixtures + pre-2F.3 smoke probes) but every new caller passes `op`. Migration impact: no — `command_operations.idempotency_key` is free-form text, and the v1→v2 cutover passes through naturally because old keys (without op) never collide with new keys (with op — different colon position).
 
 ## Step 2F.1 dry-run idempotency contract — shipped (00371 v2)
 
