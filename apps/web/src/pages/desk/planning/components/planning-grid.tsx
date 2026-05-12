@@ -19,6 +19,16 @@ export interface PlanningLane {
   blocks: WorkOrderPlanningBlock[];
 }
 
+export interface PendingBlockDrag {
+  blockId: string;
+  newStartCell: number;
+  newEndCell: number;
+  /** Lane the cursor is currently over. */
+  targetLaneKey: string;
+  /** Lane the drag started on. */
+  originLaneKey: string;
+}
+
 interface Props {
   lanes: PlanningLane[];
   dates: LocalDateString[];
@@ -30,6 +40,14 @@ interface Props {
   windowEndIso: string;
   laneLabelWidth?: number;
   rowHeight?: number;
+  pendingDrag?: PendingBlockDrag | null;
+  onBlockPointerDown?: (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => void;
+  onLaneRowPointerMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onLaneRowPointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
+}
+
+function laneKey(lane: PlanningLaneId): string {
+  return `${lane.kind}:${lane.id ?? '∅'}`;
 }
 
 export function PlanningGrid({
@@ -43,6 +61,10 @@ export function PlanningGrid({
   windowEndIso,
   laneLabelWidth = 240,
   rowHeight = 64,
+  pendingDrag,
+  onBlockPointerDown,
+  onLaneRowPointerMove,
+  onLaneRowPointerUp,
 }: Props) {
   const totalColumns = columnsPerDay * dates.length;
 
@@ -67,7 +89,19 @@ export function PlanningGrid({
         />
 
         {ordered.map((lane) => {
-          const key = `${lane.id.kind}:${lane.id.id ?? '∅'}`;
+          const key = laneKey(lane.id);
+          const isDropTarget =
+            !!pendingDrag &&
+            pendingDrag.targetLaneKey === key &&
+            pendingDrag.originLaneKey !== key;
+          const pendingForRow =
+            pendingDrag && pendingDrag.targetLaneKey === key
+              ? {
+                  blockId: pendingDrag.blockId,
+                  newStartCell: pendingDrag.newStartCell,
+                  newEndCell: pendingDrag.newEndCell,
+                }
+              : null;
           return (
             <PlanningLaneRow
               key={key}
@@ -82,7 +116,12 @@ export function PlanningGrid({
               rowHeight={rowHeight}
               windowStartIso={windowStartIso}
               windowEndIso={windowEndIso}
+              pendingDrag={pendingForRow}
               isPinned={lane.id.kind === 'unassigned'}
+              isDropTarget={isDropTarget}
+              onBlockPointerDown={onBlockPointerDown}
+              onLaneRowPointerMove={onLaneRowPointerMove}
+              onLaneRowPointerUp={onLaneRowPointerUp}
             />
           );
         })}

@@ -6,6 +6,12 @@ import { isoToCell, type LocalDateString } from '@/lib/scheduler-time';
 import { PlanningBlock } from './planning-block';
 import { LaneBufferShading } from './lane-buffer-shading';
 
+interface PendingDrag {
+  blockId: string;
+  newStartCell: number;
+  newEndCell: number;
+}
+
 interface Props {
   lane: PlanningLaneId;
   blocks: WorkOrderPlanningBlock[];
@@ -19,8 +25,17 @@ interface Props {
   rowHeight: number;
   windowStartIso: string;
   windowEndIso: string;
+  /** Drag state for a block currently being moved on this lane. */
+  pendingDrag?: PendingDrag | null;
+  /** Pointer-down on a block — forwarded to the drag controller. */
+  onBlockPointerDown?: (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => void;
+  /** Lane row pointer events (for drag-move tracking + rail-to-lane drops). */
+  onLaneRowPointerMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  onLaneRowPointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
   /** Whether this lane is pinned to the top (`unassigned`). */
   isPinned?: boolean;
+  /** Whether this lane should highlight as a drop target during drag. */
+  isDropTarget?: boolean;
 }
 
 function LaneIcon({ kind }: { kind: PlanningLaneId['kind'] }) {
@@ -43,8 +58,8 @@ function LaneIcon({ kind }: { kind: PlanningLaneId['kind'] }) {
  * striping (`LaneBufferShading`) sits behind the blocks; cell hairlines
  * are painted via CSS gradients for a flat DOM cost.
  *
- * Drag interactions are intentionally absent in this initial chunk —
- * added in Chunk 4 along with the drag controller.
+ * Chunk 4 added drag wiring — `pendingDrag` reflects the live preview
+ * position of whichever block is being dragged onto this lane.
  */
 export const PlanningLaneRow = memo(function PlanningLaneRow({
   lane,
@@ -58,7 +73,12 @@ export const PlanningLaneRow = memo(function PlanningLaneRow({
   rowHeight,
   windowStartIso,
   windowEndIso,
+  pendingDrag,
+  onBlockPointerDown,
+  onLaneRowPointerMove,
+  onLaneRowPointerUp,
   isPinned,
+  isDropTarget,
 }: Props) {
   return (
     <div
@@ -68,6 +88,7 @@ export const PlanningLaneRow = memo(function PlanningLaneRow({
       data-pinned={isPinned ? 'true' : undefined}
       className={cn(
         'grid border-b transition-colors duration-100',
+        isDropTarget && 'bg-primary/[0.03]',
         isPinned && 'bg-muted/30',
       )}
       style={{
@@ -94,7 +115,11 @@ export const PlanningLaneRow = memo(function PlanningLaneRow({
       </div>
 
       {/* Lane canvas — relative so blocks/buffer/hairlines can stack. */}
-      <div className="relative h-full overflow-hidden">
+      <div
+        className="relative h-full overflow-hidden"
+        onPointerMove={onLaneRowPointerMove}
+        onPointerUp={onLaneRowPointerUp}
+      >
         <LaneBufferShading
           windowStartIso={windowStartIso}
           windowEndIso={windowEndIso}
@@ -133,17 +158,21 @@ export const PlanningLaneRow = memo(function PlanningLaneRow({
           const duration = block.planned_duration_minutes ?? 60;
           const cellSpan = Math.max(1, Math.ceil(duration / cellMinutes));
 
-          const leftPct = (startCell / totalColumns) * 100;
-          const widthPct = (cellSpan / totalColumns) * 100;
+          const isDragging = pendingDrag?.blockId === block.id;
+          const renderStart = isDragging ? pendingDrag!.newStartCell : startCell;
+          const renderSpan = isDragging
+            ? Math.max(1, pendingDrag!.newEndCell - pendingDrag!.newStartCell + 1)
+            : cellSpan;
 
           // End ISO from the committed start + duration. The deadline
-          // overlay inside the block uses [start, end] to position the
-          // red rule; we compute end here rather than inside the block
-          // so the lane row stays the single source of truth for time
-          // → cell math.
+          // overlay uses [start, end]; the drag preview floats over the
+          // committed block until commit.
           const blockEndMs =
             new Date(block.planned_start_at).getTime() + duration * 60_000;
           const endIso = new Date(blockEndMs).toISOString();
+
+          const leftPct = (renderStart / totalColumns) * 100;
+          const widthPct = (renderSpan / totalColumns) * 100;
 
           return (
             <PlanningBlock
@@ -153,6 +182,10 @@ export const PlanningLaneRow = memo(function PlanningLaneRow({
               widthPct={widthPct}
               startIso={block.planned_start_at}
               endIso={endIso}
+              isDragging={isDragging}
+              onPointerDown={
+                onBlockPointerDown ? (e) => onBlockPointerDown(e, block) : undefined
+              }
             />
           );
         })}
