@@ -185,17 +185,24 @@ export function validateDraft(
   }
   const s = new Date(draft.startAt).getTime();
   const e = new Date(draft.endAt).getTime();
-  if (Number.isFinite(s) && Number.isFinite(e)) {
-    if (e <= s) {
-      return { field: 'time', message: 'End time must be after start.' };
-    }
-    // 60-second grace handles clock skew between client and server plus
-    // the fresh-modal case where `nextQuarterHour()` may seed a start
-    // that's a few hundred ms behind the wall clock by the time the
-    // user clicks Submit.
-    if (s < Date.now() - 60_000) {
-      return { field: 'time', message: 'Pick a time in the future.' };
-    }
+  // Codex remediation — reject malformed ISO. Pre-fix the next block
+  // was wrapped in `Number.isFinite(s) && Number.isFinite(e)`, so NaN
+  // timestamps fell through to the attendee check and could submit.
+  // The TimeRow controls produce well-formed ISO today, but a future
+  // CSV-import / URL-prefill path could feed in junk strings; reject
+  // explicitly rather than rely on the server's 422.
+  if (!Number.isFinite(s) || !Number.isFinite(e)) {
+    return { field: 'time', message: 'Pick a valid date and time.' };
+  }
+  if (e <= s) {
+    return { field: 'time', message: 'End time must be after start.' };
+  }
+  // 60-second grace handles clock skew between client and server plus
+  // the fresh-modal case where `nextQuarterHour()` may seed a start
+  // that's a few hundred ms behind the wall clock by the time the
+  // user clicks Submit.
+  if (s < Date.now() - 60_000) {
+    return { field: 'time', message: 'Pick a time in the future.' };
   }
   if (draft.attendeeCount < 1) {
     return { field: 'attendees', message: 'At least one attendee.' };

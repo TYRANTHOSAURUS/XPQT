@@ -112,6 +112,13 @@ function shortTimezone(): string {
  */
 export function TimeRow({ startAt, endAt, onChange, error }: TimeRowProps) {
   const tzLabel = useMemo(() => shortTimezone(), []);
+  // /full-review v4 codex remediation — CLAUDE.md form rule requires
+  // every FieldLabel to carry an htmlFor that pairs with a control id.
+  // The row has four controls (date × time × start × end); the label
+  // points at the leftmost (start date) since that's the natural
+  // reading-order anchor and the data-focus-target attribute already
+  // routes the summary card's "Change" action there.
+  const startDateId = useId();
 
   const startDate = useMemo(
     () => (startAt ? new Date(startAt) : new Date()),
@@ -168,7 +175,9 @@ export function TimeRow({ startAt, endAt, onChange, error }: TimeRowProps) {
 
   return (
     <Field data-invalid={error ? 'true' : undefined}>
-      <FieldLabel className="text-xs text-muted-foreground">When</FieldLabel>
+      <FieldLabel htmlFor={startDateId} className="text-xs text-muted-foreground">
+        When
+      </FieldLabel>
       <div className="flex flex-wrap items-center gap-1.5">
         <DatePopover
           side="start"
@@ -177,6 +186,7 @@ export function TimeRow({ startAt, endAt, onChange, error }: TimeRowProps) {
           onPick={onPickStartDay}
           focusTarget="time-row"
           invalid={Boolean(error)}
+          id={startDateId}
         />
         <TimePopover
           side="start"
@@ -226,6 +236,10 @@ interface DatePopoverProps {
    *  jump back here from the summary view. */
   focusTarget?: string;
   invalid?: boolean;
+  /** Optional id — set on the start-side trigger so the wrapping
+   *  `FieldLabel htmlFor=...` points at a real control (CLAUDE.md
+   *  form-composition rule). */
+  id?: string;
 }
 
 function DatePopover({
@@ -235,6 +249,7 @@ function DatePopover({
   onPick,
   focusTarget,
   invalid,
+  id,
 }: DatePopoverProps) {
   const [open, setOpen] = useState(false);
   const label = formatDay(value);
@@ -255,6 +270,7 @@ function DatePopover({
             aria-label={`${sideLabel}: ${label}`}
             aria-invalid={invalid || undefined}
             data-focus-target={focusTarget}
+            id={id}
           />
         }
       >

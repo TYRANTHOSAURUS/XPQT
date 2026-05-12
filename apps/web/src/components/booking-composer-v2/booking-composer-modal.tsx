@@ -132,19 +132,27 @@ export function BookingComposerModal({
       : null;
   }, [composer.draft.spaceId, spacesCache]);
 
-  const roomFacts: SuggestionRoomFacts | null = pickedRoom
-    ? {
-        space_id: pickedRoom.space_id,
-        name: pickedRoom.name,
-        // Phase 5 ships with these signals OFF — the API contract for
-        // surfacing them on Space is a follow-up. The suggestion engine
-        // is shape-stable; flipping these on later just lights up
-        // the chips.
-        has_av_equipment: false,
-        has_catering_vendor: false,
-        needs_visitor_pre_registration: false,
-      }
-    : null;
+  // /full-review v4 codex remediation — roomFacts must be memoized.
+  // Pre-fix this was a plain object literal recreated every render,
+  // which defeated the suggestions useMemo below (the signature memo
+  // was correct, but `roomFacts` as a dep churned regardless).
+  const roomFacts: SuggestionRoomFacts | null = useMemo(
+    () =>
+      pickedRoom
+        ? {
+            space_id: pickedRoom.space_id,
+            name: pickedRoom.name,
+            // Phase 5 ships with these signals OFF — the API contract
+            // for surfacing them on Space is a follow-up. The
+            // suggestion engine is shape-stable; flipping these on
+            // later just lights up the chips.
+            has_av_equipment: false,
+            has_catering_vendor: false,
+            needs_visitor_pre_registration: false,
+          }
+        : null,
+    [pickedRoom],
+  );
 
   const { data: mealWindows } = useMealWindows();
   // /full-review v4 I4 — stabilize the meal-windows dep against ref
@@ -155,8 +163,12 @@ export function BookingComposerModal({
   // string concat per render that turns mealWindows into a stable
   // structural key — the useMemo only invalidates when the meaningful
   // fields actually change.
+  //
+  // Codex remediation: include `label` — getSuggestions interpolates
+  // it into the user-facing reason string, so label-only refetches
+  // (e.g. an admin renamed "Lunch" → "Midday meal") must invalidate.
   const mealWindowsSignature = (mealWindows ?? [])
-    .map((w) => `${w.id}:${w.active ? 1 : 0}:${w.start_time}:${w.end_time}`)
+    .map((w) => `${w.id}:${w.active ? 1 : 0}:${w.start_time}:${w.end_time}:${w.label}`)
     .join('|');
   // Narrow deps to fields getSuggestions actually inspects (startAt,
   // endAt, visitors.length on the draft, plus the room facts and meal
@@ -215,7 +227,17 @@ export function BookingComposerModal({
   // handlers for a 30-visitor flush.
   const createInvitations = useBulkCreateInvitations();
   const validation = validateDraft(composer.draft, mode);
-  const submitting = createBooking.isPending;
+  // /full-review v4 codex remediation — `submitting` previously only
+  // tracked `createBooking.isPending`. After the booking POST resolved
+  // and before `onOpenChange(false)`, the visitor flush phase had no
+  // guard — a second click during that window would re-enter
+  // handleSubmit and fire a NEW createBooking.mutateAsync, creating a
+  // second booking. Now the predicate covers both the createBooking
+  // call AND the createInvitations bulk hook's isPending, AND a local
+  // `submitInFlight` state stamped around the whole handleSubmit body
+  // closes the microsecond gaps between the two awaits.
+  const [submitInFlight, setSubmitInFlight] = useState(false);
+  const submitting = createBooking.isPending || createInvitations.isPending || submitInFlight;
 
   // Wrapped in useCallback so the retry callback we hand to toastError
   // closes over a stable reference. The prior plain-arrow recreated on
@@ -223,6 +245,13 @@ export function BookingComposerModal({
   // a stale closure on its retry button.
   const handleSubmit = useCallback(async () => {
     if (validation) return;
+    // Codex remediation — re-entry guard. `submitting` is a derived
+    // disabled-state for the Book button, but a determined double-click
+    // (or a programmatic caller) could still re-enter handleSubmit
+    // during the visitor-flush window. The state stamp around the body
+    // makes it a one-shot until the modal closes or an error resets it.
+    if (submitInFlight) return;
+    setSubmitInFlight(true);
 
     // Build a ComposerState-compatible adapter from the BookingDraft.
     // BookingDraft is intentionally field-compatible (see booking-draft.ts)
@@ -258,7 +287,10 @@ export function BookingComposerModal({
       entrySource,
       callerPersonId,
     });
-    if (!payload) return;
+    if (!payload) {
+      setSubmitInFlight(false);
+      return;
+    }
 
     // Attach title + description from the draft. /full-review C1 fix —
     // when the user leaves the title blank, send the placeholder string
@@ -276,6 +308,7 @@ export function BookingComposerModal({
       toastError("Couldn't book the room", {
         description: 'Room details still loading — try again in a moment.',
       });
+      setSubmitInFlight(false);
       return;
     }
     const placeholderTitle = defaultTitleFor({
@@ -372,9 +405,15 @@ export function BookingComposerModal({
         error: err,
         retry: () => void handleSubmit(),
       });
+    } finally {
+      // Always release the re-entry guard so a corrected retry can fire.
+      // The successful path also resets here, then `onOpenChange(false)`
+      // unmounts the modal — the state isn't observed afterwards.
+      setSubmitInFlight(false);
     }
   }, [
     validation,
+    submitInFlight,
     composer.draft,
     mode,
     entrySource,

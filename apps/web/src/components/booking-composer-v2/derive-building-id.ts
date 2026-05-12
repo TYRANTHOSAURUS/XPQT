@@ -25,16 +25,14 @@ export function deriveBuildingId(
   if (!spaceId || !spaces) return '';
   const byId = new Map(spaces.map((s) => [s.id, s]));
   let cursor: Space | undefined = byId.get(spaceId);
-  // Missing-from-tree case — distinguishable from "no anchor exists"
-  // because the caller passed a non-null id we couldn't resolve.
-  if (!cursor) {
-    if (import.meta.env.DEV) {
-      console.warn(
-        `[deriveBuildingId] space "${spaceId}" not found in the provided spaces list (${spaces.length} rows). Visitor anchor will default to "" — backend will reject.`,
-      );
-    }
-    return '';
-  }
+  // Missing-from-tree: spaceId was set but the spaces list doesn't
+  // contain it. The most common cause is racing between the modal
+  // mounting (with a pre-seeded spaceId) and the spaces query
+  // resolving. Returning "" without warning lets the caller resolve
+  // on the next render once spaces lands. Codex remediation — the
+  // prior dev warn fired on every render during the load window,
+  // which dominated dev console output for any modal open.
+  if (!cursor) return '';
   let fallbackSiteId = '';
   let depth = 0;
   while (cursor && depth < MAX_DEPTH) {

@@ -61,8 +61,14 @@ export function useCancelBundle() {
       // tears it down.
       qc.invalidateQueries({ queryKey: roomBookingKeys.detail(id) });
       qc.invalidateQueries({ queryKey: roomBookingKeys.lists() });
-      // /full-review v4 I6 — legacy `scheduler-window` invalidation
-      // dropped (no live subscribers; see room-booking/mutations.ts).
+      // /full-review v4 I6 + codex remediation — legacy
+      // `scheduler-window` invalidation dropped (no live subscribers;
+      // see room-booking/mutations.ts), but the desk scheduler still
+      // subscribes to `scheduler-data` and full-bundle cancel CAN
+      // update booking_slots (bundle-cascade.service.ts:337). Without
+      // this invalidation the scheduler grid keeps showing the
+      // cancelled slot until the realtime push lands.
+      qc.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'scheduler-data'] });
       qc.invalidateQueries({ queryKey: ticketKeys.all });
       qc.invalidateQueries({ queryKey: approvalKeys.all });
     },
