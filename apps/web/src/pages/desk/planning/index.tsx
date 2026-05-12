@@ -141,14 +141,25 @@ export function DeskPlanningPage() {
         assigned_team_id?: string | null;
         assigned_vendor_id?: string | null;
       },
+      // X-Client-Request-Id is minted at the gesture root (commitDrop) so a
+      // retry through toastError({ retry }) reuses the same id and hits the
+      // `command_operations` cached_result fast path. Minting a fresh id per
+      // attempt would defeat idempotency on transient failures.
+      requestId: string,
     ) => {
-      const requestId = crypto.randomUUID();
       const result = await apiFetch(`/work-orders/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(payload),
         headers: { 'X-Client-Request-Id': requestId },
       });
+      // Detail invalidation keeps an open `/desk/tickets/:id` panel fresh.
+      // Lists invalidation keeps `/desk/tickets` (the main queue) honest —
+      // dragging a WO on the board changes its planned_start_at and (for
+      // cross-lane moves) its assignment columns, both of which the list
+      // renders. Mirrors `useUpdateWorkOrder`'s onSettled in
+      // apps/web/src/api/tickets/mutations.ts.
       qc.invalidateQueries({ queryKey: ticketKeys.detail(id) });
+      qc.invalidateQueries({ queryKey: ticketKeys.lists() });
       return result;
     },
     [qc],
@@ -247,7 +258,12 @@ export function DeskPlanningPage() {
       isoStart: string,
       durationMinutes: number | null,
       assigneeOverride: AssigneeOverride | null,
+      // Optional pre-minted X-Client-Request-Id. The initial gesture mints
+      // a fresh uuid; the retry callback (below) passes the SAME uuid so
+      // the server's command_operations cached_result fast path can fire.
+      requestId?: string,
     ) => {
+      const xCid = requestId ?? crypto.randomUUID();
       const wasUnscheduled = block.planned_start_at == null;
       const payload: {
         planned_start_at: string;
@@ -268,12 +284,13 @@ export function DeskPlanningPage() {
       patchPlanningCache((prev) => optimisticMove(prev, block.id, payload, assigneeOverride));
 
       try {
-        await mutateWorkOrder(block.id, payload);
+        await mutateWorkOrder(block.id, payload, xCid);
       } catch (err) {
         invalidatePlanning();
         toastError("Couldn't move plan", {
           error: err,
-          retry: () => commitDrop(block, isoStart, durationMinutes, assigneeOverride),
+          // Reuse xCid so the retry is idempotent on the server.
+          retry: () => commitDrop(block, isoStart, durationMinutes, assigneeOverride, xCid),
         });
         return;
       }

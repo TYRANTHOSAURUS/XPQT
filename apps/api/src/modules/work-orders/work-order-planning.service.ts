@@ -46,7 +46,7 @@ interface RawWorkOrderRow {
   requester_person_id: string | null;
   watchers: string[] | null;
   location_id: string | null;
-  parent_case_id: string | null;
+  parent_ticket_id: string | null;
   parent_kind: string | null;
 }
 
@@ -307,8 +307,8 @@ export class WorkOrderPlanningService {
     const parentIds = Array.from(
       new Set(
         rows
-          .filter((r) => r.parent_kind === 'case' && r.parent_case_id)
-          .map((r) => r.parent_case_id as string),
+          .filter((r) => r.parent_kind === 'case' && r.parent_ticket_id)
+          .map((r) => r.parent_ticket_id as string),
       ),
     );
     if (parentIds.length === 0) return new Map();
@@ -384,8 +384,8 @@ export class WorkOrderPlanningService {
     }
 
     const teamCandidates: Array<string | null> = [row.assigned_team_id];
-    if (row.parent_kind === 'case' && row.parent_case_id) {
-      teamCandidates.push(parentTeamMap.get(row.parent_case_id) ?? null);
+    if (row.parent_kind === 'case' && row.parent_ticket_id) {
+      teamCandidates.push(parentTeamMap.get(row.parent_ticket_id) ?? null);
     }
     for (const t of teamCandidates) {
       if (t && ctx.team_ids.includes(t)) return true;
