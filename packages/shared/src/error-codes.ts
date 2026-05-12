@@ -79,6 +79,12 @@ export type KnownErrorCode =
   | 'render.failed'
   | 'unknown.server_error'
 
+  // ─── Slice B planning board ─────────────────────────────────────────────
+  // Validation codes for GET /work-orders/planning.
+  | 'planning.window_invalid'
+  | 'planning.window_too_wide'
+  | 'planning.status_invalid'
+
   // ─── Phase 1 registered codes (per docs/follow-ups/phase-7-error-codes.md) ─
   | 'work_order.plan_invalid'
   | 'booking.slot_conflict'
@@ -849,7 +855,21 @@ export type KnownErrorCode =
   // every helper (Phase 8 refactor — see docs/follow-ups/b4-followups.md
   // "Plan-builder helpers read tenant from ALS"); this 500 catches the
   // mismatch at the entry point so the wrong-tenant read never happens.
-  | 'edit_booking.tenant_context_mismatch';
+  | 'edit_booking.tenant_context_mismatch'
+
+  // ─── Phase 1.B universal workflow ───────────────────────────────────────
+  // Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.12
+  // (Phase 1 codes — three spawn-link safety guards raised by
+  // WorkflowEngineService.assertSpawnLinkSafe before a parent workflow
+  // node spawns a child entity). All 422: the payload is well-formed but
+  // the spawn would violate the chain invariants (terminated parent /
+  // depth limit / cycle). 422 routes through the web error renderer as
+  // class:'validation' — surfaces as an inline editor error rather than
+  // a server-class retry loop, which is the right shape (the operator
+  // re-authoring the workflow definition is the mitigation).
+  | 'spawn_link.parent_terminated'
+  | 'spawn_link.depth_exceeded'
+  | 'spawn_link.cycle_detected';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1452,6 +1472,16 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   // B.4 Step 2F.2 codex remediation — see KnownErrorCode union for
   // rationale (tenant context drift guard at plan-builder entry points).
   'edit_booking.tenant_context_mismatch',
+  // ─── Phase 1.B universal workflow ───────────────────────────────────────
+  // See KnownErrorCode union for per-code rationale. All 422.
+  'spawn_link.parent_terminated',
+  'spawn_link.depth_exceeded',
+  'spawn_link.cycle_detected',
+  // ─── Slice B planning board (work-order planning read path) ─────────────
+  // Validation codes for `GET /work-orders/planning`. All 422.
+  'planning.window_invalid',
+  'planning.window_too_wide',
+  'planning.status_invalid',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

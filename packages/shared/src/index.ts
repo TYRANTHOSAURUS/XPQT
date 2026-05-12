@@ -4,6 +4,7 @@
 export * from './types/enums';
 export * from './types/tenant';
 export * from './types/ticket';
+export * from './types/work-order-planning';
 export * from './types/form-bindings';
 export * from './types/routing';
 export * from './permissions';

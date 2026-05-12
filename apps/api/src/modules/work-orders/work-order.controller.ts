@@ -5,6 +5,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -16,6 +17,7 @@ import {
   WorkOrderService,
   type UpdateWorkOrderDto,
 } from './work-order.service';
+import { WorkOrderPlanningService } from './work-order-planning.service';
 import { AppErrors } from '../../common/errors';
 import { RequireClientRequestIdGuard } from '../../common/guards/require-client-request-id.guard';
 
@@ -52,7 +54,50 @@ const ASSIGNMENT_FIELDS = ['assigned_team_id', 'assigned_user_id', 'assigned_ven
  */
 @Controller('work-orders')
 export class WorkOrderController {
-  constructor(private readonly workOrderService: WorkOrderService) {}
+  constructor(
+    private readonly workOrderService: WorkOrderService,
+    private readonly planningService: WorkOrderPlanningService,
+  ) {}
+
+  /**
+   * Planning-board read path. Returns work orders with `planned_start_at`
+   * inside `[from, to)` (the "planned" set) and unscheduled work orders
+   * matching the same status / team filter (the "unscheduled" rail).
+   *
+   * Visibility: filtered by `work_orders_visible_for_actor` (migration
+   * 00374), the work_orders sibling of `tickets_visible_for_actor`.
+   * Tenant isolation: `TenantContext.current()` + per-query
+   * `.eq('tenant_id', …)`.
+   *
+   * The window is capped at `PLANNING_WINDOW_MAX_DAYS` (14) so accidental
+   * wide ranges fail closed with a 400 rather than fetching thousands of
+   * rows. `status` accepts repeated values; `team_id` is an exact match.
+   */
+  @Get('planning')
+  async getPlanning(
+    @Req() request: Request,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('status') status?: string | string[],
+    @Query('team_id') teamId?: string,
+  ) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
+    const statusList = status === undefined
+      ? undefined
+      : Array.isArray(status)
+        ? status
+        : [status];
+    return this.planningService.getWindow(
+      {
+        from: from ?? '',
+        to: to ?? '',
+        status: statusList,
+        team_id: teamId === 'null' || teamId === '' ? null : teamId ?? null,
+      },
+      actorAuthUid,
+    );
+  }
 
   /** B.2.A I1 — producer route, requires X-Client-Request-Id (spec §3.9.1). */
   @Patch(':id')

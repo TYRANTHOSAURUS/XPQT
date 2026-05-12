@@ -157,6 +157,20 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     detail: 'Try again. If it keeps happening, contact support with the trace ID.',
   },
 
+  // ─── Slice B planning board ──────────────────────────────────────────────
+  'planning.window_invalid': {
+    title: "Couldn't load the planning board",
+    detail: 'The date range is missing or invalid.',
+  },
+  'planning.window_too_wide': {
+    title: 'Date range is too wide',
+    detail: 'Pick a window of two weeks or less.',
+  },
+  'planning.status_invalid': {
+    title: "Couldn't filter by that status",
+    detail: 'The selected status is not recognised.',
+  },
+
   // ─── work-orders ─────────────────────────────────────────────────────────
   'work_order.plan_invalid': {
     title: "Couldn't create work order",
@@ -1735,6 +1749,20 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
   'edit_booking.tenant_context_mismatch': {
     title: "Couldn't process the booking edit",
     detail: "We hit an internal consistency error while saving this edit. Try again in a moment, or contact support if this persists.",
+  },
+  // ─── Phase 1.B universal workflow ───────────────────────────────────────
+  // Web mirror of the api en table. Spec §3.6 + §3.12.
+  'spawn_link.parent_terminated': {
+    title: "Couldn't spawn — parent workflow ended",
+    detail: "This workflow has been cancelled or completed. New child entities can't be spawned from a terminated parent.",
+  },
+  'spawn_link.depth_exceeded': {
+    title: "Couldn't spawn — workflow chain too deep",
+    detail: 'The workflow chain has reached the 10-level depth limit. Restructure the workflow to spawn fewer layers.',
+  },
+  'spawn_link.cycle_detected': {
+    title: "Couldn't spawn — workflow cycle",
+    detail: 'This spawn would re-enter an ancestor entity, creating an infinite chain. Refactor the workflow to avoid revisiting the same entity.',
   },
 };
 

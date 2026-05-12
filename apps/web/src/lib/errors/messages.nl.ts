@@ -136,6 +136,20 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     detail: 'Probeer het opnieuw. Blijft dit gebeuren, neem dan contact op met support en geef het trace-ID door.',
   },
 
+  // ─── Slice B planning board ──────────────────────────────────────────────
+  'planning.window_invalid': {
+    title: 'Kon planbord niet laden',
+    detail: 'De datumreeks ontbreekt of is ongeldig.',
+  },
+  'planning.window_too_wide': {
+    title: 'Datumreeks is te breed',
+    detail: 'Kies een venster van maximaal twee weken.',
+  },
+  'planning.status_invalid': {
+    title: 'Kon niet filteren op die status',
+    detail: 'De gekozen status wordt niet herkend.',
+  },
+
   // ─── work-orders ─────────────────────────────────────────────────────────
   'work_order.plan_invalid': {
     title: 'Kon werkbon niet aanmaken',
@@ -1702,6 +1716,20 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
   'edit_booking.tenant_context_mismatch': {
     title: 'Kon de wijziging niet verwerken',
     detail: 'Er trad een interne consistentiefout op bij het opslaan van deze wijziging. Probeer het over een moment opnieuw of neem contact op met support als dit blijft gebeuren.',
+  },
+  // ─── Phase 1.B universal workflow ───────────────────────────────────────
+  // Web NL-spiegel van de api nl-tabel.
+  'spawn_link.parent_terminated': {
+    title: 'Kon niet spawnen — bovenliggende workflow is beëindigd',
+    detail: 'Deze workflow is geannuleerd of voltooid. Nieuwe onderliggende entiteiten kunnen niet meer worden aangemaakt vanuit een beëindigde bovenliggende workflow.',
+  },
+  'spawn_link.depth_exceeded': {
+    title: 'Kon niet spawnen — workflow-keten te diep',
+    detail: 'De workflow-keten heeft de dieptelimiet van 10 niveaus bereikt. Herstructureer de workflow zodat er minder lagen worden gespawned.',
+  },
+  'spawn_link.cycle_detected': {
+    title: 'Kon niet spawnen — workflow-cyclus',
+    detail: 'Deze spawn zou een eerdere entiteit opnieuw aanroepen en een oneindige keten vormen. Pas de workflow aan zodat dezelfde entiteit niet opnieuw wordt bezocht.',
   },
 };
 
