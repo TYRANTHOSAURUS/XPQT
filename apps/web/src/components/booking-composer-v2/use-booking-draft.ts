@@ -77,6 +77,17 @@ export function useBookingDraft(
   const addVisitor = useCallback((visitor: PendingVisitor) => {
     setDraft((d) => {
       if (d.visitors.some((v) => v.local_id === visitor.local_id)) {
+        // /full-review v4 I5 — the silent coerce-to-update behavior
+        // (kept for backward compatibility with callers that re-emit on
+        // form-edit) used to mask duplicate-add bugs in callers that
+        // weren't supposed to re-issue with the same local_id. Surface
+        // in dev so any regression in the calling component is loud
+        // immediately; production stays quiet.
+        if (import.meta.env.DEV) {
+          console.warn(
+            `[useBookingDraft] addVisitor called with duplicate local_id "${visitor.local_id}" — coercing to update. Callers should use updateVisitor for known-existing rows.`,
+          );
+        }
         return {
           ...d,
           visitors: d.visitors.map((v) =>
