@@ -290,4 +290,55 @@ describe('WorkOrderService.update — plan_version optimistic-lock', () => {
 
     expect(combinedCalls(deps.rpcCalls)).toHaveLength(1);
   });
+
+  it('plan_version match + plan patch forwards p_expected_plan_version to RPC (00384)', async () => {
+    // Codex remediation: the authoritative compare lives inside the RPC
+    // under SELECT FOR UPDATE. The TS pre-check stays as a fast-fail but
+    // the load-bearing gate is the RPC. Assert the new arg is plumbed
+    // through.
+    const deps = makeDeps({
+      id: 'wo1',
+      tenant_id: TENANT,
+      planned_start_at: '2026-05-12T10:00:00.000Z',
+      planned_duration_minutes: 60,
+      plan_version: 5,
+    });
+    const svc = makeSvc(deps);
+
+    await svc.update(
+      'wo1',
+      {
+        planned_start_at: '2026-05-13T10:00:00.000Z',
+        plan_version: 5,
+      },
+      SYSTEM_ACTOR,
+      CRI,
+    );
+
+    const calls = combinedCalls(deps.rpcCalls);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].p_expected_plan_version).toBe(5);
+  });
+
+  it('plan_version omitted + plan patch sends p_expected_plan_version=null (00384)', async () => {
+    const deps = makeDeps({
+      id: 'wo1',
+      tenant_id: TENANT,
+      planned_start_at: '2026-05-12T10:00:00.000Z',
+      planned_duration_minutes: 60,
+      plan_version: 5,
+    });
+    const svc = makeSvc(deps);
+
+    await svc.update(
+      'wo1',
+      { planned_start_at: '2026-05-13T10:00:00.000Z' },
+      SYSTEM_ACTOR,
+      CRI,
+    );
+
+    const calls = combinedCalls(deps.rpcCalls);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].p_expected_plan_version).toBeNull();
+  });
 });

@@ -179,6 +179,13 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'transition_entity_status.has_open_children': 409,
   'command_operations.payload_mismatch': 409,
   'dispatch_child_work_order.parent_not_dispatchable': 409,
+  // Codex remediation (00384) — authoritative plan_version race gate. The
+  // RPC raises this AFTER `SELECT FOR UPDATE` on the work_orders row,
+  // carrying `detail = jsonb_build_object('current_version', N+1,
+  // 'client_version', N)::text`. Parsed below into AppErrors.conflict's
+  // serverVersion/clientVersion so the wire body matches the TS pre-check
+  // shape (work-order.service.ts:278-282) byte-for-byte.
+  'planning.version_conflict': 409,
   // B.2.A.Step10 reland §3.5 — grant_ticket_approval CAS race.
   // CAS update missed despite advisory lock + FOR UPDATE; bug in the
   // lock code, not a normal user race. Surface as 409 + log so ops can
@@ -419,8 +426,44 @@ export function mapRpcErrorToAppError(
       // alias on the wire is `<namespace>.<specifier>`, not the standard
       // `<entity>.not_found` shape.
       return AppErrors.notFoundWithCode(code, undefined, { cause: error });
-    case 409:
+    case 409: {
+      // Codex remediation (00384) — surface plan_version conflict details
+      // on the wire. The RPC raises `planning.version_conflict` with
+      // `using detail = jsonb_build_object('current_version', N,
+      // 'client_version', M)::text`. supabase-js puts that on
+      // `PostgrestError.details`; parse and forward into AppErrors.conflict
+      // so the FE sees the same `serverVersion`/`clientVersion` body the
+      // TS pre-check produces (work-order.service.ts:278-282). Defensive
+      // try/catch — if the detail isn't parseable JSON the conflict
+      // surfaces without versions but doesn't crash.
+      if (code === 'planning.version_conflict') {
+        const rawDetail = (error as PostgrestErrorLike).details ?? null;
+        let serverVersion: string | undefined;
+        let clientVersion: string | undefined;
+        if (typeof rawDetail === 'string' && rawDetail.length > 0) {
+          try {
+            const parsed = JSON.parse(rawDetail) as {
+              current_version?: number | string;
+              client_version?: number | string;
+            };
+            if (parsed.current_version !== undefined && parsed.current_version !== null) {
+              serverVersion = String(parsed.current_version);
+            }
+            if (parsed.client_version !== undefined && parsed.client_version !== null) {
+              clientVersion = String(parsed.client_version);
+            }
+          } catch {
+            // fall through with undefined versions
+          }
+        }
+        return AppErrors.conflict(code, {
+          cause: error,
+          serverVersion,
+          clientVersion,
+        });
+      }
       return AppErrors.conflict(code, { cause: error });
+    }
     case 422:
       // 422 unprocessable entity — used for cross-tenant FK rejections
       // that need to differ from generic 400 validation failures. No

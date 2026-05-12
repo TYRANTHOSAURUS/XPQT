@@ -443,6 +443,22 @@ export class WorkOrderService {
       );
     }
 
+    // Codex remediation (00384): forward the caller's plan_version
+    // expectation into the RPC so the authoritative compare runs under
+    // `SELECT FOR UPDATE` (not just in the TS pre-check above, which is
+    // a fast-fail optimization but can lose the race when two PATCHes
+    // both miss each other's row lock). Null when the caller didn't
+    // supply a plan_version OR the patch doesn't touch a trigger column
+    // — the RPC then skips the compare and behaves identically to the
+    // pre-00384 v6 body. Only forward for work_order kind (the case
+    // table has no plan_version column).
+    const expectedPlanVersion =
+      dto.plan_version !== undefined &&
+      dto.plan_version !== null &&
+      (hasPlan || hasAssignment)
+        ? dto.plan_version
+        : null;
+
     const { error: rpcErr } = await this.supabase.admin.rpc(
       'update_entity_combined',
       {
@@ -459,7 +475,14 @@ export class WorkOrderService {
         // (byte-identical to v5 behaviour). The RPC also re-validates
         // the value (defense-in-depth) so an internal caller that
         // bypasses the controller can't smuggle an unrecognised string.
+        // 00384 also folds `_source` into the idempotency hash so a
+        // replay with the same crid + same patches + different source
+        // surfaces as payload_mismatch.
         p_activity_source: activitySource,
+        // 00384: authoritative plan_version compare INSIDE the RPC,
+        // after `SELECT FOR UPDATE`. Closes the race window where the
+        // TS pre-check (line 260-284) lets both racers through.
+        p_expected_plan_version: expectedPlanVersion,
       },
     );
     if (rpcErr) throw mapRpcErrorToAppError(rpcErr);
