@@ -39,6 +39,9 @@
  *  23. §3.6.5 Row 10 — new_outcome=deny → edit_booking.deny_on_edit.
  *  24. Cross-tenant person approver — validate_entity_in_tenant.person_not_in_tenant.
  *  25. Cross-tenant team approver — validate_entity_in_tenant.team_not_in_tenant.
+ *  26. §3.6.5 Row 4 — require_approval→allow (terminal_approved) — preserve
+ *      historical approved chain; status stays 'confirmed'; ZERO new rows;
+ *      NO booking.approval_required emit.
  *   8. Booking not found — random uuid → 'edit_booking.not_found'.
  *   9. Invalid plan shape — missing booking object → 400
  *      'edit_booking.invalid_plan_shape'.
@@ -1978,5 +1981,91 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
       [base.tenantId, booking.bookingId],
     );
     expect(approvalRows.rows[0].n).toBe(0);
+  });
+
+  // ── Scenario 26 (§3.6.5 Row 4): require_approval → allow, terminal_approved
+  // The historical approved chain stands as audit; status stays 'confirmed';
+  // ZERO new approval rows; NO booking.approval_required emit. This is the
+  // no-op case Row 8 specifically inverts — Row 4 keeps the approved row
+  // untouched because the new outcome is `allow` (the resolver says the
+  // edited booking no longer needs approval, so the historical approval
+  // simply stops mattering).
+  it('§3.6.5 Row 4 — require_approval→allow (terminal_approved) preserves historical chain + no emit', async () => {
+    const base = await seedBaseFixture(pool, `edit-row4-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    // terminal_approved = no pending/delegated/rejected rows; ≥1 approved.
+    const { chainId: oldChainId } = await seedBookingApprovalChain(pool, base, booking.bookingId, [
+      { status: 'approved', approverPersonId: base.personId },
+    ]);
+
+    // Pre-edit assertion: exactly one 'approved' row exists.
+    const beforeRows = await pool.query<{ n: number; status: string }>(
+      `select count(*)::int as n, max(status) as status
+         from public.approvals
+        where tenant_id = $1 and target_entity_id = $2`,
+      [base.tenantId, booking.bookingId],
+    );
+    expect(beforeRows.rows[0].n).toBe(1);
+    expect(beforeRows.rows[0].status).toBe('approved');
+
+    const plan = buildLocationSwapPlan({
+      bookingId: booking.bookingId,
+      slotId: booking.slotId,
+      fromSpaceId: base.spaceId,
+      toSpaceId: base.spaceId,
+      resolutionAtIso: '2026-09-15T00:00:00Z',
+      approval: buildApprovalBlock({
+        oldOutcome: 'require_approval',
+        newOutcome: 'allow',
+        chainConfigChanged: false,
+        newChainConfig: null,
+      }),
+    });
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-row4');
+
+    const result = await runRpcCapture<EditResult>(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    // Row 4 is a no-op for approvals: NO approval_required follow-up.
+    expect(result.value.follow_ups).not.toContain('booking.approval_required');
+
+    // Approval rows: still exactly 1, still 'approved', still on the
+    // historical chain, comments NOT touched (no superseded_by_edit).
+    const afterRows = await pool.query<{
+      status: string;
+      approval_chain_id: string;
+      comments: string | null;
+    }>(
+      `select status, approval_chain_id, comments
+         from public.approvals
+        where tenant_id = $1 and target_entity_id = $2`,
+      [base.tenantId, booking.bookingId],
+    );
+    expect(afterRows.rows).toHaveLength(1);
+    expect(afterRows.rows[0].status).toBe('approved');
+    expect(afterRows.rows[0].approval_chain_id).toBe(oldChainId);
+    expect(afterRows.rows[0].comments ?? '').not.toContain('superseded_by_edit');
+
+    // Booking status stays 'confirmed'.
+    const bookingRow = await pool.query<{ status: string }>(
+      'select status from public.bookings where id = $1',
+      [booking.bookingId],
+    );
+    expect(bookingRow.rows[0].status).toBe('confirmed');
+
+    // Outbox: ZERO booking.approval_required events for this booking.
+    const outboxRows = await pool.query<{ n: number }>(
+      `select count(*)::int as n from outbox.events
+        where tenant_id = $1 and aggregate_id = $2
+          and event_type = 'booking.approval_required'`,
+      [base.tenantId, booking.bookingId],
+    );
+    expect(outboxRows.rows[0].n).toBe(0);
   });
 });

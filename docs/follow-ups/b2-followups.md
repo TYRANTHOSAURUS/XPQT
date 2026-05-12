@@ -497,3 +497,30 @@ The migration occupies slot 00356 (00343 dropped via 00344; 00345-00355
 allocated to Steps 11/12 + their hardenings). Shipped as a fresh feature
 commit — not a revert-of-revert — so the audit trail reflects the
 3-drift remediation work as deliberate net-new code.
+
+## B.4.A.4 audit payload — chain_config_changed visibility (deferred, 2026-05-12)
+
+Self-review on 00364 (edit_booking RPC v4) surfaced that the
+`audit_events.details` payload for `booking.edited` carries
+`approval_action`, `approval_old_outcome`, `approval_new_outcome`,
+`approval_prior_state`, and `approval_chain_id` (citation:
+`supabase/migrations/00364_edit_booking_rpc_v4.sql:991-995`) but does
+NOT carry the TS-computed `chain_config_changed` boolean from the plan.
+
+Follow-up: extend `audit_events.details` for `booking.edited` events to
+include `chain_config_changed` boolean from `p_plan.approval` when the
+approval action is non-noop. Lets post-hoc auditors detect plan-builder
+bugs: if a tenant complains "this edit shouldn't have re-triggered
+approval", the audit row tells us whether TS claimed the config changed
+(separating "TS plan-builder bug" from "RPC executed the table
+correctly given the input").
+
+**Why deferred, not folded into the closing commit:** migrations are
+immutable in this project — every change is a new file. Creating a
+~70-line v5 supersession migration of 00364 to add one jsonb key to
+one event is poor cost/benefit. Bundle into the next v5 supersession
+of `edit_booking` (next time a real defect requires touching the RPC).
+
+Low-priority — only matters when investigating a tenant complaint
+about unexpected approval re-trigger. No correctness impact on the
+write path; cosmetic on the audit row.

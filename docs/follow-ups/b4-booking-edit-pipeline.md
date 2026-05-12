@@ -13,6 +13,10 @@
 ## Revision history
 
 - **v1 (2026-05-08).** First spec. Hand-verification was thin; internal review surfaced 7 critical citation/contract errors + missed items.
+- **v3.3 (2026-05-12, B.4.A.4 step 2C closeout via 00364 v4).** RPC v4 ships approval reconciliation per §3.6.5 — the 10-row decision table is implemented end-to-end (rows 1, 2, 3, 6, 7, 8 mutate; rows 4, 5 no-op; rows 9, 10 raise). Three doc-impacting clarifications folded back into the spec from the implementation:
+  - **§3.6.5 chain identity:** `chain_config_changed` is a TS-computed boolean in the plan jsonb (not server-derived). The RPC trusts the boolean; correctness of "same vs different chain config" lives in the TS plan-builder. Shape compared by TS = `{ required_approvers: Array<{ type: 'team' | 'person'; id }>, threshold: 'all' | 'any' }` — reusing the create-time enum from `booking-flow.service.ts:1268` so create and edit stay symmetrical. TS MUST canonical-sort approver IDs before structural comparison so order-only differences don't flip the boolean.
+  - **§7 sequencing:** added producer-before-consumer invariant — 00364 emits `booking.approval_required` to outbox on rows 2, 7, 8; the matching outbox handler must ship in or before the B.4.A.5 controller cutover, otherwise live events dead-letter at the worker as `no_handler_registered`.
+  - **Row 4 concurrency coverage:** appended scenario 26 to `apps/api/test/concurrency/edit_booking.spec.ts` asserting `require_approval → allow` with terminal_approved leaves the historical approved row untouched and emits NO `booking.approval_required`. Other rows already had scenarios from the v4 ship; Row 4 was the no-op gap.
 - **v3.2 (2026-05-12, self-review on B.4.A.3 — supersession via 00362).** Folds 9 fixes into the migration shape. The two doc-impacting items:
   - §3.2 RPC return shape extended from `{ booking, follow_ups }` to all 6 keys actually returned (booking, follow_ups, slots_updated, assets_updated, orders_updated, wo_updated). TS consumers use the counts for telemetry + operator UX.
   - §3.4 step 5 semantic-gate narrowing clarified: 00362 narrows the room_booking_rules MAX(updated_at) query to scope-aware buckets mirroring RuleResolverService specificity. `room`-scope rules narrow to exact location match; `space_subtree` + `room_type` stay conservative tenant-wide until the resolver's ancestor walk is replicated in PL/pgSQL (TODO B.4.A.4). No `request_type_id` filter — bookings has no such column (verified live).
@@ -209,7 +213,11 @@ When the rule resolver's `final` changes between create and edit:
 
 **Why `'expired'` not `'cancelled'`:** the approvals enum has no `'cancelled'` value (`00012_approvals.sql:14`: `pending|approved|rejected|delegated|expired`). v3 reuses `'expired'` with the explanation in `comments` (the table has no `reason` column — `comments` is the existing audit-payload column).
 
-**Chain identity:** "different chain config" means the new rule's `approval_config` differs in approver_targets, sequential vs parallel, or required_count. Same-config = preserve in-flight grants.
+**Chain identity:** `chain_config_changed` is a **TS-computed boolean** passed in `p_plan.approval.chain_config_changed` (jsonb). The RPC (00364) treats it as authoritative — there is NO server-side re-derivation of chain equality. Correctness of "same vs different chain config" lives entirely in the TS plan-builder.
+
+The shape compared by TS mirrors the create-time `approval_config` consumed by `booking-flow.service.ts:1268` (`createApprovalRows`): `{ required_approvers: Array<{ type: 'team' | 'person'; id }>, threshold: 'all' | 'any' }`. Same `threshold` enum (`'all'` → parallel chain via `parallel_group = parallel-<bookingId>`; `'any'` → single-approver-suffices via `parallel_group = NULL`) is reused on the edit path so the create and edit insert shapes stay symmetrical.
+
+**TS plan-builder MUST canonical-sort approver IDs (e.g. lexicographic on `(type, id)`) before structural comparison so order-only differences don't flip the boolean.** Same threshold + same approver set in different order = same chain = preserve in-flight grants. Different threshold OR different approver set (after sort) = different chain = expire-and-reinsert.
 
 ## 4. Migration plan
 
@@ -258,6 +266,8 @@ When the rule resolver's `final` changes between create and edit:
 2. **B.4.B `editOne` cutover.** All booking-level patches now route through the combined RPC. Hard-cut: `edit_booking_slot` (00291) callers go to `edit_booking` in the same migration. No transition wrapper (the wrapper would have to skip the new recomputes, defeating the point — see v1 review finding #12).
 3. **B.4.C `editScope` two-phase cutover.** Recurrence-series fan-out is the hardest case. **Two-phase:** (1) dry-run all occurrences through TS plan-build + PG semantic gate (no writes); aggregate failures. (2) If all dry-runs pass, run the commit phase across N occurrences inside one tx. If any fail at commit, abort all (rollback). User sees one atomic result: "all 52 occurrences moved" OR "none moved + here's the conflict on occurrence 14." This violates the "max single tx duration" rule for very large series — define a series-size threshold (e.g. >100) above which we explicitly chunk + surface "this edit will commit in 3 batches; partial state is possible if interrupted" in the UI, and require explicit user confirmation.
 4. **B.4.D smoke + concurrency probes.**
+
+**B.4.A.5 dependency (producer-before-consumer invariant).** The `booking.approval_required` outbox handler MUST ship in or before the controller cutover (B.4.A.5). The producer is live in 00364 (emits on §3.6.5 rows 2, 7, 8). If a TS controller calls `edit_booking` and triggers a row-2/7/8 emit, the event will dead-letter at the worker with `no_handler_registered` until the handler exists.
 
 ## 8. Dependencies
 
