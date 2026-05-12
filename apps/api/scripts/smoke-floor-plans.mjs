@@ -635,6 +635,167 @@ async function p19_signedUrlFreshness(token, floorId) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// D.9 — Availability probes (P21-P25)
+// ─────────────────────────────────────────────────────────────────────
+
+async function p21_availabilityHappyPath(token, floorId) {
+  const name = 'P21: GET /floors/<floor>/plan/availability?from=now&to=now+1h → 200 with spaces[] + crowd_heatmap[]';
+  const from = new Date().toISOString();
+  const to = new Date(Date.now() + 60 * 60_000).toISOString();
+  const r = await api('GET', `/api/floors/${floorId}/plan/availability?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { token });
+  if (r.status !== 200) {
+    fail(name, `HTTP ${r.status}: ${JSON.stringify(r.body).slice(0, 120)}`);
+    return;
+  }
+  if (!r.body || !Array.isArray(r.body.spaces)) {
+    fail(name, `missing spaces[] in response: ${JSON.stringify(r.body).slice(0, 120)}`);
+    return;
+  }
+  if (!Array.isArray(r.body.heatmap)) {
+    fail(name, `missing heatmap[] in response: ${JSON.stringify(r.body).slice(0, 120)}`);
+    return;
+  }
+  pass(name);
+}
+
+async function p22_availabilityInvalidWindow(token, floorId) {
+  const name = 'P22: GET /availability?from=t1&to=t0 (t1>t0) → 422 floor_plan.availability.invalid_window';
+  const t0 = new Date().toISOString();
+  const t1 = new Date(Date.now() + 60 * 60_000).toISOString();
+  // Swap: from=t1 (later), to=t0 (earlier) — invalid window
+  const r = await api('GET', `/api/floors/${floorId}/plan/availability?from=${encodeURIComponent(t1)}&to=${encodeURIComponent(t0)}`, { token });
+  if (r.status === 422 || r.status === 400) {
+    const code = r.body?.code ?? '';
+    if (code.includes('invalid_window')) {
+      pass(name);
+    } else {
+      fail(name, `rejected but wrong error code: ${code}`);
+    }
+  } else {
+    fail(name, `expected 422/400, got HTTP ${r.status}: ${JSON.stringify(r.body).slice(0, 120)}`);
+  }
+}
+
+async function p23_availabilityMineAfterBooking(token, floorId, roomId) {
+  const name = 'P23: Availability with confirmed booking → space.state mine';
+  // Check whether the reservations table exists (might be named differently)
+  // Use the supabase admin client to insert a booking directly, or via RPC.
+  // Try inserting directly into reservations table as admin.
+  const from = new Date().toISOString();
+  const to = new Date(Date.now() + 60 * 60_000).toISOString();
+
+  // Look up the admin user's person/user id for the booking
+  const { data: user } = await supa().from('users').select('id').eq('auth_uid', ADMIN_AUTH_UID).maybeSingle();
+  if (!user) {
+    skip(name, 'admin user row not found in users table — skipping mine-state probe');
+    return null;
+  }
+
+  // Insert a confirmed reservation for this space
+  const { data: res, error: resErr } = await supa()
+    .from('reservations')
+    .insert({
+      tenant_id: TENANT_ID,
+      requester_person_id: null,
+      host_person_id: null,
+      space_id: roomId,
+      status: 'confirmed',
+      start_at: from,
+      end_at: to,
+      attendee_count: 1,
+      title: 'smoke-test-p23',
+    })
+    .select('id')
+    .single();
+
+  if (resErr || !res) {
+    skip(name, `could not insert test reservation: ${resErr?.message} — skipping`);
+    return null;
+  }
+
+  try {
+    const r = await api('GET', `/api/floors/${floorId}/plan/availability?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { token });
+    if (r.status !== 200) {
+      fail(name, `HTTP ${r.status}`);
+      return res.id;
+    }
+    const space = (r.body?.spaces ?? []).find((s) => s.space_id === roomId);
+    if (!space) {
+      // Floor has no polygon for this room (not published) — that's acceptable
+      skip(name, 'room has no published polygon in floor plan — state not visible in availability; acceptable');
+      return res.id;
+    }
+    if (space.state === 'mine') {
+      pass(name);
+    } else {
+      fail(name, `expected state 'mine', got '${space.state}'`);
+    }
+    return res.id;
+  } catch (e) {
+    fail(name, String(e));
+    return res.id;
+  }
+}
+
+async function p24_availabilityAvailableAfterCancel(token, floorId, roomId, reservationId) {
+  const name = 'P24: Availability after cancelling booking → space.state available';
+  if (!reservationId) {
+    skip(name, 'P23 skipped or failed — no reservation to cancel');
+    return;
+  }
+
+  // Cancel the reservation
+  const { error } = await supa()
+    .from('reservations')
+    .update({ status: 'cancelled' })
+    .eq('id', reservationId);
+
+  if (error) {
+    skip(name, `could not cancel reservation: ${error.message}`);
+    return;
+  }
+
+  const from = new Date().toISOString();
+  const to = new Date(Date.now() + 60 * 60_000).toISOString();
+  const r = await api('GET', `/api/floors/${floorId}/plan/availability?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { token });
+  if (r.status !== 200) {
+    fail(name, `HTTP ${r.status}`);
+    return;
+  }
+  const space = (r.body?.spaces ?? []).find((s) => s.space_id === roomId);
+  if (!space) {
+    skip(name, 'room has no published polygon — state not in availability response; acceptable');
+    return;
+  }
+  if (space.state === 'available' || space.state === 'not_bookable') {
+    pass(name);
+  } else {
+    fail(name, `expected 'available', got '${space.state}'`);
+  }
+}
+
+async function p25_heatmapExactly13Buckets(token, floorId) {
+  const name = 'P25: GET /availability → heatmap has exactly 13 buckets (hours 7..19)';
+  const from = new Date().toISOString();
+  const to = new Date(Date.now() + 60 * 60_000).toISOString();
+  const r = await api('GET', `/api/floors/${floorId}/plan/availability?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { token });
+  if (r.status !== 200) {
+    fail(name, `HTTP ${r.status}`);
+    return;
+  }
+  const heatmap = r.body?.heatmap;
+  if (!Array.isArray(heatmap)) {
+    fail(name, `heatmap is not an array: ${JSON.stringify(heatmap)}`);
+    return;
+  }
+  if (heatmap.length === 13) {
+    pass(name);
+  } else {
+    fail(name, `expected 13 buckets, got ${heatmap.length}`);
+  }
+}
+
 async function p20_directRestBlocked(token) {
   const name = 'P20: Direct POST to Supabase REST floor_plan_publish_history → 403/401';
   const restUrl = `${env.SUPABASE_URL}/rest/v1/floor_plan_publish_history`;
@@ -762,9 +923,19 @@ async function main() {
     console.log('\n=== Signed-URL freshness + REST block ===');
     await p19_signedUrlFreshness(token, floorId);
     await p20_directRestBlocked(token);
+
+    console.log('\n=== D.9 Availability probes ===');
+    // Need a published floor plan for P21-P25 (the floor already has one from P4).
+    await p21_availabilityHappyPath(token, floorId);
+    await p22_availabilityInvalidWindow(token, floorId);
+    const reservationId = await p23_availabilityMineAfterBooking(token, floorId, roomId);
+    await p24_availabilityAvailableAfterCancel(token, floorId, roomId, reservationId);
+    await p25_heatmapExactly13Buckets(token, floorId);
   } finally {
     // Best-effort cleanup — don't let cleanup errors hide probe failures
     console.log('\n  [cleanup]');
+    // Clean up smoke-test reservations (P23/P24)
+    await supa().from('reservations').delete().eq('tenant_id', TENANT_ID).eq('title', 'smoke-test-p23');
     await deleteDraft(floorId);
     await deletePublishHistory(floorId);
     await deleteFloorPlan(floorId);

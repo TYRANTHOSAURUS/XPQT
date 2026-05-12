@@ -1,8 +1,10 @@
 import { polygonArea, polygonCentroid, polygonToSvgPath } from './lib/polygon-geometry';
 import { STATE_PALETTE, type AvailabilityState } from './lib/availability-state';
 import type { Point, RenderHint } from '../../api/floor-plans/types';
+import { useNow } from '../../lib/use-now';
 
 const LABEL_AREA_THRESHOLD = 6000;
+const FREE_IN_THRESHOLD_MS = 30 * 60_000; // 30 minutes
 
 type Props = {
   spaceId: string;
@@ -13,13 +15,30 @@ type Props = {
   state: AvailabilityState;
   selected?: boolean;
   onClick?: (spaceId: string) => void;
+  /** ISO timestamp when the space becomes free; from availability data. */
+  freeAt?: string | null;
+  /** True when `now` is within the selected booking window. */
+  isCurrentWindow?: boolean;
 };
 
-export function PolygonShape({ spaceId, points, renderHint, name, capacity, state, selected, onClick }: Props) {
+export function PolygonShape({ spaceId, points, renderHint, name, capacity, state, selected, onClick, freeAt, isCurrentWindow }: Props) {
+  const now = useNow(60_000);
   const palette = STATE_PALETTE[state];
   const area = polygonArea(points);
   const renderAsSeat = renderHint === 'seat' || (renderHint === 'default' && area < LABEL_AREA_THRESHOLD);
   const centroid = polygonCentroid(points);
+
+  // Compute free-in-N badge text (only for labeled rectangles, not seat circles)
+  const freeInLabel = (() => {
+    if (renderAsSeat) return null;
+    if (state !== 'booked') return null;
+    if (!isCurrentWindow) return null;
+    if (!freeAt) return null;
+    const diff = Date.parse(freeAt) - now;
+    if (diff <= 0 || diff >= FREE_IN_THRESHOLD_MS) return null;
+    const mins = Math.ceil(diff / 60_000);
+    return `free in ${mins}m`;
+  })();
 
   if (renderAsSeat) {
     return (
@@ -45,7 +64,7 @@ export function PolygonShape({ spaceId, points, renderHint, name, capacity, stat
     <g
       role="button"
       tabIndex={0}
-      aria-label={`${name}: ${state}, capacity ${capacity ?? 'unknown'}`}
+      aria-label={`${name}: ${state}, capacity ${capacity ?? 'unknown'}${freeInLabel ? `, ${freeInLabel}` : ''}`}
       onClick={() => onClick?.(spaceId)}
       onKeyDown={(e) => e.key === 'Enter' && onClick?.(spaceId)}
       style={{ cursor: 'pointer' }}
@@ -56,7 +75,10 @@ export function PolygonShape({ spaceId, points, renderHint, name, capacity, stat
         strokeWidth={selected ? 2 : 1.5}
       />
       <circle cx={points[0].x + 16} cy={points[0].y + 16} r={5} fill={palette.dot} />
-      <text x={centroid.x} y={centroid.y} textAnchor="middle" fontSize={13} fontWeight={500} fill="#1c1917">{name}</text>
+      <text x={centroid.x} y={freeInLabel ? centroid.y - 7 : centroid.y} textAnchor="middle" fontSize={13} fontWeight={500} fill="#1c1917">{name}</text>
+      {freeInLabel && (
+        <text x={centroid.x} y={centroid.y + 9} textAnchor="middle" fontSize={10} fill="#78716c">{freeInLabel}</text>
+      )}
     </g>
   );
 }

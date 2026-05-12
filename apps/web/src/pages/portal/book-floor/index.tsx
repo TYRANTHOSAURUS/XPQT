@@ -14,7 +14,7 @@
  *
  * D.5 — floor-plan booking surface.
  */
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Maximize2, Map } from 'lucide-react';
 import { PortalPage } from '@/components/portal/portal-page';
@@ -35,6 +35,7 @@ import {
 import type { AvailabilityState } from '@/components/floor-plan/lib/availability-state';
 import type { TimeScrubberValue } from '@/components/floor-plan/time-scrubber';
 import { BookingSheet } from './booking-sheet';
+import { useRealtimeStatus } from '@/lib/use-realtime-status';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -52,9 +53,9 @@ function defaultWindow(): { start: Date; end: Date } {
 
 /** Map SpaceAvailability[] from the API into the SpaceState[] shape FloorPlanCanvas expects */
 function mapAvailabilityToStates(
-  spaces: Array<{ space_id: string; state: AvailabilityState }>,
-): Array<{ spaceId: string; state: AvailabilityState }> {
-  return spaces.map((s) => ({ spaceId: s.space_id, state: s.state }));
+  spaces: Array<{ space_id: string; state: AvailabilityState; free_at?: string | null }>,
+): Array<{ spaceId: string; state: AvailabilityState; freeAt?: string | null }> {
+  return spaces.map((s) => ({ spaceId: s.space_id, state: s.state, freeAt: s.free_at ?? null }));
 }
 
 /** Build occupancy-by-floor-id from heatmap data (average occupancy for the window) */
@@ -192,6 +193,12 @@ export function PortalBookFloor() {
     [effectiveFloorId, avgOccupancy],
   );
 
+  // True when "now" falls within the selected time window — enables free-in-N badges.
+  const isCurrentWindow = useMemo(() => {
+    const now = Date.now();
+    return now >= timeWindow.start.getTime() && now < timeWindow.end.getTime();
+  }, [timeWindow]);
+
   // ---------------------------------------------------------------------------
   // Space selection + modals
   // ---------------------------------------------------------------------------
@@ -216,6 +223,14 @@ export function PortalBookFloor() {
   // Fit-to-screen: reset by re-mounting ZoomPanLayer via key
   const [zoomKey, setZoomKey] = useState(0);
 
+  // Realtime connection status dot — hidden for the first 30s in 'open' state.
+  const realtimeStatus = useRealtimeStatus();
+  const [dotVisible, setDotVisible] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setDotVisible(true), 30_000);
+    return () => clearTimeout(t);
+  }, []);
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -235,9 +250,25 @@ export function PortalBookFloor() {
 
       {/* Header */}
       <header className="mb-4">
-        <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
-          Floor plan
-        </h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
+            Floor plan
+          </h1>
+          {/* Realtime status dot — hidden when open (first 30s) */}
+          {(dotVisible || realtimeStatus !== 'open') && (
+            <span
+              aria-label={`Realtime: ${realtimeStatus}`}
+              className={[
+                'inline-block size-1.5 rounded-full flex-shrink-0 self-center',
+                realtimeStatus === 'open' ? 'bg-emerald-500' :
+                realtimeStatus === 'reconnecting' ? 'bg-amber-400' :
+                'bg-red-500',
+                // Hide green dot until 30s have elapsed
+                realtimeStatus === 'open' && !dotVisible ? 'hidden' : '',
+              ].join(' ')}
+            />
+          )}
+        </div>
         <p className="mt-1 text-sm text-muted-foreground text-pretty">
           Tap a room to book it for the selected time window.
         </p>
@@ -290,6 +321,7 @@ export function PortalBookFloor() {
               states={spaceStates}
               selectedSpaceId={selectedSpaceId}
               onSpaceClick={handleSpaceClick}
+              isCurrentWindow={isCurrentWindow}
             />
           </ZoomPanLayer>
 

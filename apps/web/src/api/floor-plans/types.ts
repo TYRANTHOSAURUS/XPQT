@@ -53,6 +53,8 @@ export type SpaceAvailability = {
   name: string;
   capacity: number | null;
   state: AvailabilityState;
+  /** ISO timestamp when the space next becomes free (present when state === 'booked'). */
+  free_at?: string | null;
 };
 
 export type CrowdHeatmapBucket = {

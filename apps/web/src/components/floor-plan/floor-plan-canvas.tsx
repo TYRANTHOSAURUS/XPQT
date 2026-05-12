@@ -3,19 +3,21 @@ import { PolygonShape } from './polygon-shape';
 import type { PublishedFloorPlan } from '../../api/floor-plans/types';
 import type { AvailabilityState } from './lib/availability-state';
 
-type SpaceState = { spaceId: string; state: AvailabilityState };
+type SpaceState = { spaceId: string; state: AvailabilityState; freeAt?: string | null };
 
 type Props = {
   plan: PublishedFloorPlan;
   states?: SpaceState[];
   selectedSpaceId?: string | null;
   onSpaceClick?: (spaceId: string) => void;
+  /** Pass true when the canvas is showing the current time window (now is within from..to). */
+  isCurrentWindow?: boolean;
 };
 
-export function FloorPlanCanvas({ plan, states, selectedSpaceId, onSpaceClick }: Props) {
+export function FloorPlanCanvas({ plan, states, selectedSpaceId, onSpaceClick, isCurrentWindow }: Props) {
   const stateMap = useMemo(() => {
-    const m = new Map<string, AvailabilityState>();
-    states?.forEach((s) => m.set(s.spaceId, s.state));
+    const m = new Map<string, SpaceState>();
+    states?.forEach((s) => m.set(s.spaceId, s));
     return m;
   }, [states]);
 
@@ -33,19 +35,24 @@ export function FloorPlanCanvas({ plan, states, selectedSpaceId, onSpaceClick }:
         </pattern>
       </defs>
       <image href={plan.floor.image_url} x="0" y="0" width={plan.floor.width_px} height={plan.floor.height_px} />
-      {plan.spaces.map((s) => (
-        <PolygonShape
-          key={s.id}
-          spaceId={s.id}
-          points={s.floor_plan_polygon.points}
-          renderHint={s.floor_plan_render_hint}
-          name={s.name}
-          capacity={s.capacity}
-          state={stateMap.get(s.id) ?? 'not_bookable'}
-          selected={selectedSpaceId === s.id}
-          onClick={onSpaceClick}
-        />
-      ))}
+      {plan.spaces.map((s) => {
+        const entry = stateMap.get(s.id);
+        return (
+          <PolygonShape
+            key={s.id}
+            spaceId={s.id}
+            points={s.floor_plan_polygon.points}
+            renderHint={s.floor_plan_render_hint}
+            name={s.name}
+            capacity={s.capacity}
+            state={entry?.state ?? 'not_bookable'}
+            selected={selectedSpaceId === s.id}
+            onClick={onSpaceClick}
+            freeAt={entry?.freeAt}
+            isCurrentWindow={isCurrentWindow}
+          />
+        );
+      })}
     </svg>
   );
 }
