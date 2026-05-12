@@ -258,6 +258,14 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // constructs AppError with status=500 via AppErrors.server; this entry
   // is defense-in-depth for any future RPC raise of the same code.
   'approval.read_failed': 500,
+  // B.4 step 2D-D — controller-vs-notification gate. The TS layer in
+  // ReservationService.editSlot pre-flight-rejects any edit whose plan
+  // would emit `booking.approval_required` (rows 2/7/8 of §3.6.5) until
+  // B.4.A.5 ships notification dispatch. 503 service-unavailable: the
+  // server isn't ready for this branch yet; retry once the platform
+  // updates. TS-only raise today; defense-in-depth listing in case any
+  // future RPC raises the same code (none planned).
+  'booking.edit_requires_notification_dispatch': 503,
 };
 
 /**
@@ -332,6 +340,11 @@ export function mapRpcErrorToAppError(
       return new AppError(code, 422, { cause: error });
     case 500:
       return AppErrors.server(code, { cause: error });
+    case 503:
+      // 503 service-unavailable. No dedicated factory; construct AppError
+      // directly. Used today only for B.4 step 2D-D's
+      // `booking.edit_requires_notification_dispatch` controller gate.
+      return new AppError(code, 503, { cause: error });
     case 400:
     default:
       return AppErrors.validationFailed(code, { cause: error });

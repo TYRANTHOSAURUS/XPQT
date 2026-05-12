@@ -1750,6 +1750,14 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon de reservering niet opslaan',
     detail: 'We konden de goedkeuringsstatus van deze reservering niet lezen. Probeer het over een moment opnieuw.',
   },
+  // B.4 step 2D-D — controller-vs-notification gate (B.4.A.5 sequencing).
+  // Voice mirrors the rest of the edit_booking family — "reservering" not
+  // "boeking" per the project NL convention.
+  'booking.edit_requires_notification_dispatch': {
+    title: 'Kon de reservering niet opslaan',
+    detail:
+      'Deze wijziging vereist goedkeuring. Wacht op de volgende platformupdate voordat je het opnieuw probeert.',
+  },
 };
 
 /**

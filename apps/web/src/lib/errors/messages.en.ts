@@ -1675,6 +1675,14 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't save the booking",
     detail: "We couldn't read this booking's approval state. Try again in a moment.",
   },
+  // B.4 step 2D-D — controller-vs-notification gate (B.4.A.5 sequencing).
+  // Same copy as the server registry so render fallbacks match. Service-
+  // class 503: the user payload is fine, the platform isn't ready yet.
+  'booking.edit_requires_notification_dispatch': {
+    title: "Couldn't save the booking",
+    detail:
+      'This edit changes approval requirements. Wait for the next platform update before retrying.',
+  },
 };
 
 /**

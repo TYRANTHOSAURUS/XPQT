@@ -1,5 +1,7 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
-import { AppErrors } from '../../common/errors';
+import { AppError, AppErrors } from '../../common/errors';
+import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
+import { buildEditBookingIdempotencyKey } from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { assertTenantOwned, assertTenantOwnedAll } from '../../common/tenant-validation';
@@ -7,6 +9,7 @@ import { ConflictGuardService } from './conflict-guard.service';
 import { ReservationVisibilityService } from './reservation-visibility.service';
 import { RecurrenceService } from './recurrence.service';
 import { BookingNotificationsService } from './booking-notifications.service';
+import { AssembleEditPlanService } from './assemble-edit-plan.service';
 import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
 import { BundleEventBus } from '../booking-bundles/bundle-event-bus';
 import {
@@ -56,6 +59,12 @@ export class ReservationService {
     @Optional() private readonly notifications?: BookingNotificationsService,
     @Optional() private readonly bundleCascade?: BundleCascadeService,
     @Optional() private readonly bundleEventBus?: BundleEventBus,
+    // B.4 step 2D-D — `editSlot` cuts over to `assembleEditPlan` +
+    // `edit_booking` RPC. Optional only so legacy unit tests that
+    // construct ReservationService without DI can keep compiling; the
+    // editSlot path asserts non-null at call time and surfaces a 500
+    // if an instance lands in that path without the dependency wired.
+    @Optional() private readonly assembleEditPlan?: AssembleEditPlanService,
   ) {}
 
   // === Reads ===
@@ -843,7 +852,26 @@ export class ReservationService {
       // redundant but cheap), surfaces 409 ConflictException on GiST
       // exclusion, NotFoundException on missing slot, and emits the
       // visitor cascade exactly once.
-      await this.editSlot(id, primarySlotId, actor, geometryPatch);
+      //
+      // B.4 step 2D-D — editSlot now requires a clientRequestId for the
+      // edit_booking RPC's idempotency_key (`buildEditBookingIdempotencyKey`).
+      // editOne itself isn't yet a producer route (no
+      // RequireClientRequestIdGuard until Step 2E ships its own cutover),
+      // so we forward `actor.client_request_id` — which the middleware
+      // always populates (server-defaulted UUID if the client didn't send
+      // one). That preserves at-most-once-per-attempt within a single
+      // request lifecycle; cross-retry idempotency for editOne will
+      // become a hard contract when Step 2E ships its guard.
+      const delegateCrid = actor.client_request_id;
+      if (!delegateCrid) {
+        // Defense-in-depth — middleware guarantees this is set on real
+        // HTTP requests, but a non-controller caller (workflow engine,
+        // future CLI) could construct an actor without it.
+        throw AppErrors.server('command_operations.unexpected_state', {
+          detail: 'editOne→editSlot delegation requires actor.client_request_id.',
+        });
+      }
+      await this.editSlot(id, primarySlotId, actor, delegateCrid, geometryPatch);
     }
 
     // Slot-meta (attendee_count / attendee_person_ids) on the primary
@@ -961,6 +989,7 @@ export class ReservationService {
     bookingId: string,
     slotId: string,
     actor: ActorContext,
+    clientRequestId: string,
     patch: { space_id?: string; start_at?: string; end_at?: string },
   ): Promise<Reservation> {
     const tenantId = TenantContext.current().id;
@@ -1031,6 +1060,11 @@ export class ReservationService {
     //      'space.invalid_or_cross_tenant' from inside the RPC.
     //   2. Protects any future code path that might bypass the RPC.
     //   3. Mirrors editOne so a regression in either route is uniform.
+    //   B.4 step 2D-D: still useful even after cutover — the RPC's
+    //   validate_entity_in_tenant.space_not_in_tenant raise is caught by
+    //   mapRpcErrorToAppError (404), but the TS pre-flight surfaces a
+    //   curated error before any DB round-trip and avoids polluting
+    //   command_operations with a known-bad attempt.
     if (patch.space_id !== undefined && patch.space_id !== null) {
       await assertTenantOwned(
         this.supabase,
@@ -1045,56 +1079,116 @@ export class ReservationService {
       );
     }
 
-    // Build the trimmed RPC patch — only the geometry keys are honored
-    // server-side; unrelated keys are stripped here so we don't widen the
-    // RPC's contract by accident.
-    const rpcPatch: Record<string, unknown> = {};
-    if (patch.space_id !== undefined) rpcPatch.space_id = patch.space_id;
-    if (patch.start_at !== undefined) rpcPatch.start_at = patch.start_at;
-    if (patch.end_at !== undefined) rpcPatch.end_at = patch.end_at;
+    // ── B.4 step 2D-D: cutover to assembleEditPlan + edit_booking RPC ──
+    //
+    // Replaces the legacy `edit_booking_slot` (00291) RPC call. The new
+    // path:
+    //   1. AssembleEditPlanService.assembleEditPlan({ kind: 'slot', ... })
+    //      builds the EditPlan jsonb the §3.0 RPC consumes (00364:200-308).
+    //   2. The B.4.A.5 controller-vs-notification gate refuses any plan
+    //      whose approval block would emit `booking.approval_required`
+    //      (rows 2/7/8 of §3.6.5). Required because the
+    //      BookingApprovalRequiredHandler is a v1 stub today (commit
+    //      d285bc32) — committing the chain inserts without delivering
+    //      notifications would silently strand approvers. Decision logged
+    //      at docs/follow-ups/b4-followups.md "Sequencing — controller
+    //      cutover MUST land in or after notification dispatch (B.4.A.5)".
+    //      Lift this gate when B.4.A.5 ships dispatch.
+    //   3. buildEditBookingIdempotencyKey(bookingId, clientRequestId) —
+    //      shared helper at packages/shared/src/idempotency.ts:350. Same
+    //      booking + same X-Client-Request-Id ⇒ same key ⇒ retries collapse
+    //      on `command_operations` (00364:330-410).
+    //   4. supabase.rpc('edit_booking', ...) returns the post-edit booking
+    //      jsonb plus follow_ups[] (00364:1106-1129). Errors map via
+    //      mapRpcErrorToAppError; GiST exclusion (23P01) is preserved as
+    //      the only TS-side special-case (the RPC doesn't translate it).
+    //   5. The audit_events 'booking.edited' row + domain_events row are
+    //      written INSIDE the RPC (00364:976-999, :1001-1016). The
+    //      legacy TS-side 'booking.slot_updated' insert is RETIRED; the
+    //      RPC's diff is broader (location_id, start_at, end_at, cost,
+    //      policy snapshot, applied rules, host, status) and includes
+    //      approval_action / approval_chain_id metadata the slot-only
+    //      audit row could never carry.
+    //   6. Visitor cascade emit stays HERE (post-RPC, on geometry change).
+    //      The RPC doesn't know about the visitors module; cascade is a
+    //      TS responsibility per the existing pattern.
+    if (!this.assembleEditPlan) {
+      // Defense-in-depth — DI wiring in the parent module provides the
+      // dep, but a malformed test harness could miss it. Surface as 500
+      // so the failure is loud, not silent.
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail: 'editSlot: AssembleEditPlanService is not wired into ReservationService.',
+      });
+    }
 
-    const { error: rpcErr } = await this.supabase.admin.rpc('edit_booking_slot', {
-      p_slot_id: slotId,
-      p_patch: rpcPatch,
+    const plan = await this.assembleEditPlan.assembleEditPlan({
+      bookingId,
+      tenantId,
+      slotId,
+      patch: {
+        kind: 'slot',
+        space_id: patch.space_id,
+        start_at: patch.start_at,
+        end_at: patch.end_at,
+      },
+    });
+
+    // B.4.A.5 sequencing gate. Surface 503 BEFORE the RPC call to:
+    //   (a) avoid producing the very `booking.approval_required` event
+    //       this gate is trying to suppress (the RPC commits chain rows +
+    //       emits in one tx — even if we drop the result, the row + emit
+    //       stand);
+    //   (b) save a DB round-trip on the failure path;
+    //   (c) keep `command_operations` clean of probably-doomed attempts.
+    // The gate fires when the plan would route through §3.6.5 row 2/7/8:
+    //   row 2: allow → require_approval                            (any chain)
+    //   row 7: require_approval → require_approval, diff config    (pending)
+    //   row 8: require_approval → require_approval, diff config    (terminal_approved — DANGEROUS GAP)
+    // Combined predicate: new_outcome=require_approval AND
+    //   (old_outcome ≠ require_approval OR chain_config_changed).
+    // Same-config preservations (row 6) and allow→allow / approve→allow
+    // pass through unaffected.
+    const wouldEmitApprovalRequired =
+      plan.approval.new_outcome === 'require_approval' &&
+      (plan.approval.old_outcome !== 'require_approval' ||
+        plan.approval.chain_config_changed === true);
+    if (wouldEmitApprovalRequired) {
+      throw new AppError('booking.edit_requires_notification_dispatch', 503, {
+        detail:
+          'This edit changes approval requirements. Wait for the next platform update before retrying.',
+      });
+    }
+
+    const idempotencyKey = buildEditBookingIdempotencyKey(bookingId, clientRequestId);
+
+    const { error: rpcErr } = await this.supabase.admin.rpc('edit_booking', {
+      p_booking_id: bookingId,
+      p_plan: plan as unknown as Record<string, unknown>,
       p_tenant_id: tenantId,
+      p_actor_user_id: actor.user_id,
+      p_idempotency_key: idempotencyKey,
     });
     if (rpcErr) {
       // GiST exclusion (booking_slots_no_overlap, 00277:211-217) → 409.
+      // The new RPC propagates the raw 23P01 the same way 00291 did —
+      // the constraint fires inside the UPDATE before any RPC-level
+      // RAISE has a chance to translate it. Preserve the special-case.
       if (this.conflict.isExclusionViolation(rpcErr)) {
         throw AppErrors.conflict('booking.slot_conflict', {
           detail: 'Slot conflicts with another booking.',
         });
       }
-      // Slot-not-found from inside the RPC (defense in depth — should be
-      // caught by the pre-flight above, but if a race deletes the slot
-      // between pre-flight and RPC, surface it cleanly).
-      const errRecord = rpcErr as { message?: string; hint?: string; details?: string };
-      const errMsg = errRecord.message ?? '';
-      if (errMsg.includes('booking_slot.not_found')) {
-        throw AppErrors.notFoundWithCode('booking_slot.not_found', 'Slot not found.');
-      }
-      // /full-review v3 closure C1 — cross-tenant / inactive / non-reservable
-      // space target. The 00294 RPC raises P0001 with hint
-      // 'space.invalid_or_cross_tenant' when the patched space_id fails the
-      // (id, tenant_id, active, reservable) probe. Without this map, the
-      // RPC's structured rejection drops to a generic slot_update_failed
-      // 400 and the client can't tell a permissions/data problem from a
-      // schema mismatch. Match on hint OR the raw 'space_invalid' message
-      // (PostgREST surfaces both depending on driver shape).
-      const errHint = errRecord.hint ?? '';
-      const errDetails = errRecord.details ?? '';
-      if (
-        errHint.includes('space.invalid_or_cross_tenant') ||
-        errMsg.includes('space_invalid') ||
-        errDetails.includes('space.invalid_or_cross_tenant')
-      ) {
-        throw AppErrors.validationFailed('booking.slot_space_invalid', {
-          detail: 'Target space is invalid or in a different tenant.',
-        });
-      }
-      throw AppErrors.validationFailed('booking.slot_update_failed', {
-        detail: errMsg || 'Slot update failed.',
-      });
+      // All other registered RPC error codes (edit_booking.*,
+      // validate_entity_in_tenant.*, automation_plan.*,
+      // command_operations.payload_mismatch, booking.cancelled_cannot_edit,
+      // etc.) are routed via mapRpcErrorToAppError. Unrecognised raises
+      // fall back to `booking.slot_update_failed` — under
+      // mapRpcErrorToAppError that's a 500 server-class (the helper
+      // routes ALL fallbacks through AppErrors.server). Honest framing:
+      // an unrecognised raise from a registered RPC is a server bug, not
+      // a user payload bug. The legacy 400 framing dates to a TS-side
+      // raise that's now retired.
+      throw mapRpcErrorToAppError(rpcErr, { fallbackCode: 'booking.slot_update_failed' });
     }
 
     // Project the post-RPC slot via the same path findOne uses. Reading
@@ -1103,39 +1197,6 @@ export class ReservationService {
     // (slotWithBookingToReservation) and means any future column
     // additions land in both paths automatically.
     const updated = await this.findByIdOrThrowAtSlot(slotId, tenantId);
-
-    // /full-review v3 fix — was a silent `try { } catch { /* best-effort */ }`.
-    // GDPR Wave 0 Sprint 1 mandates an audit trail for booking-state
-    // transitions; if RLS regresses or the row insert errors, ops MUST see
-    // it. Slot-edit is a NEW event type that the audit pipeline hasn't
-    // been verified against — silent drop is the worst failure mode here.
-    // Promoted to log.error on insert error + caught-throw still logged;
-    // the user response is unchanged (audit drop doesn't fail the edit
-    // since the slot mutation has already committed).
-    try {
-      const { error: auditErr } = await this.supabase.admin.from('audit_events').insert({
-        tenant_id: tenantId,
-        event_type: 'booking.slot_updated',
-        entity_type: 'booking_slot',
-        entity_id: slotId,
-        details: {
-          booking_id: bookingId,
-          slot_id: slotId,
-          patch: rpcPatch,
-        },
-      });
-      if (auditErr) {
-        this.log.error(
-          `audit_events insert failed for booking.slot_updated (booking=${bookingId} slot=${slotId}): ${auditErr.message}`,
-        );
-      }
-    } catch (auditCatchErr) {
-      this.log.error(
-        `audit_events insert threw for booking.slot_updated (booking=${bookingId} slot=${slotId}): ${
-          (auditCatchErr as Error).message
-        }`,
-      );
-    }
 
     // /full-review v3 closure I3 — emit visitor cascade on geometry change.
     //

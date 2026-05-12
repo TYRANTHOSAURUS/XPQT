@@ -1771,6 +1771,16 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save the booking",
     detail: 'The rule for this room requires approval but no approvers are configured. Ask an administrator to configure approvers, or pick a different room.',
   },
+  // B.4 step 2D-D — controller-vs-notification gate (B.4.A.5 sequencing).
+  // ReservationService.editSlot pre-flight-rejects when the plan's
+  // approval block would emit `booking.approval_required` (Rows 2/7/8 of
+  // §3.6.5) and B.4.A.5 hasn't shipped notification dispatch yet. Service-
+  // class 503: the system isn't ready for this branch yet, retry later.
+  'booking.edit_requires_notification_dispatch': {
+    title: "Couldn't save the booking",
+    detail:
+      'This edit changes approval requirements. Wait for the next platform update before retrying.',
+  },
   // B.4.A.4 step 2D-C self-review remediation (CODE-I2).
   // approval.read_failed: AssembleEditPlanService.loadCurrentApprovalChain
   // could not read the approvals table. Generic server-class voice; the

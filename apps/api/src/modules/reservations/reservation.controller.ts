@@ -317,7 +317,17 @@ export class ReservationController {
    * controller doesn't double-load the slot. On mismatch the service
    * throws `BadRequestException(booking_slot.url_mismatch)`.
    */
+  // B.4 step 2D-D — editSlot is now a producer route. The cutover from
+  // the legacy `edit_booking_slot` (00291) RPC to the §3.0 combined
+  // `edit_booking` (00364) RPC requires a CLIENT-supplied
+  // `X-Client-Request-Id` so retries collapse on the
+  // `command_operations` idempotency gate (spec §3.3 + §3.4 step 2).
+  // Without the guard, the middleware's server-default falls through
+  // and every retry mints a new key — silently double-booking on a
+  // network blip. Mirrors the gate on POST /, POST /multi-room, and
+  // POST /:id/services (controller lines 106 / 151 / 431).
   @Patch(':bookingId/slots/:slotId')
+  @UseGuards(RequireClientRequestIdGuard)
   async editSlot(
     @Req() request: Request,
     @Param('bookingId') bookingId: string,
@@ -325,7 +335,17 @@ export class ReservationController {
     @Body() body: { space_id?: string; start_at?: string; end_at?: string },
   ) {
     const actor = await this.actorFromRequest(request);
-    return this.service.editSlot(bookingId, slotId, actor, {
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    if (!clientRequestId) {
+      // Defense-in-depth — the guard already rejected the missing-header
+      // case, so reaching this branch means a programming error in the
+      // guard wiring, not a user mistake. Surface as a server-class
+      // missing-config so ops investigate.
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail: 'editSlot reached service layer with no clientRequestId despite RequireClientRequestIdGuard.',
+      });
+    }
+    return this.service.editSlot(bookingId, slotId, actor, clientRequestId, {
       space_id: body?.space_id,
       start_at: body?.start_at,
       end_at: body?.end_at,

@@ -777,7 +777,18 @@ export type KnownErrorCode =
   // which lied about chain presence (caller derived old_outcome='allow').
   // 500 server-class — DB transient failures during plan assembly are not a
   // user payload problem; surface with traceId so ops can investigate.
-  | 'approval.read_failed';
+  | 'approval.read_failed'
+  // B.4 step 2D-D — controller cutover gate (B.4.A.5 sequencing).
+  // Until B.4.A.5 ships notification dispatch (email approvers + in-app
+  // inbox), TS controllers MUST pre-flight-reject any edit whose plan
+  // would emit `booking.approval_required` (rows 2/7/8 of §3.6.5). The
+  // reject prevents an approval chain from being committed without any
+  // approver being notified — a silent stall worse than a clean 503.
+  // Service-class 503 (retry-later semantics): the system isn't ready
+  // yet; the user payload is fine.
+  // Reference: docs/follow-ups/b4-followups.md "Sequencing — controller
+  // cutover MUST land in or after notification dispatch (B.4.A.5)".
+  | 'booking.edit_requires_notification_dispatch';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1361,6 +1372,8 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   //   supabase error in loadCurrentApprovalChain.
   'edit_booking.rule_missing_approvers',
   'approval.read_failed',
+  // B.4 step 2D-D — see KnownErrorCode union for rationale.
+  'booking.edit_requires_notification_dispatch',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */
