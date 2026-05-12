@@ -955,7 +955,11 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
     expect(outboxRows.rows).toHaveLength(1);
     expect(outboxRows.rows[0].payload.booking_id).toBe(booking.bookingId);
     expect(outboxRows.rows[0].payload.chain_id).toBe(approvalRows.rows[0].approval_chain_id);
-    expect(Array.isArray(outboxRows.rows[0].payload.approver_ids)).toBe(true);
+    // v5: split arrays — person approver populates approver_user_ids,
+    // approver_team_ids stays []; v4's mixed approver_ids is dropped.
+    expect(Array.isArray(outboxRows.rows[0].payload.approver_user_ids)).toBe(true);
+    expect(outboxRows.rows[0].payload.approver_user_ids).toEqual([base.personId]);
+    expect(outboxRows.rows[0].payload.approver_team_ids).toEqual([]);
   });
 
   // ── Scenario 8: booking not found ────────────────────────────────────
@@ -2067,5 +2071,243 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
       [base.tenantId, booking.bookingId],
     );
     expect(outboxRows.rows[0].n).toBe(0);
+  });
+
+  // ── Scenario 27 (B.4.A.5 sub-step B): inbox INSERT row count == approver count ─
+  // Hybrid C invariant — flipping allow→require_approval on a fresh booking
+  // writes one inbox_notifications row per person approver, atomically with
+  // the approvals row, in the same RPC tx. Person approver path.
+  it('B.4.A.5 — person approver inbox INSERT row count == approver count', async () => {
+    const base = await seedBaseFixture(pool, `inbox-person-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    const targetSpaceId = await seedTargetMeetingRoom(pool, base);
+
+    // Wire the approver person to a real users row so the RPC's
+    // `users.person_id = v_approver_id` JOIN finds it. seedAuthUser
+    // returns { userId, authUid }; we keep the user — the inbox INSERT
+    // targets users.id, not auth_uid.
+    const { userId: approverUserId } = await seedAuthUser(
+      pool,
+      base.tenantId,
+      base.approverPersonId,
+    );
+
+    const plan = buildLocationSwapPlan({
+      bookingId: booking.bookingId,
+      slotId: booking.slotId,
+      fromSpaceId: base.spaceId,
+      toSpaceId: targetSpaceId,
+      resolutionAtIso: '2026-09-15T00:00:00Z',
+      approval: buildApprovalBlock({
+        oldOutcome: 'allow',
+        newOutcome: 'require_approval',
+        chainConfigChanged: true,
+        newChainConfig: {
+          requiredApprovers: [{ type: 'person', id: base.approverPersonId }],
+          threshold: 'all',
+        },
+      }),
+    });
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-inbox-p');
+
+    const result = await runRpcCapture<EditResult>(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+
+    const chainRow = await pool.query<{ approval_chain_id: string }>(
+      `select approval_chain_id from public.approvals
+        where tenant_id = $1 and target_entity_id = $2 limit 1`,
+      [base.tenantId, booking.bookingId],
+    );
+    const chainId = chainRow.rows[0].approval_chain_id;
+
+    // Inbox row: exactly 1 (person approver = 1 user).
+    const inboxRows = await pool.query<{
+      user_id: string;
+      event_kind: string;
+      payload: Record<string, unknown>;
+    }>(
+      `select user_id, event_kind, payload
+         from public.inbox_notifications
+        where tenant_id = $1 and payload->>'chain_id' = $2`,
+      [base.tenantId, chainId],
+    );
+    expect(inboxRows.rows).toHaveLength(1);
+    expect(inboxRows.rows[0].user_id).toBe(approverUserId);
+    expect(inboxRows.rows[0].event_kind).toBe('booking.approval_required');
+    expect(inboxRows.rows[0].payload.booking_id).toBe(booking.bookingId);
+    expect(inboxRows.rows[0].payload.chain_id).toBe(chainId);
+    expect(inboxRows.rows[0].payload.approver_person_id).toBe(base.approverPersonId);
+  });
+
+  // ── Scenario 28 (B.4.A.5 sub-step B): ON CONFLICT replay preserves count ─
+  // Same edit replayed via the same idempotency_key returns the cached
+  // result — the inbox block does NOT re-execute (cached_result short-
+  // circuits), and even if a future change re-executes the block (e.g.
+  // ON CONFLICT survives via the partial unique index), the count stays
+  // unchanged. Both paths are exercised here.
+  it('B.4.A.5 — ON CONFLICT replay preserves inbox row count', async () => {
+    const base = await seedBaseFixture(pool, `inbox-replay-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    const targetSpaceId = await seedTargetMeetingRoom(pool, base);
+    await seedAuthUser(pool, base.tenantId, base.approverPersonId);
+
+    const plan = buildLocationSwapPlan({
+      bookingId: booking.bookingId,
+      slotId: booking.slotId,
+      fromSpaceId: base.spaceId,
+      toSpaceId: targetSpaceId,
+      resolutionAtIso: '2026-09-15T00:00:00Z',
+      approval: buildApprovalBlock({
+        oldOutcome: 'allow',
+        newOutcome: 'require_approval',
+        chainConfigChanged: true,
+        newChainConfig: {
+          requiredApprovers: [{ type: 'person', id: base.approverPersonId }],
+          threshold: 'all',
+        },
+      }),
+    });
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-inbox-replay');
+
+    const first = await runRpcCapture<EditResult>(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(first.kind).toBe('ok');
+
+    const initialCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.inbox_notifications
+        where tenant_id = $1 and event_kind = 'booking.approval_required'`,
+      [base.tenantId],
+    );
+    expect(initialCount.rows[0].n).toBe(1);
+
+    // Replay — same key, same payload → cached_result hit. No new inbox
+    // row should be written (the replay short-circuits before the INSERT
+    // block runs at all; the partial unique index would also catch any
+    // re-execution).
+    const second = await runRpcCapture<EditResult>(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(second.kind).toBe('ok');
+
+    const replayedCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.inbox_notifications
+        where tenant_id = $1 and event_kind = 'booking.approval_required'`,
+      [base.tenantId],
+    );
+    expect(replayedCount.rows[0].n).toBe(1);
+  });
+
+  // ── Scenario 29 (B.4.A.5 sub-step B): team approver fan-out ──────────
+  // Team approver path — RPC fans out via team_members.user_id JOIN public.users
+  // (tenant-filtered both sides). N team members → N inbox rows.
+  it('B.4.A.5 — team approver fan-out yields one inbox row per team member', async () => {
+    const base = await seedBaseFixture(pool, `inbox-team-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    const targetSpaceId = await seedTargetMeetingRoom(pool, base);
+
+    // Seed 3 users + add them to base.teamId. team_members joins on
+    // user_id (00003:123).
+    const member1 = await seedAuthUser(pool, base.tenantId, base.personId);
+    const member2 = await seedAuthUser(pool, base.tenantId, base.approverPersonId);
+    // Third member needs a fresh person row to satisfy users.person_id FK.
+    const thirdPersonId = randomUUID();
+    await pool.query(
+      `insert into public.persons (id, tenant_id, type, first_name, last_name, email)
+       values ($1, $2, 'employee', 'Team', 'Member3', $3)`,
+      [thirdPersonId, base.tenantId, `team3-${thirdPersonId.slice(0, 8)}@concurrency.test`],
+    );
+    registerCleanup(async () => {
+      await pool.query('delete from public.persons where id = $1', [thirdPersonId]);
+    });
+    const member3 = await seedAuthUser(pool, base.tenantId, thirdPersonId);
+
+    for (const m of [member1, member2, member3]) {
+      await pool.query(
+        `insert into public.team_members (id, tenant_id, team_id, user_id)
+         values ($1, $2, $3, $4)`,
+        [randomUUID(), base.tenantId, base.teamId, m.userId],
+      );
+    }
+    // team_members rows clean up via the seedBaseFixture cleanup.
+
+    const plan = buildLocationSwapPlan({
+      bookingId: booking.bookingId,
+      slotId: booking.slotId,
+      fromSpaceId: base.spaceId,
+      toSpaceId: targetSpaceId,
+      resolutionAtIso: '2026-09-15T00:00:00Z',
+      approval: buildApprovalBlock({
+        oldOutcome: 'allow',
+        newOutcome: 'require_approval',
+        chainConfigChanged: true,
+        newChainConfig: {
+          requiredApprovers: [{ type: 'team', id: base.teamId }],
+          threshold: 'all',
+        },
+      }),
+    });
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-inbox-t');
+
+    const result = await runRpcCapture<EditResult>(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+
+    const chainRow = await pool.query<{ approval_chain_id: string }>(
+      `select approval_chain_id from public.approvals
+        where tenant_id = $1 and target_entity_id = $2 limit 1`,
+      [base.tenantId, booking.bookingId],
+    );
+    const chainId = chainRow.rows[0].approval_chain_id;
+
+    // 3 team members → 3 inbox rows; one per user_id, all carrying the
+    // same chain_id + approver_team_id.
+    const inboxRows = await pool.query<{ user_id: string; payload: Record<string, unknown> }>(
+      `select user_id, payload from public.inbox_notifications
+        where tenant_id = $1 and payload->>'chain_id' = $2
+        order by user_id`,
+      [base.tenantId, chainId],
+    );
+    expect(inboxRows.rows).toHaveLength(3);
+    const userIds = inboxRows.rows.map((r) => r.user_id).sort();
+    const expected = [member1.userId, member2.userId, member3.userId].sort();
+    expect(userIds).toEqual(expected);
+    for (const row of inboxRows.rows) {
+      expect(row.payload.chain_id).toBe(chainId);
+      expect(row.payload.approver_team_id).toBe(base.teamId);
+      expect(row.payload.booking_id).toBe(booking.bookingId);
+    }
+
+    // Outbox payload echoes the team id in approver_team_ids array.
+    const outboxRows = await pool.query<{ payload: Record<string, unknown> }>(
+      `select payload from outbox.events
+        where tenant_id = $1 and aggregate_id = $2
+          and event_type = 'booking.approval_required'`,
+      [base.tenantId, booking.bookingId],
+    );
+    expect(outboxRows.rows).toHaveLength(1);
+    expect(outboxRows.rows[0].payload.approver_user_ids).toEqual([]);
+    expect(outboxRows.rows[0].payload.approver_team_ids).toEqual([base.teamId]);
   });
 });

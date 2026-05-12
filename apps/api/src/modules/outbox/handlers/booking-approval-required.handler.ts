@@ -53,8 +53,22 @@ export interface BookingApprovalRequiredPayload {
   booking_id: string;
   /** Approval chain row id inserted by edit_booking for this flip. */
   chain_id: string;
-  /** Approver user uuids resolved by the RPC at flip time. */
-  approver_ids: string[];
+  /**
+   * Person approver ids (each resolves to one users row via users.person_id
+   * in tenant scope). Sub-step D fetches the user row + dispatches one email
+   * per id.
+   *
+   * v5 (00394) split the v4 mixed `approver_ids` field into two typed arrays
+   * so the handler doesn't have to re-classify each id.
+   */
+  approver_user_ids: string[];
+  /**
+   * Team approver ids. Sub-step D fans these out via team_members.user_id
+   * JOIN public.users (tenant-filtered both sides) at dispatch time. The
+   * inbox row(s) for these team members were already written by the RPC
+   * (Hybrid C); the handler is responsible only for email dispatch.
+   */
+  approver_team_ids: string[];
   /** ISO timestamp captured by the RPC (v_started_at). */
   started_at: string;
 }
@@ -78,9 +92,12 @@ export class BookingApprovalRequiredHandler
 
     // ── 2. Validate payload shape ─────────────────────────────────────────
     //
-    // Producer is 00364:1059-1080 — payload keys are well-defined. Any
-    // mismatch is a contract bug requiring code change, not retry.
-    const { booking_id, chain_id, approver_ids, started_at } = payload;
+    // Producer is supabase/migrations/00394_edit_booking_rpc_v5.sql (v5
+    // split mixed `approver_ids` into `approver_user_ids` +
+    // `approver_team_ids` — keys are typed at the JSON layer to drop the
+    // re-classification step the handler used to do). Any shape mismatch
+    // is a contract bug requiring code change, not retry.
+    const { booking_id, chain_id, approver_user_ids, approver_team_ids, started_at } = payload;
 
     if (typeof booking_id !== 'string' || !UUID_RE.test(booking_id)) {
       throw new DeadLetterError(
@@ -92,15 +109,32 @@ export class BookingApprovalRequiredHandler
         `booking.approval_required.chain_id_invalid: '${chain_id}' is not a uuid`,
       );
     }
-    if (!Array.isArray(approver_ids) || approver_ids.length === 0) {
+    if (!Array.isArray(approver_user_ids)) {
       throw new DeadLetterError(
-        `booking.approval_required.approver_ids_empty_or_missing: chain=${chain_id}`,
+        `booking.approval_required.approver_user_ids_missing: chain=${chain_id}`,
       );
     }
-    for (const id of approver_ids) {
+    if (!Array.isArray(approver_team_ids)) {
+      throw new DeadLetterError(
+        `booking.approval_required.approver_team_ids_missing: chain=${chain_id}`,
+      );
+    }
+    if (approver_user_ids.length === 0 && approver_team_ids.length === 0) {
+      throw new DeadLetterError(
+        `booking.approval_required.no_approvers: chain=${chain_id} (both user + team arrays empty)`,
+      );
+    }
+    for (const id of approver_user_ids) {
       if (typeof id !== 'string' || !UUID_RE.test(id)) {
         throw new DeadLetterError(
-          `booking.approval_required.approver_id_invalid: '${id}' is not a uuid (chain=${chain_id})`,
+          `booking.approval_required.approver_user_id_invalid: '${id}' is not a uuid (chain=${chain_id})`,
+        );
+      }
+    }
+    for (const id of approver_team_ids) {
+      if (typeof id !== 'string' || !UUID_RE.test(id)) {
+        throw new DeadLetterError(
+          `booking.approval_required.approver_team_id_invalid: '${id}' is not a uuid (chain=${chain_id})`,
         );
       }
     }
@@ -118,16 +152,19 @@ export class BookingApprovalRequiredHandler
 
     // ── 3. Log + return (v1 stub) ────────────────────────────────────────
     //
-    // TODO(B.4.A.5): replace this log with notification dispatch:
+    // TODO(B.4.A.5 sub-step D): replace this log with email dispatch:
     //   - re-read bookings (tenant_id, id) to confirm pending_approval state
     //   - re-read the approval chain row by chain_id to confirm still pending
-    //   - fan out approver notifications (email + in-app inbox)
+    //   - fan out email per approver_user_ids; fan out team_members for
+    //     each id in approver_team_ids; combine into one userIds set
+    //   - inbox rows are ALREADY written by the producer RPC (Hybrid C);
+    //     this handler only sends email
     //   - record an audit event for the dispatch
-    // Spec: docs/follow-ups/b4-booking-edit-pipeline.md §3.4 step 9 +
-    //       apps/api/src/modules/reservations/event-types.ts:40-51.
+    // Spec: /tmp/b4a5-plan-v2.md sub-step D.
     this.log.log(
-      `booking.approval_required received (stub — B.4.A.5 will dispatch): ` +
-        `booking=${booking_id} chain=${chain_id} approvers=${approver_ids.length} ` +
+      `booking.approval_required received (stub — sub-step D will dispatch email): ` +
+        `booking=${booking_id} chain=${chain_id} ` +
+        `users=${approver_user_ids.length} teams=${approver_team_ids.length} ` +
         `started_at=${started_at} event=${event.id}`,
     );
   }

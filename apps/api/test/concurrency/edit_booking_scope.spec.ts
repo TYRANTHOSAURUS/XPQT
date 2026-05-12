@@ -1403,4 +1403,60 @@ describe('edit_booking_scope RPC — concurrency + state-machine probes', () => 
     if (result.kind !== 'ok') return;
     expect(result.value.committed).toBe(200);
   }, 120_000);
+
+  // ── Scenario 16 (B.4.A.5 sub-step B): inbox tx-scope on gate raise ──────
+  // The B.4.A.5 emit-site gate at 00395:~575-580 stays UP in v3 — the
+  // inbox INSERT block in the per-occurrence loop is defense-in-depth
+  // (unreachable until sub-step H lifts the gate). This test pins the
+  // contract that as long as the gate is up, an approval-flipping plan
+  // raises and writes ZERO inbox rows. When sub-step H lifts the gate,
+  // this test should evolve into "inbox row count == approver count" —
+  // the scope variant of the edit_booking.spec.ts Scenario 27 probe.
+  it('B.4.A.5 — gate raise leaves inbox_notifications empty (tx rollback covers the inbox INSERT block)', async () => {
+    const base = await seedBaseFixture(pool, `scope-inbox-gate-${Date.now()}`);
+    const fixture = await seedRecurrenceSeries(pool, base, 3);
+    const targetSpaceId = await seedTargetMeetingRoom(pool, base);
+
+    // Make occurrence 1 trip the gate.
+    const plans = await buildPlansForFixture(
+      pool,
+      fixture,
+      targetSpaceId,
+      base.spaceId,
+      '2026-10-15T00:00:00Z',
+      (idx) =>
+        idx === 1
+          ? buildApprovalBlock({
+              oldOutcome: 'allow',
+              newOutcome: 'require_approval',
+              chainConfigChanged: true,
+              newChainConfig: {
+                requiredApprovers: [{ type: 'person', id: base.approverPersonId }],
+                threshold: 'all',
+              },
+            })
+          : buildApprovalBlock({}),
+    );
+    const idempotencyKey = scopeIdempotencyKey(`inbox-gate-${Date.now()}`);
+
+    const result = await runRpcCapture(pool, 'public.edit_booking_scope', [
+      JSON.stringify(plans),
+      base.tenantId,
+      null,
+      idempotencyKey,
+      false,
+    ]);
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') return;
+    expect(result.error.message).toContain('booking.edit_requires_notification_dispatch');
+
+    // ZERO inbox rows in this tenant — the gate fires before the per-occurrence
+    // write block (and even if it didn't, the failed RPC tx would roll the
+    // INSERT back).
+    const inboxCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.inbox_notifications where tenant_id = $1`,
+      [base.tenantId],
+    );
+    expect(inboxCount.rows[0].n).toBe(0);
+  });
 });

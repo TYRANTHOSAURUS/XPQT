@@ -371,6 +371,10 @@ export async function seedBaseFixture(pool: Pool, seed: string): Promise<BaseFix
         await c.query('delete from outbox.events where tenant_id = $1', [tenantId]);
         await c.query('delete from outbox.events_dead_letter where tenant_id = $1', [tenantId]);
         await c.query('delete from public.attach_operations where tenant_id = $1', [tenantId]);
+        // Notifications surface (B.4.A.5 sub-step A — 00391). Cascades from
+        // users.id deletion via FK, but deleting up-front lets the users
+        // delete proceed without depending on cascade ordering.
+        await c.query('delete from public.inbox_notifications where tenant_id = $1', [tenantId]);
         // Domain + audit
         await c.query('delete from public.domain_events where tenant_id = $1', [tenantId]);
         await c.query('delete from public.audit_events where tenant_id = $1', [tenantId]);
@@ -389,8 +393,13 @@ export async function seedBaseFixture(pool: Pool, seed: string): Promise<BaseFix
         ]);
         // Identity + reference data
         await c.query('delete from public.catalog_items where tenant_id = $1', [tenantId]);
+        await c.query('delete from public.team_members where tenant_id = $1', [tenantId]);
         await c.query('delete from public.teams where tenant_id = $1', [tenantId]);
         await c.query('delete from public.spaces where tenant_id = $1', [tenantId]);
+        // Users → persons FK ordering: users.person_id references persons(id),
+        // so users must drop before persons. Delete users last in this group;
+        // any seedAuthUser-created rows clean up via this path.
+        await c.query('delete from public.users where tenant_id = $1', [tenantId]);
         await c.query('delete from public.persons where tenant_id = $1', [tenantId]);
         // Tenant itself last.
         await c.query('delete from public.tenants where id = $1', [tenantId]);
