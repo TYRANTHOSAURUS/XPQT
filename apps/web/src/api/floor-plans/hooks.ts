@@ -108,9 +108,10 @@ export function floorAvailabilityOptions(floorSpaceId: string, start: string, en
     queryKey: floorPlanKeys.floorAvailability(floorSpaceId, start, end),
     queryFn: async () =>
       apiFetch<FloorAvailability>(
-        `/api/floors/${floorSpaceId}/plan/availability?from=${encodeURIComponent(start)}&to=${encodeURIComponent(end)}`,
+        `/floors/${floorSpaceId}/plan/availability?from=${encodeURIComponent(start)}&to=${encodeURIComponent(end)}`,
       ),
     staleTime: 30_000,
+    enabled: !!floorSpaceId && !!start && !!end,
   });
 }
 

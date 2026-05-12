@@ -35,11 +35,35 @@ export class FloorPlanDraftService {
       .eq('tenant_id', tenantId)
       .not('floor_plan_polygon', 'is', null);
 
-    const seedPolygons = (spaces ?? []).map((s) => ({
-      space_id: s.id,
-      points: (s.floor_plan_polygon as { points: unknown[] }).points,
-      render_hint: (s as { floor_plan_render_hint?: string }).floor_plan_render_hint ?? 'default',
-    }));
+    // Validate each published polygon before seeding the draft. Migration 00367
+    // forces {points:[…]} shape, but its CHECK only requires array-length >= 3
+    // — not that each entry is a finite {x,y}. Any malformed row would otherwise
+    // poison the draft, autosave back to the server, and 422 forever.
+    const seedPolygons = (spaces ?? [])
+      .map((s) => {
+        const raw = s.floor_plan_polygon as { points?: unknown } | null;
+        const pts = raw && Array.isArray(raw.points) ? raw.points : [];
+        const valid: Array<{ x: number; y: number }> = [];
+        for (const p of pts) {
+          if (
+            p &&
+            typeof p === 'object' &&
+            typeof (p as { x?: unknown }).x === 'number' &&
+            typeof (p as { y?: unknown }).y === 'number' &&
+            Number.isFinite((p as { x: number }).x) &&
+            Number.isFinite((p as { y: number }).y)
+          ) {
+            valid.push({ x: (p as { x: number }).x, y: (p as { y: number }).y });
+          }
+        }
+        if (valid.length < 3) return null;
+        return {
+          space_id: s.id,
+          points: valid,
+          render_hint: (s as { floor_plan_render_hint?: string }).floor_plan_render_hint ?? 'default',
+        };
+      })
+      .filter((p): p is { space_id: string; points: Array<{ x: number; y: number }>; render_hint: string } => p !== null);
 
     const { data: created, error } = await client
       .from('floor_plan_drafts')

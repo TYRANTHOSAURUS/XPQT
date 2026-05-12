@@ -1,4 +1,4 @@
-import { polygonArea, polygonCentroid, polygonToSvgPath } from './lib/polygon-geometry';
+import { polygonArea, polygonCentroid, polygonToSvgPath, isValidPolygon } from './lib/polygon-geometry';
 import { STATE_PALETTE, type AvailabilityState } from './lib/availability-state';
 import type { Point, RenderHint } from '../../api/floor-plans/types';
 import { useNow } from '../../lib/use-now';
@@ -23,6 +23,9 @@ type Props = {
 
 export function PolygonShape({ spaceId, points, renderHint, name, capacity, state, selected, onClick, freeAt, isCurrentWindow }: Props) {
   const now = useNow(60_000);
+  // Defensive: skip rendering when polygon shape is malformed. Better an
+  // invisible polygon than NaN-laced SVG attributes that crash React.
+  if (!isValidPolygon(points) || points.length < 1) return null;
   const palette = STATE_PALETTE[state];
   const area = polygonArea(points);
   const renderAsSeat = renderHint === 'seat' || (renderHint === 'default' && area < LABEL_AREA_THRESHOLD);

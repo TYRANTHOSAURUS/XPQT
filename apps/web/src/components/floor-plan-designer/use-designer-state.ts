@@ -150,7 +150,9 @@ const INITIAL: StateWithHistory = {
 export function useDesignerState(floorSpaceId: string, draft: DraftResponse | undefined) {
   const [state, dispatch] = useReducer(reducer, INITIAL);
   const updateDraft = useUpdateDraft(floorSpaceId);
-  const lastSyncedRef = useRef<string>('');
+  // '__init__' = special sentinel so the first run-through after hydrate
+  // doesn't echo the server-provided draft back as an autosave.
+  const lastSyncedRef = useRef<string>('__init__');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -166,21 +168,34 @@ export function useDesignerState(floorSpaceId: string, draft: DraftResponse | un
       widthPx: state.widthPx,
       heightPx: state.heightPx,
     });
+    // Skip autosave on initial hydrate. The first computed snapshot equals
+    // exactly what the server just sent us; sending it back would (a) echo
+    // any malformed polygons that survived seeding, and (b) burn If-Match
+    // CAS for no reason. Set the ref to the initial snapshot when hydrated.
+    if (lastSyncedRef.current === '__init__') {
+      lastSyncedRef.current = snapshot;
+      return;
+    }
     if (snapshot === lastSyncedRef.current) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
-      lastSyncedRef.current = snapshot;
       try {
+        // Build the patch with undefined values dropped (otherwise the
+        // optimistic-update spread on the client would nuke previously-set
+        // width/height in the cache).
+        const patch: Record<string, unknown> = {
+          polygons: state.polygons,
+          labels: state.labels,
+        };
+        if (state.imageUrl !== null && state.imageUrl !== undefined) patch.image_url = state.imageUrl;
+        if (state.widthPx !== null && state.widthPx !== undefined) patch.width_px = state.widthPx;
+        if (state.heightPx !== null && state.heightPx !== undefined) patch.height_px = state.heightPx;
         const data = await updateDraft.mutateAsync({
-          patch: {
-            polygons: state.polygons,
-            labels: state.labels,
-            image_url: state.imageUrl,
-            width_px: state.widthPx ?? undefined,
-            height_px: state.heightPx ?? undefined,
-          },
+          patch: patch as Partial<DraftResponse>,
           ifMatch: state.updatedAt,
         });
+        // Update lastSynced AFTER success so a failed PATCH doesn't pretend it synced.
+        lastSyncedRef.current = snapshot;
         dispatch({ type: 'server-sync', updatedAt: data.updated_at });
       } catch (err: unknown) {
         const e = err as Record<string, unknown>;
@@ -194,7 +209,7 @@ export function useDesignerState(floorSpaceId: string, draft: DraftResponse | un
       }
     }, 500);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [state.polygons, state.labels, state.imageUrl, state.widthPx, state.heightPx, state.draftId, state.updatedAt, updateDraft]);
+  }, [state.polygons, state.labels, state.imageUrl, state.widthPx, state.heightPx, state.draftId, state.updatedAt, updateDraft, dispatch]);
 
   const canUndo = state._historyIndex >= 0;
   const canRedo = state._historyIndex + 1 < state._history.length;
