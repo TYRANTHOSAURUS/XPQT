@@ -149,6 +149,10 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon niet filteren op die status',
     detail: 'De gekozen status wordt niet herkend.',
   },
+  'planning.version_conflict': {
+    title: 'Verplaatst door iemand anders',
+    detail: 'Een andere planner heeft deze werkorder zojuist verplaatst. Herlaad om hun wijziging te zien, of behoud je wijziging en overschrijf de hunne.',
+  },
 
   // ─── work-orders ─────────────────────────────────────────────────────────
   'work_order.plan_invalid': {

@@ -84,6 +84,9 @@ export type KnownErrorCode =
   | 'planning.window_invalid'
   | 'planning.window_too_wide'
   | 'planning.status_invalid'
+  // Optimistic-lock conflict on PATCH /work-orders/:id when the caller's
+  // plan_version doesn't match the row's current plan_version (00382).
+  | 'planning.version_conflict'
 
   // ─── Phase 1 registered codes (per docs/follow-ups/phase-7-error-codes.md) ─
   | 'work_order.plan_invalid'
@@ -1480,6 +1483,11 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'planning.window_invalid',
   'planning.window_too_wide',
   'planning.status_invalid',
+  // 409: PATCH /work-orders/:id refused because caller's plan_version
+  // is stale vs the row. Carries serverVersion (current_version on the
+  // row) + clientVersion (what the caller passed) per AppErrors.conflict
+  // wire-shape contract.
+  'planning.version_conflict',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

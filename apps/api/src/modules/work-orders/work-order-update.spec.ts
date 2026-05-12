@@ -74,6 +74,7 @@ function makeRow(overrides: Partial<WorkOrderRow> = {}): WorkOrderRow {
     assigned_team_id: null,
     assigned_user_id: null,
     assigned_vendor_id: null,
+    plan_version: 1,
     ...overrides,
   } as WorkOrderRow;
 }

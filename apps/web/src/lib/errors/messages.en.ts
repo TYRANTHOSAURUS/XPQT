@@ -170,6 +170,10 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't filter by that status",
     detail: 'The selected status is not recognised.',
   },
+  'planning.version_conflict': {
+    title: 'Moved by someone else',
+    detail: 'Another dispatcher just moved this work order. Reload to see their change, or keep yours and overwrite theirs.',
+  },
 
   // ─── work-orders ─────────────────────────────────────────────────────────
   'work_order.plan_invalid': {

@@ -43,6 +43,15 @@ export interface WorkOrderPlanningBlock {
   lane: PlanningLaneId;
   request_type: { id: string; name: string; domain: string } | null;
   can_plan: boolean;
+  /**
+   * Optimistic-lock version (00382). The FE stages every plan-touching
+   * PATCH with the version it read on the block. If a concurrent
+   * dispatcher's PATCH lands first the row's plan_version bumps; the
+   * loser's PATCH returns 409 `planning.version_conflict` with the
+   * row's current version in `serverVersion`. The FE rolls back the
+   * optimistic patch and prompts "Reload" or "Keep mine".
+   */
+  plan_version: number;
 }
 
 export interface WorkOrderPlanningResponse {

@@ -495,6 +495,113 @@ async function runWorkOrderMutations(headers, probe) {
     },
   }, TENANT_ID, 'work_order', WO_ID);
 
+  // ── P1-2 plan_version (optimistic-lock) probes ──────────────────────
+  // Migration 00382 adds plan_version + before-update trigger. The PATCH
+  // endpoint compares caller's plan_version against the row's current
+  // value when ANY trigger column is in the patch; mismatch → 409
+  // planning.version_conflict.
+  //
+  // Probe shape:
+  //   1. Read current plan_version (v0).
+  //   2. PATCH planned_start_at with plan_version=v0 → 200, row now at v0+1.
+  //   3. PATCH again with stale plan_version=v0 → 409 with
+  //      code=planning.version_conflict + serverVersion=v0+1 + clientVersion=v0.
+  //   4. PATCH with fresh plan_version=v0+1 → 200, row now at v0+2.
+  //   5. Restore start to a stable value at the end so subsequent probes
+  //      operate on a known plan.
+  const beforeVersion = await readWO(headers);
+  const v0 = beforeVersion.plan_version;
+  if (typeof v0 !== 'number') {
+    results.fail += 1;
+    results.failed.push('WO: plan_version present on response');
+    console.log(`  ✗ WO: plan_version present on response — got ${v0}`);
+  } else {
+    results.pass += 1;
+    console.log(`  ✓ WO: plan_version present on response (v${v0})`);
+  }
+
+  const planVersionStart1 = new Date(Date.now() + 4 * 86400000).toISOString();
+  const pvProbe1 = await probeAndAssertCommandOp(
+    probe,
+    'WO: plan_version match → 200',
+    {
+      url: `${API_BASE}/api/work-orders/${WO_ID}`,
+      body: { planned_start_at: planVersionStart1, plan_version: v0 },
+    },
+    TENANT_ID,
+    'work_order',
+    WO_ID,
+  );
+  let v1 = null;
+  if (pvProbe1.ok) {
+    const after1 = await readWO(headers);
+    v1 = after1.plan_version;
+    if (v1 === v0 + 1) {
+      results.pass += 1;
+      console.log(`  ✓ WO: plan_version bumped v${v0} → v${v1}`);
+    } else {
+      results.fail += 1;
+      results.failed.push('WO: plan_version bumped on planning UPDATE');
+      console.log(`  ✗ WO: plan_version expected v${v0 + 1}, got v${v1}`);
+    }
+  }
+
+  // Stale version → 409 with planning.version_conflict.
+  const planVersionStart2 = new Date(Date.now() + 5 * 86400000).toISOString();
+  const pvStale = await probe('WO: stale plan_version → 409', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: { planned_start_at: planVersionStart2, plan_version: v0 },
+    expect: 'conflict',
+  });
+  if (pvStale.ok) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(pvStale.body);
+    } catch {
+      // ignore
+    }
+    if (
+      parsed &&
+      parsed.code === 'planning.version_conflict' &&
+      parsed.serverVersion === String(v1) &&
+      parsed.clientVersion === String(v0)
+    ) {
+      results.pass += 1;
+      console.log(
+        `  ✓ WO: stale plan_version body (code+serverVersion=${parsed.serverVersion} clientVersion=${parsed.clientVersion})`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('WO: stale plan_version body shape');
+      console.log(
+        `  ✗ WO: stale plan_version body shape — got code=${parsed?.code} serverVersion=${parsed?.serverVersion} clientVersion=${parsed?.clientVersion}`,
+      );
+    }
+  }
+
+  // Fresh version → 200 again. Proves "Keep mine" path: re-read fresh
+  // plan_version then re-PATCH.
+  await probeAndAssertCommandOp(
+    probe,
+    'WO: fresh plan_version after conflict → 200',
+    {
+      url: `${API_BASE}/api/work-orders/${WO_ID}`,
+      body: { planned_start_at: planVersionStart2, plan_version: v1 },
+    },
+    TENANT_ID,
+    'work_order',
+    WO_ID,
+  );
+
+  // Restore a sensible plan again for downstream probes.
+  await probeAndAssertCommandOp(probe, 'WO: restore plan (post plan_version)', {
+    url: `${API_BASE}/api/work-orders/${WO_ID}`,
+    body: {
+      planned_start_at: new Date(Date.now() + 86400000).toISOString(),
+      planned_duration_minutes: 60,
+    },
+  }, TENANT_ID, 'work_order', WO_ID);
+
   // sla: clear (null is XOR-different from any current sla_id)
   await probeAndAssertCommandOp(probe, 'WO: sla_id = null', {
     url: `${API_BASE}/api/work-orders/${WO_ID}`,

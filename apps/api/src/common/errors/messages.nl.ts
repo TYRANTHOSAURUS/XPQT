@@ -151,6 +151,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon niet filteren op die status',
     detail: 'De gekozen status wordt niet herkend.',
   },
+  'planning.version_conflict': {
+    title: 'Verplaatst door iemand anders',
+    detail: 'Een andere planner heeft deze werkorder zojuist verplaatst. Herlaad om hun wijziging te zien, of behoud je wijziging en overschrijf de hunne.',
+  },
 
   // ─── Phase 1 registered codes ────────────────────────────────────────────
   'work_order.plan_invalid': {

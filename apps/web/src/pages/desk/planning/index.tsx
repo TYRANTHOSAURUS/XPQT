@@ -17,7 +17,7 @@ import {
   toLocalDateString,
 } from '@/lib/scheduler-time';
 import { toast, toastError } from '@/lib/toast';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, ApiError } from '@/lib/api';
 import { ticketKeys } from '@/api/tickets';
 import {
   useWorkOrderPlanning,
@@ -25,6 +25,15 @@ import {
   type PlanningWindowFilters,
 } from '@/api/work-order-planning';
 import { ConfirmDialog } from '@/components/confirm-dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
 import { formatRelativeTime } from '@/lib/format';
 import { PlanningToolbar } from './components/planning-toolbar';
 import { PlanningGrid, type PlanningLane, type PendingBlockDrag } from './components/planning-grid';
@@ -147,6 +156,12 @@ export function DeskPlanningPage() {
         assigned_user_id?: string | null;
         assigned_team_id?: string | null;
         assigned_vendor_id?: string | null;
+        // P1-2 (00382): optimistic-lock token. Threaded from the block's
+        // current `plan_version` at the gesture root so two dispatchers
+        // racing the same drag don't silently overwrite each other. The
+        // server returns 409 planning.version_conflict on mismatch; the
+        // FE rolls back + opens the conflict dialog.
+        plan_version?: number;
       },
       // X-Client-Request-Id is minted at the gesture root (commitDrop) so a
       // retry through toastError({ retry }) reuses the same id and hits the
@@ -187,6 +202,19 @@ export function DeskPlanningPage() {
     // operator may have nudged duration without touching start (or vice
     // versa) but we don't track which side changed at confirm time.
     kind: 'drop' | 'keyboard';
+  } | null>(null);
+
+  // ── plan_version conflict (P1-2 / 00382) ──────────────────────────
+  // When two dispatchers race the same drag, the loser's PATCH returns
+  // 409 planning.version_conflict. runOptimisticWithRollback has already
+  // restored the cache before this fires (rollback BEFORE onError per
+  // commit-with-rollback.ts:71), so the dialog opens on top of pre-
+  // optimistic state. The action stored here is the closure that re-
+  // attempts the mutation against a fresh plan_version once the
+  // operator picks "Keep mine"; "Reload" just closes + invalidates.
+  const [pendingConflict, setPendingConflict] = useState<{
+    block: WorkOrderPlanningBlock;
+    retry: () => void;
   } | null>(null);
 
   // ── Drag controller (chunk 4) ─────────────────────────────────────
@@ -282,6 +310,12 @@ export function DeskPlanningPage() {
       // a fresh uuid; the retry callback (below) passes the SAME uuid so
       // the server's command_operations cached_result fast path can fire.
       requestId?: string,
+      // P1-2 (00382): explicit plan_version override. Used by the
+      // conflict-dialog "Keep mine" path which re-fetches the row to get
+      // the post-other-dispatcher version, then re-PATCHes with it.
+      // Default is the block's known plan_version captured at gesture
+      // time.
+      planVersionOverride?: number,
     ) => {
       const xCid = requestId ?? crypto.randomUUID();
       const wasUnscheduled = block.planned_start_at == null;
@@ -291,6 +325,7 @@ export function DeskPlanningPage() {
         assigned_user_id?: string | null;
         assigned_team_id?: string | null;
         assigned_vendor_id?: string | null;
+        plan_version?: number;
       } = { planned_start_at: isoStart };
       if (wasUnscheduled && durationMinutes != null) {
         payload.planned_duration_minutes = durationMinutes;
@@ -300,6 +335,7 @@ export function DeskPlanningPage() {
         payload.assigned_team_id = assigneeOverride.team_id;
         payload.assigned_vendor_id = assigneeOverride.vendor_id;
       }
+      payload.plan_version = planVersionOverride ?? block.plan_version;
 
       // Capture the key + snapshot once at the start of the gesture. If
       // the operator changes the status/team filter while the PATCH is in
@@ -314,6 +350,26 @@ export function DeskPlanningPage() {
         mutator: (prev) => optimisticMove(prev, block.id, payload, assigneeOverride),
         mutationFn: () => mutateWorkOrder(block.id, payload, xCid),
         onError: (err) => {
+          const conflict = extractPlanVersionConflict(err);
+          if (conflict != null) {
+            // "Keep mine" must mint a NEW xCid because the previous one
+            // has a `failed` command_operations row for this id; reusing
+            // it would short-circuit on cached_result. The fresh version
+            // comes from the conflict response itself.
+            setPendingConflict({
+              block,
+              retry: () =>
+                void commitDrop(
+                  block,
+                  isoStart,
+                  durationMinutes,
+                  assigneeOverride,
+                  undefined,
+                  conflict.serverVersion,
+                ),
+            });
+            return;
+          }
           toastError("Couldn't move plan", {
             error: err,
             // Reuse xCid so the retry is idempotent on the server.
@@ -395,12 +451,14 @@ export function DeskPlanningPage() {
       block: WorkOrderPlanningBlock,
       newDurationMinutes: number,
       requestId?: string,
+      planVersionOverride?: number,
     ) => {
       const xCid = requestId ?? crypto.randomUUID();
       // Same key-capture discipline as commitDrop — filters can shift
       // mid-flight; reading the key at error time would miss the slot we
       // patched.
       const planningKey = workOrderPlanningKeys.window(filters);
+      const planVersion = planVersionOverride ?? block.plan_version;
 
       await runOptimisticWithRollback<WorkOrderPlanningResponse>({
         qc,
@@ -413,8 +471,21 @@ export function DeskPlanningPage() {
           return { ...prev, planned: next };
         },
         mutationFn: () =>
-          mutateWorkOrder(block.id, { planned_duration_minutes: newDurationMinutes }, xCid),
+          mutateWorkOrder(
+            block.id,
+            { planned_duration_minutes: newDurationMinutes, plan_version: planVersion },
+            xCid,
+          ),
         onError: (err) => {
+          const conflict = extractPlanVersionConflict(err);
+          if (conflict != null) {
+            setPendingConflict({
+              block,
+              retry: () =>
+                void commitResize(block, newDurationMinutes, undefined, conflict.serverVersion),
+            });
+            return;
+          }
           toastError("Couldn't resize plan", {
             error: err,
             retry: () => commitResize(block, newDurationMinutes, xCid),
@@ -437,13 +508,16 @@ export function DeskPlanningPage() {
       isoStart: string,
       durationMinutes: number | null,
       requestId?: string,
+      planVersionOverride?: number,
     ) => {
       const xCid = requestId ?? crypto.randomUUID();
       const payload: {
         planned_start_at: string;
         planned_duration_minutes?: number;
+        plan_version?: number;
       } = { planned_start_at: isoStart };
       if (durationMinutes != null) payload.planned_duration_minutes = durationMinutes;
+      payload.plan_version = planVersionOverride ?? block.plan_version;
       const planningKey = workOrderPlanningKeys.window(filters);
       await runOptimisticWithRollback<WorkOrderPlanningResponse>({
         qc,
@@ -462,6 +536,21 @@ export function DeskPlanningPage() {
         },
         mutationFn: () => mutateWorkOrder(block.id, payload, xCid),
         onError: (err) => {
+          const conflict = extractPlanVersionConflict(err);
+          if (conflict != null) {
+            setPendingConflict({
+              block,
+              retry: () =>
+                void commitKeyboardChange(
+                  block,
+                  isoStart,
+                  durationMinutes,
+                  undefined,
+                  conflict.serverVersion,
+                ),
+            });
+            return;
+          }
           toastError("Couldn't move plan", {
             error: err,
             retry: () => commitKeyboardChange(block, isoStart, durationMinutes, xCid),
@@ -757,11 +846,90 @@ export function DeskPlanningPage() {
           }
         }}
       />
+
+      <PlanVersionConflictDialog
+        open={!!pendingConflict}
+        blockTitle={pendingConflict ? `WO #${pendingConflict.block.module_number}` : ''}
+        onReload={() => {
+          setPendingConflict(null);
+          invalidatePlanning();
+        }}
+        onKeepMine={() => {
+          const action = pendingConflict?.retry;
+          setPendingConflict(null);
+          action?.();
+        }}
+      />
     </div>
   );
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+/**
+ * P1-2 (00382) — detect a `planning.version_conflict` 409 from the
+ * apiFetch ApiError. Returns `{ serverVersion }` (parsed to a number)
+ * for the "Keep mine" path to re-PATCH with, or null if the error is
+ * something else.
+ *
+ * Why we parse here instead of letting `classify` do it: the planning
+ * board has a domain-specific dialog (Reload vs Keep mine) that the
+ * generic toast pipeline can't express. We're effectively short-
+ * circuiting the toast path on a known recovery shape, not bypassing
+ * the error system — the same error still surfaces via the
+ * RouteErrorBoundary if the dialog is somehow dismissed in error
+ * (operator closes the tab during the dialog) because nothing
+ * suppresses the underlying ApiError above this layer.
+ */
+export function extractPlanVersionConflict(err: unknown): { serverVersion: number } | null {
+  if (!(err instanceof ApiError)) return null;
+  if (err.status !== 409) return null;
+  const body = err.body as { code?: string; serverVersion?: string } | null;
+  if (!body || body.code !== 'planning.version_conflict') return null;
+  const parsed = Number.parseInt(body.serverVersion ?? '', 10);
+  if (!Number.isFinite(parsed)) return null;
+  return { serverVersion: parsed };
+}
+
+/**
+ * P1-2 (00382) — conflict dialog. Two CTAs: Reload (default — close +
+ * invalidate so the operator sees the other dispatcher's change) and
+ * Keep mine (run the `retry` closure, which re-PATCHes with the fresh
+ * plan_version captured from the conflict response).
+ *
+ * Why a custom Dialog vs ConfirmDialog: ConfirmDialog is single-CTA;
+ * the conflict story is two equally-valid choices, neither destructive.
+ * The default focus is the primary `Reload` button so an Enter press
+ * picks the safe path.
+ */
+export function PlanVersionConflictDialog(props: {
+  open: boolean;
+  blockTitle: string;
+  onReload: () => void;
+  onKeepMine: () => void;
+}) {
+  const { open, blockTitle, onReload, onKeepMine } = props;
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onReload(); }}>
+      <DialogContent className="max-w-[440px]">
+        <DialogHeader>
+          <DialogTitle>Moved by someone else</DialogTitle>
+          <DialogDescription>
+            Another dispatcher just moved {blockTitle}. Reload to see their change, or keep yours and overwrite theirs.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={onKeepMine}>
+            Keep mine
+          </Button>
+          <Button onClick={onReload} autoFocus>
+            Reload
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 function todayInTenantZone(): string {
   return toLocalDateString(new Date());

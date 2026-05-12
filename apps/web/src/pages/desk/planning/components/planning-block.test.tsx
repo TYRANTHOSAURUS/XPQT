@@ -19,6 +19,7 @@ function makeBlock(overrides?: Partial<WorkOrderPlanningBlock>): WorkOrderPlanni
     lane: { kind: 'user', id: 'u-1', label: 'Alex' },
     request_type: null,
     can_plan: true,
+    plan_version: 1,
     ...overrides,
   };
 }

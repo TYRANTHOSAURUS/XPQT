@@ -52,6 +52,13 @@ export interface TicketDetail {
   sla_resolution_breached_at: string | null;
   planned_start_at: string | null;
   planned_duration_minutes: number | null;
+  /**
+   * Optimistic-lock version for work_orders (00382). Always 1+ on
+   * work_order rows; undefined on case rows (the column lives on
+   * work_orders only). Used by the detail-page PlanField to thread
+   * plan_version on PATCHes that touch planning columns.
+   */
+  plan_version?: number;
   created_at: string;
   requester?: TicketRequester;
   location?: TicketLocation;
@@ -145,4 +152,15 @@ export interface UpdateWorkOrderPayload {
   cost?: number | null;
   tags?: string[] | null;
   watchers?: string[] | null;
+  /**
+   * Optimistic-lock token (00382). Set by planning-board gestures
+   * (drag, resize, keyboard-nudge) AND the detail-page plan editor.
+   * Compared server-side against the row's current plan_version when
+   * the patch touches any of the trigger-tracked columns
+   * (planned_start_at, planned_duration_minutes, assigned_team_id /
+   * _user_id / _vendor_id). Mismatch → 409 planning.version_conflict.
+   * Omit on patches that don't touch planning columns (status, sla,
+   * priority, title) — the check is skipped.
+   */
+  plan_version?: number;
 }

@@ -29,6 +29,12 @@ export type WorkOrderRow = Record<string, unknown> & {
   sla_id: string | null;
   planned_start_at: string | null;
   planned_duration_minutes: number | null;
+  // P1-2 (00382): optimistic-lock column. Bumped by
+  // tg_work_orders_plan_version_bump on any update of planned_start_at,
+  // planned_duration_minutes, or the three assignment columns. The PATCH
+  // endpoint returns the post-trigger value so callers can stage the next
+  // gesture against the new version.
+  plan_version: number;
 };
 
 /**
@@ -61,6 +67,14 @@ export interface UpdateWorkOrderDto {
   cost?: number | null;
   tags?: string[] | null;
   watchers?: string[] | null;
+  // P1-2 (00382): optimistic-lock token. When present AND any of the
+  // five trigger-tracked columns (planned_start_at,
+  // planned_duration_minutes, assigned_team_id/user_id/vendor_id) is in
+  // the patch, the service compares against the row's current
+  // plan_version and rejects with 409 planning.version_conflict on
+  // mismatch. Optional so non-planning-board callers (detail-page SLA
+  // edit, status flip, etc.) don't have to thread a version.
+  plan_version?: number;
 }
 
 const PLAN_FIELDS = ['planned_start_at', 'planned_duration_minutes'] as const;
@@ -215,6 +229,49 @@ export class WorkOrderService {
       });
     }
 
+    // P1-2 — optimistic-lock check (00382). When the caller supplies
+    // `plan_version` AND any column the row-version trigger tracks is in
+    // this patch (plan branch + assignment branch are the trigger's full
+    // domain), compare against the row's current value before the RPC
+    // runs. Two dispatchers racing the same drag both started from
+    // version N; the loser's PATCH lands second with plan_version=N,
+    // reads back N+1, and 409s. The winner's `current_version` is
+    // surfaced via AppErrors.conflict's `serverVersion` so the FE can
+    // offer "keep mine" via a fresh re-fetch + retry. Mirrors the
+    // existing reservation.version_conflict pattern (booking edits).
+    //
+    // Why only when plan_version is supplied: detail-page edits
+    // (SLA flip, status, priority, title) don't pass plan_version and
+    // shouldn't pay the round-trip — only the planning board cares about
+    // racing-drag semantics. The DB trigger fires either way; non-board
+    // callers just don't see the version on the response (they don't
+    // read it).
+    if (
+      dto.plan_version !== undefined &&
+      dto.plan_version !== null &&
+      (hasPlan || hasAssignment)
+    ) {
+      const tenantForLock = TenantContext.current();
+      const { data: lockRow, error: lockErr } = await this.supabase.admin
+        .from('work_orders')
+        .select('plan_version')
+        .eq('id', workOrderId)
+        .eq('tenant_id', tenantForLock.id)
+        .maybeSingle();
+      if (lockErr) throw lockErr;
+      if (!lockRow) {
+        throw AppErrors.notFound('work_order', workOrderId);
+      }
+      const currentVersion = (lockRow as { plan_version: number }).plan_version;
+      if (currentVersion !== dto.plan_version) {
+        throw AppErrors.conflict('planning.version_conflict', {
+          detail: `plan_version ${dto.plan_version} is stale; current is ${currentVersion}`,
+          serverVersion: String(currentVersion),
+          clientVersion: String(dto.plan_version),
+        });
+      }
+    }
+
     // Pre-flight validation. Runs every check that could reject the
     // write (visibility, tenant-validation, permission RPCs, format / enum
     // / range) BEFORE the RPC is invoked. If it throws, the
@@ -247,6 +304,11 @@ export class WorkOrderService {
     // dto. Previously the plan-clear branch mutated `dto.planned_duration_minutes
     // = null` directly, which silently rewrote the caller's object.
     const dtoNormalized: UpdateWorkOrderDto = { ...dto };
+    // plan_version is a meta-field consumed by the optimistic-lock check
+    // above — strip from the column-patch clone so the payload builder
+    // can't accidentally treat it as a writable column on a future
+    // refactor that iterates dto keys generically.
+    delete dtoNormalized.plan_version;
 
     if (hasPlan) {
       let currentStart: string | null = null;

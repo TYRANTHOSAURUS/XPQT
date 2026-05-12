@@ -53,6 +53,9 @@ interface RawWorkOrderRow {
   location_id: string | null;
   parent_ticket_id: string | null;
   parent_kind: string | null;
+  // 00382: row-version trigger column. Returned on every block so the
+  // FE can stage plan-touching PATCHes with optimistic locking.
+  plan_version: number;
 }
 
 const VALID_STATUS_CATEGORIES: Set<string> = new Set([
@@ -169,6 +172,7 @@ export class WorkOrderPlanningService {
       lane: this.deriveLane(row, userMap, teamMap, vendorMap),
       request_type: row.ticket_type_id ? requestTypeMap.get(row.ticket_type_id) ?? null : null,
       can_plan: this.evaluateCanPlan(row, ctx, parentTeamMap, requestTypeMap),
+      plan_version: row.plan_version,
     });
 
     const plannedBlocks = plannedRows.map(toBlock);

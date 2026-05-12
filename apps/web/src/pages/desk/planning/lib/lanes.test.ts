@@ -22,6 +22,7 @@ function makeBlock(
     lane,
     request_type: null,
     can_plan: true,
+    plan_version: 1,
   };
 }
 

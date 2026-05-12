@@ -214,6 +214,7 @@ function block(overrides: Partial<{ id: string; assigned_user_id: string | null;
     location_id: null,
     parent_ticket_id: null,
     parent_kind: null,
+    plan_version: 1,
   };
 }
 
