@@ -15,6 +15,7 @@ import {
   KeySquare,
   ListChecks,
   ListTree,
+  Map,
   MapPin,
   Package,
   Palette,
@@ -159,6 +160,12 @@ const operationsItems: AdminNavItem[] = [
     path: '/admin/locations',
     icon: MapPin,
     description: 'Sites, buildings, floors, and spaces',
+  },
+  {
+    title: 'Floor plans',
+    path: '/admin/floor-plans',
+    icon: Map,
+    description: 'Upload floor images and trace room polygons for the visual room picker',
   },
   {
     title: 'Assets',

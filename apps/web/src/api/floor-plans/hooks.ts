@@ -1,9 +1,29 @@
-import { useMutation, useQueryClient, queryOptions } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, queryOptions } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { withErrorHandling, handleMutationError } from '@/lib/errors';
 import { usePageQuery } from '@/lib/errors';
 import { floorPlanKeys } from './keys';
 import type { DraftResponse, PublishedFloorPlan } from './types';
+
+export type FloorPlanIndexRow = {
+  id: string;
+  name: string;
+  building_name: string;
+  has_plan: boolean;
+  last_published_at: string | null;
+};
+
+export function floorPlansAdminIndexOptions() {
+  return queryOptions({
+    queryKey: floorPlanKeys.adminIndex(),
+    queryFn: async () => apiFetch<FloorPlanIndexRow[]>('/api/admin/floor-plans-index'),
+    staleTime: 60_000,
+  });
+}
+
+export function useAdminFloorPlansIndex() {
+  return useQuery(floorPlansAdminIndexOptions());
+}
 
 export function floorPlanPublishedOptions(floorSpaceId: string) {
   return queryOptions({

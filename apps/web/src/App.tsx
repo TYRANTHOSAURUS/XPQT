@@ -150,6 +150,9 @@ const AdminVisitorPoolsPage = lazyNamed(() => import('@/pages/admin/visitors/poo
 const AdminVisitorPoolDetailPage = lazyNamed(() => import('@/pages/admin/visitors/pools/detail'), 'AdminVisitorPoolDetailPage');
 const DeskVisitorsPage = lazyNamed(() => import('@/pages/desk/visitors'), 'DeskVisitorsPage');
 const DeskVisitorDetailPage = lazyNamed(() => import('@/pages/desk/visitor-detail-page'), 'DeskVisitorDetailPage');
+// Floor plans (B.13)
+const FloorPlansIndexPage = lazyNamed(() => import('@/pages/admin/floor-plans-index'), 'FloorPlansIndexPage');
+const FloorPlanDesignerPage = lazyNamed(() => import('@/pages/admin/floor-plan-designer'), 'FloorPlanDesignerPage');
 
 function RouteFallback() {
   return (
@@ -389,6 +392,9 @@ export function App() {
                   <Route path="visitors/types/:id" element={<AdminVisitorTypeDetailPage />} />
                   <Route path="visitors/pools" element={<AdminVisitorPoolsPage />} />
                   <Route path="visitors/pools/:spaceId" element={<AdminVisitorPoolDetailPage />} />
+                  {/* Floor plans (B.13) */}
+                  <Route path="floor-plans" element={<RouteErrorBoundary><FloorPlansIndexPage /></RouteErrorBoundary>} />
+                  <Route path="floor-plans/:floorSpaceId" element={<RouteErrorBoundary><FloorPlanDesignerPage /></RouteErrorBoundary>} />
                 </Route>
                 </Routes>
               </Suspense>
