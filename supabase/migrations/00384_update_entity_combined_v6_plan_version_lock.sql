@@ -1,8 +1,9 @@
 -- 00384 — update_entity_combined v6 hardening (codex remediation).
 --
 -- Spec:        ai/handoff-planning-board-cleanup.md (codex remediation pass).
--- Supersedes:  00383 (v6 body — same function, same arg list; just CREATE OR
---              REPLACE on the 7-arg signature).
+-- Supersedes:  00383 (v6 body — 7-arg signature; this migration drops the
+--              7-arg overload and defines the 8-arg variant with
+--              p_expected_plan_version added).
 -- Predecessor: 00331 v1 → 00332 v2 → 00333 v3 → 00334 v4 → 00335 v5 →
 --              00383 v6 → 00384 v6 hardened.
 --
@@ -56,14 +57,15 @@
 -- wait, they don't fail. There is no gap in a single-transaction DDL.
 -- No action needed.
 --
--- ── No signature change — straight CREATE OR REPLACE on the 7-arg ─────
+-- ── Arity bump 7 → 8 (drop-then-create, mirrors 00383) ───────────────
 --
 -- 00383 already dropped the 6-arg overload and defined the 7-arg variant.
 -- The new arg `p_expected_plan_version int default null` is the 8th
--- parameter. Because the previous 7-arg signature is replaced via
--- CREATE OR REPLACE (same name + arg LIST), and arity changes are NOT
--- replaceable, we must drop the 7-arg variant first. Mirrors the pattern
--- in 00383 lines 71-74.
+-- parameter. CREATE OR REPLACE only allows replacing identical
+-- (name + arg LIST) signatures, so we drop the 7-arg variant first and
+-- create the 8-arg variant. Same single-transaction DDL pattern as 00383
+-- lines 71-74 — ACCESS EXCLUSIVE on the function blocks concurrent calls
+-- for the duration of the migration; no rolling-deploy gap.
 
 drop function if exists public.update_entity_combined(text, uuid, uuid, uuid, text, jsonb, text);
 
