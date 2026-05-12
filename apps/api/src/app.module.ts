@@ -50,6 +50,7 @@ import { VendorPortalModule } from './modules/vendor-portal/vendor-portal.module
 import { VisitorsModule } from './modules/visitors/visitors.module';
 import { MailModule } from './common/mail/mail.module';
 import { OutboxModule } from './modules/outbox/outbox.module';
+import { FloorPlanModule } from './modules/floor-plan/floor-plan.module';
 
 @Module({
   imports: [
@@ -101,6 +102,7 @@ import { OutboxModule } from './modules/outbox/outbox.module';
     VisitorsModule,
     MailModule,
     OutboxModule,
+    FloorPlanModule,
   ],
   controllers: [HealthController],
   providers: [

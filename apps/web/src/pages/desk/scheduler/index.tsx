@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, CalendarDays, Map as MapIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { toastUpdated } from '@/lib/toast';
 import { handleMutationError } from '@/lib/errors';
 import { useAuth } from '@/providers/auth-provider';
@@ -18,6 +19,7 @@ import { useDragResize, type ResizeState } from './hooks/use-drag-resize';
 import { useDragMove, type MoveState } from './hooks/use-drag-move';
 import { SchedulerToolbar } from './components/scheduler-toolbar';
 import { SchedulerGrid } from './components/scheduler-grid';
+import { SchedulerFloorView } from './components/scheduler-floor-view';
 import { QuickBookPopover } from '@/components/booking-composer-v2/quick-book-popover';
 import { BookingComposerModal } from '@/components/booking-composer-v2/booking-composer-modal';
 import type { BookingDraft } from '@/components/booking-composer-v2/booking-draft';
@@ -27,6 +29,29 @@ import { SchedulerOverrideDialog } from './components/scheduler-override-dialog'
 import { SchedulerMultiRoomToggle } from './components/scheduler-multi-room-toggle';
 import { SchedulerInspector } from './components/scheduler-inspector';
 import type { CellOutcomeMap } from './components/scheduler-grid-cell';
+
+// ---------------------------------------------------------------------------
+// View mode toggle — persisted to localStorage so the user's preference
+// survives reloads. Separate from the scheduler's date/filter state so
+// switching tabs doesn't touch the URL or the room query.
+// ---------------------------------------------------------------------------
+type SchedulerSurfaceMode = 'timeline' | 'floor-plan';
+const SURFACE_MODE_KEY = 'scheduler-view-mode';
+
+function readSurfaceMode(): SchedulerSurfaceMode {
+  try {
+    const v = typeof window !== 'undefined' ? window.localStorage.getItem(SURFACE_MODE_KEY) : null;
+    return v === 'floor-plan' ? 'floor-plan' : 'timeline';
+  } catch {
+    return 'timeline';
+  }
+}
+
+function writeSurfaceMode(mode: SchedulerSurfaceMode): void {
+  try {
+    if (typeof window !== 'undefined') window.localStorage.setItem(SURFACE_MODE_KEY, mode);
+  } catch { /* quota / privacy mode — silent */ }
+}
 
 /**
  * `/desk/scheduler` — full-bleed calendar canvas. Per CLAUDE.md "true
@@ -47,6 +72,14 @@ export function DeskSchedulerPage() {
   const requesterPersonId = person?.id ?? '';
 
   const win = useSchedulerWindow();
+
+  // E.1 — Timeline ↔ Floor-plan toggle. Persisted in localStorage; does NOT
+  // affect the room-query or URL state so the user can switch freely.
+  const [surfaceMode, setSurfaceMode] = useState<SchedulerSurfaceMode>(readSurfaceMode);
+  const handleSurfaceModeChange = useCallback((next: SchedulerSurfaceMode) => {
+    setSurfaceMode(next);
+    writeSurfaceMode(next);
+  }, []);
 
   // Initial-building priority chain (resolved exactly once per page mount):
   //   1. URL `?building=…` (handled inside useSchedulerWindow's bootstrap).
@@ -660,6 +693,29 @@ export function DeskSchedulerPage() {
             {data.isFetching ? 'Updating…' : `${data.rooms.length} rooms`}
           </span>
         </div>
+
+        {/* E.1 — Timeline | Floor-plan toggle. base-ui ToggleGroup uses
+            array-valued `value` (same pattern as existing bookings.tsx
+            scope toggle). Prevent deselect by ignoring empty arrays. */}
+        <ToggleGroup
+          value={[surfaceMode]}
+          onValueChange={(v) => {
+            const next = v[0] as SchedulerSurfaceMode | undefined;
+            if (next === 'timeline' || next === 'floor-plan') handleSurfaceModeChange(next);
+          }}
+          variant="outline"
+          className="h-7"
+          aria-label="Switch between timeline and floor plan view"
+        >
+          <ToggleGroupItem value="timeline" className="h-7 px-2.5 gap-1.5 text-xs" aria-label="Timeline view">
+            <CalendarDays className="size-3.5" />
+            Timeline
+          </ToggleGroupItem>
+          <ToggleGroupItem value="floor-plan" className="h-7 px-2.5 gap-1.5 text-xs" aria-label="Floor plan view">
+            <MapIcon className="size-3.5" />
+            Floor plan
+          </ToggleGroupItem>
+        </ToggleGroup>
       </div>
 
       {/* Body: calendar canvas + optional right-pinned inspector. The
@@ -668,96 +724,130 @@ export function DeskSchedulerPage() {
           the full viewport width to the canvas in the default state. */}
       <div className="flex flex-1 min-h-0">
         <div className="flex flex-1 min-w-0 flex-col">
-          <SchedulerToolbar
-            state={win.state}
-            update={win.update}
-            onPrev={() => win.navigate(-1)}
-            onNext={() => win.navigate(1)}
-            onToday={win.goToToday}
-            visibleDateLabel={headerLabel}
-            visibleCount={data.rooms.length}
-            totalCount={data.totalUnfiltered}
-            onClearFilters={onClearFilters}
-          />
-
-          {/* 00296 — truncation banner. The new RPC bounds the
-              reservation payload at the row level (pre-fix the LIMIT
-              after jsonb_agg was a no-op and the function silently
-              scanned every matching slot). When the bound is hit, the
-              grid is incomplete and the operator must refine the
-              window or filters. We surface this loudly because the
-              alternative is a grid that LOOKS correct but is missing
-              events. */}
-          {(data.reservationsTruncated || data.roomsTruncated) && (
-            <div className="border-b border-amber-300/60 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-400/30 dark:bg-amber-950/40 dark:text-amber-100">
-              {data.reservationsTruncated && (
-                <span>
-                  Showing first {data.reservationsBySpaceId.size > 0
-                    ? Array.from(data.reservationsBySpaceId.values()).reduce(
-                        (n, list) => n + list.length,
-                        0,
-                      )
-                    : '—'}{' '}
-                  of {data.reservationsTotal} bookings in this window. Refine the
-                  date range or filters to see the rest.
-                </span>
-              )}
-              {data.roomsTruncated && (
-                <span className={data.reservationsTruncated ? ' ml-2' : ''}>
-                  Showing first {data.rooms.length} of {data.roomsTotal} rooms.
-                  Use building / floor filters or search to narrow the list.
-                </span>
-              )}
-            </div>
-          )}
-
-          {data.isError ? (
-            <div className="flex flex-1 items-center justify-center text-sm text-destructive">
-              {data.error instanceof Error ? data.error.message : 'Scheduler failed to load'}
-            </div>
-          ) : data.isLoading ? (
-            <SchedulerSkeleton />
-          ) : data.rooms.length === 0 ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-              <div className="text-sm font-medium">No rooms match the current filters.</div>
-              <div className="max-w-sm text-xs text-muted-foreground">
-                Try clearing the building / floor / type filters above, or widen
-                the search term.
-              </div>
-              <Button variant="outline" size="sm" onClick={onClearFilters}>
-                Clear all filters
-              </Button>
-            </div>
-          ) : (
-            <SchedulerGrid
+          {/* E.1 — Floor-plan tab: replaces the timeline body when active. */}
+          {surfaceMode === 'floor-plan' && (
+            <SchedulerFloorView
+              winState={win.state}
+              startAtIso={win.startAtIso}
+              endAtIso={win.endAtIso}
               rooms={data.rooms}
               reservationsBySpaceId={data.reservationsBySpaceId}
-              windowStartIso={win.startAtIso}
-              windowEndIso={win.endAtIso}
-              totalColumns={totalColumns}
-              dates={win.dates}
-              dayStartHour={win.state.dayStartHour}
-              dayEndHour={win.state.dayEndHour}
-              cellMinutes={win.state.cellMinutes}
-              hideBuilding={!!win.state.buildingId}
-              hideFloor={!!win.state.floorId}
-              onRoomClick={onRoomClick}
-              activeRoomId={inspectorRoomId}
-              cellOutcomesByRoom={cellOutcomesByRoom}
-              selectedCellsByRoom={multiSel}
-              pendingCreate={pendingCreate}
-              pendingResize={pendingResize}
-              pendingMove={pendingMove}
-              onCellPointerDown={onCellPointerDown}
-              onCellPointerMove={onCellPointerMove}
-              onCellPointerUp={onCellPointerUp}
-              onCellShiftClick={onCellShiftClick}
-              onCellHover={onCellHover}
-              onEventClick={onEventClick}
-              onEventResizeStart={onEventResizeStart}
-              onEventMoveStart={onEventMoveStart}
-              onCellClickWhenDenied={onCellClickWhenDenied}
+              onOpenBookingDetail={(r) => {
+                setActiveReservation(r);
+                setEventDialogOpen(true);
+              }}
+              onNewBooking={(spaceId, startAtIso, endAtIso) => {
+                const room = data.rooms.find((r) => r.space_id === spaceId);
+                setComposerModalSeed(
+                  draftFromComposerSeed({
+                    spaceId,
+                    startAt: startAtIso,
+                    endAt: endAtIso,
+                    attendeeCount:
+                      room?.min_attendees && room.min_attendees > 0
+                        ? room.min_attendees
+                        : 2,
+                  }),
+                );
+                setComposerModalOpen(true);
+              }}
             />
+          )}
+
+          {surfaceMode === 'timeline' && (
+            <>
+              <SchedulerToolbar
+                state={win.state}
+                update={win.update}
+                onPrev={() => win.navigate(-1)}
+                onNext={() => win.navigate(1)}
+                onToday={win.goToToday}
+                visibleDateLabel={headerLabel}
+                visibleCount={data.rooms.length}
+                totalCount={data.totalUnfiltered}
+                onClearFilters={onClearFilters}
+              />
+
+              {/* 00296 — truncation banner. The new RPC bounds the
+                  reservation payload at the row level (pre-fix the LIMIT
+                  after jsonb_agg was a no-op and the function silently
+                  scanned every matching slot). When the bound is hit, the
+                  grid is incomplete and the operator must refine the
+                  window or filters. We surface this loudly because the
+                  alternative is a grid that LOOKS correct but is missing
+                  events. */}
+              {(data.reservationsTruncated || data.roomsTruncated) && (
+                <div className="border-b border-amber-300/60 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-400/30 dark:bg-amber-950/40 dark:text-amber-100">
+                  {data.reservationsTruncated && (
+                    <span>
+                      Showing first {data.reservationsBySpaceId.size > 0
+                        ? Array.from(data.reservationsBySpaceId.values()).reduce(
+                            (n, list) => n + list.length,
+                            0,
+                          )
+                        : '—'}{' '}
+                      of {data.reservationsTotal} bookings in this window. Refine the
+                      date range or filters to see the rest.
+                    </span>
+                  )}
+                  {data.roomsTruncated && (
+                    <span className={data.reservationsTruncated ? ' ml-2' : ''}>
+                      Showing first {data.rooms.length} of {data.roomsTotal} rooms.
+                      Use building / floor filters or search to narrow the list.
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {data.isError ? (
+                <div className="flex flex-1 items-center justify-center text-sm text-destructive">
+                  {data.error instanceof Error ? data.error.message : 'Scheduler failed to load'}
+                </div>
+              ) : data.isLoading ? (
+                <SchedulerSkeleton />
+              ) : data.rooms.length === 0 ? (
+                <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+                  <div className="text-sm font-medium">No rooms match the current filters.</div>
+                  <div className="max-w-sm text-xs text-muted-foreground">
+                    Try clearing the building / floor / type filters above, or widen
+                    the search term.
+                  </div>
+                  <Button variant="outline" size="sm" onClick={onClearFilters}>
+                    Clear all filters
+                  </Button>
+                </div>
+              ) : (
+                <SchedulerGrid
+                  rooms={data.rooms}
+                  reservationsBySpaceId={data.reservationsBySpaceId}
+                  windowStartIso={win.startAtIso}
+                  windowEndIso={win.endAtIso}
+                  totalColumns={totalColumns}
+                  dates={win.dates}
+                  dayStartHour={win.state.dayStartHour}
+                  dayEndHour={win.state.dayEndHour}
+                  cellMinutes={win.state.cellMinutes}
+                  hideBuilding={!!win.state.buildingId}
+                  hideFloor={!!win.state.floorId}
+                  onRoomClick={onRoomClick}
+                  activeRoomId={inspectorRoomId}
+                  cellOutcomesByRoom={cellOutcomesByRoom}
+                  selectedCellsByRoom={multiSel}
+                  pendingCreate={pendingCreate}
+                  pendingResize={pendingResize}
+                  pendingMove={pendingMove}
+                  onCellPointerDown={onCellPointerDown}
+                  onCellPointerMove={onCellPointerMove}
+                  onCellPointerUp={onCellPointerUp}
+                  onCellShiftClick={onCellShiftClick}
+                  onCellHover={onCellHover}
+                  onEventClick={onEventClick}
+                  onEventResizeStart={onEventResizeStart}
+                  onEventMoveStart={onEventMoveStart}
+                  onCellClickWhenDenied={onCellClickWhenDenied}
+                />
+              )}
+            </>
           )}
         </div>
 

@@ -808,6 +808,26 @@ export type KnownErrorCode =
   // docs/follow-ups/b4-followups.md "Sequencing — controller cutover
   // MUST land in or after notification dispatch (B.4.A.5)".
   | 'booking.edit_requires_notification_dispatch'
+
+  // ─── floor_plan ──────────────────────────────────────────────────────────
+  | 'floor_plan.draft.not_found'
+  | 'floor_plan.draft.create_failed'
+  | 'floor_plan.draft.update_failed'
+  | 'floor_plan.draft.discard_failed'
+  | 'floor_plan.draft.stale_update'
+  | 'floor_plan.draft.invalid_polygons'
+  | 'floor_plan.publish.image_required'
+  | 'floor_plan.publish.unlinked_polygons'
+  | 'floor_plan.publish.invalid_polygons'
+  | 'floor_plan.publish.cross_tenant'
+  | 'floor_plan.publish_failed'
+  | 'floor_plan.list_failed'
+  | 'floor_plan.history.not_found'
+  | 'floor_plan.history.cross_tenant'
+  | 'floor_plan.restore_failed'
+  | 'floor_plan.availability.invalid_window'
+  | 'floor_plan.availability.invalid_args'
+  | 'floor_plan.availability_failed'
   // B.4 Step 2F.1 — edit_booking_scope RPC (00367). Series-scope edits
   // fan out one EditPlan per occurrence; this RPC commits all-or-none.
   // - invalid_plans (400): p_plans isn't an array, is empty, or an
@@ -1463,6 +1483,25 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'approval.read_failed',
   // B.4 step 2D-D — see KnownErrorCode union for rationale.
   'booking.edit_requires_notification_dispatch',
+  // floor_plan module — A.9
+  'floor_plan.draft.not_found',
+  'floor_plan.draft.create_failed',
+  'floor_plan.draft.update_failed',
+  'floor_plan.draft.discard_failed',
+  'floor_plan.draft.stale_update',
+  'floor_plan.draft.invalid_polygons',
+  'floor_plan.publish.image_required',
+  'floor_plan.publish.unlinked_polygons',
+  'floor_plan.publish.invalid_polygons',
+  'floor_plan.publish.cross_tenant',
+  'floor_plan.publish_failed',
+  'floor_plan.list_failed',
+  'floor_plan.history.not_found',
+  'floor_plan.history.cross_tenant',
+  'floor_plan.restore_failed',
+  'floor_plan.availability.invalid_window',
+  'floor_plan.availability.invalid_args',
+  'floor_plan.availability_failed',
   // B.4 Step 2F.1 — edit_booking_scope RPC (00367). See KnownErrorCode
   // union for per-code rationale.
   'edit_booking_scope.invalid_plans',

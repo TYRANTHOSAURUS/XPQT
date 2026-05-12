@@ -1835,6 +1835,80 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save the booking",
     detail: "We couldn't read this booking's approval state. Try again in a moment.",
   },
+
+  // ─── floor_plan ──────────────────────────────────────────────────────────
+  'floor_plan.draft.not_found': {
+    title: 'Floor plan draft not found',
+    detail: 'This floor has no active draft. Open the designer to create one.',
+  },
+  'floor_plan.draft.create_failed': {
+    title: "Couldn't create draft",
+    detail: "We couldn't create a floor plan draft. Try again in a moment.",
+  },
+  'floor_plan.draft.update_failed': {
+    title: "Couldn't save draft",
+    detail: "We couldn't save your changes to the draft. Try again in a moment.",
+  },
+  'floor_plan.draft.discard_failed': {
+    title: "Couldn't discard draft",
+    detail: "We couldn't discard the floor plan draft. Try again in a moment.",
+  },
+  'floor_plan.draft.stale_update': {
+    title: 'Draft changed by another editor',
+    detail: 'Someone else saved changes to this draft while you were editing. Reload to continue.',
+  },
+  'floor_plan.draft.invalid_polygons': {
+    title: 'Invalid polygon data',
+    detail: 'One or more polygons reference spaces that are not part of this floor.',
+  },
+  'floor_plan.publish.image_required': {
+    title: "Can't publish without a floor image",
+    detail: 'Upload a floor plan image and set dimensions before publishing.',
+  },
+  'floor_plan.publish.unlinked_polygons': {
+    title: "Can't publish — unlinked polygons",
+    detail: 'All polygons must be linked to a space before publishing. Select a space for each unlinked polygon.',
+  },
+  'floor_plan.publish.invalid_polygons': {
+    title: "Can't publish — invalid polygons",
+    detail: 'One or more polygons are invalid (fewer than 3 points or missing a space). Fix them in the designer.',
+  },
+  'floor_plan.publish.cross_tenant': {
+    title: 'Permission denied',
+    detail: "You can't publish a floor plan from another organisation.",
+  },
+  'floor_plan.publish_failed': {
+    title: "Couldn't publish floor plan",
+    detail: "The floor plan couldn't be published. Try again in a moment.",
+  },
+  'floor_plan.list_failed': {
+    title: "Couldn't load floor plans",
+    detail: "We couldn't load the floor plans list. Try again in a moment.",
+  },
+  'floor_plan.history.not_found': {
+    title: 'Publish history entry not found',
+    detail: 'The selected publish snapshot no longer exists.',
+  },
+  'floor_plan.history.cross_tenant': {
+    title: "Couldn't restore floor plan",
+    detail: "You don't have permission to restore this snapshot.",
+  },
+  'floor_plan.restore_failed': {
+    title: "Couldn't restore floor plan",
+    detail: "The floor plan couldn't be restored. Try again in a moment.",
+  },
+  'floor_plan.availability.invalid_window': {
+    title: "Couldn't load availability",
+    detail: 'The time window is invalid. The start must be before the end.',
+  },
+  'floor_plan.availability.invalid_args': {
+    title: "Couldn't load availability",
+    detail: 'A required parameter is missing.',
+  },
+  'floor_plan.availability_failed': {
+    title: "Couldn't load availability",
+    detail: "Floor availability couldn't be loaded. Try again in a moment.",
+  },
   // B.4 Step 2F.1 — edit_booking_scope RPC (00367). Series-scope edits
   // fan out one EditPlan per occurrence; failures here surface with the
   // same operator-actionable voice as the single-occurrence edit codes.

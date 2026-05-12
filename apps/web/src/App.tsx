@@ -44,6 +44,7 @@ const CatalogCategoryPage = lazyNamed(() => import('@/pages/portal/catalog-categ
 const SubmitRequestPage = lazyNamed(() => import('@/pages/portal/submit-request'), 'SubmitRequestPage');
 const PortalProfilePage = lazyNamed(() => import('@/pages/portal/profile'), 'PortalProfilePage');
 const BookRoomPage = lazyNamed(() => import('@/pages/portal/book-room'), 'BookRoomPage');
+const PortalBookFloor = lazyNamed(() => import('@/pages/portal/book-floor'), 'PortalBookFloor');
 const MyBookingsPage = lazyNamed(() => import('@/pages/portal/me-bookings'), 'MyBookingsPage');
 const MyBookingDetailPage = lazyNamed(() => import('@/pages/portal/me-bookings/detail'), 'MyBookingDetailPage');
 const PortalOrderPage = lazyNamed(() => import('@/pages/portal/order'), 'PortalOrderPage');
@@ -151,6 +152,9 @@ const AdminVisitorPoolsPage = lazyNamed(() => import('@/pages/admin/visitors/poo
 const AdminVisitorPoolDetailPage = lazyNamed(() => import('@/pages/admin/visitors/pools/detail'), 'AdminVisitorPoolDetailPage');
 const DeskVisitorsPage = lazyNamed(() => import('@/pages/desk/visitors'), 'DeskVisitorsPage');
 const DeskVisitorDetailPage = lazyNamed(() => import('@/pages/desk/visitor-detail-page'), 'DeskVisitorDetailPage');
+// Floor plans (B.13)
+const FloorPlansIndexPage = lazyNamed(() => import('@/pages/admin/floor-plans-index'), 'FloorPlansIndexPage');
+const FloorPlanDesignerPage = lazyNamed(() => import('@/pages/admin/floor-plan-designer'), 'FloorPlanDesignerPage');
 
 function RouteFallback() {
   return (
@@ -241,6 +245,8 @@ export function App() {
                   <Route path="order"    element={<PortalOrderPage />} />
                   <Route path="account"  element={<Navigate to="/portal/profile" replace />} />
                   <Route path="book" element={<Navigate to="/portal/rooms" replace />} />
+                  <Route path="book/floor" element={<RouteErrorBoundary><PortalBookFloor /></RouteErrorBoundary>} />
+                  <Route path="book/floor/:floorSpaceId" element={<RouteErrorBoundary><PortalBookFloor /></RouteErrorBoundary>} />
                   {/* My bookings — list at /me/bookings, full-route detail at /me/bookings/:id */}
                   <Route path="me/bookings" element={<MyBookingsPage />} />
                   <Route path="me/bookings/:id" element={<MyBookingDetailPage />} />
@@ -391,6 +397,9 @@ export function App() {
                   <Route path="visitors/types/:id" element={<AdminVisitorTypeDetailPage />} />
                   <Route path="visitors/pools" element={<AdminVisitorPoolsPage />} />
                   <Route path="visitors/pools/:spaceId" element={<AdminVisitorPoolDetailPage />} />
+                  {/* Floor plans (B.13) */}
+                  <Route path="floor-plans" element={<RouteErrorBoundary><FloorPlansIndexPage /></RouteErrorBoundary>} />
+                  <Route path="floor-plans/:floorSpaceId" element={<RouteErrorBoundary><FloorPlanDesignerPage /></RouteErrorBoundary>} />
                 </Route>
                 </Routes>
               </Suspense>

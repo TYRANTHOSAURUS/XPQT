@@ -51,10 +51,16 @@ export class TenantService implements OnModuleInit {
   }
 
   private async refreshCache() {
+    // Order by created_at so resolveDefault() returns the FIRST tenant (the
+    // primary), not whichever Postgres physical-row order returns. Bit the
+    // floor-plan worktree when smoke-tenant-b (created by smoke probes)
+    // ended up first in the cache and resolveDefault on localhost shadowed
+    // the primary Solana Inc. tenant.
     const { data, error } = await this.supabase.admin
       .from('tenants')
       .select('*')
-      .eq('status', 'active');
+      .eq('status', 'active')
+      .order('created_at', { ascending: true });
 
     if (error) {
       console.error('Failed to load tenant registry:', error.message);

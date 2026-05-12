@@ -92,6 +92,7 @@ export const DEFAULT_ROLE_TEMPLATES: readonly RoleTemplate[] = [
       'reports.export',
       'routing.read',
       'rooms.admin',
+      'floor_plans.admin',
       'vendors.admin',
       'visitors.reception',
       'visitors.invite',

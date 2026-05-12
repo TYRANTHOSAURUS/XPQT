@@ -1795,6 +1795,80 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     detail:
       'Deze wijziging verandert de goedkeuringsregels. Vraag de ruimte-beheerder om goedkeuring voor deze ruimte uit te zetten, of kies een andere ruimte.',
   },
+
+  // ─── floor_plan ──────────────────────────────────────────────────────────
+  'floor_plan.draft.not_found': {
+    title: 'Concept plattegrond niet gevonden',
+    detail: 'Deze verdieping heeft geen actief concept. Open de ontwerper om er een te maken.',
+  },
+  'floor_plan.draft.create_failed': {
+    title: 'Concept aanmaken mislukt',
+    detail: 'Het aanmaken van het concept plattegrond is mislukt. Probeer het opnieuw.',
+  },
+  'floor_plan.draft.update_failed': {
+    title: 'Concept opslaan mislukt',
+    detail: 'Uw wijzigingen in het concept konden niet worden opgeslagen. Probeer het opnieuw.',
+  },
+  'floor_plan.draft.discard_failed': {
+    title: 'Concept verwijderen mislukt',
+    detail: 'Het concept plattegrond kon niet worden verwijderd. Probeer het opnieuw.',
+  },
+  'floor_plan.draft.stale_update': {
+    title: 'Concept gewijzigd door een andere gebruiker',
+    detail: 'Iemand anders heeft wijzigingen opgeslagen in dit concept. Herlaad de pagina om door te gaan.',
+  },
+  'floor_plan.draft.invalid_polygons': {
+    title: 'Ongeldige polygoongegevens',
+    detail: 'Een of meer polygonen verwijzen naar ruimten die geen deel uitmaken van deze verdieping.',
+  },
+  'floor_plan.publish.image_required': {
+    title: 'Publiceren niet mogelijk zonder plattegrondafbeelding',
+    detail: 'Upload een plattegrondafbeelding en stel de afmetingen in voordat u publiceert.',
+  },
+  'floor_plan.publish.unlinked_polygons': {
+    title: 'Publiceren niet mogelijk — niet-gekoppelde polygonen',
+    detail: 'Alle polygonen moeten aan een ruimte zijn gekoppeld voordat u kunt publiceren.',
+  },
+  'floor_plan.publish.invalid_polygons': {
+    title: 'Publiceren niet mogelijk — ongeldige polygonen',
+    detail: 'Een of meer polygonen zijn ongeldig (minder dan 3 punten of ontbrekende ruimte). Corrigeer ze in de ontwerper.',
+  },
+  'floor_plan.publish.cross_tenant': {
+    title: 'Toegang geweigerd',
+    detail: 'U kunt geen plattegrond van een andere organisatie publiceren.',
+  },
+  'floor_plan.publish_failed': {
+    title: 'Publiceren mislukt',
+    detail: 'De plattegrond kon niet worden gepubliceerd. Probeer het opnieuw.',
+  },
+  'floor_plan.list_failed': {
+    title: 'Plattegronden laden mislukt',
+    detail: 'De lijst met plattegronden kon niet worden geladen. Probeer het opnieuw.',
+  },
+  'floor_plan.history.not_found': {
+    title: 'Publicatiegeschiedenisinvoer niet gevonden',
+    detail: 'De geselecteerde publicatieopname bestaat niet meer.',
+  },
+  'floor_plan.history.cross_tenant': {
+    title: 'Plattegrond herstellen mislukt',
+    detail: 'U heeft geen toestemming om deze opname te herstellen.',
+  },
+  'floor_plan.restore_failed': {
+    title: 'Plattegrond herstellen mislukt',
+    detail: 'De plattegrond kon niet worden hersteld. Probeer het opnieuw.',
+  },
+  'floor_plan.availability.invalid_window': {
+    title: 'Beschikbaarheid laden mislukt',
+    detail: 'Het tijdvenster is ongeldig. De begintijd moet vóór de eindtijd liggen.',
+  },
+  'floor_plan.availability.invalid_args': {
+    title: 'Beschikbaarheid laden mislukt',
+    detail: 'Een verplichte parameter ontbreekt.',
+  },
+  'floor_plan.availability_failed': {
+    title: 'Beschikbaarheid laden mislukt',
+    detail: 'De beschikbaarheid van de verdieping kon niet worden geladen. Probeer het opnieuw.',
+  },
   // B.4 Step 2F.1 — edit_booking_scope RPC (00367 + v2 00371). Series-scope edits.
   // v2 N-2: "afspraken" → "reserveringen" voor consistentie met de
   // booking-voice in de rest van de app; "seriewijziging" → "reeks-wijziging".
