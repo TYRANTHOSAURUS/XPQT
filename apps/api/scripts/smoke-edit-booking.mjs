@@ -235,6 +235,34 @@ function runPsql(sql) {
   }
 }
 
+// Single-row, single-column query helper. Returns the trimmed scalar
+// string. Used by the Phase 8.D pre-flight assertion (regprocedure
+// existence check). Uses `psql -tA` (tuples-only + unaligned) so the
+// output is the raw value with no header/footer chrome.
+function runPsqlQuery(sql) {
+  const dbPass = env.SUPABASE_DB_PASS;
+  if (!dbPass) {
+    throw new Error(
+      'smoke-edit-booking: SUPABASE_DB_PASS missing from .env — cannot run query',
+    );
+  }
+  const dbUrl =
+    env.SUPABASE_DB_URL ||
+    'postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres';
+  try {
+    const out = execFileSync('psql', [dbUrl, '-tA', '-v', 'ON_ERROR_STOP=1', '-c', sql], {
+      env: { ...process.env, PGPASSWORD: dbPass },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return out.toString().trim();
+  } catch (e) {
+    const stderr = e.stderr?.toString() ?? '';
+    throw new Error(
+      `psql query failed: ${e.message}\nstderr: ${stderr}\nsql: ${sql.slice(0, 200)}…`,
+    );
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Fixture A — single non-recurring booking + 1 slot on ROOM_HUDDLE.
 // +130 days future, 1 hour duration. Used by all editOne probes.
@@ -1136,6 +1164,29 @@ async function main() {
   } catch (e) {
     console.error(`✗ API at ${API_BASE} is not reachable: ${e.message}`);
     console.error(`  Start the dev server first: pnpm dev:api`);
+    process.exit(2);
+  }
+
+  // Phase 8.D regression guard — the legacy edit_booking_slot RPC was
+  // dropped by migration 00379. If a future migration re-creates the
+  // function (intentionally or by mistake), this assertion trips before
+  // any fixture is seeded so the smoke can't accidentally exercise the
+  // dead surface. The check uses to_regprocedure to resolve the
+  // function signature; NULL means "no such function." Citation:
+  // supabase/migrations/00379_drop_edit_booking_slot_rpc.sql.
+  try {
+    const slotRpcDropped = runPsqlQuery(
+      "select to_regprocedure('public.edit_booking_slot(uuid, jsonb, uuid)') is null",
+    );
+    if (slotRpcDropped !== 't') {
+      console.error('✗ Phase 8.D regression: public.edit_booking_slot(uuid, jsonb, uuid) still exists on remote.');
+      console.error('  Expected: dropped by migration 00379. A migration after 00379 has re-created it.');
+      console.error('  Action: identify the offending migration and decide whether to drop again or restore the legacy path on purpose.');
+      process.exit(1);
+    }
+    console.log('✓ Phase 8.D guard: public.edit_booking_slot RPC is dropped (00379)');
+  } catch (e) {
+    console.error(`✗ Phase 8.D guard query failed: ${e.message}`);
     process.exit(2);
   }
 

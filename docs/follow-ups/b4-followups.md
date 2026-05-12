@@ -38,6 +38,21 @@ Citations baked into the script header: `apps/api/src/modules/reservations/reser
 
 CLAUDE.md "Smoke gate" section updated to mandate the probe before claiming any work touching `ReservationService.editOne` / `ReservationService.editSlot` / `assembleEditPlan` (kinds `'one'` + `'slot'`) / the `edit_booking` RPC is complete.
 
+## Tier B item #4 — Phase 8.D drop dead `edit_booking_slot` RPC — CLOSED (2026-05-12)
+
+Closing-retro §10 item #2 (drop the legacy `edit_booking_slot` RPC introduced by 00291 + extended by 00293 + 00294, superseded by 00364 `edit_booking` v4) shipped via migration `supabase/migrations/00379_drop_edit_booking_slot_rpc.sql`. The migration is a single `drop function if exists public.edit_booking_slot(uuid, jsonb, uuid);` — `CASCADE` intentionally omitted so the drop fails loudly on unexpected dependencies rather than silently nuking them.
+
+Pre-drop verification (all 0 hits):
+- `grep -rE "\.rpc\(\s*['\"]edit_booking_slot['\"]" apps/ packages/` — zero TS callers.
+- `grep -nE "perform\s+(public\.)?edit_booking_slot|select\s+(public\.)?edit_booking_slot" supabase/migrations/*.sql` — zero PL/pgSQL invocations across migration bodies.
+- `grep -rE "edit_booking_slot" --include="*.json" --include="*.sh" .` — zero infrastructure references.
+
+Remote DB state confirmed via `select to_regprocedure('public.edit_booking_slot(uuid, jsonb, uuid)')` → NULL after the drop applied. PostgREST schema cache reloaded with `NOTIFY pgrst, 'reload schema'`.
+
+Regression guard wired into `apps/api/scripts/smoke-edit-booking.mjs` as a pre-flight assertion (runs before fixture seed): if a future migration re-creates `public.edit_booking_slot(uuid, jsonb, uuid)`, the smoke trips `Phase 8.D regression: public.edit_booking_slot(uuid, jsonb, uuid) still exists on remote.` and exits 1 before any HTTP probe runs. The asserting helper is `runPsqlQuery` (lines added alongside `runPsql`); the assertion lives in `main()` between the API health check and the fixture seed block.
+
+Remaining references in migration files (`00292`, `00293`, `00294`, `00373`) and TS comments (`tenant-validation.ts`, `bundle-cascade-integration.spec.ts`, `reservation.service.events.spec.ts`, `reservation-edit-tenant-validation.spec.ts`, `reservation.service.ts` legacy docstrings) are all backward-looking lineage citations, not live invocations. Left as-is — historical context for future readers.
+
 ## Step 2F.3 — shipped (2026-05-12)
 
 `POST /reservations/:id/edit-scope` cut over from `BookingFlowService.editScope` (bare-UPDATE, deleted) to `ReservationService.editScope` → `assembleScopeEditPlan` → `edit_booking_scope` RPC (00371 v2).
