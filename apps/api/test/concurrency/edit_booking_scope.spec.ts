@@ -30,6 +30,10 @@
  *      (00371): dry-run is stateless w.r.t. command_operations — a
  *      subsequent commit on the same key MUST insert + write, not
  *      short-circuit on a stale dry-run row.
+ *  17. B.4.A.5 sub-step B — gate raise leaves inbox_notifications empty
+ *      (proves the per-occurrence inbox INSERT block in 00395 is properly
+ *      tx-scoped behind the B.4.A.5 emit-site gate; will evolve into
+ *      "row count == approver count" once sub-step H lifts the gate).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -1404,7 +1408,7 @@ describe('edit_booking_scope RPC — concurrency + state-machine probes', () => 
     expect(result.value.committed).toBe(200);
   }, 120_000);
 
-  // ── Scenario 16 (B.4.A.5 sub-step B): inbox tx-scope on gate raise ──────
+  // ── Scenario 17 (B.4.A.5 sub-step B): inbox tx-scope on gate raise ──────
   // The B.4.A.5 emit-site gate at 00395:~575-580 stays UP in v3 — the
   // inbox INSERT block in the per-occurrence loop is defense-in-depth
   // (unreachable until sub-step H lifts the gate). This test pins the

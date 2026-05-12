@@ -955,10 +955,12 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
     expect(outboxRows.rows).toHaveLength(1);
     expect(outboxRows.rows[0].payload.booking_id).toBe(booking.bookingId);
     expect(outboxRows.rows[0].payload.chain_id).toBe(approvalRows.rows[0].approval_chain_id);
-    // v5: split arrays — person approver populates approver_user_ids,
-    // approver_team_ids stays []; v4's mixed approver_ids is dropped.
-    expect(Array.isArray(outboxRows.rows[0].payload.approver_user_ids)).toBe(true);
-    expect(outboxRows.rows[0].payload.approver_user_ids).toEqual([base.personId]);
+    // v5: split arrays — person approver populates approver_person_ids
+    // (persons.id values, NOT user ids; sub-step D fans person → user via
+    // users.person_id JOIN at dispatch). approver_team_ids stays []; v4's
+    // mixed approver_ids is dropped.
+    expect(Array.isArray(outboxRows.rows[0].payload.approver_person_ids)).toBe(true);
+    expect(outboxRows.rows[0].payload.approver_person_ids).toEqual([base.personId]);
     expect(outboxRows.rows[0].payload.approver_team_ids).toEqual([]);
   });
 
@@ -2299,7 +2301,8 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
       expect(row.payload.booking_id).toBe(booking.bookingId);
     }
 
-    // Outbox payload echoes the team id in approver_team_ids array.
+    // Outbox payload echoes the team id in approver_team_ids array;
+    // approver_person_ids is empty (this booking has no person approver).
     const outboxRows = await pool.query<{ payload: Record<string, unknown> }>(
       `select payload from outbox.events
         where tenant_id = $1 and aggregate_id = $2
@@ -2307,7 +2310,7 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
       [base.tenantId, booking.bookingId],
     );
     expect(outboxRows.rows).toHaveLength(1);
-    expect(outboxRows.rows[0].payload.approver_user_ids).toEqual([]);
+    expect(outboxRows.rows[0].payload.approver_person_ids).toEqual([]);
     expect(outboxRows.rows[0].payload.approver_team_ids).toEqual([base.teamId]);
   });
 });

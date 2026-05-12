@@ -8,7 +8,8 @@ import type { OutboxEvent } from '../../outbox.types';
 /**
  * B.4.A.4 — `BookingApprovalRequiredHandler.handle` tests.
  *
- * Producer: supabase/migrations/00364_edit_booking_rpc_v4.sql:1059-1080.
+ * Producer: supabase/migrations/00394_edit_booking_rpc_v5.sql:974-993
+ *           (post-B.4.A.5-sub-step-B; supersedes 00364 v4).
  * Event literal: apps/api/src/modules/reservations/event-types.ts:51
  *                (`BookingEditEventType.ApprovalRequired`).
  *
@@ -45,7 +46,7 @@ function makeEvent(
       tenant_id: TENANT_ID,
       booking_id: BOOKING_ID,
       chain_id: CHAIN_ID,
-      approver_user_ids: [APPROVER_A, APPROVER_B],
+      approver_person_ids: [APPROVER_A, APPROVER_B],
       approver_team_ids: [],
       started_at: '2026-05-12T09:00:00Z',
       ...payloadOverrides,
@@ -75,14 +76,14 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
     it('accepts a single-approver event', async () => {
       const handler = new BookingApprovalRequiredHandler();
       await expect(
-        handler.handle(makeEvent({}, { approver_user_ids: [APPROVER_A], approver_team_ids: [] })),
+        handler.handle(makeEvent({}, { approver_person_ids: [APPROVER_A], approver_team_ids: [] })),
       ).resolves.toBeUndefined();
     });
 
     it('accepts a team-only event', async () => {
       const handler = new BookingApprovalRequiredHandler();
       await expect(
-        handler.handle(makeEvent({}, { approver_user_ids: [], approver_team_ids: [APPROVER_A] })),
+        handler.handle(makeEvent({}, { approver_person_ids: [], approver_team_ids: [APPROVER_A] })),
       ).resolves.toBeUndefined();
     });
   });
@@ -116,15 +117,15 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
 
     it('dead-letters when both approver arrays are empty', async () => {
       const handler = new BookingApprovalRequiredHandler();
-      const event = makeEvent({}, { approver_user_ids: [], approver_team_ids: [] });
+      const event = makeEvent({}, { approver_person_ids: [], approver_team_ids: [] });
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
 
-    it('dead-letters on missing approver_user_ids', async () => {
+    it('dead-letters on missing approver_person_ids', async () => {
       const handler = new BookingApprovalRequiredHandler();
       const event = makeEvent(
         {},
-        { approver_user_ids: undefined as unknown as string[] },
+        { approver_person_ids: undefined as unknown as string[] },
       );
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
@@ -138,9 +139,9 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
 
-    it('dead-letters when an approver user id is not a uuid', async () => {
+    it('dead-letters when an approver person id is not a uuid', async () => {
       const handler = new BookingApprovalRequiredHandler();
-      const event = makeEvent({}, { approver_user_ids: [APPROVER_A, 'bogus'] });
+      const event = makeEvent({}, { approver_person_ids: [APPROVER_A, 'bogus'] });
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
 

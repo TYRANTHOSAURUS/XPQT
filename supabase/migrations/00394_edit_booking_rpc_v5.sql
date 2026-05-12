@@ -31,14 +31,24 @@
 --    v4 emitted `{ chain_id, approver_ids: uuid[], started_at }` where
 --    `approver_ids` mixed person ids and team ids — the consumer had to
 --    re-classify each id. v5 emits:
---      { booking_id, chain_id, approver_user_ids: uuid[],
+--      { booking_id, chain_id, approver_person_ids: uuid[],
 --        approver_team_ids: uuid[], started_at }
---    The Sub-step D handler iterates `approver_user_ids` directly and
---    fans-out `approver_team_ids` via a TS team_members join. The shape
---    change required a parallel update to
+--    The `approver_person_ids` key holds `persons.id` values (sourced
+--    from `required_approvers[n].id` where `type='person'`). The Sub-step D
+--    handler fans person → user via `users.person_id` JOIN — the same way
+--    the inbox INSERT block below already does — and fans team → user via
+--    a `team_members` JOIN. The split shape required a parallel update to
 --    apps/api/src/modules/outbox/handlers/booking-approval-required.handler.ts
 --    + its spec to keep TS compile + jest gates green (the handler is
 --    still a stub that logs; sub-step D fills in dispatch).
+--
+--    NOTE: the v5 self-review remediation (commit 7852ebf0 follow-up)
+--    renamed the array from the original `approver_user_ids` to
+--    `approver_person_ids` because the contents are person ids, NOT user
+--    ids. The original name lied about the contents and would have caused
+--    the sub-step D handler to find zero rows on a `users WHERE id =
+--    any(...)` lookup. `approver_team_ids` is unchanged — those ARE team
+--    ids.
 --
 -- 3. **No `inbox_written` flag on the outbox payload.**
 --    Architect N3 (plan v2) — `ON CONFLICT DO NOTHING` on
@@ -150,7 +160,11 @@ declare
   v_approver_type          text;
   v_approver_id            uuid;
   -- v5 — split arrays for the outbox payload (replaces v4 v_approver_ids).
-  v_approver_user_ids      uuid[] := '{}'::uuid[];   -- person approvers
+  -- Self-review remediation: renamed v_approver_user_ids →
+  -- v_approver_person_ids because the values are persons.id (sourced from
+  -- required_approvers[n].id where type='person'), not users.id. The
+  -- handler fans person → user via users.person_id JOIN at dispatch time.
+  v_approver_person_ids    uuid[] := '{}'::uuid[];   -- person approvers
   v_approver_team_ids      uuid[] := '{}'::uuid[];   -- team approvers
   v_new_booking_status     text;
 
@@ -461,7 +475,7 @@ begin
             hint = 'A rule on the target room denies this edit. Pick a different room or revert the change.';
   end if;
 
-  -- 7.d — validate the new chain config + collect approver_user_ids /
+  -- 7.d — validate the new chain config + collect approver_person_ids /
   -- approver_team_ids BEFORE the write block. Cross-tenant person/team
   -- failures surface as 404s without leaving a half-applied edit behind.
   if v_action in ('insert', 'expire_and_insert') then
@@ -482,9 +496,9 @@ begin
       v_parallel_group := null;
     end if;
 
-    v_new_chain_id      := gen_random_uuid();
-    v_approver_user_ids := '{}'::uuid[];
-    v_approver_team_ids := '{}'::uuid[];
+    v_new_chain_id        := gen_random_uuid();
+    v_approver_person_ids := '{}'::uuid[];
+    v_approver_team_ids   := '{}'::uuid[];
 
     for v_approver in
       select * from jsonb_array_elements(v_new_chain_config->'required_approvers')
@@ -502,7 +516,7 @@ begin
 
       if v_approver_type = 'person' then
         perform public.validate_entity_in_tenant(p_tenant_id, 'person', v_approver_id);
-        v_approver_user_ids := array_append(v_approver_user_ids, v_approver_id);
+        v_approver_person_ids := array_append(v_approver_person_ids, v_approver_id);
       elsif v_approver_type = 'team' then
         perform public.validate_entity_in_tenant(p_tenant_id, 'team', v_approver_id);
         v_approver_team_ids := array_append(v_approver_team_ids, v_approver_id);
@@ -512,7 +526,7 @@ begin
       end if;
     end loop;
 
-    if (array_length(v_approver_user_ids, 1) is null)
+    if (array_length(v_approver_person_ids, 1) is null)
        and (array_length(v_approver_team_ids, 1) is null) then
       raise exception 'edit_booking.invalid_plan_shape: p_plan.approval.new_chain_config.required_approvers cannot be empty when insert is required'
         using errcode = 'P0001';
@@ -969,8 +983,10 @@ begin
   end if;
 
   -- v5: booking.approval_required emit for rows 2, 7, 8 — v5 splits the
-  -- mixed v4 `approver_ids` into separate user/team arrays so the handler
-  -- doesn't have to re-classify each id.
+  -- mixed v4 `approver_ids` into separate person/team arrays so the
+  -- handler doesn't have to re-classify each id. The `approver_person_ids`
+  -- key holds persons.id values; the handler resolves person → user via
+  -- users.person_id JOIN at dispatch time (sub-step D).
   if v_emit_approval_required then
     perform outbox.emit(
       p_tenant_id       => p_tenant_id,
@@ -981,7 +997,7 @@ begin
         'tenant_id',           p_tenant_id,
         'booking_id',          p_booking_id,
         'chain_id',            v_new_chain_id,
-        'approver_user_ids',   to_jsonb(v_approver_user_ids),
+        'approver_person_ids', to_jsonb(v_approver_person_ids),
         'approver_team_ids',   to_jsonb(v_approver_team_ids),
         'started_at',          v_started_at
       ),
@@ -1052,6 +1068,6 @@ revoke all on function public.edit_booking(uuid, jsonb, uuid, uuid, text) from p
 grant  execute on function public.edit_booking(uuid, jsonb, uuid, uuid, text) to service_role;
 
 comment on function public.edit_booking(uuid, jsonb, uuid, uuid, text) is
-  'B.4.A.5 sub-step B — edit_booking RPC v5 (supersedes 00364 v4). Hybrid C invariant: inbox_notifications row(s) inserted in the same RPC tx as the approvals row(s). Person approver → one inbox row for the matching users.person_id; team approver → fan-out via team_members.user_id JOIN public.users (tenant-filtered both sides; codex pick A). ON CONFLICT DO NOTHING on uq_inbox_notifications_chain (00391 partial unique index) keeps cached_result replay idempotent. Outbox payload split: approver_ids[] → approver_user_ids[] + approver_team_ids[] so the dispatch handler (sub-step D) doesn''t re-classify. All §3.6.5 Row 1-10 semantics + v3+v4 critical fixes preserved verbatim. Spec: /tmp/b4a5-plan-v2.md sub-step B.';
+  'B.4.A.5 sub-step B — edit_booking RPC v5 (supersedes 00364 v4). Hybrid C invariant: inbox_notifications row(s) inserted in the same RPC tx as the approvals row(s). Person approver → one inbox row for the matching users.person_id; team approver → fan-out via team_members.user_id JOIN public.users (tenant-filtered both sides; codex pick A). ON CONFLICT DO NOTHING on uq_inbox_notifications_chain (00391 partial unique index) keeps cached_result replay idempotent. Outbox payload split: approver_ids[] → approver_person_ids[] + approver_team_ids[] (the person array holds persons.id values; sub-step D fans person → user via users.person_id JOIN at dispatch time). All §3.6.5 Row 1-10 semantics + v3+v4 critical fixes preserved verbatim. Spec: /tmp/b4a5-plan-v2.md sub-step B.';
 
 notify pgrst, 'reload schema';

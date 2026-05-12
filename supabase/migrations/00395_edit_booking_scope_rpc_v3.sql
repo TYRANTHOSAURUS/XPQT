@@ -23,11 +23,19 @@
 --
 -- 2. **Outbox payload: split mixed `approver_ids` into two typed arrays.**
 --    Symmetric with 00394. Per-occurrence accumulators
---    `v_approver_user_ids` / `v_approver_team_ids` replace the v2
+--    `v_approver_person_ids` / `v_approver_team_ids` replace the v2
 --    `v_approver_ids` mixed array. v3 outbox payload:
---      { booking_id, chain_id, approver_user_ids, approver_team_ids,
+--      { booking_id, chain_id, approver_person_ids, approver_team_ids,
 --        scope_series_id, started_at }
 --    (scope_series_id retained from 00371 for cross-cutting tracing.)
+--
+--    Self-review remediation (commit 7852ebf0 follow-up): the person
+--    accumulator was renamed v_approver_user_ids → v_approver_person_ids
+--    because the values are persons.id (sourced from
+--    required_approvers[n].id where type='person'), not users.id. The
+--    outbox payload key was renamed in lockstep. Sub-step D's handler
+--    fans person → user via users.person_id JOIN at dispatch — the same
+--    way the inbox INSERT block below already does.
 --
 -- 3. **No `inbox_written` flag on the outbox payload.** Architect N3 — the
 --    ON CONFLICT DO NOTHING on inbox_notifications is the sole idempotency
@@ -116,9 +124,12 @@ declare
   v_approver           jsonb;
   v_approver_type      text;
   v_approver_id        uuid;
-  -- v3 — split arrays (replaces v2 v_approver_ids).
-  v_approver_user_ids  uuid[];
-  v_approver_team_ids  uuid[];
+  -- v3 — split arrays (replaces v2 v_approver_ids). Initializers added for
+  -- parity with 00394 (self-review N4); the per-occurrence loop also
+  -- re-initializes them at iteration entry, so the declaration default is
+  -- belt-and-braces against future loop-entry edits that drop the reset.
+  v_approver_person_ids  uuid[] := '{}'::uuid[];   -- person approvers (persons.id values)
+  v_approver_team_ids    uuid[] := '{}'::uuid[];   -- team approvers
   v_new_booking_status text;
 
   v_booking_patch      jsonb;
@@ -334,7 +345,7 @@ begin
     v_wo_updated     := 0;
     v_per_follow_ups := '[]'::jsonb;
     v_emit_approval_required := false;
-    v_approver_user_ids := '{}'::uuid[];
+    v_approver_person_ids := '{}'::uuid[];
     v_approver_team_ids := '{}'::uuid[];
     v_new_chain_id := null;
     v_parallel_group := null;
@@ -575,7 +586,7 @@ begin
       end if;
 
       v_new_chain_id := gen_random_uuid();
-      v_approver_user_ids := '{}'::uuid[];
+      v_approver_person_ids := '{}'::uuid[];
       v_approver_team_ids := '{}'::uuid[];
 
       for v_approver in
@@ -594,7 +605,7 @@ begin
 
         if v_approver_type = 'person' then
           perform public.validate_entity_in_tenant(p_tenant_id, 'person', v_approver_id);
-          v_approver_user_ids := array_append(v_approver_user_ids, v_approver_id);
+          v_approver_person_ids := array_append(v_approver_person_ids, v_approver_id);
         elsif v_approver_type = 'team' then
           perform public.validate_entity_in_tenant(p_tenant_id, 'team', v_approver_id);
           v_approver_team_ids := array_append(v_approver_team_ids, v_approver_id);
@@ -604,7 +615,7 @@ begin
         end if;
       end loop;
 
-      if (array_length(v_approver_user_ids, 1) is null)
+      if (array_length(v_approver_person_ids, 1) is null)
          and (array_length(v_approver_team_ids, 1) is null) then
         raise exception 'edit_booking.invalid_plan_shape: plan.approval.new_chain_config.required_approvers cannot be empty (booking=%)', v_target_booking_id
           using errcode = 'P0001';
@@ -1153,6 +1164,6 @@ revoke all on function public.edit_booking_scope(jsonb, uuid, uuid, text, boolea
 grant  execute on function public.edit_booking_scope(jsonb, uuid, uuid, text, boolean) to service_role;
 
 comment on function public.edit_booking_scope(jsonb, uuid, uuid, text, boolean) is
-  'B.4.A.5 sub-step B — edit_booking_scope RPC v3 (supersedes 00371 v2). Hybrid C invariant: inbox_notifications row(s) inserted in the same RPC tx as the approvals row(s), defense-in-depth (the B.4.A.5 emit-site gate at line ~575 stays UP until sub-step H lifts it; the inbox INSERT block is in place + pushed so cutover is gate-flag-only). Person approver → users.person_id; team approver → team_members.user_id JOIN public.users (tenant-filtered both sides). ON CONFLICT DO NOTHING on uq_inbox_notifications_chain. Outbox payload split into approver_user_ids[] + approver_team_ids[]. All 00371 v2 contract preserved: stateless dry-run, payload_hash bound on p_plans only, bounded booking_not_found error, recurrence_overridden defensive guard, per-occurrence before/after snapshots, same-series check, 200-occurrence hard cap. Spec: /tmp/b4a5-plan-v2.md sub-step B.';
+  'B.4.A.5 sub-step B — edit_booking_scope RPC v3 (supersedes 00371 v2). Hybrid C invariant: inbox_notifications row(s) inserted in the same RPC tx as the approvals row(s), defense-in-depth (the B.4.A.5 emit-site gate at line ~575 stays UP until sub-step H lifts it; the inbox INSERT block is in place + pushed so cutover is gate-flag-only). Person approver → users.person_id; team approver → team_members.user_id JOIN public.users (tenant-filtered both sides). ON CONFLICT DO NOTHING on uq_inbox_notifications_chain. Outbox payload split into approver_person_ids[] + approver_team_ids[] (the person array holds persons.id values; sub-step D fans person → user via users.person_id JOIN at dispatch time). All 00371 v2 contract preserved: stateless dry-run, payload_hash bound on p_plans only, bounded booking_not_found error, recurrence_overridden defensive guard, per-occurrence before/after snapshots, same-series check, 200-occurrence hard cap. Spec: /tmp/b4a5-plan-v2.md sub-step B.';
 
 notify pgrst, 'reload schema';

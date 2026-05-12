@@ -98,11 +98,13 @@ create policy tenant_owner_isolation on public.inbox_notifications
     )
   );
 
--- ON CONFLICT smoke probe — verifies the partial-index conflict-target
--- syntax round-trips before sub-step B depends on it. Inserts twice
--- with the same (tenant, user, event, chain) tuple; second one must be
--- a no-op via DO NOTHING. We allocate a throwaway tenant + user inside
--- the block so this is non-destructive and rolled back via raise.
+-- ON CONFLICT smoke probe — PREPAREs an INSERT with the partial-index
+-- ON CONFLICT target so 42P10 (no unique or exclusion constraint matching
+-- the ON CONFLICT specification) trips at migration plan time, NOT at
+-- first runtime use inside the edit_booking RPC. The probe does NOT
+-- execute the INSERT — it only validates that the conflict-target syntax
+-- round-trips against the partial unique index above. The PREPARE +
+-- DEALLOCATE pair is non-destructive (no rows touched).
 do $$
 declare
   v_tenant uuid := gen_random_uuid();
