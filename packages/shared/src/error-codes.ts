@@ -791,7 +791,21 @@ export type KnownErrorCode =
   // 503 → 422 in commit `fb7b163f`. Reference:
   // docs/follow-ups/b4-followups.md "Sequencing — controller cutover
   // MUST land in or after notification dispatch (B.4.A.5)".
-  | 'booking.edit_requires_notification_dispatch';
+  | 'booking.edit_requires_notification_dispatch'
+
+  // ─── floor_plan ──────────────────────────────────────────────────────────
+  | 'floor_plan.draft.not_found'
+  | 'floor_plan.draft.create_failed'
+  | 'floor_plan.draft.update_failed'
+  | 'floor_plan.draft.discard_failed'
+  | 'floor_plan.draft.stale_update'
+  | 'floor_plan.draft.invalid_polygons'
+  | 'floor_plan.publish.image_required'
+  | 'floor_plan.publish.unlinked_polygons'
+  | 'floor_plan.publish.invalid_polygons'
+  | 'floor_plan.publish.cross_tenant'
+  | 'floor_plan.publish_failed'
+  | 'floor_plan.list_failed';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1377,6 +1391,19 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'approval.read_failed',
   // B.4 step 2D-D — see KnownErrorCode union for rationale.
   'booking.edit_requires_notification_dispatch',
+  // floor_plan module — A.9
+  'floor_plan.draft.not_found',
+  'floor_plan.draft.create_failed',
+  'floor_plan.draft.update_failed',
+  'floor_plan.draft.discard_failed',
+  'floor_plan.draft.stale_update',
+  'floor_plan.draft.invalid_polygons',
+  'floor_plan.publish.image_required',
+  'floor_plan.publish.unlinked_polygons',
+  'floor_plan.publish.invalid_polygons',
+  'floor_plan.publish.cross_tenant',
+  'floor_plan.publish_failed',
+  'floor_plan.list_failed',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

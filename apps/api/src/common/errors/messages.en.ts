@@ -1802,6 +1802,56 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save the booking",
     detail: "We couldn't read this booking's approval state. Try again in a moment.",
   },
+
+  // ─── floor_plan ──────────────────────────────────────────────────────────
+  'floor_plan.draft.not_found': {
+    title: 'Floor plan draft not found',
+    detail: 'This floor has no active draft. Open the designer to create one.',
+  },
+  'floor_plan.draft.create_failed': {
+    title: "Couldn't create draft",
+    detail: "We couldn't create a floor plan draft. Try again in a moment.",
+  },
+  'floor_plan.draft.update_failed': {
+    title: "Couldn't save draft",
+    detail: "We couldn't save your changes to the draft. Try again in a moment.",
+  },
+  'floor_plan.draft.discard_failed': {
+    title: "Couldn't discard draft",
+    detail: "We couldn't discard the floor plan draft. Try again in a moment.",
+  },
+  'floor_plan.draft.stale_update': {
+    title: 'Draft changed by another editor',
+    detail: 'Someone else saved changes to this draft while you were editing. Reload to continue.',
+  },
+  'floor_plan.draft.invalid_polygons': {
+    title: 'Invalid polygon data',
+    detail: 'One or more polygons reference spaces that are not part of this floor.',
+  },
+  'floor_plan.publish.image_required': {
+    title: "Can't publish without a floor image",
+    detail: 'Upload a floor plan image and set dimensions before publishing.',
+  },
+  'floor_plan.publish.unlinked_polygons': {
+    title: "Can't publish — unlinked polygons",
+    detail: 'All polygons must be linked to a space before publishing. Select a space for each unlinked polygon.',
+  },
+  'floor_plan.publish.invalid_polygons': {
+    title: "Can't publish — invalid polygons",
+    detail: 'One or more polygons are invalid (fewer than 3 points or missing a space). Fix them in the designer.',
+  },
+  'floor_plan.publish.cross_tenant': {
+    title: 'Permission denied',
+    detail: "You can't publish a floor plan from another organisation.",
+  },
+  'floor_plan.publish_failed': {
+    title: "Couldn't publish floor plan",
+    detail: "The floor plan couldn't be published. Try again in a moment.",
+  },
+  'floor_plan.list_failed': {
+    title: "Couldn't load floor plans",
+    detail: "We couldn't load the floor plans list. Try again in a moment.",
+  },
 };
 
 /**

@@ -1762,6 +1762,56 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     detail:
       'Deze wijziging verandert de goedkeuringsregels. Vraag de ruimte-beheerder om goedkeuring voor deze ruimte uit te zetten, of kies een andere ruimte.',
   },
+
+  // ─── floor_plan ──────────────────────────────────────────────────────────
+  'floor_plan.draft.not_found': {
+    title: 'Concept plattegrond niet gevonden',
+    detail: 'Deze verdieping heeft geen actief concept. Open de ontwerper om er een te maken.',
+  },
+  'floor_plan.draft.create_failed': {
+    title: 'Concept aanmaken mislukt',
+    detail: 'Het aanmaken van het concept plattegrond is mislukt. Probeer het opnieuw.',
+  },
+  'floor_plan.draft.update_failed': {
+    title: 'Concept opslaan mislukt',
+    detail: 'Uw wijzigingen in het concept konden niet worden opgeslagen. Probeer het opnieuw.',
+  },
+  'floor_plan.draft.discard_failed': {
+    title: 'Concept verwijderen mislukt',
+    detail: 'Het concept plattegrond kon niet worden verwijderd. Probeer het opnieuw.',
+  },
+  'floor_plan.draft.stale_update': {
+    title: 'Concept gewijzigd door een andere gebruiker',
+    detail: 'Iemand anders heeft wijzigingen opgeslagen in dit concept. Herlaad de pagina om door te gaan.',
+  },
+  'floor_plan.draft.invalid_polygons': {
+    title: 'Ongeldige polygoongegevens',
+    detail: 'Een of meer polygonen verwijzen naar ruimten die geen deel uitmaken van deze verdieping.',
+  },
+  'floor_plan.publish.image_required': {
+    title: 'Publiceren niet mogelijk zonder plattegrondafbeelding',
+    detail: 'Upload een plattegrondafbeelding en stel de afmetingen in voordat u publiceert.',
+  },
+  'floor_plan.publish.unlinked_polygons': {
+    title: 'Publiceren niet mogelijk — niet-gekoppelde polygonen',
+    detail: 'Alle polygonen moeten aan een ruimte zijn gekoppeld voordat u kunt publiceren.',
+  },
+  'floor_plan.publish.invalid_polygons': {
+    title: 'Publiceren niet mogelijk — ongeldige polygonen',
+    detail: 'Een of meer polygonen zijn ongeldig (minder dan 3 punten of ontbrekende ruimte). Corrigeer ze in de ontwerper.',
+  },
+  'floor_plan.publish.cross_tenant': {
+    title: 'Toegang geweigerd',
+    detail: 'U kunt geen plattegrond van een andere organisatie publiceren.',
+  },
+  'floor_plan.publish_failed': {
+    title: 'Publiceren mislukt',
+    detail: 'De plattegrond kon niet worden gepubliceerd. Probeer het opnieuw.',
+  },
+  'floor_plan.list_failed': {
+    title: 'Plattegronden laden mislukt',
+    detail: 'De lijst met plattegronden kon niet worden geladen. Probeer het opnieuw.',
+  },
 };
 
 /**
