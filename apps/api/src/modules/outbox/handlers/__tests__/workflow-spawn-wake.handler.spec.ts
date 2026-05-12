@@ -169,18 +169,40 @@ function makeSupabase(opts: FakeSupabaseOpts) {
     const nowIso = new Date().toISOString();
     for (const [key, val] of Object.entries(filters)) {
       if (key === '__or') {
-        // Handler uses `.or('wait_timeout_at.is.null,wait_timeout_at.gt.now()')`
-        // — null OR (timestamp > now). Only need to support that exact
-        // shape; if a test passes a different `or` expression, extend
-        // here.
+        // Codex IMPORTANT 2 remediation (2026-05-12 Phase 1.C): the
+        // handler used to embed the literal token `now()` after `gt.`,
+        // which PostgREST does not parse as a timestamp special value
+        // (the special token is bare `now`, not `now()`). Fix: embed
+        // a TS-side ISO timestamp directly. Parse it here.
+        //
+        // Shape: `wait_timeout_at.is.null,wait_timeout_at.gt.<isoString>`.
+        // Tolerate legacy `now()` / `now` shapes for tests that still
+        // assert on the old expression (we'll remove them as part of
+        // this remediation).
         const expr = val as string;
         const nullMatch = row.wait_timeout_at === null;
-        const gtMatch =
-          row.wait_timeout_at !== null && row.wait_timeout_at > nowIso;
-        if (
+
+        // Match `wait_timeout_at.gt.<value>` and extract the comparison
+        // value. Use the same `nowIso` from the matcher's closure as
+        // the legacy fallback timestamp for the `now()` / `now` tokens.
+        const legacy =
           expr === 'wait_timeout_at.is.null,wait_timeout_at.gt.now()' ||
-          expr === 'wait_timeout_at.is.null,wait_timeout_at.gt.now'
-        ) {
+          expr === 'wait_timeout_at.is.null,wait_timeout_at.gt.now';
+        const isoMatch = expr.match(
+          /^wait_timeout_at\.is\.null,wait_timeout_at\.gt\.(.+)$/,
+        );
+        if (legacy) {
+          const gtMatch =
+            row.wait_timeout_at !== null && row.wait_timeout_at > nowIso;
+          if (!(nullMatch || gtMatch)) return false;
+          continue;
+        }
+        if (isoMatch) {
+          const cmp = isoMatch[1];
+          // For the iso-string form, do a direct string compare —
+          // ISO 8601 sorts lexicographically.
+          const gtMatch =
+            row.wait_timeout_at !== null && row.wait_timeout_at > cmp;
           if (!(nullMatch || gtMatch)) return false;
           continue;
         }
@@ -285,13 +307,16 @@ function makeSupabase(opts: FakeSupabaseOpts) {
               filters[`${col}__is`] = val;
               return updateChain;
             },
-            // Codex IMPORTANT 2 remediation (2026-05-12): the claim
-            // UPDATE now carries `.or('wait_timeout_at.is.null,wait_timeout_at.gt.now()')`
-            // so a row whose timeout passes between SELECT and UPDATE
-            // can't be claimed (leaves it for the Tier 1 cron's
-            // `timeout` branch). Mock the supabase-js or() filter:
-            // parse the two clauses and store them so matchesFilters can
-            // evaluate them against the stored row.
+            // Codex IMPORTANT 2 remediation (2026-05-12 Phase 1.C): the
+            // claim UPDATE carries `.or('wait_timeout_at.is.null,wait_timeout_at.gt.<isoString>')`
+            // (was previously `gt.now()` — PostgREST doesn't accept
+            // `now()` as a literal timestamp value; the canonical
+            // pattern matches the cron's `.lte(col, isoString)`) so a
+            // row whose timeout passes between SELECT and UPDATE can't
+            // be claimed (leaves it for the Tier 1 cron's `timeout`
+            // branch). Mock the supabase-js or() filter: parse the two
+            // clauses and store them so matchesFilters can evaluate
+            // them against the stored row.
             or(expr: string) {
               filters['__or'] = expr;
               return updateChain;

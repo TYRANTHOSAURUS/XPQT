@@ -293,23 +293,38 @@ export class WorkflowSpawnWakeCore {
     for (const link of eligible) {
       // ── 4a. Atomic per-row claim ───────────────────────────────────────
       //
-      // Timeout-ownership defense (codex IMPORTANT 2 remediation, 2026-05-12):
+      // Timeout-ownership defense (codex IMPORTANT 2 remediation, 2026-05-12 Phase 1.C):
       // the SELECT above filters expired rows in JS, but `nowIso` is a
       // snapshot from before the SELECT. If `wait_timeout_at` passes
       // between SELECT and this UPDATE, the Phase 1.C cron sweeper owns
       // the row for the `timeout` branch — we must NOT claim it. Add the
       // condition to the WHERE so the UPDATE matches zero rows in that
-      // race window. supabase-js doesn't expose a fluent
-      // `column > now()` builder, so we use `.or('wait_timeout_at.is.null,wait_timeout_at.gt.now()')`.
+      // race window.
+      //
+      // Original v1 used `.or('wait_timeout_at.is.null,wait_timeout_at.gt.now()')`.
+      // PostgREST treats the value half of `gt.<value>` as a literal —
+      // the special token for "current timestamp" is the bare string
+      // `now` (no parens), not `now()`. With `now()`, PostgREST sends
+      // the literal text `now()` to Postgres which fails to parse it
+      // as a timestamp. The mock blessed the broken syntax which hid
+      // the failure in unit tests but it would error against the real
+      // DB. The cron sweeper at workflow-wait-sweeper.cron.ts:284 uses
+      // `.lte('wait_timeout_at', new Date().toISOString())` — the
+      // canonical pattern. We mirror it here, embedding the TS-side
+      // ISO string into the `.or()` expression. The `.or()` parser
+      // treats `,` as the disjunct separator and `.` as the part
+      // separator inside each clause; ISO timestamps' `:` and `.` after
+      // `gt.` are part of the value, not parsed as further parts.
+      const claimNowIso = new Date().toISOString();
       const claimRes = await this.supabase.admin
         .from('workflow_instance_links')
         .update({
-          resolved_at: new Date().toISOString(),
+          resolved_at: claimNowIso,
           resolution_kind: 'condition_met',
         })
         .eq('id', link.id)
         .is('resolved_at', null)
-        .or('wait_timeout_at.is.null,wait_timeout_at.gt.now()')
+        .or(`wait_timeout_at.is.null,wait_timeout_at.gt.${claimNowIso}`)
         .select('id');
 
       if (claimRes.error) {

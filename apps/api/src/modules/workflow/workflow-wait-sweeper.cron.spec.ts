@@ -691,8 +691,15 @@ describe('WorkflowWaitSweeperCron (Universal Workflow Architecture Phase 1.C)', 
     });
   });
 
-  describe('on_timeout_branch null', () => {
-    it('warns and still resumes with undefined branch (engine falls through to edges[0])', async () => {
+  describe('on_timeout_branch null (codex IMPORTANT 1 — fail closed)', () => {
+    it('does NOT call engine.resume; link stays claimed; link_pending_entity_cancel emitted; error logged', async () => {
+      // Codex IMPORTANT 1 remediation (2026-05-12 Phase 1.C): when
+      // on_timeout_branch is null, the cron used to resume with an
+      // undefined branch — engine.advance() fell through to edges[0]
+      // (fail-OPEN). Spec §3.4 (line 650) requires on_timeout_branch
+      // when wait_timeout_at is set; the misconfiguration must be
+      // surfaced + fail closed.
+      const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
       const supabase = makeSupabase({
         links: [makeStoredLink({ on_timeout_branch: null })],
         parents: {
@@ -703,13 +710,35 @@ describe('WorkflowWaitSweeperCron (Universal Workflow Architecture Phase 1.C)', 
       const engine = makeWorkflowEngine({}, supabase.service);
       const cron = new WorkflowWaitSweeperCron(supabase.service, engine);
       const handled = await cron.sweepOnce();
+
+      // The cron counts the link as "handled" (claim landed) but
+      // deliberately skips engine.resume.
       expect(handled).toBe(1);
-      expect(engine.resume).toHaveBeenCalledTimes(1);
-      expect(engine.resume).toHaveBeenCalledWith(
-        PARENT_INSTANCE_ID,
-        TENANT_ID,
-        undefined,
+      expect(engine.resume).not.toHaveBeenCalled();
+
+      // Link stays claimed — resolved_at + resolution_kind set, NOT
+      // rolled back to NULL. This is what prevents the cron from
+      // re-attempting every 30s.
+      expect(supabase.linkStore[0].resolved_at).not.toBeNull();
+      expect(supabase.linkStore[0].resolution_kind).toBe('timeout');
+
+      // link_pending_entity_cancel emitted with the new reason code.
+      const pending = supabase.captured.eventInserts.find(
+        (e) => e.event_type === 'link_pending_entity_cancel',
       );
+      expect(pending).toBeTruthy();
+      const payload = pending!.payload as Record<string, unknown>;
+      expect(payload.reason).toBe('on_timeout_branch_null_resume_skipped');
+      expect(payload.link_id).toBe(LINK_ID);
+
+      // link_resolved must NOT have been emitted — we fail before that
+      // step now (no resume → no audit).
+      const resolved = supabase.captured.eventInserts.find(
+        (e) => e.event_type === 'link_resolved',
+      );
+      expect(resolved).toBeFalsy();
+
+      errSpy.mockRestore();
     });
   });
 

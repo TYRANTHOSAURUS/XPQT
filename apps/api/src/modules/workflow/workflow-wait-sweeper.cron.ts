@@ -70,10 +70,12 @@ import { WorkflowEngineService } from './workflow-engine.service';
  *     sweep workers (if ever deployed; today single-instance) and
  *     (b) Tier 1 vs Tier 2 (Phase 1.A wake handler) racing on the same
  *     row. The Tier 2 path also carries
- *     `.or('wait_timeout_at.is.null,wait_timeout_at.gt.now()')` on its
- *     UPDATE so a row whose timeout has just passed is OWNED by Tier 1
- *     (workflow-spawn-wake.handler.ts:304-313). The two paths are
- *     mutually exclusive at the SQL layer.
+ *     `.or('wait_timeout_at.is.null,wait_timeout_at.gt.<nowIso>')` on its
+ *     UPDATE (the `<nowIso>` is a TS-side `new Date().toISOString()`
+ *     captured at claim time — PostgREST does NOT accept `now()` as a
+ *     literal, see the comment at workflow-spawn-wake.handler.ts:294-318)
+ *     so a row whose timeout has just passed is OWNED by Tier 1. The
+ *     two paths are mutually exclusive at the SQL layer.
  *
  *   - The sweep itself is serialized to one in-flight run via
  *     `this.sweeping` (mirrors outbox.worker.ts:55-79). A 30s cron
@@ -356,22 +358,31 @@ export class WorkflowWaitSweeperCron {
 
     // Step 4 + 5: Emit `link_resolved` audit event and resume on
     // the timeout branch.
+    //
+    // Codex IMPORTANT 1 remediation (2026-05-12 Phase 1.C): when
+    // on_timeout_branch is null we now FAIL CLOSED. Previously the cron
+    // resumed the parent with `branch=undefined`, which fell through to
+    // `edges[0]` in engine.advance() — fail-OPEN, silently taking
+    // whatever edge happened to be authored first. Spec §3.4 (line 650)
+    // says on_timeout_branch is REQUIRED when wait_timeout_at is set;
+    // resuming on edges[0] hides the misconfiguration.
+    //
+    // Fail-closed shape:
+    //   - Do NOT call engine.resume.
+    //   - LEAVE the link claimed (resolved_at + resolution_kind already
+    //     set above) so the cron does NOT re-attempt every 30s.
+    //   - Emit `link_pending_entity_cancel` with reason
+    //     `on_timeout_branch_null_resume_skipped` so the misconfiguration
+    //     surfaces in the timeline + ops queries.
+    //   - Log error-level (not warn) — this is a hard misconfiguration
+    //     requiring ops triage. Phase 2's editor validator will reject
+    //     the misconfig at save time.
+    //
+    // Return `true` so the outer loop counts this as "handled" (the
+    // claim landed; we're deliberately not resuming).
     if (link.on_timeout_branch === null) {
-      // The editor authored a wait without an on_timeout_branch. The
-      // wait spec §3.4 says this should be rejected at save time,
-      // but Phase 2's editor validator isn't written yet. The engine
-      // falls through to `edges[0]` (workflow-engine.service.ts:214)
-      // on a null edgeCondition — that's the best we can do here.
-      //
-      // Plan-review remediation: also emit a `link_pending_entity_cancel`
-      // event so the misconfiguration shows up in the timeline (not
-      // just in stderr). Ops can query
-      // `WHERE event_type='link_pending_entity_cancel'
-      //    AND payload->>'reason'='on_timeout_branch_null'`
-      // to find every workflow that fell through to edges[0] due to
-      // editor-side misconfiguration.
-      this.log.warn(
-        `workflow-wait-sweeper: on_timeout_branch_null link=${link.id} parent=${link.parent_instance_id} parent_node=${link.parent_node_id} (engine will fall through to edges[0])`,
+      this.log.error(
+        `workflow-wait-sweeper: on_timeout_branch_null_resume_skipped link=${link.id} parent=${link.parent_instance_id} parent_node=${link.parent_node_id} — link left claimed; ops triage required`,
       );
       try {
         await TenantContext.run(tenant, async () => {
@@ -382,17 +393,24 @@ export class WorkflowWaitSweeperCron {
               parent_node_id: link.parent_node_id,
               child_entity_kind: link.child_entity_kind,
               child_entity_id: link.child_entity_id,
-              reason: 'on_timeout_branch_null',
+              reason: 'on_timeout_branch_null_resume_skipped',
             },
           });
         });
       } catch (emitErr) {
-        // Best-effort emit; don't let it abort the actual resume.
-        this.log.warn(
+        // Best-effort emit; the link is already claimed and the error
+        // log above is the load-bearing alert.
+        this.log.error(
           `workflow-wait-sweeper: misconfig_emit_failed link=${link.id} error="${(emitErr as Error).message}"`,
         );
       }
+      return true;
     }
+
+    // Past this point, link.on_timeout_branch is guaranteed non-null
+    // (the early-return above handled the null case). Capture it in
+    // a const so TS narrows the type.
+    const branch = link.on_timeout_branch;
 
     try {
       await TenantContext.run(tenant, async () => {
@@ -410,12 +428,12 @@ export class WorkflowWaitSweeperCron {
         await this.engine.resume(
           link.parent_instance_id,
           link.tenant_id,
-          link.on_timeout_branch ?? undefined,
+          branch ?? undefined,
         );
       });
 
       this.log.log(
-        `workflow-wait-sweeper: resumed link=${link.id} parent=${link.parent_instance_id} branch=${link.on_timeout_branch ?? '<edges[0]>'}`,
+        `workflow-wait-sweeper: resumed link=${link.id} parent=${link.parent_instance_id} branch=${branch}`,
       );
       return true;
     } catch (err) {

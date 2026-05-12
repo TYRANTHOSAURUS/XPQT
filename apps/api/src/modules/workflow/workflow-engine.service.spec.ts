@@ -1767,6 +1767,90 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
     expect(events.filter((e) => e.event_type === 'link_resolved')).toHaveLength(1);
   });
 
+  it('BLOCKER fix (Phase 1.C): cron-claimed link STILL cancels child entity + child workflow (cascade enumerates ALL links, not just unresolved)', async () => {
+    // Codex BLOCKER (2026-05-12 Phase 1.C). Sequence:
+    //   1. cancelInstance atomic-claims parent.status='cancelled'.
+    //   2. Tier 1 cron sweeper concurrently atomic-claims the link
+    //      (resolved_at=now(), resolution_kind='timeout').
+    //   3. cancelInstance enumerates links. With the old
+    //      `.is('resolved_at', null)` filter, the cron-claimed link was
+    //      MISSING — the cascade body never ran, the child entity +
+    //      child workflow stayed alive. Cron's subsequent engine.resume
+    //      no-op'd because parent.status was no longer 'waiting'.
+    //   4. New behavior: cascade enumerates the link regardless of
+    //      resolved_at. Entity cancel + child workflow cancel run
+    //      UNCONDITIONALLY. link-resolve is the only step that's
+    //      conditional on resolved_at — it skips the duplicate
+    //      link_resolved emit when the cron already wrote one.
+    //
+    // Mock setup: the link row has resolved_at set + resolution_kind
+    // 'timeout' (mocking the cron's prior claim). The applyFilters
+    // helper is loose — it only rejects when the column is present on
+    // the row and value differs, so omitting the `__is__: { resolved_at: null }`
+    // assertion in the cascade SELECT means this resolved link IS now
+    // returned (the new code drops the .is filter).
+    const { supabase, dispatchService, slaService } = makeCancelDeps({
+      tables: {
+        workflow_instances: {
+          rows: [
+            { id: 'wi-parent', status: 'active', tenant_id: 'ten1', entity_kind: 'case', case_id: 'tk-parent' },
+            { id: 'wi-child',  status: 'active', tenant_id: 'ten1', entity_kind: 'case', case_id: 'tk-child' },
+          ],
+          updateResult: [{ id: 'wi-parent' }],
+        },
+        workflow_instance_links: {
+          rows: [{
+            id: 'link-cron-claimed',
+            parent_instance_id: 'wi-parent',
+            child_instance_id: 'wi-child',
+            child_entity_kind: 'case',
+            child_entity_id: 'tk-child',
+            on_parent_cancel: 'cancel_child',
+            // Pre-claimed by the cron — the old cascade's
+            // .is('resolved_at', null) filter would have excluded it.
+            resolved_at: '2026-05-12T10:00:00.000Z',
+            resolution_kind: 'timeout',
+          }],
+          // The cascade's resolveLinkRow UPDATE returns null because the
+          // .is('resolved_at', null) guard inside resolveLinkRow now
+          // matches zero rows (the cron already flipped resolved_at).
+          updateResult: null,
+        },
+      },
+    });
+    const engine = new WorkflowEngineService(supabase as never, dispatchService as never, slaService as never);
+    const events = captureEmits(engine);
+    jest.spyOn(console, 'info').mockImplementation(() => {});
+
+    await engine.cancelInstance('case', 'tk-parent', 'ten1', 'admin');
+
+    // Parent cancel + child cancel BOTH emitted — the load-bearing
+    // assertion. If the cascade had filtered out the cron-claimed link
+    // (the old behavior), only `wi-parent` would have been cancelled
+    // and wi-child would have stayed active forever.
+    const cancelled = events.filter((e) => e.event_type === 'instance_cancelled');
+    expect(cancelled).toHaveLength(2);
+    expect(cancelled[0].instanceId).toBe('wi-parent');
+    expect(cancelled[1].instanceId).toBe('wi-child');
+    // Child cancel carries the cascade context (proves it was driven
+    // by the link cascade, not an unrelated path).
+    expect(cancelled[1].payload?.triggered_by_link_id).toBe('link-cron-claimed');
+    expect(cancelled[1].payload?.parent_instance_id).toBe('wi-parent');
+
+    // link_resolved suppressed — cron already emitted it for the
+    // 'timeout' resolution. Cascade's resolveLinkRow UPDATE returns
+    // null (the resolved_at IS NULL guard inside resolveLinkRow
+    // matches 0 rows), so no duplicate emit. The pending event is
+    // ALSO not emitted — zero-row return is a normal race.
+    expect(events.filter((e) => e.event_type === 'link_resolved')).toHaveLength(0);
+    expect(events.filter((e) => e.event_type === 'link_pending_entity_cancel')).toHaveLength(1);
+    // …the one pending event is the deferred case-kind entity cancel
+    // (phase_1b_case_entity_cancel_pending — unrelated to the race;
+    // it's emitted unconditionally for case-child links).
+    const pending = events.filter((e) => e.event_type === 'link_pending_entity_cancel');
+    expect(pending[0].payload?.reason).toBe('phase_1b_case_entity_cancel_pending');
+  });
+
   it('IMPORTANT 2 fix: resolveLinkRow on already-resolved link (concurrent wake) does NOT emit duplicate link_resolved', async () => {
     // Codex IMPORTANT 2 (2026-05-12). Wake handler at :304 claims the
     // link first → row's resolved_at is now non-null. Our cancel

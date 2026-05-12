@@ -130,3 +130,46 @@ stops retrying.
 24h window. At that point ship a `wait_timeout_retry_count` column
 on `workflow_instance_links` + cap at N retries before emitting
 `link_resume_failed` and leaving the row claimed for operator triage.
+
+**Second probe — claimed-but-not-resumed rows (codex IMPORTANT 3
+remediation, 2026-05-12 Phase 1.C):** the cron creates a state the
+first probe misses — rows that are CLAIMED (`resolved_at IS NOT NULL`,
+`resolution_kind = 'timeout'`) but where no `instance_resumed` event
+landed on the parent. This happens when:
+
+  1. `engine.resume()` threw transient AND the cron's unclaim itself
+     also failed (the row stays claimed; the cron's `unclaim_failed`
+     error log flags it).
+  2. The cross-tenant defense path left the row claimed deliberately
+     (parent.tenant_id mismatch — corrupt row; intentionally not
+     unclaimed so it stops being re-swept).
+  3. The fail-closed null-`on_timeout_branch` path leaves the row
+     claimed (codex IMPORTANT 1 remediation — also intentional;
+     ops-triage required).
+
+```sql
+-- Links resolved by the cron but with no instance_resumed event on the
+-- parent within the last 24 hours (likely stuck due to resume failure or
+-- cross-tenant defense or null on_timeout_branch). Action: investigate
+-- per row.
+select wil.id, wil.parent_instance_id, wil.resolved_at,
+       wil.resolution_kind,
+       extract(epoch from (now() - wil.resolved_at))::int as resolved_seconds_ago
+  from public.workflow_instance_links wil
+ where wil.resolution_kind = 'timeout'
+   and wil.resolved_at > now() - interval '24 hours'
+   and not exists (
+     select 1 from public.workflow_instance_events e
+      where e.workflow_instance_id = wil.parent_instance_id
+        and e.event_type = 'instance_resumed'
+        and e.created_at >= wil.resolved_at
+   )
+ order by wil.resolved_at desc
+ limit 50;
+```
+
+Pair this probe with a search for `link_pending_entity_cancel` events
+on the same parents — those carry the structured reason
+(`on_timeout_branch_null_resume_skipped`, `cascade_error`,
+`link_resolve_update_failed`, etc.) that explains why the resume
+never happened.

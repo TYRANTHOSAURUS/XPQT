@@ -379,14 +379,31 @@ export class WorkflowEngineService {
     // Step 4: cascade through workflow_instance_links. Tenant-filtered
     // (admin client bypasses RLS). Process every link individually with
     // try/catch boundaries so one bad link doesn't abort the loop.
+    //
+    // Codex BLOCKER remediation (2026-05-12 Phase 1.C): the SELECT used to
+    // filter `.is('resolved_at', null)`. That filter caused a child-
+    // cancellation leak when the Tier 1 cron sweeper claimed a link
+    // (setting resolved_at=now(), resolution_kind='timeout') between this
+    // cancelInstance call's atomic claim of `parent.status='cancelled'` and
+    // this enumeration. The cron-claimed link disappeared from the
+    // enumeration, the child entity + child workflow_instance stayed
+    // alive forever, and cron's subsequent engine.resume() no-op'd because
+    // parent.status was no longer 'waiting'.
+    //
+    // Fix: enumerate ALL links from this parent regardless of resolved_at.
+    // The semantic work (cancel child entity + cancel child workflow) runs
+    // UNCONDITIONALLY. resolveLinkRow is the only step that's conditional
+    // on resolved_at — its UPDATE keeps the `.is('resolved_at', null)`
+    // guard so the link's audit-only resolution_kind isn't overwritten
+    // (and a duplicate `link_resolved` isn't emitted). The link's
+    // resolution_kind is audit-only; what matters is the child cascade.
     const { data: linkRows } = await this.supabase.admin
       .from('workflow_instance_links')
       .select(
         'id, child_instance_id, child_entity_kind, child_entity_id, on_parent_cancel',
       )
       .eq('parent_instance_id', instanceId)
-      .eq('tenant_id', tenantId)
-      .is('resolved_at', null);
+      .eq('tenant_id', tenantId);
 
     const links = (linkRows ?? []) as Array<{
       id: string;
@@ -637,9 +654,19 @@ export class WorkflowEngineService {
         throw updateError;
       }
       if (!res.data) {
-        // Lost the race — another path (wake handler or a concurrent
-        // cancel cascade) already resolved this link. The other path
+        // Lost the race — another path (wake handler or Tier 1 cron
+        // sweeper) already resolved this link with a different
+        // resolution_kind ('condition_met' or 'timeout'). The other path
         // emits its own `link_resolved`; we MUST NOT emit a duplicate.
+        // Log at info-level so ops sees the race in the audit feed.
+        // Codex BLOCKER remediation (2026-05-12 Phase 1.C): this is now
+        // a hot path on the parent-cancel cascade because the cascade
+        // enumerates ALL links (not just resolved_at IS NULL), so a
+        // cron-claimed link's link-resolve step lands here cleanly.
+        console.info('[workflow] resolveLinkRow: already resolved by concurrent path', {
+          link_id: linkId,
+          parent_instance_id: parentInstanceId,
+        });
         return;
       }
       await this.emit(parentInstanceId, 'link_resolved', {
