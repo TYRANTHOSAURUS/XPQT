@@ -92,6 +92,12 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // _resolution_at string, etc.). TS plan-build mints these via a Zod
   // schema; the raise is defense-in-depth for non-HTTP callers.
   'edit_booking.invalid_plan_shape': 400,
+  // B.4 Step 2F.1 — edit_booking_scope.invalid_plans (00367). Caller
+  // passed a non-array, empty array, or malformed {booking_id, plan}
+  // element. Same 400 shape as edit_booking.invalid_plan_shape — defense-
+  // in-depth for non-HTTP callers; TS plan-build mints these via a Zod
+  // schema.
+  'edit_booking_scope.invalid_plans': 400,
 
   // ── 404 not_found ────────────────────────────────────────────────
   'transition_entity_status.not_found': 404,
@@ -156,6 +162,12 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'edit_booking.work_order_not_in_booking': 404,
   'edit_booking.order_not_in_booking': 404,
   'edit_booking.asset_reservation_not_in_booking': 404,
+  // B.4 Step 2F.1 — edit_booking_scope.booking_not_found (00367). One
+  // of the booking_ids in p_plans doesn't exist or belongs to a
+  // different tenant. 404 mirrors edit_booking.not_found shape — from
+  // the caller's perspective the row is invisible inside this edit's
+  // scope. Caller refetches the scope-edit plan and retries.
+  'edit_booking_scope.booking_not_found': 404,
 
   // ── 409 conflict ─────────────────────────────────────────────────
   // payload_mismatch: the client reused the same X-Client-Request-Id
@@ -229,6 +241,19 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // status=422; this entry is defense-in-depth for any future RPC raise of
   // the same code (none today; the gate is exclusively TS-side).
   'edit_booking.rule_missing_approvers': 422,
+  // B.4 Step 2F.1 — edit_booking_scope RPC (00367) 422 raises.
+  // - too_many_occurrences: N > 200 hard cap. Request payload is valid;
+  //   the system can't safely commit an unbounded all-or-none batch in
+  //   one transaction. Operator must split the edit OR pass a chunk
+  //   confirmation (TS UX in §7.B.4.C handles this above 100).
+  // - mixed_series: booking_ids don't all share the same non-null
+  //   recurrence_series_id. Request payload is valid jsonb; the
+  //   scope-derivation in the caller is wrong (TS bug or non-HTTP
+  //   smuggling). 422 routes to the validation surface so the operator
+  //   sees the actionable detail ("retry from the scope picker") rather
+  //   than a generic 500 retry-loop.
+  'edit_booking_scope.too_many_occurrences': 422,
+  'edit_booking_scope.mixed_series': 422,
   // B.2.A semantic re-derivation gates — RPCs raise these when the
   // TS-side plan disagrees with the server's recomputation at write time
   // (workflow/SLA/scope-override changed, effective location resolved

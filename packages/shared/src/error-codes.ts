@@ -792,7 +792,23 @@ export type KnownErrorCode =
   // 503 → 422 in commit `fb7b163f`. Reference:
   // docs/follow-ups/b4-followups.md "Sequencing — controller cutover
   // MUST land in or after notification dispatch (B.4.A.5)".
-  | 'booking.edit_requires_notification_dispatch';
+  | 'booking.edit_requires_notification_dispatch'
+  // B.4 Step 2F.1 — edit_booking_scope RPC (00367). Series-scope edits
+  // fan out one EditPlan per occurrence; this RPC commits all-or-none.
+  // - invalid_plans (400): p_plans isn't an array, is empty, or an
+  //   element is malformed (missing booking_id/plan, wrong jsonb type,
+  //   duplicate booking_ids).
+  // - too_many_occurrences (422): N > 200 hard server cap (TS confirms
+  //   at 100 per §7.B.4.C; this is defense-in-depth for non-HTTP
+  //   callers or TS regressions).
+  // - booking_not_found (404): one of the booking_ids doesn't exist or
+  //   is cross-tenant. Caller refetches the scope-edit plan.
+  // - mixed_series (422): booking_ids don't all share the same non-null
+  //   recurrence_series_id. Caller's scope derivation is wrong (TS bug).
+  | 'edit_booking_scope.invalid_plans'
+  | 'edit_booking_scope.too_many_occurrences'
+  | 'edit_booking_scope.booking_not_found'
+  | 'edit_booking_scope.mixed_series';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1379,6 +1395,12 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'approval.read_failed',
   // B.4 step 2D-D — see KnownErrorCode union for rationale.
   'booking.edit_requires_notification_dispatch',
+  // B.4 Step 2F.1 — edit_booking_scope RPC (00367). See KnownErrorCode
+  // union for per-code rationale.
+  'edit_booking_scope.invalid_plans',
+  'edit_booking_scope.too_many_occurrences',
+  'edit_booking_scope.booking_not_found',
+  'edit_booking_scope.mixed_series',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

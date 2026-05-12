@@ -1806,6 +1806,25 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save the booking",
     detail: "We couldn't read this booking's approval state. Try again in a moment.",
   },
+  // B.4 Step 2F.1 — edit_booking_scope RPC (00367). Series-scope edits
+  // fan out one EditPlan per occurrence; failures here surface with the
+  // same operator-actionable voice as the single-occurrence edit codes.
+  'edit_booking_scope.invalid_plans': {
+    title: "Couldn't save the series edit",
+    detail: 'The series edit request was malformed. Refresh the page and try again.',
+  },
+  'edit_booking_scope.too_many_occurrences': {
+    title: "Couldn't save the series edit — too large",
+    detail: 'This edit affects too many occurrences to commit in one step. Narrow the scope (e.g. "this and following") or contact support.',
+  },
+  'edit_booking_scope.booking_not_found': {
+    title: "Couldn't save the series edit — not found",
+    detail: 'One or more occurrences in the series no longer exist. Refresh the page and try again.',
+  },
+  'edit_booking_scope.mixed_series': {
+    title: "Couldn't save the series edit",
+    detail: 'The selected occurrences are not all part of the same series. Refresh the page and pick the scope again.',
+  },
 };
 
 /**
