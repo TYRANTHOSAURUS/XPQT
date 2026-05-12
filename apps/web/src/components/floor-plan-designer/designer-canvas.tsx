@@ -46,9 +46,23 @@ export function DesignerCanvas({ state, dispatch }: Props) {
           ref={svgRef}
           viewBox={`0 0 ${state.widthPx ?? 1000} ${state.heightPx ?? 1000}`}
           className="w-full h-full"
-          onPointerDown={(e) => tool.onPointerDown?.({ state, dispatch, ...toWorld(e) })}
-          onPointerMove={(e) => tool.onPointerMove?.({ state, dispatch, ...toWorld(e) })}
-          onPointerUp={(e) => tool.onPointerUp?.({ state, dispatch, ...toWorld(e) })}
+          // Left-click only — middle/right buttons fall through to ZoomPanLayer
+          // for pan. Capture the pointer on the SVG so drag-to-draw works even
+          // when the cursor leaves the SVG mid-drag.
+          onPointerDown={(e) => {
+            if (e.button !== 0) return;
+            e.currentTarget.setPointerCapture(e.pointerId);
+            tool.onPointerDown?.({ state, dispatch, ...toWorld(e) });
+          }}
+          onPointerMove={(e) => {
+            if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+            tool.onPointerMove?.({ state, dispatch, ...toWorld(e) });
+          }}
+          onPointerUp={(e) => {
+            if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+            tool.onPointerUp?.({ state, dispatch, ...toWorld(e) });
+            e.currentTarget.releasePointerCapture(e.pointerId);
+          }}
         >
           {displayImageUrl && (
             <image

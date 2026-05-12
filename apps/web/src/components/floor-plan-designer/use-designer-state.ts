@@ -82,7 +82,9 @@ function reducer(state: StateWithHistory, action: Action): StateWithHistory {
     case 'set-tool':       return { ...state, activeTool: action.tool, inProgressPolygon: null };
     case 'add-polygon': {
       const hist = pushHistory(state);
-      return { ...state, ...hist, polygons: [...state.polygons, action.polygon] };
+      const nextPolygons = [...state.polygons, action.polygon];
+      // Auto-select the newly added polygon so the inspector opens for linking.
+      return { ...state, ...hist, polygons: nextPolygons, selectedPolygonIndex: nextPolygons.length - 1 };
     }
     case 'update-polygon': {
       const hist = pushHistory(state);
@@ -109,8 +111,21 @@ function reducer(state: StateWithHistory, action: Action): StateWithHistory {
     case 'start-drawing':  return { ...state, inProgressPolygon: action.polygon };
     case 'commit-drawing': {
       if (!state.inProgressPolygon) return state;
+      // Don't commit degenerate polygons (e.g. rectangle drag that never moved).
+      if (state.inProgressPolygon.points.length < 3) {
+        return { ...state, inProgressPolygon: null };
+      }
       const hist = pushHistory(state);
-      return { ...state, ...hist, polygons: [...state.polygons, state.inProgressPolygon], inProgressPolygon: null };
+      const nextPolygons = [...state.polygons, state.inProgressPolygon];
+      // Auto-select + auto-switch to select tool so the user can immediately
+      // link the polygon to a space via the inspector picker.
+      return {
+        ...state, ...hist,
+        polygons: nextPolygons,
+        inProgressPolygon: null,
+        selectedPolygonIndex: nextPolygons.length - 1,
+        activeTool: 'select',
+      };
     }
     case 'cancel-drawing': return { ...state, inProgressPolygon: null };
     case 'server-sync':    return { ...state, updatedAt: action.updatedAt };

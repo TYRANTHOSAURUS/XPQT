@@ -325,7 +325,7 @@ export function PortalBookFloor() {
         </div>
       ) : (
         <div className="relative w-full rounded-xl border bg-muted/30 overflow-hidden" style={{ aspectRatio: '16/9', minHeight: '300px' }}>
-          <ZoomPanLayer key={zoomKey} minScale={0.25} maxScale={8}>
+          <ZoomPanLayer key={zoomKey} minScale={0.25} maxScale={8} reserveLeftClickForChildren={false}>
             <FloorPlanCanvas
               plan={publishedPlan}
               states={spaceStates}
