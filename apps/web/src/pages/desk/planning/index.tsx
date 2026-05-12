@@ -16,7 +16,7 @@ import {
   shiftDate,
   toLocalDateString,
 } from '@/lib/scheduler-time';
-import { toastError } from '@/lib/toast';
+import { toast, toastError } from '@/lib/toast';
 import { apiFetch } from '@/lib/api';
 import { ticketKeys } from '@/api/tickets';
 import {
@@ -30,6 +30,7 @@ import { PlanningToolbar } from './components/planning-toolbar';
 import { PlanningGrid, type PlanningLane, type PendingBlockDrag } from './components/planning-grid';
 import { UnscheduledRail } from './components/unscheduled-rail';
 import { usePlanningDrag, type PlanningDragState } from './hooks/use-planning-drag';
+import { useKeyboardNudge } from './hooks/use-keyboard-nudge';
 import { runOptimisticWithRollback } from './lib/commit-with-rollback';
 import { deriveLanesFromBlocks } from './lib/lanes';
 
@@ -123,7 +124,11 @@ export function DeskPlanningPage() {
     [fromIso, toIso, status, teamId],
   );
   const planningQuery = useWorkOrderPlanning(filters);
-  const data: WorkOrderPlanningResponse = planningQuery.data ?? { planned: [], unscheduled: [] };
+  const data: WorkOrderPlanningResponse = planningQuery.data ?? {
+    planned: [],
+    unscheduled: [],
+    lanes: [],
+  };
 
   // ── Mutation helpers ───────────────────────────────────────────────
   // `useUpdateWorkOrder` from `@/api/tickets` requires the work-order id
@@ -177,6 +182,11 @@ export function DeskPlanningPage() {
     isoStart: string;
     durationMinutes: number | null;
     assigneeOverride: AssigneeOverride | null;
+    // `'drop'` reuses commitDrop's payload shape (start + optional duration
+    // when unscheduled). `'keyboard'` always sends both because the
+    // operator may have nudged duration without touching start (or vice
+    // versa) but we don't track which side changed at confirm time.
+    kind: 'drop' | 'keyboard';
   } | null>(null);
 
   // ── Drag controller (chunk 4) ─────────────────────────────────────
@@ -192,10 +202,39 @@ export function DeskPlanningPage() {
     onComplete: (state) => handleDropRef.current?.(state),
   });
 
+  // Server-supplied lanes (P1-1) are the truth — they include idle
+  // assignees in the filtered team as drop targets. Falls back to
+  // block-derived lanes when the server response is missing the field
+  // (initial loading state, legacy response, or test fixtures that
+  // omit it).
   const lanes: PlanningLane[] = useMemo(
-    () => deriveLanesFromBlocks(data.planned, data.unscheduled),
-    [data.planned, data.unscheduled],
+    () =>
+      deriveLanesFromBlocks(
+        data.planned,
+        data.unscheduled,
+        data.lanes && data.lanes.length > 0 ? data.lanes : null,
+      ),
+    [data.planned, data.unscheduled, data.lanes],
   );
+
+  // Truncation warning — fires once per (window, filter) combination so
+  // the dispatcher knows the lane roster is partial. Sonner dedup by
+  // id keeps a rapid filter-flip from spamming. Guarded by `data.truncated`
+  // so it only emits when the server actually capped.
+  const truncatedToastIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!data.truncated) {
+      truncatedToastIdRef.current = null;
+      return;
+    }
+    const key = `planning-truncated:${fromIso}:${teamId ?? ''}`;
+    if (truncatedToastIdRef.current === key) return;
+    truncatedToastIdRef.current = key;
+    toast.warning('Showing the 50 busiest lanes', {
+      description: 'Filter by team to see a specific roster.',
+      id: key,
+    });
+  }, [data.truncated, fromIso, teamId]);
 
   // Block (lane → lane) drag start.
   const onBlockPointerDown = useCallback(
@@ -387,6 +426,98 @@ export function DeskPlanningPage() {
     [filters, invalidatePlanning, mutateWorkOrder, qc],
   );
 
+  /**
+   * Commit a keyboard nudge — may shift start, duration, or both. Routed
+   * through the same rollback helper as drag so a 4xx/5xx PATCH restores
+   * the cache before the toast fires.
+   */
+  const commitKeyboardChange = useCallback(
+    async (
+      block: WorkOrderPlanningBlock,
+      isoStart: string,
+      durationMinutes: number | null,
+      requestId?: string,
+    ) => {
+      const xCid = requestId ?? crypto.randomUUID();
+      const payload: {
+        planned_start_at: string;
+        planned_duration_minutes?: number;
+      } = { planned_start_at: isoStart };
+      if (durationMinutes != null) payload.planned_duration_minutes = durationMinutes;
+      const planningKey = workOrderPlanningKeys.window(filters);
+      await runOptimisticWithRollback<WorkOrderPlanningResponse>({
+        qc,
+        key: planningKey,
+        mutator: (prev) => {
+          const idx = prev.planned.findIndex((b) => b.id === block.id);
+          if (idx < 0) return prev;
+          const next = [...prev.planned];
+          next[idx] = {
+            ...next[idx],
+            planned_start_at: isoStart,
+            planned_duration_minutes:
+              durationMinutes ?? next[idx].planned_duration_minutes,
+          };
+          return { ...prev, planned: next };
+        },
+        mutationFn: () => mutateWorkOrder(block.id, payload, xCid),
+        onError: (err) => {
+          toastError("Couldn't move plan", {
+            error: err,
+            retry: () => commitKeyboardChange(block, isoStart, durationMinutes, xCid),
+          });
+        },
+        onSettled: invalidatePlanning,
+      });
+    },
+    [filters, invalidatePlanning, mutateWorkOrder, qc],
+  );
+
+  // ── Keyboard nudge ────────────────────────────────────────────────
+  // Drag/keyboard contention: keyboard input fast-fails if a pointer drag
+  // is mid-flight. The drag controller's ctxRef + optimistic patch share a
+  // cache slot with the keyboard path — overlapping them would interleave
+  // two snapshot/restore sequences against the same key.
+  const isDragActive = useCallback(
+    () => dragController.active != null,
+    [dragController.active],
+  );
+  const keyboardNudge = useKeyboardNudge({
+    qc,
+    filters,
+    isBlocked: isDragActive,
+    onCommit: (block, nextStartIso, nextDurationMinutes) => {
+      const dropMs = new Date(nextStartIso).getTime();
+      const inPast = dropMs < Date.now() - PAST_DROP_GRACE_MS;
+      if (inPast) {
+        setPendingPastDrop({
+          block,
+          isoStart: nextStartIso,
+          durationMinutes: nextDurationMinutes,
+          assigneeOverride: null,
+          kind: 'keyboard',
+        });
+        return;
+      }
+      void commitKeyboardChange(block, nextStartIso, nextDurationMinutes);
+    },
+  });
+  const onBlockKeyboardMove = useCallback(
+    (block: WorkOrderPlanningBlock, deltaMinutes: number) => {
+      keyboardNudge.nudgeStart(block, deltaMinutes);
+    },
+    [keyboardNudge],
+  );
+  const onBlockKeyboardResize = useCallback(
+    (block: WorkOrderPlanningBlock, deltaMinutes: number) => {
+      keyboardNudge.nudgeDuration(block, deltaMinutes);
+    },
+    [keyboardNudge],
+  );
+  const onBlockKeyboardFlush = useCallback(() => {
+    keyboardNudge.flush();
+  }, [keyboardNudge]);
+
   const handleDrop = useCallback(
     (state: PlanningDragState) => {
       const block =
@@ -432,7 +563,13 @@ export function DeskPlanningPage() {
           : block.planned_duration_minutes;
 
       if (inPast) {
-        setPendingPastDrop({ block, isoStart, durationMinutes, assigneeOverride });
+        setPendingPastDrop({
+          block,
+          isoStart,
+          durationMinutes,
+          assigneeOverride,
+          kind: 'drop',
+        });
         return;
       }
       void commitDrop(block, isoStart, durationMinutes, assigneeOverride);
@@ -579,6 +716,9 @@ export function DeskPlanningPage() {
               pendingDrag={pendingDrag}
               onBlockPointerDown={onBlockPointerDown}
               onBlockResizePointerDown={onBlockResizePointerDown}
+              onBlockKeyboardMove={onBlockKeyboardMove}
+              onBlockKeyboardResize={onBlockKeyboardResize}
+              onBlockKeyboardFlush={onBlockKeyboardFlush}
               onLaneRowPointerMove={onLaneRowPointerMove}
               onLaneRowPointerUp={onLaneRowPointerUp}
             />
@@ -589,7 +729,17 @@ export function DeskPlanningPage() {
       <ConfirmDialog
         open={!!pendingPastDrop}
         onOpenChange={(o) => {
-          if (!o) setPendingPastDrop(null);
+          if (!o) {
+            // Keyboard nudges paint the cache optimistically BEFORE the
+            // past-slot dialog fires; cancelling the dialog without
+            // invalidating leaves the operator looking at a phantom past
+            // time until the next refetch. Drag's past-slot path doesn't
+            // need this because drag's optimistic patch only lands inside
+            // `commitDrop` which never runs on cancel.
+            const wasKeyboard = pendingPastDrop?.kind === 'keyboard';
+            setPendingPastDrop(null);
+            if (wasKeyboard) invalidatePlanning();
+          }
         }}
         title="Backfill plan?"
         description={pastDropDescription}
@@ -597,9 +747,14 @@ export function DeskPlanningPage() {
         cancelLabel="Cancel"
         onConfirm={async () => {
           if (!pendingPastDrop) return;
-          const { block, isoStart, durationMinutes, assigneeOverride } = pendingPastDrop;
+          const { block, isoStart, durationMinutes, assigneeOverride, kind } =
+            pendingPastDrop;
           setPendingPastDrop(null);
-          await commitDrop(block, isoStart, durationMinutes, assigneeOverride);
+          if (kind === 'keyboard') {
+            await commitKeyboardChange(block, isoStart, durationMinutes);
+          } else {
+            await commitDrop(block, isoStart, durationMinutes, assigneeOverride);
+          }
         }}
       />
     </div>
@@ -680,7 +835,7 @@ function optimisticMove(
   if (fromPlanned >= 0) planned.splice(fromPlanned, 1);
   if (fromUnscheduled >= 0) unscheduled.splice(fromUnscheduled, 1);
   planned.push(updated);
-  return { planned, unscheduled };
+  return { ...prev, planned, unscheduled };
 }
 
 function laneForOverride(

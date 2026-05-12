@@ -32,6 +32,10 @@ interface Props {
   /** Pointer-down on a block's right-edge resize handle — forwarded to the
    *  drag controller with a `'resize'` source so only the duration changes. */
   onBlockResizePointerDown?: (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => void;
+  /** Keyboard arrow nudges — forwarded to the page's debounced nudge hook. */
+  onBlockKeyboardMove?: (block: WorkOrderPlanningBlock, deltaMinutes: number) => void;
+  onBlockKeyboardResize?: (block: WorkOrderPlanningBlock, deltaMinutes: number) => void;
+  onBlockKeyboardFlush?: () => void;
   /** Lane row pointer events (for drag-move tracking + rail-to-lane drops). */
   onLaneRowPointerMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onLaneRowPointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
@@ -79,6 +83,9 @@ export const PlanningLaneRow = memo(function PlanningLaneRow({
   pendingDrag,
   onBlockPointerDown,
   onBlockResizePointerDown,
+  onBlockKeyboardMove,
+  onBlockKeyboardResize,
+  onBlockKeyboardFlush,
   onLaneRowPointerMove,
   onLaneRowPointerUp,
   isPinned,
@@ -187,12 +194,16 @@ export const PlanningLaneRow = memo(function PlanningLaneRow({
               startIso={block.planned_start_at}
               endIso={endIso}
               isDragging={isDragging}
+              cellMinutes={cellMinutes}
               onPointerDown={
                 onBlockPointerDown ? (e) => onBlockPointerDown(e, block) : undefined
               }
               onResizeHandlePointerDown={
                 onBlockResizePointerDown ? (e) => onBlockResizePointerDown(e, block) : undefined
               }
+              onKeyboardMove={onBlockKeyboardMove}
+              onKeyboardResize={onBlockKeyboardResize}
+              onKeyboardFlush={onBlockKeyboardFlush}
             />
           );
         })}

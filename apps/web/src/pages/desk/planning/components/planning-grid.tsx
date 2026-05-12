@@ -44,6 +44,10 @@ interface Props {
   onBlockPointerDown?: (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => void;
   /** Resize-handle pointer-down — passed through to each lane row. */
   onBlockResizePointerDown?: (e: React.PointerEvent<HTMLDivElement>, block: WorkOrderPlanningBlock) => void;
+  /** Keyboard arrow nudges — passed through to each lane row → block. */
+  onBlockKeyboardMove?: (block: WorkOrderPlanningBlock, deltaMinutes: number) => void;
+  onBlockKeyboardResize?: (block: WorkOrderPlanningBlock, deltaMinutes: number) => void;
+  onBlockKeyboardFlush?: () => void;
   onLaneRowPointerMove?: (e: React.PointerEvent<HTMLDivElement>) => void;
   onLaneRowPointerUp?: (e: React.PointerEvent<HTMLDivElement>) => void;
 }
@@ -66,6 +70,9 @@ export function PlanningGrid({
   pendingDrag,
   onBlockPointerDown,
   onBlockResizePointerDown,
+  onBlockKeyboardMove,
+  onBlockKeyboardResize,
+  onBlockKeyboardFlush,
   onLaneRowPointerMove,
   onLaneRowPointerUp,
 }: Props) {
@@ -124,6 +131,9 @@ export function PlanningGrid({
               isDropTarget={isDropTarget}
               onBlockPointerDown={onBlockPointerDown}
               onBlockResizePointerDown={onBlockResizePointerDown}
+              onBlockKeyboardMove={onBlockKeyboardMove}
+              onBlockKeyboardResize={onBlockKeyboardResize}
+              onBlockKeyboardFlush={onBlockKeyboardFlush}
               onLaneRowPointerMove={onLaneRowPointerMove}
               onLaneRowPointerUp={onLaneRowPointerUp}
             />

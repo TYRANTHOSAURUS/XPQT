@@ -45,6 +45,18 @@ interface Props {
    * `undefined` disables resize. Same `can_plan` gate as the move handler.
    */
   onResizeHandlePointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  /**
+   * Keyboard arrow-key nudge — shifts `planned_start_at` by `deltaMinutes`.
+   * Parent owns the debounce + commit; the block just translates a keypress
+   * to a delta. Gated by `block.can_plan`.
+   */
+  onKeyboardMove?: (block: WorkOrderPlanningBlock, deltaMinutes: number) => void;
+  /** Same as `onKeyboardMove` but for `planned_duration_minutes`. */
+  onKeyboardResize?: (block: WorkOrderPlanningBlock, deltaMinutes: number) => void;
+  /** Force-flush any pending keyboard burst (Escape). */
+  onKeyboardFlush?: () => void;
+  /** Grid snap unit in minutes — used as the arrow-key step. */
+  cellMinutes?: number;
 }
 
 export const PlanningBlock = memo(function PlanningBlock({
@@ -56,6 +68,10 @@ export const PlanningBlock = memo(function PlanningBlock({
   isDragging,
   onPointerDown,
   onResizeHandlePointerDown,
+  onKeyboardMove,
+  onKeyboardResize,
+  onKeyboardFlush,
+  cellMinutes = 30,
 }: Props) {
   const navigate = useNavigate();
   const statusEntry = statusConfig[block.status_category] ?? statusConfig.new;
@@ -89,9 +105,47 @@ export const PlanningBlock = memo(function PlanningBlock({
       aria-label={`Open ${ref}: ${block.title}`}
       onClick={handleClick}
       onKeyDown={(e) => {
+        // Scope keyboard handling to the block root. The resize handle is
+        // role=separator + not focusable, so this is a belt-and-braces
+        // guard against future interactive children swallowing keypresses.
+        if (e.target !== e.currentTarget) return;
+
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
+          // Commit any pending nudge before navigating so the detail page
+          // shows the truth the operator just typed in — not a stale row.
+          onKeyboardFlush?.();
           navigate(`/desk/tickets/${block.id}`);
+          return;
+        }
+
+        if (e.key === 'Escape') {
+          if (onKeyboardFlush) {
+            e.preventDefault();
+            onKeyboardFlush();
+          }
+          return;
+        }
+
+        if (!canPlan) return;
+        // Shift = 30-min coarse step; bare arrows = grid snap (cellMinutes).
+        const moveStep = e.shiftKey ? 30 : cellMinutes;
+
+        if (e.key === 'ArrowLeft' && onKeyboardMove) {
+          e.preventDefault();
+          onKeyboardMove(block, -moveStep);
+        } else if (e.key === 'ArrowRight' && onKeyboardMove) {
+          e.preventDefault();
+          onKeyboardMove(block, moveStep);
+        } else if (e.shiftKey && e.key === 'ArrowUp' && onKeyboardResize) {
+          // Vertical without Shift is reserved for future row navigation —
+          // require Shift+Vertical for resize so a power user pressing
+          // ArrowDown to scroll isn't surprised by a duration mutation.
+          e.preventDefault();
+          onKeyboardResize(block, cellMinutes);
+        } else if (e.shiftKey && e.key === 'ArrowDown' && onKeyboardResize) {
+          e.preventDefault();
+          onKeyboardResize(block, -cellMinutes);
         }
       }}
       onPointerDown={canPlan ? onPointerDown : undefined}
