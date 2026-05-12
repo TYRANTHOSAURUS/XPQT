@@ -656,6 +656,21 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
       "The `update_ticket` node config references a field that's no longer supported. See docs/follow-ups/b2-followups.md for the supported set.",
   },
 
+  // ─── maintenance plans (slice c — pm generator) ─────────────────────────
+  'maintenance_plans.not_found': { title: "We can't find that maintenance plan" },
+  'maintenance_plans.target_mutex_violation': {
+    title: "Couldn't save — pick exactly one target",
+    detail: 'A plan targets either a specific asset or an asset type — not both, and not neither.',
+  },
+  'maintenance_plans.invalid_recurrence': {
+    title: "Couldn't save — recurrence is invalid",
+    detail: 'Interval must be a positive whole number and the unit must be day, week, month, or year.',
+  },
+  'maintenance_plans.in_use': {
+    title: "Can't delete — work orders reference this plan",
+    detail: 'Deactivate the plan instead, or wait until linked work orders are archived.',
+  },
+
   // ─── routing / sla ───────────────────────────────────────────────────────
   'routing.no_match': { title: "Couldn't route — no team matches" },
   'routing.cycle_detected': { title: 'Routing loop detected' },

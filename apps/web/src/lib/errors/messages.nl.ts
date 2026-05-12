@@ -635,6 +635,21 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
       'De `update_ticket`-stap verwijst naar een veld dat niet meer ondersteund wordt. Zie docs/follow-ups/b2-followups.md voor de toegestane velden.',
   },
 
+  // ─── maintenance plans (slice c — pm generator) ─────────────────────────
+  'maintenance_plans.not_found': { title: 'We kunnen dat onderhoudsplan niet vinden' },
+  'maintenance_plans.target_mutex_violation': {
+    title: 'Kon niet opslaan — kies precies één doel',
+    detail: 'Een plan gericht op een specifiek asset óf een assettype — niet allebei en niet geen van beide.',
+  },
+  'maintenance_plans.invalid_recurrence': {
+    title: 'Kon niet opslaan — ongeldige herhaling',
+    detail: 'Interval moet een positief geheel getal zijn en de eenheid dag, week, maand of jaar.',
+  },
+  'maintenance_plans.in_use': {
+    title: 'Kan niet verwijderen — er zijn werkorders aan dit plan gekoppeld',
+    detail: 'Deactiveer het plan, of wacht totdat de gekoppelde werkorders gearchiveerd zijn.',
+  },
+
   // ─── routing / sla ───────────────────────────────────────────────────────
   'routing.no_match': { title: 'Kon niet routeren — geen team gevonden' },
   'routing.cycle_detected': { title: 'Routinglus gedetecteerd' },

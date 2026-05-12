@@ -155,6 +155,9 @@ const DeskVisitorDetailPage = lazyNamed(() => import('@/pages/desk/visitor-detai
 // Floor plans (B.13)
 const FloorPlansIndexPage = lazyNamed(() => import('@/pages/admin/floor-plans-index'), 'FloorPlansIndexPage');
 const FloorPlanDesignerPage = lazyNamed(() => import('@/pages/admin/floor-plan-designer'), 'FloorPlanDesignerPage');
+// Maintenance (Slice C)
+const MaintenancePlansPage = lazyNamed(() => import('@/pages/admin/maintenance/plans'), 'MaintenancePlansPage');
+const MaintenancePlanDetailPage = lazyNamed(() => import('@/pages/admin/maintenance/plan-detail'), 'MaintenancePlanDetailPage');
 
 function RouteFallback() {
   return (
@@ -400,6 +403,9 @@ export function App() {
                   {/* Floor plans (B.13) */}
                   <Route path="floor-plans" element={<RouteErrorBoundary><FloorPlansIndexPage /></RouteErrorBoundary>} />
                   <Route path="floor-plans/:floorSpaceId" element={<RouteErrorBoundary><FloorPlanDesignerPage /></RouteErrorBoundary>} />
+                  {/* Maintenance plans (Slice C) */}
+                  <Route path="maintenance/plans" element={<RouteErrorBoundary><MaintenancePlansPage /></RouteErrorBoundary>} />
+                  <Route path="maintenance/plans/:id" element={<RouteErrorBoundary><MaintenancePlanDetailPage /></RouteErrorBoundary>} />
                 </Route>
                 </Routes>
               </Suspense>

@@ -29,6 +29,7 @@ import {
   Users,
   Webhook,
   Workflow,
+  Wrench,
 } from 'lucide-react';
 
 export interface AdminNavItem {
@@ -184,6 +185,12 @@ const operationsItems: AdminNavItem[] = [
     path: '/admin/vendor-menus',
     icon: BookOpen,
     description: 'Offerings and price lists per vendor',
+  },
+  {
+    title: 'Maintenance plans',
+    path: '/admin/maintenance/plans',
+    icon: Wrench,
+    description: 'Preventive-maintenance plans that auto-generate work orders',
   },
 ];
 
