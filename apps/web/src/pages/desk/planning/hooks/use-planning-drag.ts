@@ -131,6 +131,10 @@ export function usePlanningDrag(opts: {
     (e: React.PointerEvent) => {
       const ctx = ctxRef.current;
       if (!ctx) return;
+      // Window listeners fire for every pointer in the document. On a
+      // multi-touch iPad a second finger would drive the active gesture
+      // with the wrong coordinates. Only honor the pointer that begun.
+      if (e.pointerId !== ctx.pointerId) return;
       const { laneKey, cellAtCursor } = resolveLaneAtPoint(e.clientX, e.clientY, totalColumns, ctx.grabOffsetPx);
 
       let startCell: number;
@@ -176,6 +180,7 @@ export function usePlanningDrag(opts: {
     (e: React.PointerEvent) => {
       const ctx = ctxRef.current;
       if (!ctx) return;
+      if (e.pointerId !== ctx.pointerId) return;
       try {
         ctx.captureEl.releasePointerCapture(ctx.pointerId);
       } catch {
@@ -249,7 +254,18 @@ export function usePlanningDrag(opts: {
     setActive(null);
   }, []);
 
-  return { active, begin, onPointerMove, onPointerUp, cancel };
+  // iOS Safari fires `pointercancel` when multi-touch escapes, scroll
+  // takes over, or the system interrupts. Without handling it the gesture
+  // never ends — ctxRef stays populated and the re-entrant-begin guard
+  // permanently rejects future gestures, locking the board.
+  const onPointerCancel = useCallback((e: React.PointerEvent) => {
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+    if (e.pointerId !== ctx.pointerId) return;
+    cancel();
+  }, [cancel]);
+
+  return { active, begin, onPointerMove, onPointerUp, onPointerCancel, cancel };
 }
 
 /**

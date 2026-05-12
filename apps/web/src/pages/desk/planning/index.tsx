@@ -473,7 +473,10 @@ export function DeskPlanningPage() {
   );
 
   // Global listener so drags still receive move/up events even if the
-  // cursor leaves the grid. Escape cancels.
+  // cursor leaves the grid. Escape cancels. pointercancel covers
+  // iOS Safari multi-touch escape, scroll takeover, and system
+  // interruptions — without it the gesture never ends, ctxRef stays
+  // populated, and the re-entrant guard permanently locks the board.
   useEffect(() => {
     if (!dragController.active) return;
     const onMove = (e: PointerEvent) => {
@@ -482,15 +485,20 @@ export function DeskPlanningPage() {
     const onUp = (e: PointerEvent) => {
       dragController.onPointerUp(e as unknown as React.PointerEvent);
     };
+    const onCancel = (e: PointerEvent) => {
+      dragController.onPointerCancel(e as unknown as React.PointerEvent);
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') dragController.cancel();
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
     window.addEventListener('keydown', onKey);
     return () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
       window.removeEventListener('keydown', onKey);
     };
   }, [dragController]);
