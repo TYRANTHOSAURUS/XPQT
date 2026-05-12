@@ -989,8 +989,12 @@ export class WorkflowEngineService {
         decision: fields.decision ?? null,
         payload: fields.payload ?? {},
       });
-    } catch {
-      // Best-effort — workflow engine continues if event log is unavailable
+    } catch (err) {
+      // Best-effort — workflow engine continues if event log is unavailable.
+      // Surface failures to logs so future event_type / CHECK-constraint
+      // drift doesn't silently swallow audit rows (cf. node_failed regression
+      // shipped in B.2.A.Step 8 → fixed by 00366).
+      console.warn('[workflow] workflow_instance_events insert failed', { event_type, error: err });
     }
   }
 }

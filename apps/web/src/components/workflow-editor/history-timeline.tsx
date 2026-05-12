@@ -1,4 +1,4 @@
-import { ArrowRight, CheckCircle, Pause, Play, AlertCircle, GitBranch } from 'lucide-react';
+import { ArrowRight, CheckCircle, Pause, Play, AlertCircle, GitBranch, XCircle } from 'lucide-react';
 
 export interface InstanceEvent {
   id: string;
@@ -17,6 +17,7 @@ const iconFor = (type: string) => {
     case 'instance_waiting': return Pause;
     case 'instance_resumed': return Play;
     case 'instance_failed': return AlertCircle;
+    case 'node_failed': return XCircle;
     case 'decision_made': return GitBranch;
     default: return ArrowRight;
   }
@@ -26,6 +27,10 @@ function labelFor(e: InstanceEvent): string {
   if (e.event_type === 'instance_started') return 'Workflow started';
   if (e.event_type === 'instance_completed') return 'Workflow completed';
   if (e.event_type === 'instance_failed') return 'Workflow failed';
+  if (e.event_type === 'node_failed') {
+    const reason = (e.payload?.reason as string | undefined) ?? 'unknown';
+    return `${e.node_type ?? 'Node'} failed: ${reason}`;
+  }
   if (e.event_type === 'instance_waiting') return `Waiting at ${e.node_type ?? '—'}`;
   if (e.event_type === 'instance_resumed') return 'Resumed';
   if (e.event_type === 'decision_made') return `Decision at ${e.node_type ?? '—'}`;
