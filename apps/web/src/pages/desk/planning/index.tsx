@@ -215,8 +215,17 @@ export function DeskPlanningPage() {
       const lane = ensure(block.lane);
       lane.blocks.push(block);
     }
+    // Codex review 2026-05-12: also seed lanes from the unscheduled rail's
+    // current assignees. Without this, a day with zero planned blocks for a
+    // given user shows zero drop targets, even though the user has open
+    // rail work that the dispatcher wants to drag onto them. Don't push
+    // the unscheduled block onto `lane.blocks` — those render in the rail,
+    // not on the grid — just register the lane so it's a drop target.
+    for (const block of data.unscheduled) {
+      ensure(block.lane);
+    }
     return Array.from(map.values());
-  }, [data.planned]);
+  }, [data.planned, data.unscheduled]);
 
   // Block (lane → lane) drag start.
   const onBlockPointerDown = useCallback(

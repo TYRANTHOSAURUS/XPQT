@@ -646,25 +646,68 @@ async function runPlanningProbes(headers, probe) {
     expect: 'badrequest',
   });
 
-  // Valid status filter — 200 and only matching categories.
+  // Valid status filter — 200 and only matching categories on both
+  // planned[] AND unscheduled[]. Codex review 2026-05-12 flagged that the
+  // previous version inspected only planned[] and could pass vacuously on
+  // an empty seed. We now assert the unscheduled[] also obeys the filter
+  // (open-status floor + the requested filter union).
   const statusUrl = `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&status=new&status=assigned`;
   const statusResp = await fetch(statusUrl, { headers });
   if (statusResp.status === 200) {
     const body = await statusResp.json();
     const allowed = new Set(['new', 'assigned']);
-    const violator = body.planned.find((b) => !allowed.has(b.status_category));
-    if (violator) {
+    const plannedViolator = body.planned.find((b) => !allowed.has(b.status_category));
+    const unschedViolator = body.unscheduled.find((b) => !allowed.has(b.status_category));
+    if (plannedViolator || unschedViolator) {
       results.fail += 1;
       results.failed.push('Planning: status filter leak');
-      console.log(`  ✗ Planning status filter leaked: got ${violator.status_category}`);
+      const v = plannedViolator ?? unschedViolator;
+      const where = plannedViolator ? 'planned[]' : 'unscheduled[]';
+      console.log(`  ✗ Planning status filter leaked: ${where} contains ${v.status_category}`);
     } else {
       results.pass += 1;
-      console.log(`  ✓ Planning status filter — only new/assigned in planned[]`);
+      console.log(
+        `  ✓ Planning status filter — only new/assigned across ${body.planned.length} planned + ${body.unscheduled.length} unscheduled`,
+      );
     }
   } else {
     results.fail += 1;
     results.failed.push('Planning: valid status filter');
     console.log(`  ✗ GET planning status filter → HTTP ${statusResp.status}`);
+  }
+
+  // Block shape probes — assert every block carries the typed lane and
+  // a boolean can_plan. Catches the next breaking regression in the wire
+  // shape without relying on seed counts.
+  const shapeUrl = `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`;
+  const shapeResp = await fetch(shapeUrl, { headers });
+  if (shapeResp.status === 200) {
+    const body = await shapeResp.json();
+    const allBlocks = [...body.planned, ...body.unscheduled];
+    if (allBlocks.length === 0) {
+      // No data is acceptable — but a stricter env should fail closed.
+      console.log(`  · Planning shape probe — empty result, skipped`);
+    } else {
+      const badLane = allBlocks.find(
+        (b) =>
+          !b.lane ||
+          typeof b.lane.kind !== 'string' ||
+          !['user', 'team', 'vendor', 'unassigned'].includes(b.lane.kind) ||
+          typeof b.lane.label !== 'string',
+      );
+      const badCanPlan = allBlocks.find((b) => typeof b.can_plan !== 'boolean');
+      const badUnschedPlanField = body.unscheduled.find((b) => b.planned_start_at !== null);
+      if (badLane || badCanPlan || badUnschedPlanField) {
+        results.fail += 1;
+        results.failed.push('Planning: block shape probe');
+        if (badLane) console.log(`  ✗ Planning block has malformed lane: ${JSON.stringify(badLane.lane)}`);
+        if (badCanPlan) console.log(`  ✗ Planning block missing can_plan boolean`);
+        if (badUnschedPlanField) console.log(`  ✗ Unscheduled block has non-null planned_start_at`);
+      } else {
+        results.pass += 1;
+        console.log(`  ✓ Planning block shape — lane typed, can_plan boolean, unscheduled has null planned_start_at`);
+      }
+    }
   }
 }
 
