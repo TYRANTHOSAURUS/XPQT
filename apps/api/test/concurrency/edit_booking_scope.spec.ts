@@ -22,6 +22,14 @@
  *  10. Idempotency mismatch (same key, different payload) — payload_mismatch.
  *  11. this_and_following scope — RPC writes exactly the booking_ids it's given.
  *  12. N > 200 — too_many_occurrences.
+ *  13. §3.6.5 Row 3 — require_approval → allow w/ pending expires + flips to confirmed.
+ *  14. §3.6.5 Row 4 — require_approval → allow w/ terminal_approved preserves confirmed.
+ *  15. N = 200 cap-boundary commits successfully.
+ *  16. dry-run → commit with SAME idempotency_key actually performs the write
+ *      (no stale-row short-circuit). Regression test for the v2 contract
+ *      (00371): dry-run is stateless w.r.t. command_operations — a
+ *      subsequent commit on the same key MUST insert + write, not
+ *      short-circuit on a stale dry-run row.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -893,6 +901,161 @@ describe('edit_booking_scope RPC — concurrency + state-machine probes', () => 
       [base.tenantId],
     );
     expect(outboxCount.rows[0].n).toBe(2);
+  });
+
+  // ── Scenario 16: dry-run → commit with SAME idempotency_key ──────────
+  // Regression test for the v2 (00371) contract: dry-run is stateless
+  // w.r.t. command_operations. v1 (00367) hashed p_dry_run into the
+  // payload AND wrote a command_operations row on every dry-run — so a
+  // commit re-using the same key against a prior dry-run row would
+  // short-circuit (either as payload_mismatch via the hashed flag, or
+  // as a stale cached_result lookup). v2 fixed both: dry-run never
+  // touches command_operations, and payload_hash no longer mixes
+  // p_dry_run. This scenario locks the fix in place:
+  //   Phase 1: dry-run with key K → 0 command_operations rows, 0 writes.
+  //   Phase 2: commit with same K → 1 command_operations row, slots
+  //            actually rewritten (proves no stale-row short-circuit).
+  it('dry-run → commit with same idempotency_key actually performs the write (no stale-row short-circuit)', async () => {
+    const base = await seedBaseFixture(pool, `scope-dryrun-then-commit-${Date.now()}`);
+    const fixture = await seedRecurrenceSeries(pool, base, 3);
+    const targetSpaceId = await seedTargetMeetingRoom(pool, base);
+
+    const plans = await buildPlansForFixture(
+      pool,
+      fixture,
+      targetSpaceId,
+      base.spaceId,
+      '2026-10-15T00:00:00Z',
+    );
+    const idempotencyKey = scopeIdempotencyKey(`dryrun-then-commit-${Date.now()}`);
+    const bookingIds = fixture.occurrences.map((o) => o.bookingId);
+    const slotIds = fixture.occurrences.map((o) => o.slotId);
+
+    // ── Phase 1 — dry-run with key K ─────────────────────────────────
+    const dryRun = await runRpcCapture<DryRunResult>(pool, 'public.edit_booking_scope', [
+      JSON.stringify(plans),
+      base.tenantId,
+      null,
+      idempotencyKey,
+      true,
+    ]);
+    expect(dryRun.kind).toBe('ok');
+    if (dryRun.kind !== 'ok') return;
+    expect(dryRun.value.dry_run).toBe(true);
+    expect(dryRun.value.would_succeed).toBe(true);
+    expect(dryRun.value.per_occurrence).toHaveLength(3);
+
+    // v2 contract: dry-run wrote ZERO command_operations rows for K.
+    const cmdOpAfterDryRun = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.command_operations
+        where tenant_id = $1 and idempotency_key = $2`,
+      [base.tenantId, idempotencyKey],
+    );
+    expect(cmdOpAfterDryRun.rows[0].n).toBe(0);
+
+    // v2 contract: dry-run wrote ZERO booking_slots rewrites.
+    const slotsAfterDryRun = await pool.query<{ space_id: string }>(
+      `select space_id from public.booking_slots
+        where id = any($1::uuid[])
+        order by id`,
+      [slotIds],
+    );
+    expect(slotsAfterDryRun.rows).toHaveLength(3);
+    for (const row of slotsAfterDryRun.rows) {
+      expect(row.space_id).toBe(base.spaceId);
+    }
+
+    // Belt-and-braces: no audit, no domain, no outbox from dry-run.
+    const auditAfterDryRun = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.audit_events where tenant_id = $1`,
+      [base.tenantId],
+    );
+    expect(auditAfterDryRun.rows[0].n).toBe(0);
+    const domainAfterDryRun = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.domain_events where tenant_id = $1`,
+      [base.tenantId],
+    );
+    expect(domainAfterDryRun.rows[0].n).toBe(0);
+    const outboxAfterDryRun = await pool.query<{ n: number }>(
+      `select count(*)::int as n from outbox.events where tenant_id = $1`,
+      [base.tenantId],
+    );
+    expect(outboxAfterDryRun.rows[0].n).toBe(0);
+
+    // ── Phase 2 — commit with SAME key K ─────────────────────────────
+    // If v1 behavior regressed (dry-run wrote a command_operations row
+    // and the commit short-circuits on it), this call would either raise
+    // payload_mismatch (hashed flag differs) or return a cached_result
+    // with zero writes — and `committed` would not be 3.
+    const commit = await runRpcCapture<CommitResult>(pool, 'public.edit_booking_scope', [
+      JSON.stringify(plans),
+      base.tenantId,
+      null,
+      idempotencyKey,
+      false,
+    ]);
+    expect(commit.kind).toBe('ok');
+    if (commit.kind !== 'ok') return;
+    expect(commit.value.committed).toBe(3);
+    expect(commit.value.per_occurrence).toHaveLength(3);
+    expect(commit.value.series_id).toBe(fixture.seriesId);
+
+    // Commit wrote exactly ONE command_operations row for K now (the
+    // cached_result success row).
+    const cmdOpAfterCommit = await pool.query<{ n: number; outcome: string }>(
+      `select count(*)::int as n,
+              coalesce(max(outcome), '') as outcome
+         from public.command_operations
+        where tenant_id = $1 and idempotency_key = $2`,
+      [base.tenantId, idempotencyKey],
+    );
+    expect(cmdOpAfterCommit.rows[0].n).toBe(1);
+    expect(cmdOpAfterCommit.rows[0].outcome).toBe('success');
+
+    // Commit actually wrote — every booking_slot.space_id now points at
+    // the target room. This is the proof of no-stale-row short-circuit:
+    // if v2 had regressed to v1 behavior, a cached_result lookup would
+    // have returned without touching booking_slots.
+    const slotsAfterCommit = await pool.query<{ space_id: string }>(
+      `select space_id from public.booking_slots
+        where id = any($1::uuid[])
+        order by id`,
+      [slotIds],
+    );
+    expect(slotsAfterCommit.rows).toHaveLength(3);
+    for (const row of slotsAfterCommit.rows) {
+      expect(row.space_id).toBe(targetSpaceId);
+    }
+
+    // Bookings also rewritten (mirrors Scenario 4 commit shape).
+    const bookingRows = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.bookings
+        where tenant_id = $1 and location_id = $2 and id = any($3::uuid[])`,
+      [base.tenantId, targetSpaceId, bookingIds],
+    );
+    expect(bookingRows.rows[0].n).toBe(3);
+
+    // Audit + domain + outbox each got 3 rows from the commit (mirrors
+    // Scenario 4). If the commit had short-circuited on a stale dry-run
+    // row, these would be 0.
+    const auditAfterCommit = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.audit_events
+        where tenant_id = $1 and event_type = 'booking.edited'`,
+      [base.tenantId],
+    );
+    expect(auditAfterCommit.rows[0].n).toBe(3);
+    const domainAfterCommit = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.domain_events
+        where tenant_id = $1 and event_type = 'booking.edited'`,
+      [base.tenantId],
+    );
+    expect(domainAfterCommit.rows[0].n).toBe(3);
+    const outboxAfterCommit = await pool.query<{ n: number }>(
+      `select count(*)::int as n from outbox.events
+        where tenant_id = $1 and event_type = 'booking.location_changed'`,
+      [base.tenantId],
+    );
+    expect(outboxAfterCommit.rows[0].n).toBe(3);
   });
 
   // ── Scenario 10: idempotency mismatch (same key, different payload) ──
