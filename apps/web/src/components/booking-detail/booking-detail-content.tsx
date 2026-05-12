@@ -260,10 +260,13 @@ export function BookingDetailContent({
                 }}
                 onCommit={async (next) => {
                   if (next === (reservation.attendee_count ?? 0)) return;
+                  // B.4 step 2D-D self-review P1 — defense-in-depth.
+                  const requestId = crypto.randomUUID();
                   try {
                     await editBooking.mutateAsync({
                       id: reservation.id,
                       patch: { attendee_count: next },
+                      requestId,
                     });
                     toastUpdated('Attendee count');
                   } catch (e) {
@@ -471,10 +474,13 @@ export function BookingDetailContent({
             setChangingRoom(false);
             return;
           }
+          // B.4 step 2D-D self-review P1 — defense-in-depth.
+          const requestId = crypto.randomUUID();
           try {
             await editBooking.mutateAsync({
               id: reservation.id,
               patch: { space_id: nextSpaceId },
+              requestId,
             });
             toastUpdated('Room');
             setChangingRoom(false);

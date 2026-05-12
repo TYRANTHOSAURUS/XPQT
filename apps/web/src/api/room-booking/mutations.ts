@@ -151,19 +151,35 @@ export function useMultiRoomBooking() {
  * multi-room context, use `useEditBookingSlot` below — that's the path
  * the desk scheduler drag/resize/move hits so a non-primary slot
  * actually moves the slot the operator clicked.
+ *
+ * `requestId` — defense-in-depth (B.4 step 2D-D self-review P1).
+ * The PATCH /:id (editOne) controller is NOT yet guarded by
+ * RequireClientRequestIdGuard (Step 2E ships its own cutover), but
+ * editOne's geometry path DELEGATES to editSlot (reservation.service.ts
+ * :877, line `const delegateCrid = actor.client_request_id`). Without
+ * a client-supplied header the middleware falls back to a fresh
+ * server-generated UUID per request — cross-retry idempotency on the
+ * delegated editSlot call is silently broken (the implementer's own
+ * note at reservation.service.ts:870-876). Sending the header now
+ * preserves at-most-once-per-attempt semantics through the delegation
+ * AND lets Step 2E flip the controller guard with zero frontend churn.
  */
+export interface EditBookingVariables {
+  id: string;
+  patch: Partial<Pick<Reservation,
+    'space_id' | 'start_at' | 'end_at' | 'attendee_count' |
+    'attendee_person_ids' | 'host_person_id'>>;
+  requestId: string;
+}
+
 export function useEditBooking() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, patch }: {
-      id: string;
-      patch: Partial<Pick<Reservation,
-        'space_id' | 'start_at' | 'end_at' | 'attendee_count' |
-        'attendee_person_ids' | 'host_person_id'>>;
-    }) =>
+    mutationFn: ({ id, patch, requestId }: EditBookingVariables) =>
       apiFetch<Reservation>(`/reservations/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
+        headers: { 'X-Client-Request-Id': requestId },
       }),
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(vars.id) });
@@ -183,24 +199,40 @@ export function useEditBooking() {
  * booking's primary.
  *
  * The booking-level mirror (start_at / end_at / location_id) is
- * recomputed atomically on the server inside the `edit_booking_slot`
- * RPC (00291) — there's no separate booking write to issue from the
- * client.
+ * recomputed atomically on the server inside the `edit_booking` RPC
+ * (00364, post B.4 step 2D-D cutover) — there's no separate booking
+ * write to issue from the client.
  *
  * For booking-level fields (host_person_id, attendee_count), use
  * `useEditBooking` instead.
+ *
+ * Producer route — REQUIRES `requestId` (B.4 step 2D-D self-review P1).
+ * The controller (reservation.controller.ts:329-330) is now guarded by
+ * `RequireClientRequestIdGuard`; the guard rejects 400
+ * `client_request_id.required` (require-client-request-id.guard.ts:44)
+ * when the header is missing or server-defaulted. Without the header,
+ * EVERY operator drag / resize / move on the desk scheduler 400s. Same
+ * Pattern A as `useCreateBooking` and `useAttachReservationServices`:
+ * caller generates `requestId` ONCE per attempt with `crypto.randomUUID()`
+ * inside the form-submit handler so React Query retries reuse the id
+ * and the backend's `command_operations` cached_result row hits on the
+ * second attempt.
  */
+export interface EditBookingSlotVariables {
+  bookingId: string;
+  slotId: string;
+  patch: Partial<Pick<Reservation, 'space_id' | 'start_at' | 'end_at'>>;
+  requestId: string;
+}
+
 export function useEditBookingSlot() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ bookingId, slotId, patch }: {
-      bookingId: string;
-      slotId: string;
-      patch: Partial<Pick<Reservation, 'space_id' | 'start_at' | 'end_at'>>;
-    }) =>
+    mutationFn: ({ bookingId, slotId, patch, requestId }: EditBookingSlotVariables) =>
       apiFetch<Reservation>(`/reservations/${bookingId}/slots/${slotId}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
+        headers: { 'X-Client-Request-Id': requestId },
       }),
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: roomBookingKeys.detail(vars.bookingId) });

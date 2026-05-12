@@ -4,7 +4,7 @@ import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
 import { buildEditBookingIdempotencyKey } from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { assertTenantOwned, assertTenantOwnedAll } from '../../common/tenant-validation';
+import { assertTenantOwned, assertTenantOwnedAll, UUID_RE } from '../../common/tenant-validation';
 import { ConflictGuardService } from './conflict-guard.service';
 import { ReservationVisibilityService } from './reservation-visibility.service';
 import { RecurrenceService } from './recurrence.service';
@@ -883,6 +883,25 @@ export class ReservationService {
           detail: 'editOne→editSlot delegation requires actor.client_request_id.',
         });
       }
+      // self-review I-CODE-3 (B.4 step 2D-D) — observability for the
+      // unguarded editOne path. PATCH /reservations/:id has no
+      // RequireClientRequestIdGuard yet (Step 2E ships it), so when the
+      // frontend forgets X-Client-Request-Id the middleware mints a
+      // fresh UUID per request. Forwarding that into editSlot's
+      // buildEditBookingIdempotencyKey produces a different key on each
+      // retry — silently soft-breaking cross-retry idempotency on the
+      // RPC's `command_operations` cached_result row.
+      // Log at warn so ops can measure the actual rate before flipping
+      // the controller guard. Once Step 2E ships and this branch
+      // becomes unreachable from real HTTP, the log volume should drop
+      // to non-controller callers (workflow engine, CLI) only.
+      if (actor.client_request_id_source === 'server_default') {
+        this.log.warn(
+          `editOne→editSlot delegation running with server-defaulted X-Client-Request-Id ` +
+            `(booking_id=${id}, user_id=${actor.user_id}). Cross-retry idempotency on the ` +
+            `delegated edit_booking RPC is broken until the caller sends a client-supplied UUID.`,
+        );
+      }
       await this.editSlot(id, primarySlotId, actor, delegateCrid, geometryPatch);
     }
 
@@ -993,6 +1012,22 @@ export class ReservationService {
     patch: { space_id?: string; start_at?: string; end_at?: string },
   ): Promise<Reservation> {
     const tenantId = TenantContext.current().id;
+
+    // self-review N-CODE-1 (B.4 step 2D-D) — defense-in-depth UUID
+    // validation. RequireClientRequestIdGuard already validates UUID
+    // shape at the controller boundary (middleware UUID_RE.test → if
+    // false, source=server_default → guard rejects 400). This check
+    // catches non-controller callers (editOne delegation, workflow
+    // engine, future CLI) that build clientRequestId by other means.
+    // Cheap; surfaces the contract violation as a clean
+    // command_operations.unexpected_state instead of letting a
+    // malformed key end up in the buildEditBookingIdempotencyKey
+    // helper / `command_operations.idempotency_key` column.
+    if (!UUID_RE.test(clientRequestId)) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail: `editSlot received malformed clientRequestId (length=${clientRequestId.length}).`,
+      });
+    }
 
     // Pre-flight: resolve the slot's parent booking_id under tenant scope.
     // Two failure modes here, both must be detected BEFORE we hit the RPC
@@ -1148,14 +1183,43 @@ export class ReservationService {
     //   (old_outcome ≠ require_approval OR chain_config_changed).
     // Same-config preservations (row 6) and allow→allow / approve→allow
     // pass through unaffected.
+    //
+    // self-review I-CODE-1 (2026-05-12): the gate has 4 emit sites in
+    // the §3.6.5 decision table. Three are covered above:
+    //   row 2: allow → require_approval                   (any chain)
+    //   row 7: require_approval → require_approval, diff config (pending)
+    //   row 8: require_approval → require_approval, diff config (terminal_approved)
+    // The 4th — the defensive fall-through at 00364:551 — fires when
+    //   v_old_outcome=require_approval AND v_new_outcome=require_approval
+    //   AND v_approval_state='none' (treated as Row 2 insert).
+    // For the TS gate to MISS that 4th site requires the resolver chain
+    // already exists in the DB (loadCurrentApprovalChain returns non-
+    // null → old_outcome='require_approval') AND the existing chain
+    // config equals the new resolver chain (chain_config_changed=false)
+    // AND the approval row is in state='none'. That's a stale chain
+    // row in 'none' with matching config — an inconsistency
+    // create_booking_with_attach_plan SHOULDN'T produce (chains are
+    // inserted with state='pending'), but the RPC defends against it.
+    // The unreachable-in-practice argument is sound; documentation is
+    // the right level of fix here. Don't extend the predicate — the
+    // false-negative gap requires the DB to already be inconsistent,
+    // and the RPC catches the resulting emit anyway. If the inconsistent
+    // state ever shows up in production, lift this comment + extend the
+    // predicate to read approvals.state and treat 'none' like absent.
     const wouldEmitApprovalRequired =
       plan.approval.new_outcome === 'require_approval' &&
       (plan.approval.old_outcome !== 'require_approval' ||
         plan.approval.chain_config_changed === true);
     if (wouldEmitApprovalRequired) {
-      throw new AppError('booking.edit_requires_notification_dispatch', 503, {
+      // self-review I1: 422 (not 503). This is a platform-state
+      // limitation, not a server outage. 503 routed to class 'server'
+      // with a retry-loop-bait toast; 422 routes to class 'validation'
+      // with the right inline-error UX. STATUS_BY_CODE[
+      //   'booking.edit_requires_notification_dispatch'] mirrors this
+      // for any future RPC-side raise of the same code.
+      throw new AppError('booking.edit_requires_notification_dispatch', 422, {
         detail:
-          'This edit changes approval requirements. Wait for the next platform update before retrying.',
+          "This edit would change approval requirements. Ask the rooms admin to remove approval from this room, or pick a different room.",
       });
     }
 

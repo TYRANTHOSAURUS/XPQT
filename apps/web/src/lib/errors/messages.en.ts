@@ -1564,70 +1564,69 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't update assignment",
     detail: 'The vendor is not part of this tenant.',
   },
-  // Tenant-entity validation helper (00321 / 00340) — Codex-S8-I2 / F-IMP-2.
+  // Tenant-entity validation helper (00321 / 00340 / 00359 / 00360) —
+  // self-review I3 (2026-05-12): voice-neutralised. See server-side
+  // apps/api/src/common/errors/messages.en.ts for rationale; same copy
+  // here so client-side fallback rendering matches.
   'validate_entity_in_tenant.unknown_kind': {
-    title: "Couldn't dispatch",
+    title: 'Unknown entity kind',
     detail: 'The request referenced an unknown entity kind.',
   },
   'validate_entity_in_tenant.dispatch_missing': {
-    title: "Couldn't dispatch",
+    title: 'Unknown entity kind',
     detail: 'The request referenced an unknown entity kind.',
   },
   'validate_entity_in_tenant.case_not_in_tenant': {
-    title: "Couldn't dispatch",
-    detail: 'The case is not part of this tenant.',
+    title: 'Case not found',
+    detail: "The selected case isn't part of this tenant. Pick a different case.",
   },
   'validate_entity_in_tenant.work_order_not_in_tenant': {
-    title: "Couldn't dispatch",
-    detail: 'The work order is not part of this tenant.',
+    title: 'Work order not found',
+    detail: "The selected work order isn't part of this tenant. Pick a different work order.",
   },
   'validate_entity_in_tenant.asset_not_in_tenant': {
-    title: "Couldn't dispatch",
-    detail: 'The asset is not part of this tenant.',
+    title: 'Asset not found',
+    detail: "The selected asset isn't part of this tenant. Pick a different asset.",
   },
   'validate_entity_in_tenant.space_not_in_tenant': {
-    title: "Couldn't dispatch",
-    detail: 'The space is not part of this tenant.',
+    title: 'Space not found',
+    detail: "The selected space isn't part of this tenant. Pick a different space.",
   },
   'validate_entity_in_tenant.request_type_not_in_tenant': {
-    title: "Couldn't dispatch",
-    detail: 'The request type is not part of this tenant.',
+    title: 'Request type not found',
+    detail: "The selected request type isn't part of this tenant. Pick a different request type.",
   },
   'validate_entity_in_tenant.scope_override_not_in_tenant': {
-    title: "Couldn't dispatch",
-    detail: 'The scope override is not part of this tenant.',
+    title: 'Scope override not found',
+    detail: "The selected scope override isn't part of this tenant.",
   },
   'validate_entity_in_tenant.workflow_definition_not_in_tenant': {
-    title: "Couldn't dispatch",
-    detail: 'The workflow definition is not part of this tenant.',
+    title: 'Workflow not found',
+    detail: "The selected workflow definition isn't part of this tenant.",
   },
   'validate_entity_in_tenant.sla_policy_not_in_tenant': {
-    title: "Couldn't dispatch",
-    detail: 'The SLA policy is not part of this tenant.',
+    title: 'SLA policy not found',
+    detail: "The selected SLA policy isn't part of this tenant.",
   },
   'validate_entity_in_tenant.person_not_in_tenant': {
-    title: "Couldn't dispatch",
-    detail: 'The person is not part of this tenant.',
+    title: 'Person not found',
+    detail: "The selected person isn't part of this tenant. Pick a different person.",
   },
   'validate_entity_in_tenant.routing_rule_not_in_tenant': {
-    title: "Couldn't dispatch",
-    detail: 'The routing rule is not part of this tenant.',
+    title: 'Routing rule not found',
+    detail: "The selected routing rule isn't part of this tenant.",
   },
-  // v4 (00359) — B.4.A.2 booking-edit foundation. Voice mirrors the
-  // rest of the validate_entity_in_tenant family.
   'validate_entity_in_tenant.booking_rule_not_in_tenant': {
-    title: "Couldn't dispatch",
-    detail: 'The booking rule is not part of this tenant.',
+    title: 'Booking rule not found',
+    detail: "The selected booking rule isn't part of this tenant.",
   },
   'validate_entity_in_tenant.cost_center_not_in_tenant': {
-    title: "Couldn't dispatch",
-    detail: 'The cost center is not part of this tenant.',
+    title: 'Cost center not found',
+    detail: "The selected cost center isn't part of this tenant. Pick a different cost center.",
   },
-  // v5 (00360) — codex finding. Voice mirrors the rest of the
-  // validate_entity_in_tenant family.
   'validate_entity_in_tenant.team_not_in_tenant': {
-    title: "Couldn't dispatch",
-    detail: 'The team is not part of this tenant.',
+    title: 'Team not found',
+    detail: "The selected team isn't part of this tenant. Pick a different team.",
   },
   // ─── B.4.A.3 edit_booking RPC (00361) ────────────────────────────────────
   'edit_booking.actor_not_found': {
@@ -1676,12 +1675,14 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     detail: "We couldn't read this booking's approval state. Try again in a moment.",
   },
   // B.4 step 2D-D — controller-vs-notification gate (B.4.A.5 sequencing).
-  // Same copy as the server registry so render fallbacks match. Service-
-  // class 503: the user payload is fine, the platform isn't ready yet.
+  // self-review I1 + I2 (2026-05-12): now 422 (validation) — the edit
+  // would change approval requirements but B.4.A.5 hasn't shipped
+  // notification dispatch. Copy mirrors the server registry so render
+  // fallbacks match.
   'booking.edit_requires_notification_dispatch': {
-    title: "Couldn't save the booking",
+    title: "Edit blocked — approval changes can't be saved yet",
     detail:
-      'This edit changes approval requirements. Wait for the next platform update before retrying.',
+      "This edit would change approval requirements. Ask the rooms admin to remove approval from this room, or pick a different room.",
   },
 };
 

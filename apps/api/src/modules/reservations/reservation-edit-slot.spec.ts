@@ -6,6 +6,7 @@ import type {
   EditPlan,
   EditPlanApproval,
 } from './edit-plan.types';
+import { buildEditBookingIdempotencyKey } from '@prequest/shared';
 
 // Phase 1.4 — Bug #2 (slot-first scheduler).
 //
@@ -34,7 +35,8 @@ import type {
 // New scenario:
 //   5. B.4.A.5 controller-vs-notification gate — edit whose plan would
 //      emit `booking.approval_required` (rows 2/7/8 of §3.6.5) is
-//      rejected 503 before any RPC fires.
+//      rejected 422 (was 503; self-review I1 corrected the status to
+//      route through class 'validation' instead of class 'server').
 
 const CLIENT_REQUEST_ID = 'cccccccc-1111-4111-8111-cccccccccccc';
 
@@ -60,10 +62,21 @@ function makeEditPlan(opts: {
     },
     slot_patches: [
       {
+        // self-review N-CODE-3 (B.4 step 2D-D) — mirror the full slot
+        // patch shape AssembleEditPlanService.assembleEditPlan emits
+        // (assemble-edit-plan.service.ts:310-318) so test mocks stay
+        // honest about the contract the RPC consumes. Pre-fix we
+        // omitted setup_buffer_minutes / teardown_buffer_minutes /
+        // attendee_count / attendee_person_ids — a partial-shape mock
+        // can pass while the real builder regresses on a missing key.
         slot_id: opts.slotId,
         space_id: opts.spaceId,
         start_at: opts.startAt,
         end_at: opts.endAt,
+        setup_buffer_minutes: 0,
+        teardown_buffer_minutes: 0,
+        attendee_count: 0,
+        attendee_person_ids: [],
       },
     ],
     asset_reservation_patches: [],
@@ -388,7 +401,15 @@ describe('ReservationService.editSlot', () => {
     expect(args.p_booking_id).toBe(BOOKING_ID);
     expect(args.p_tenant_id).toBe(TENANT.id);
     expect(args.p_actor_user_id).toBe('U');
-    expect(args.p_idempotency_key).toBe(`booking:edit:${BOOKING_ID}:${CLIENT_REQUEST_ID}`);
+    // self-review N-CODE-4 (B.4 step 2D-D) — derive via the helper
+    // instead of inlining the format. Couples the test to the public
+    // helper API rather than the internal `booking:edit:<bookingId>:<crid>`
+    // string shape — if the helper changes prefix or separator, this
+    // assertion still passes (and the wider contract tests for the
+    // helper itself catch the format change in one place).
+    expect(args.p_idempotency_key).toBe(
+      buildEditBookingIdempotencyKey(BOOKING_ID, CLIENT_REQUEST_ID),
+    );
     const plan = args.p_plan as EditPlan;
     expect(plan.slot_patches).toHaveLength(1);
     expect(plan.slot_patches[0]).toMatchObject({
@@ -407,9 +428,15 @@ describe('ReservationService.editSlot', () => {
 
   // B.4 step 2D-D — controller-vs-notification gate (B.4.A.5).
   // When the plan would emit booking.approval_required (rows 2/7/8 of
-  // §3.6.5), the service rejects 503 BEFORE any RPC call. Verifies that
+  // §3.6.5), the service rejects 422 BEFORE any RPC call. Verifies that
   // the gate fires for all three trigger conditions.
-  it('B.4.A.5 gate: allow → require_approval rejects 503 before RPC fires', async () => {
+  // self-review I1 (2026-05-12): gate now returns 422 (validation),
+  // not 503 (server). Rationale lives at map-rpc-error.ts STATUS_BY_CODE
+  // entry for booking.edit_requires_notification_dispatch — 503 routed
+  // to class 'server' with retry-loop-bait toast; 422 routes to class
+  // 'validation' with the right inline-error UX for the actual user
+  // mitigation (pick a different room or remove approval from this room).
+  it('B.4.A.5 gate: allow → require_approval rejects 422 before RPC fires', async () => {
     const supabase = makeSupabase();
     const visibility = makeVisibility({ canEdit: true });
     const conflict = makeConflictGuard();
@@ -439,14 +466,14 @@ describe('ReservationService.editSlot', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
       code: 'booking.edit_requires_notification_dispatch',
-      status: 503,
+      status: 422,
     });
     // Critical: no RPC fired. The whole point of the pre-flight is to
     // avoid producing the very event the gate is suppressing.
     expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
   });
 
-  it('B.4.A.5 gate: require_approval → require_approval with chain_config_changed rejects 503', async () => {
+  it('B.4.A.5 gate: require_approval → require_approval with chain_config_changed rejects 422', async () => {
     const supabase = makeSupabase();
     const visibility = makeVisibility({ canEdit: true });
     const conflict = makeConflictGuard();
@@ -475,7 +502,7 @@ describe('ReservationService.editSlot', () => {
     }
     expect(caught).toMatchObject({
       code: 'booking.edit_requires_notification_dispatch',
-      status: 503,
+      status: 422,
     });
     expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
   });
@@ -954,7 +981,15 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
     expect(rpcCalls).toHaveLength(1);
     const args = rpcCalls[0].args as Record<string, unknown>;
     expect(args.p_booking_id).toBe(BOOKING_ID);
-    expect(args.p_idempotency_key).toBe(`booking:edit:${BOOKING_ID}:${CLIENT_REQUEST_ID}`);
+    // self-review N-CODE-4 (B.4 step 2D-D) — derive via the helper
+    // instead of inlining the format. Couples the test to the public
+    // helper API rather than the internal `booking:edit:<bookingId>:<crid>`
+    // string shape — if the helper changes prefix or separator, this
+    // assertion still passes (and the wider contract tests for the
+    // helper itself catch the format change in one place).
+    expect(args.p_idempotency_key).toBe(
+      buildEditBookingIdempotencyKey(BOOKING_ID, CLIENT_REQUEST_ID),
+    );
     const plan = args.p_plan as EditPlan;
     expect(plan.slot_patches[0]).toMatchObject({
       slot_id: PRIMARY_SLOT,

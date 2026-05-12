@@ -751,6 +751,13 @@ export class ReservationController {
       is_service_desk: !!bookOnBehalfRes.data,
       has_override_rules: !!overrideRes.data,
       client_request_id: (req as { clientRequestId?: string }).clientRequestId,
+      // self-review I-CODE-3 (B.4 step 2D-D) — thread the source so
+      // editOne's geometry-path delegation can log when it's running
+      // with a server-defaulted UUID (cross-retry idempotency soft-
+      // break). Step 2E will guard PATCH /:id and this field becomes
+      // unconditionally 'client' on real requests.
+      client_request_id_source: (req as { clientRequestIdSource?: 'client' | 'server_default' })
+        .clientRequestIdSource,
     };
   }
 }

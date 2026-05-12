@@ -1543,70 +1543,67 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kan toewijzing niet bijwerken',
     detail: 'De leverancier hoort niet bij deze tenant.',
   },
-  // Tenant-entity validation helper (00321 / 00340) — Codex-S8-I2 / F-IMP-2.
+  // Tenant-entity validation helper (00321 / 00340 / 00359 / 00360) —
+  // self-review I3 (2026-05-12): voice-neutralised. See en.ts.
   'validate_entity_in_tenant.unknown_kind': {
-    title: 'Kan niet uitdelen',
+    title: 'Onbekend entiteitstype',
     detail: 'De aanvraag verwees naar een onbekend type.',
   },
   'validate_entity_in_tenant.dispatch_missing': {
-    title: 'Kan niet uitdelen',
+    title: 'Onbekend entiteitstype',
     detail: 'De aanvraag verwees naar een onbekend type.',
   },
   'validate_entity_in_tenant.case_not_in_tenant': {
-    title: 'Kan niet uitdelen',
-    detail: 'De case hoort niet bij deze tenant.',
+    title: 'Case niet gevonden',
+    detail: 'De geselecteerde case hoort niet bij deze tenant. Kies een andere case.',
   },
   'validate_entity_in_tenant.work_order_not_in_tenant': {
-    title: 'Kan niet uitdelen',
-    detail: 'De werkorder hoort niet bij deze tenant.',
+    title: 'Werkorder niet gevonden',
+    detail: 'De geselecteerde werkorder hoort niet bij deze tenant. Kies een andere werkorder.',
   },
   'validate_entity_in_tenant.asset_not_in_tenant': {
-    title: 'Kan niet uitdelen',
-    detail: 'Het asset hoort niet bij deze tenant.',
+    title: 'Asset niet gevonden',
+    detail: 'Het geselecteerde asset hoort niet bij deze tenant. Kies een ander asset.',
   },
   'validate_entity_in_tenant.space_not_in_tenant': {
-    title: 'Kan niet uitdelen',
-    detail: 'De ruimte hoort niet bij deze tenant.',
+    title: 'Ruimte niet gevonden',
+    detail: 'De geselecteerde ruimte hoort niet bij deze tenant. Kies een andere ruimte.',
   },
   'validate_entity_in_tenant.request_type_not_in_tenant': {
-    title: 'Kan niet uitdelen',
-    detail: 'Het verzoektype hoort niet bij deze tenant.',
+    title: 'Verzoektype niet gevonden',
+    detail: 'Het geselecteerde verzoektype hoort niet bij deze tenant. Kies een ander verzoektype.',
   },
   'validate_entity_in_tenant.scope_override_not_in_tenant': {
-    title: 'Kan niet uitdelen',
-    detail: 'De scope-uitzondering hoort niet bij deze tenant.',
+    title: 'Scope-uitzondering niet gevonden',
+    detail: 'De geselecteerde scope-uitzondering hoort niet bij deze tenant.',
   },
   'validate_entity_in_tenant.workflow_definition_not_in_tenant': {
-    title: 'Kan niet uitdelen',
-    detail: 'De workflow-definitie hoort niet bij deze tenant.',
+    title: 'Workflow niet gevonden',
+    detail: 'De geselecteerde workflow-definitie hoort niet bij deze tenant.',
   },
   'validate_entity_in_tenant.sla_policy_not_in_tenant': {
-    title: 'Kan niet uitdelen',
-    detail: 'Het SLA-beleid hoort niet bij deze tenant.',
+    title: 'SLA-beleid niet gevonden',
+    detail: 'Het geselecteerde SLA-beleid hoort niet bij deze tenant.',
   },
   'validate_entity_in_tenant.person_not_in_tenant': {
-    title: 'Kan niet uitdelen',
-    detail: 'De persoon hoort niet bij deze tenant.',
+    title: 'Persoon niet gevonden',
+    detail: 'De geselecteerde persoon hoort niet bij deze tenant. Kies een andere persoon.',
   },
   'validate_entity_in_tenant.routing_rule_not_in_tenant': {
-    title: 'Kan niet uitdelen',
-    detail: 'De routeringsregel hoort niet bij deze tenant.',
+    title: 'Routeringsregel niet gevonden',
+    detail: 'De geselecteerde routeringsregel hoort niet bij deze tenant.',
   },
-  // v4 (00359) — B.4.A.2 booking-edit foundation. Voice mirrors the
-  // rest of the validate_entity_in_tenant family.
   'validate_entity_in_tenant.booking_rule_not_in_tenant': {
-    title: 'Kan niet uitdelen',
-    detail: 'De boekingsregel hoort niet bij deze tenant.',
+    title: 'Boekingsregel niet gevonden',
+    detail: 'De geselecteerde boekingsregel hoort niet bij deze tenant.',
   },
   'validate_entity_in_tenant.cost_center_not_in_tenant': {
-    title: 'Kan niet uitdelen',
-    detail: 'De kostenplaats hoort niet bij deze tenant.',
+    title: 'Kostenplaats niet gevonden',
+    detail: 'De geselecteerde kostenplaats hoort niet bij deze tenant. Kies een andere kostenplaats.',
   },
-  // v5 (00360) — codex finding. NL uses 'team' (same word in Dutch);
-  // voice mirrors the rest of the family.
   'validate_entity_in_tenant.team_not_in_tenant': {
-    title: 'Kan niet uitdelen',
-    detail: 'Het team hoort niet bij deze tenant.',
+    title: 'Team niet gevonden',
+    detail: 'Het geselecteerde team hoort niet bij deze tenant. Kies een ander team.',
   },
   // ─── B.4.A.3 edit_booking RPC (00361) ────────────────────────────────────
   'edit_booking.actor_not_found': {
@@ -1650,10 +1647,11 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     detail: 'We konden de goedkeuringsstatus van deze reservering niet lezen. Probeer het over een moment opnieuw.',
   },
   // B.4 step 2D-D — controller-vs-notification gate (B.4.A.5 sequencing).
+  // self-review I1 + I2 (2026-05-12): 422 + concrete operator action.
   'booking.edit_requires_notification_dispatch': {
-    title: 'Kon de reservering niet opslaan',
+    title: 'Wijziging geblokkeerd — goedkeuringsregels kunnen nog niet worden opgeslagen',
     detail:
-      'Deze wijziging vereist goedkeuring. Wacht op de volgende platformupdate voordat je het opnieuw probeert.',
+      'Deze wijziging verandert de goedkeuringsregels. Vraag de ruimte-beheerder om goedkeuring voor deze ruimte uit te zetten, of kies een andere ruimte.',
   },
 };
 

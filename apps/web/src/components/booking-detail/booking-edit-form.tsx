@@ -57,6 +57,10 @@ export function BookingEditForm({ reservation, onClose }: Props) {
       new Date(startIso).getTime() + durationMinutes * 60_000,
     ).toISOString();
 
+    // B.4 step 2D-D self-review P1 — defense-in-depth on editOne too
+    // (it delegates to editSlot which IS guarded). Mint once per
+    // attempt outside the await so React Query retries reuse the id.
+    const requestId = crypto.randomUUID();
     try {
       await edit.mutateAsync({
         id: reservation.id,
@@ -64,6 +68,7 @@ export function BookingEditForm({ reservation, onClose }: Props) {
           start_at: startIso,
           end_at: endIso,
         },
+        requestId,
       });
       toastUpdated('Booking');
       onClose();

@@ -296,6 +296,14 @@ export function DeskSchedulerPage() {
       newEndIso: string,
       newSpaceId?: string,
     ) => {
+      // B.4 step 2D-D self-review P1 — `useEditBookingSlot` is now a
+      // producer route. The controller's `RequireClientRequestIdGuard`
+      // (reservation.controller.ts:329-330) rejects 400 if the header
+      // is missing or server-defaulted. Mint the id ONCE per attempt
+      // outside the await so React Query retries reuse it. The
+      // toast-retry callback re-enters persistEdit and gets a fresh id
+      // (new logical attempt, intentional).
+      const requestId = crypto.randomUUID();
       try {
         await editBookingSlot.mutateAsync({
           bookingId,
@@ -305,6 +313,7 @@ export function DeskSchedulerPage() {
             end_at: newEndIso,
             ...(newSpaceId ? { space_id: newSpaceId } : null),
           },
+          requestId,
         });
         toastUpdated('Booking');
       } catch (e) {

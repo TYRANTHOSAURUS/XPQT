@@ -978,6 +978,7 @@ apps/api/src/modules/reservations/reservation.service.ts:27: * Booking-canonical
 apps/api/src/modules/reservations/reservation.service.ts:509:        reservation_id: updated.id,                   // = booking id under canonicalisation
 apps/api/src/modules/reservations/reservation.service.ts:925:   * The desk scheduler PATCHed `/reservations/:id` with `id = booking.id`,
 apps/api/src/modules/reservations/reservation.service.ts:954:   * Existing `editOne` (`PATCH /reservations/:id`) stays as the booking-
+apps/api/src/modules/reservations/reservation.service.ts:887:      // unguarded editOne path. PATCH /reservations/:id has no
 apps/api/src/modules/reservations/reservations.module.ts:103:    // Sub-project 2: when a master reservation has a booking_bundle, the
 apps/api/src/modules/reservations/reservations.module.ts:1:// Reservations module — owns the reservations table lifecycle.
 apps/api/src/modules/room-booking-rules/impact-preview.service.ts:108:    // Pre-filter reservations by scope when feasible. For room scope we can

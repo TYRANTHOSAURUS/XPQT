@@ -261,11 +261,32 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // B.4 step 2D-D — controller-vs-notification gate. The TS layer in
   // ReservationService.editSlot pre-flight-rejects any edit whose plan
   // would emit `booking.approval_required` (rows 2/7/8 of §3.6.5) until
-  // B.4.A.5 ships notification dispatch. 503 service-unavailable: the
-  // server isn't ready for this branch yet; retry once the platform
-  // updates. TS-only raise today; defense-in-depth listing in case any
-  // future RPC raises the same code (none planned).
-  'booking.edit_requires_notification_dispatch': 503,
+  // B.4.A.5 ships notification dispatch.
+  //
+  // self-review I1 (2026-05-12): WAS 503; corrected to 422. Rationale:
+  //   - 503 → classify.ts:354-368 routes to class 'server' with
+  //     `retry` + `contactSupport` recoveries. Toast offers a Retry
+  //     button that re-fires → 503 → re-fires forever, AND offers
+  //     "Contact Support" with traceId — telling ops there's an outage
+  //     when there isn't. The user can't usefully retry; the gate is a
+  //     temporary platform-state limitation until B.4.A.5 ships.
+  //   - 422 → classify.ts:312-321 routes to class 'validation'. The
+  //     edit can't be saved in current platform state; the operator's
+  //     mitigation is to pick a different room or remove approval from
+  //     the room. Validation surface (inline form error, no retry-loop
+  //     bait) matches the user's actual situation.
+  // The case 503 arm in mapRpcErrorToAppError stays — defense-in-depth
+  // for any future RPC raise of a different code with status 503.
+  // TS-only raise today; defense-in-depth listing in case any future
+  // RPC raises the same code (none planned).
+  'booking.edit_requires_notification_dispatch': 422,
+  // self-review N-CODE-2 (2026-05-12): explicit fallback mapping for
+  // the editSlot rpcErr path. The default behaviour (`?? 400` at line
+  // 315 below) misclassifies an unrecognised RPC raise as a validation
+  // error; the comment at reservation.service.ts:1184-1191 documents
+  // the intended fallback as 500 server-class. Make it explicit so the
+  // registered code matches the documented semantics.
+  'booking.slot_update_failed': 500,
 };
 
 /**
