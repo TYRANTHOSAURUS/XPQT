@@ -298,6 +298,14 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // must have ≥1 slot per 00043 invariant).
   'edit_booking_scope.series_mismatch': 500,
   'edit_booking_scope.primary_slot_not_found': 500,
+  // B.4 Step 2F.3 self-review remediation (I1) — server-class fallback for
+  // unknown RPC errors out of edit_booking_scope (DB timeout, missing column,
+  // any unrecognised raise). Mirrors `booking.edit_failed`'s role for editOne
+  // (line 349 below). Pre-fix the fallback was `edit_booking_scope.invalid_plans`
+  // (a 400), which routed server-class failures through the validation surface
+  // — operator saw an inline "request was malformed" inline error for what was
+  // actually a transient platform problem.
+  'edit_booking_scope.update_failed': 500,
   // B.4 Step 2F.2 codex remediation — tenant context drift guard.
   // Raised by AssembleEditPlanService at every plan-builder entry point
   // when `TenantContext.current()?.id !== args.tenantId`. 500 server-class:
@@ -347,6 +355,14 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // api/web message tables); making it explicit here keeps the
   // (fallback, STATUS_BY_CODE) tuple consistent.
   'booking.edit_failed': 500,
+  // ─── Phase 1.B universal workflow ───────────────────────────────────────
+  // Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.12
+  // (Phase 1 codes). All 422 — TS-only raises today (engine.assertSpawnLinkSafe);
+  // listed here as defense-in-depth in case any future spawn RPC raises the
+  // same code (Phase 3 spawn_*_with_link RPCs are the natural candidates).
+  'spawn_link.parent_terminated': 422,
+  'spawn_link.depth_exceeded': 422,
+  'spawn_link.cycle_detected': 422,
 };
 
 /**

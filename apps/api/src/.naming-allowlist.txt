@@ -1031,3 +1031,8 @@ apps/api/src/modules/outbox/handlers/__tests__/booking-approval-required.handler
 # docs/follow-ups/phase-8-naming-audit.md.
 apps/api/src/modules/outbox/handlers/workflow-spawn-wake.handler.ts:8:} from '../../reservations/event-types';
 apps/api/src/modules/outbox/handlers/__tests__/workflow-spawn-wake.handler.spec.ts:9:import { BookingLifecycleEventType } from '../../../reservations/event-types';
+apps/api/src/modules/reservations/dto/dtos.ts:80: * B.4 Step 2F.3 — DTO for `POST /reservations/:id/edit-scope`.
+apps/api/src/modules/reservations/reservation.service.ts:1590:        detail: "Use the regular edit endpoint (PATCH /reservations/:id) for scope='this'.",
+apps/api/src/modules/reservations/reservation.service.ts:1586:    // .ts:1062-1064). The single-occurrence edit path is `PATCH /reservations
+apps/api/src/modules/reservations/reservation.service.ts:1521:   *     instead of `PATCH /reservations/:id`.
+apps/api/src/modules/reservations/reservation.service.ts:1470:   * Cuts over `POST /reservations/:id/edit-scope` from the legacy bare-

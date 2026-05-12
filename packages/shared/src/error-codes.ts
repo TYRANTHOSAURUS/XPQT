@@ -842,6 +842,17 @@ export type KnownErrorCode =
   | 'edit_booking_scope.series_mismatch'
   | 'edit_booking_scope.empty_scope'
   | 'edit_booking_scope.primary_slot_not_found'
+  // B.4 Step 2F.3 self-review remediation (I1) — server-class fallback
+  // for unknown RPC errors from edit_booking_scope. Pre-fix the fallback
+  // in ReservationService.editScope was `edit_booking_scope.invalid_plans`
+  // (a 400 validation code), which miscategorised DB timeouts / missing
+  // columns / other server-class RPC failures as 4xx client errors. This
+  // 500 code mirrors `booking.edit_failed`'s role for editOne/editSlot
+  // (reservation.service.ts:1184-1191 + STATUS_BY_CODE entry at
+  // map-rpc-error.ts:349). Routes via the renderer to a server-class
+  // toast (retry + traceId + contact-support) instead of an inline
+  // validation surface that the operator can't action.
+  | 'edit_booking_scope.update_failed'
   // B.4 Step 2F.2 codex remediation — tenant context drift guard.
   // Thrown by AssembleEditPlanService at every plan-builder entry point
   // (assembleSlotEditPlan / assembleOneEditPlan / assembleScopeEditPlan)
@@ -1469,6 +1480,9 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'edit_booking_scope.series_mismatch',
   'edit_booking_scope.empty_scope',
   'edit_booking_scope.primary_slot_not_found',
+  // B.4 Step 2F.3 self-review remediation (I1) — see KnownErrorCode union
+  // for rationale (500 server-class fallback for unknown RPC errors).
+  'edit_booking_scope.update_failed',
   // B.4 Step 2F.2 codex remediation — see KnownErrorCode union for
   // rationale (tenant context drift guard at plan-builder entry points).
   'edit_booking.tenant_context_mismatch',

@@ -99,7 +99,7 @@ function makePivotReservation(overrides?: {
 }
 
 /**
- * Supabase mock: only two operations matter for editScope's TS layer.
+ * Supabase mock: three operations matter for editScope's TS layer.
  *
  *   1. The `bookings` read inside `findByIdOrThrow(pivotId, tenantId)`.
  *      Goes through the SLOT_WITH_BOOKING_SELECT projection by joining
@@ -108,11 +108,25 @@ function makePivotReservation(overrides?: {
  *      from('bookings') / from('booking_slots') chain only needs to
  *      no-op cleanly for the rare paths that touch it.
  *   2. `supabase.rpc('edit_booking_scope', ...)` — what the spec asserts on.
+ *   3. The `command_operations` read for the C1 self-review remediation
+ *      pre-check: `from('command_operations').select().eq().eq().maybeSingle()`.
+ *      Returns `{ data: null }` by default (no cached row → proceed
+ *      normally); a test can override via `cachedRow` to exercise the
+ *      short-circuit replay path.
  */
 function makeSupabase(opts?: {
   rpcResponse?: { data: unknown; error: unknown };
+  /** B.4 Step 2F.3 self-review C1 — cached_result pre-check seed. */
+  cachedRow?:
+    | { outcome: 'success'; cached_result: unknown }
+    | { outcome: 'in_progress'; cached_result: null }
+    | null;
+  cachedError?: unknown;
 }) {
-  const calls = { rpc: [] as Array<{ fn: string; args: unknown }> };
+  const calls = {
+    rpc: [] as Array<{ fn: string; args: unknown }>,
+    commandOpsReads: [] as Array<{ idempotencyKey: string; tenantId: string }>,
+  };
   const rpcResponse = opts?.rpcResponse ?? {
     data: {
       committed: 3,
@@ -156,14 +170,36 @@ function makeSupabase(opts?: {
       calls.rpc.push({ fn, args });
       return Promise.resolve(rpcResponse);
     },
-    from: () => {
+    from: (table: string) => {
+      if (table === 'command_operations') {
+        // C1 pre-check chain: .select().eq('tenant_id', _).eq('idempotency_key', _).maybeSingle()
+        const filters: Record<string, unknown> = {};
+        const builder = {
+          select: () => builder,
+          eq: (col: string, val: unknown) => {
+            filters[col] = val;
+            return builder;
+          },
+          maybeSingle: () => {
+            calls.commandOpsReads.push({
+              idempotencyKey: filters.idempotency_key as string,
+              tenantId: filters.tenant_id as string,
+            });
+            return Promise.resolve({
+              data: opts?.cachedRow ?? null,
+              error: opts?.cachedError ?? null,
+            });
+          },
+        };
+        return builder as unknown;
+      }
       // The TS path that exercises editScope calls findByIdOrThrow which
       // hits supabase.admin.from('booking_slots'). We override that via
       // a spy on the service instance directly, so this stub never
       // actually runs in the tested paths — but if a future change
       // tries to read tables directly we want a clear failure.
       throw new Error(
-        'unexpected supabase.from() call — editScope service spec stubs findByIdOrThrow + assembler + RPC',
+        `unexpected supabase.from('${table}') call — editScope service spec stubs findByIdOrThrow + assembler + RPC + command_operations pre-check`,
       );
     },
   };
@@ -648,5 +684,246 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
       expect((caught as AppError).code).toBe('booking.slot_conflict');
       expect((caught as AppError).status).toBe(409);
     });
+  });
+
+  // ─── Self-review remediation (2026-05-12) ─────────────────────────────────
+  // C1: splitSeries-then-RPC retry race.
+  // C2-plan-rev: start_at / end_at smuggled in body silently dropped.
+  // C2-code-rev: scope value never validated (garbage falls through to series).
+
+  it('C1: command_operations cached_result short-circuits BEFORE splitSeries on retry', async () => {
+    // Pre-seeded cached_result row. The first-attempt's RPC commit
+    // succeeded and stored cached_result; the response was dropped (network
+    // failure). On retry with the same crid, the service MUST detect the
+    // cached row and return its content verbatim WITHOUT firing splitSeries
+    // again (which would mint a phantom orphan series).
+    const cachedResult = {
+      committed: 3,
+      series_id: NEW_SERIES_ID, // FIRST attempt's split-series id
+      per_occurrence: [
+        {
+          booking_id: 'occ-1',
+          space_id_before: PIVOT_SPACE_ID,
+          space_id_after: NEW_SPACE_ID,
+          start_at_before: PIVOT_START_AT,
+          start_at_after: PIVOT_START_AT,
+          slots_updated: 1,
+          follow_ups: ['booking.location_changed'],
+        },
+      ],
+      aggregated_follow_ups: ['booking.location_changed'],
+    };
+    const supabase = makeSupabase({
+      cachedRow: { outcome: 'success', cached_result: cachedResult },
+    });
+    const recurrence = makeRecurrence();
+    const assemble = makeAssembleEditPlan();
+    const bundleEventBus = makeBundleEventBus();
+    const svc = buildService({
+      supabase,
+      visibility: makeVisibility(),
+      conflict: makeConflictGuard(),
+      recurrence,
+      assemble,
+      bundleEventBus,
+    });
+    const cascadeSpy = jest
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .spyOn(svc as any, 'emitVisitorCascadeForBundle')
+      .mockResolvedValue(undefined);
+
+    const result = await TenantContext.run(TENANT, async () =>
+      svc.editScope(
+        PIVOT_BOOKING_ID,
+        { scope: 'this_and_following', space_id: NEW_SPACE_ID },
+        makeActor(),
+        CLIENT_REQUEST_ID,
+      ),
+    );
+
+    // splitSeries MUST NOT fire (the C1 hazard — first attempt already
+    // minted a series; the second mint would be orphan).
+    expect(recurrence.splitSeries).not.toHaveBeenCalled();
+    // Assembler MUST NOT fire (no plan to assemble — replay path).
+    expect(assemble.assembleScopeEditPlan).not.toHaveBeenCalled();
+    // RPC MUST NOT fire (cached_result IS the response).
+    expect(supabase.calls.rpc).toHaveLength(0);
+    // Cascade MUST NOT fire (already fanned out on first attempt).
+    expect(cascadeSpy).not.toHaveBeenCalled();
+
+    // Defensive: the pre-check read DID happen, with the expected key.
+    expect(supabase.calls.commandOpsReads).toHaveLength(1);
+    expect(supabase.calls.commandOpsReads[0].tenantId).toBe(TENANT.id);
+    expect(supabase.calls.commandOpsReads[0].idempotencyKey).toBe(
+      buildEditBookingIdempotencyKey(
+        PIVOT_BOOKING_ID,
+        CLIENT_REQUEST_ID,
+        'scope',
+      ),
+    );
+
+    // Response shape matches cached_result + recovers new_series_id from
+    // cached.series_id (because scope='this_and_following' → first attempt
+    // wrote effectiveSeriesId = newSeriesId into the RPC's series_id).
+    expect(result.scope).toBe('this_and_following');
+    expect(result.new_series_id).toBe(NEW_SERIES_ID);
+    expect(result.dry_run).toBe(false);
+    expect(result.committed).toBe(3);
+    expect(result.series_id).toBe(NEW_SERIES_ID);
+    expect(result.aggregated_follow_ups).toEqual(['booking.location_changed']);
+  });
+
+  it('C1: cached row with outcome=in_progress does NOT short-circuit', async () => {
+    // Only outcome='success' triggers the replay path. A stale in_progress
+    // row (which shouldn't materialise per the 00316 v6 contract — rolled
+    // back by the RPC tx — but defense-in-depth) must still let the normal
+    // flow proceed; the RPC's own advisory lock + payload_hash check will
+    // serialize correctly.
+    const supabase = makeSupabase({
+      cachedRow: { outcome: 'in_progress', cached_result: null },
+    });
+    const recurrence = makeRecurrence();
+    const assemble = makeAssembleEditPlan();
+    const svc = buildService({
+      supabase,
+      visibility: makeVisibility(),
+      conflict: makeConflictGuard(),
+      recurrence,
+      assemble,
+      bundleEventBus: makeBundleEventBus(),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    jest.spyOn(svc as any, 'emitVisitorCascadeForBundle').mockResolvedValue(undefined);
+
+    await TenantContext.run(TENANT, async () =>
+      svc.editScope(
+        PIVOT_BOOKING_ID,
+        { scope: 'this_and_following', space_id: NEW_SPACE_ID },
+        makeActor(),
+        CLIENT_REQUEST_ID,
+      ),
+    );
+
+    // Normal flow proceeded: splitSeries + assemble + RPC all fired.
+    expect(recurrence.splitSeries).toHaveBeenCalledTimes(1);
+    expect(assemble.assembleScopeEditPlan).toHaveBeenCalledTimes(1);
+    expect(supabase.calls.rpc).toHaveLength(1);
+  });
+
+  it("C2-plan-rev: rejects smuggled start_at with 422 time_shift_not_supported", async () => {
+    const supabase = makeSupabase();
+    const svc = buildService({
+      supabase,
+      visibility: makeVisibility(),
+      conflict: makeConflictGuard(),
+      recurrence: makeRecurrence(),
+      assemble: makeAssembleEditPlan(),
+    });
+
+    await TenantContext.run(TENANT, async () => {
+      await expect(
+        svc.editScope(
+          PIVOT_BOOKING_ID,
+          // Smuggled time-shift fields — the typed DTO forbids these.
+          // Pre-fix the service silently dropped them (only field-picked
+          // space_id / attendee_count / attendee_person_ids / host_person_id).
+          {
+            scope: 'series',
+            start_at: '2026-06-01T11:00:00Z',
+          } as unknown as EditScopeDto,
+          makeActor(),
+          CLIENT_REQUEST_ID,
+        ),
+      ).rejects.toMatchObject({
+        code: 'edit_booking_scope.time_shift_not_supported',
+        status: 422,
+      });
+    });
+    expect(supabase.calls.rpc).toHaveLength(0);
+    expect(supabase.calls.commandOpsReads).toHaveLength(0);
+  });
+
+  it("C2-plan-rev: rejects smuggled end_at with 422 time_shift_not_supported", async () => {
+    const supabase = makeSupabase();
+    const svc = buildService({
+      supabase,
+      visibility: makeVisibility(),
+      conflict: makeConflictGuard(),
+      recurrence: makeRecurrence(),
+      assemble: makeAssembleEditPlan(),
+    });
+
+    await TenantContext.run(TENANT, async () => {
+      await expect(
+        svc.editScope(
+          PIVOT_BOOKING_ID,
+          {
+            scope: 'series',
+            end_at: '2026-06-01T12:00:00Z',
+          } as unknown as EditScopeDto,
+          makeActor(),
+          CLIENT_REQUEST_ID,
+        ),
+      ).rejects.toMatchObject({
+        code: 'edit_booking_scope.time_shift_not_supported',
+        status: 422,
+      });
+    });
+    expect(supabase.calls.rpc).toHaveLength(0);
+  });
+
+  it("C2-code-rev: rejects scope='garbage' with 400 invalid_plans (no silent fall-through)", async () => {
+    // Pre-fix only `scope==='this'` was explicitly rejected; any other
+    // non-allowlist value (`'garbage'`, `null`, `undefined`) fell through
+    // to the else branch and was silently executed as `'series'`.
+    const supabase = makeSupabase();
+    const svc = buildService({
+      supabase,
+      visibility: makeVisibility(),
+      conflict: makeConflictGuard(),
+      recurrence: makeRecurrence(),
+      assemble: makeAssembleEditPlan(),
+    });
+
+    await TenantContext.run(TENANT, async () => {
+      await expect(
+        svc.editScope(
+          PIVOT_BOOKING_ID,
+          { scope: 'garbage' as unknown as 'series' },
+          makeActor(),
+          CLIENT_REQUEST_ID,
+        ),
+      ).rejects.toMatchObject({
+        code: 'edit_booking_scope.invalid_plans',
+        status: 400,
+      });
+    });
+    expect(supabase.calls.rpc).toHaveLength(0);
+  });
+
+  it("C2-code-rev: rejects scope=null with 400 invalid_plans", async () => {
+    const supabase = makeSupabase();
+    const svc = buildService({
+      supabase,
+      visibility: makeVisibility(),
+      conflict: makeConflictGuard(),
+      recurrence: makeRecurrence(),
+      assemble: makeAssembleEditPlan(),
+    });
+
+    await TenantContext.run(TENANT, async () => {
+      await expect(
+        svc.editScope(
+          PIVOT_BOOKING_ID,
+          { scope: null as unknown as 'series' },
+          makeActor(),
+          CLIENT_REQUEST_ID,
+        ),
+      ).rejects.toMatchObject({
+        code: 'edit_booking_scope.invalid_plans',
+        status: 400,
+      });
+    });
+    expect(supabase.calls.rpc).toHaveLength(0);
   });
 });

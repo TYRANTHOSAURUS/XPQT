@@ -1862,6 +1862,14 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save the series edit",
     detail: "One of the occurrences is in an inconsistent state. Contact support if this persists.",
   },
+  // B.4 Step 2F.3 self-review remediation (I1) — 500 server-class fallback
+  // for unknown RPC errors. Voice mirrors `booking.edit_failed`'s
+  // "Couldn't save the changes" — a transient platform problem the operator
+  // can retry, not an inline validation message.
+  'edit_booking_scope.update_failed': {
+    title: "Couldn't save the series edit",
+    detail: "Something went wrong saving this series edit. Try again in a moment; contact support if this persists.",
+  },
   // B.4 Step 2F.2 codex remediation — tenant context drift guard.
   // 500 server-class. Generic voice — this is a programmer error (ALS
   // missing or programmatic caller mismatch), not something the operator

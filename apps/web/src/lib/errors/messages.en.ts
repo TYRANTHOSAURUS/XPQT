@@ -1742,6 +1742,12 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't save the series edit",
     detail: 'One of the occurrences is in an inconsistent state. Contact support if this persists.',
   },
+  // B.4 Step 2F.3 self-review remediation (I1) — server-class fallback. Web
+  // mirror of the api registry (api/messages.en.ts is the source of truth).
+  'edit_booking_scope.update_failed': {
+    title: "Couldn't save the series edit",
+    detail: 'Something went wrong saving this series edit. Try again in a moment; contact support if this persists.',
+  },
   // B.4 Step 2F.2 codex remediation — tenant context drift guard. Web
   // mirror of the api registry so the renderer can resolve before any
   // network round-trip (matches the single source of truth at

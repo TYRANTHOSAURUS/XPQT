@@ -1821,6 +1821,12 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon de reeks-wijziging niet opslaan',
     detail: 'Eén van de reserveringen in deze reeks staat in een inconsistente staat. Neem contact op met support als dit blijft gebeuren.',
   },
+  // B.4 Step 2F.3 self-review remediation (I1) — 500 server-class fallback
+  // voor onbekende RPC errors. Voice in lijn met `booking.edit_failed`.
+  'edit_booking_scope.update_failed': {
+    title: 'Kon de reeks-wijziging niet opslaan',
+    detail: 'Er ging iets mis bij het opslaan van deze reeks-wijziging. Probeer het over een moment opnieuw; neem contact op met support als dit blijft gebeuren.',
+  },
   // B.4 Step 2F.2 codex remediation — tenant context drift guard.
   // 500 server-class. Generic NL-voice — programmer error niet
   // gebruikersactie.

@@ -1506,6 +1506,18 @@ export class ReservationService {
    * series. The dry-run + commit paths can share an idempotency key
    * (00371 v2 contract — dry-run does NOT touch command_operations).
    *
+   * IDEMPOTENCY MITIGATION (C1 fix, Step 2F.3 self-review remediation,
+   * 2026-05-12): the retry hazard from splitSeries non-idempotency is
+   * mitigated by an EXPLICIT command_operations cached_result check
+   * BEFORE splitSeries fires. If a prior attempt's RPC commit succeeded
+   * (cached row exists with outcome='success'), this method short-
+   * circuits and returns the cached response verbatim — no splitSeries,
+   * no assembler, no RPC, no cascade. splitSeries does NOT re-fire on
+   * retries. This is structural defense: without it, splitSeries-on-
+   * retry would mint orphan series with no edits while the RPC's own
+   * cached_result returned the first attempt's (now-stale) series id.
+   * See the pre-check at the body of this method (search "C1").
+   *
    * Visitor cascade emission: walks the RPC's `per_occurrence[]` return
    * shape (`00371:1114-1125` — each row carries `space_id_before/after` +
    * `start_at_before/after`) and fans out to `emitVisitorCascadeForBundle`
@@ -1591,6 +1603,38 @@ export class ReservationService {
       });
     }
 
+    // Self-review remediation C2-plan-rev (2026-05-12) — reject smuggled
+    // start_at / end_at fields. The TS interface `EditScopeDto` deliberately
+    // omits these (series time-shift requires recurrence_rule mutation,
+    // not slot UPDATE). The patch construction below explicitly picks only
+    // space_id / attendee_count / attendee_person_ids / host_person_id, so
+    // a non-TS caller smuggling `{ scope: 'series', start_at: '...' }` would
+    // have those fields silently dropped — operator's intent (time-shift)
+    // lost, no error. Surface the existing `edit_booking_scope.time_shift_
+    // not_supported` (422) code at the service boundary so the caller gets
+    // an actionable inline error and the assembler's own gate-A defence
+    // remains reachable via the typed path.
+    if (
+      (body as { start_at?: unknown }).start_at !== undefined ||
+      (body as { end_at?: unknown }).end_at !== undefined
+    ) {
+      throw new AppError('edit_booking_scope.time_shift_not_supported', 422, {
+        detail: 'Series time-shift requires recurrence_rule edit; not supported on scope edits.',
+      });
+    }
+
+    // Self-review remediation C2-code-rev (2026-05-12) — allowlist scope
+    // values. Pre-fix only `'this'` was rejected explicitly; `'garbage'`,
+    // `null`, `undefined`, or any other non-allowlist value fell through
+    // to the `else` branch and silently executed as `'series'`. Surface
+    // the existing `edit_booking_scope.invalid_plans` (400) code so the
+    // caller gets a clear validation error instead of silent re-routing.
+    if (body.scope !== 'series' && body.scope !== 'this_and_following') {
+      throw AppErrors.validationFailed('edit_booking_scope.invalid_plans', {
+        detail: `scope must be 'series' or 'this_and_following' (received ${JSON.stringify(body.scope)}).`,
+      });
+    }
+
     // RecurrenceService is required for split-series; surface the DI
     // miswiring as a clean 500 rather than letting the optional access
     // throw later. Mirrors editOne's assembleEditPlan DI guard at
@@ -1604,6 +1648,116 @@ export class ReservationService {
       throw AppErrors.server('command_operations.unexpected_state', {
         detail: 'editScope: AssembleEditPlanService is not wired into ReservationService.',
       });
+    }
+
+    // Type the RPC return + the cached_result jsonb shape per 00371 v2:
+    //   - commit (00371:1143-1148):  { committed, series_id, per_occurrence, aggregated_follow_ups }
+    //   - dry_run (00371:1131-1140): { dry_run, would_succeed, series_id, per_occurrence, aggregated_follow_ups }
+    // Declared early because the C1 cached_result pre-check below
+    // references it before the RPC fires.
+    type RpcEditBookingScopeResult = {
+      committed?: number;
+      dry_run?: boolean;
+      would_succeed?: boolean;
+      series_id: string;
+      per_occurrence: Array<{
+        booking_id: string;
+        space_id_before: string;
+        space_id_after: string;
+        start_at_before: string;
+        start_at_after: string;
+        slots_updated?: number;
+        assets_updated?: number;
+        orders_updated?: number;
+        wo_updated?: number;
+        follow_ups?: string[];
+        would_succeed?: boolean;
+        approval_action?: string;
+        follow_ups_preview?: string[];
+        slots_to_update?: number;
+        assets_to_update?: number;
+        orders_to_update?: number;
+        wo_to_update?: number;
+      }>;
+      aggregated_follow_ups: string[];
+    };
+
+    // Idempotency key — built EARLY (before splitSeries) so the C1
+    // pre-check below can short-circuit a retry without re-firing the
+    // non-idempotent splitSeries side effect. Keyed on (pivot bookingId,
+    // crid, 'scope') because the pivot id is stable across retries.
+    // dry_run is NOT in the key (00371 v2 contract — dry-run does not
+    // touch command_operations).
+    const idempotencyKey = buildEditBookingIdempotencyKey(
+      bookingId,
+      clientRequestId,
+      'scope',
+    );
+
+    // Self-review remediation C1 (2026-05-12) — pre-check command_operations
+    // BEFORE splitSeries fires. The retry hazard: splitSeries mints a new
+    // recurrence_series_id row + UPDATEs forward bookings — side effects
+    // that COMMIT outside the RPC's transaction. If a prior attempt's RPC
+    // commit succeeded (cached_result row stored under this same key) but
+    // the response was dropped (network failure, client crash, timeout),
+    // a retry with the same crid would:
+    //   1. Re-run splitSeries → mint a SECOND new series_id (SERIES_2)
+    //   2. assembleScopeEditPlan reads under SERIES_2
+    //   3. RPC hits command_operations cached_result → returns SERIES_1's
+    //      response (the FIRST attempt's series_id) verbatim
+    // Result: orphan SERIES_1 (no forward bookings, no edits), audit/
+    // response advertises SERIES_1, actual edited data on SERIES_2.
+    //
+    // Schema reference: 00316_command_operations_table.sql — columns are
+    // (tenant_id, idempotency_key, payload_hash, outcome, cached_result).
+    // outcome is enum('in_progress', 'success'); v6 contract drops 'failed'
+    // (rolled back by RPC tx). RLS uses current_tenant_id(); we use
+    // supabase.admin to bypass and tenant-scope explicitly.
+    //
+    // If payload_hash differs between attempts, the RPC will raise
+    // `command_operations.payload_mismatch` later — defer that check to
+    // the RPC; here we only short-circuit on a confirmed 'success' row.
+    const { data: cachedRow, error: cachedErr } = await this.supabase.admin
+      .from('command_operations')
+      .select('outcome, cached_result')
+      .eq('tenant_id', tenantId)
+      .eq('idempotency_key', idempotencyKey)
+      .maybeSingle();
+    if (cachedErr) {
+      // A DB error reading command_operations is itself server-class —
+      // don't proceed (we'd risk firing splitSeries twice if it transiently
+      // failed and was actually present).
+      throw AppErrors.server('edit_booking_scope.update_failed', {
+        detail: 'Failed to read command_operations cache before splitSeries.',
+      });
+    }
+    if (
+      cachedRow !== null &&
+      (cachedRow as { outcome: string }).outcome === 'success'
+    ) {
+      // Replay path — return the cached jsonb verbatim. No splitSeries,
+      // no RPC, no visitor cascade, no assembler. The first attempt's
+      // response is the source of truth (it already committed the cascade
+      // via OutboxService.emit() fire-and-forget on the first attempt).
+      // dry_run is forced false because cached rows only exist on commit
+      // (Step 2F.1 v2 contract: dry-run never writes command_operations).
+      const cached = (cachedRow as { cached_result: RpcEditBookingScopeResult }).cached_result;
+      // For 'this_and_following' the FIRST attempt's splitSeries minted a
+      // new series_id which the RPC stored as cached.series_id; surface
+      // that as new_series_id so the response shape matches the original
+      // commit envelope. For 'series', no split happened so new_series_id
+      // remains undefined.
+      return {
+        scope: body.scope,
+        new_series_id:
+          body.scope === 'this_and_following' ? cached.series_id : undefined,
+        dry_run: false,
+        committed: cached.committed,
+        would_succeed: cached.would_succeed,
+        series_id: cached.series_id,
+        per_occurrence: cached.per_occurrence,
+        aggregated_follow_ups: cached.aggregated_follow_ups,
+      };
     }
 
     // Load pivot booking. `findByIdOrThrow` enforces tenant scope +
@@ -1669,16 +1823,12 @@ export class ReservationService {
       forwardOnlyFromStartAt,
     });
 
-    // Idempotency key — keyed on PIVOT bookingId (not effectiveSeriesId)
-    // because splitSeries is non-idempotent on retry and the pivot id is
-    // stable. Same crid + same pivot ⇒ same key ⇒ command_operations
-    // cached_result hits on retry. dry_run is NOT in the key
-    // (00371 v2 contract — dry-run does not touch command_operations).
-    const idempotencyKey = buildEditBookingIdempotencyKey(
-      bookingId,
-      clientRequestId,
-      'scope',
-    );
+    // Idempotency key was built earlier (before the C1 cached_result
+    // pre-check + splitSeries) so the pre-check could short-circuit a
+    // retry without re-firing the non-idempotent splitSeries side effect.
+    // We reuse the same key here so the RPC's own command_operations
+    // advisory-lock + cached_result path stays consistent with the
+    // pre-check above.
 
     const { data: rpcData, error: rpcErr } = await this.supabase.admin.rpc(
       'edit_booking_scope',
@@ -1700,40 +1850,21 @@ export class ReservationService {
           detail: 'Slot conflicts with another booking in the series.',
         });
       }
+      // Self-review remediation I1 (2026-05-12) — server-class fallback.
+      // Pre-fix fallback was `edit_booking_scope.invalid_plans` (a 400
+      // validation code), which misclassified unknown server-class RPC
+      // failures (DB timeout, missing column, OOM, etc.) as 4xx
+      // validation. mapRpcErrorToAppError still routes recognised raises
+      // to their canonical codes; this fallback only fires when the
+      // raise is unregistered. Mirrors editOne's `booking.edit_failed`
+      // (line 1184-1191) — see STATUS_BY_CODE entry at map-rpc-error.ts.
       throw mapRpcErrorToAppError(rpcErr, {
-        fallbackCode: 'edit_booking_scope.invalid_plans',
+        fallbackCode: 'edit_booking_scope.update_failed',
       });
     }
 
-    // Type the RPC return per 00371 v2:
-    //   - commit (00371:1143-1148):  { committed, series_id, per_occurrence, aggregated_follow_ups }
-    //   - dry_run (00371:1131-1140): { dry_run, would_succeed, series_id, per_occurrence, aggregated_follow_ups }
-    type RpcEditBookingScopeResult = {
-      committed?: number;
-      dry_run?: boolean;
-      would_succeed?: boolean;
-      series_id: string;
-      per_occurrence: Array<{
-        booking_id: string;
-        space_id_before: string;
-        space_id_after: string;
-        start_at_before: string;
-        start_at_after: string;
-        slots_updated?: number;
-        assets_updated?: number;
-        orders_updated?: number;
-        wo_updated?: number;
-        follow_ups?: string[];
-        would_succeed?: boolean;
-        approval_action?: string;
-        follow_ups_preview?: string[];
-        slots_to_update?: number;
-        assets_to_update?: number;
-        orders_to_update?: number;
-        wo_to_update?: number;
-      }>;
-      aggregated_follow_ups: string[];
-    };
+    // RpcEditBookingScopeResult type declared above (before the C1
+    // cached_result pre-check, which also references it).
     const result = rpcData as unknown as RpcEditBookingScopeResult;
 
     // Visitor cascade fan-out (commit only — dry-run has no committed

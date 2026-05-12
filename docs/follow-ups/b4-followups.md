@@ -394,3 +394,49 @@ ambient context is the right shape.
 threading tenantId through the helpers re-introduces the silent
 cross-tenant leak. The assertion is the load-bearing structural
 defense until Phase 8 lands.
+
+## Step 2F.3 — deferred items
+
+### In-flight retry hazard across the deploy window
+
+Step 2F.3 changed `buildEditBookingIdempotencyKey` to accept an
+optional op discriminator. Existing callers (editOne, editSlot) now
+pass `'one'` / `'slot'` / `'scope'` — minting 5-segment keys. In-
+flight client retries from BEFORE the deploy used 4-segment legacy
+keys; after the deploy, those retries mint NEW 5-segment keys and
+miss the in-flight `command_operations` cached_result row.
+
+**Risk:** double-write on retry across the cutover window (RPC re-
+runs the write under a new key).
+
+**Mitigation for production cutover:**
+- Drain edit-booking traffic during deploy
+- OR add a fallback read: if op-discriminated key misses, retry with
+  legacy 4-segment shape
+- Test scenarios at `apps/api/src/common/idempotency.spec.ts:113-126`
+  document the divergence.
+
+### Visitor cascade fan-out — batch optimization
+
+`ReservationService.editScope` cascade loop is N sequential queries
+(one `visitors` lookup per occurrence with geometry change). For
+N=200 series, that's up to 200 round-trips post-RPC.
+
+**Fix shape:**
+- Collect booking_ids with geometry changes
+- One `.in('booking_id', bookingIds)` query against visitors
+- Emit per-visitor in a single pass
+
+Defer until smoke probes (Step 2F.4) quantify the actual cost.
+
+### Frontend hook tests for useEditBookingScope[DryRun]
+
+Sibling edit hooks (useEditBooking, useMoveBooking) are also
+untested. Backlog for a future test-coverage sweep.
+
+### `emitVisitorCascadeForBundle` exposure
+
+Made public on `ReservationService` for the single new `editScope`
+caller. Future cleanup: add `@internal` JSDoc tag to discourage
+accidental imports, or move to a shared service if a third caller
+appears.

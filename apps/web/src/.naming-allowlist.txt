@@ -176,3 +176,9 @@ apps/web/src/pages/portal/book-room/hooks/use-realtime-availability.ts:9: * Subs
 apps/web/src/pages/portal/me-bookings/components/bookings-list.tsx:205: * Bucket reservations into calendar-friendly day groups for the Upcoming
 apps/web/src/pages/portal/me-bookings/components/bookings-list.tsx:44:  // reservations"), so we dedup by `booking_id`, keeping the first
 packages/shared/src/error-codes.ts:192:  // ─── reservations module migration (Phase 7.A.2.c.ii) ────────────────────
+apps/web/src/api/room-booking/mutations.ts:345:      apiFetch<EditBookingScopeResult>(`/reservations/${id}/edit-scope`, {
+apps/web/src/api/room-booking/mutations.ts:247: * B.4 Step 2F.3 — scope-edit hooks for `POST /reservations/:id/edit-scope`.
+apps/web/src/api/room-booking/mutations.ts:251: * `apps/api/src/modules/reservations/reservation.service.ts` and the
+packages/shared/src/idempotency.ts:340: *   - `'scope'` → `POST  /reservations/:id/edit-scope` (editScope → edit_booking_scope)
+packages/shared/src/idempotency.ts:338: *   - `'one'`   → `PATCH /reservations/:id`            (editOne → edit_booking)
+packages/shared/src/idempotency.ts:339: *   - `'slot'`  → `PATCH /reservations/:id/slots/:sid` (editSlot → edit_booking)
