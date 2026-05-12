@@ -1691,6 +1691,26 @@ export class WorkflowEngineService {
     });
   }
 
+  /**
+   * Phase 1.C — public emit alias for the wait-sweeper cron.
+   *
+   * The private `emit()` is the canonical write path for
+   * workflow_instance_events; the cron has no other reason to know
+   * about the audit table's shape. Exposing a narrow named method
+   * (vs. unprivating `emit`) keeps the engine's authorial surface
+   * unchanged. `TenantContext.run(...)` must be active at the call
+   * site — same precondition as the internal emit.
+   *
+   * Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.5.
+   */
+  async emitForCron(
+    instanceId: string,
+    event_type: string,
+    fields: { node_id?: string; node_type?: string; decision?: string; payload?: Record<string, unknown> } = {},
+  ): Promise<void> {
+    await this.emit(instanceId, event_type, fields);
+  }
+
   private async emit(
     instanceId: string,
     event_type: string,

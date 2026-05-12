@@ -6,6 +6,7 @@ import { WorkflowService } from './workflow.service';
 import { WorkflowEngineService } from './workflow-engine.service';
 import { WorkflowValidatorService } from './workflow-validator.service';
 import { WorkflowSimulatorService } from './workflow-simulator.service';
+import { WorkflowWaitSweeperCron } from './workflow-wait-sweeper.cron';
 import { WorkflowController } from './workflow.controller';
 
 @Module({
@@ -18,6 +19,10 @@ import { WorkflowController } from './workflow.controller';
     WorkflowEngineService,
     WorkflowValidatorService,
     WorkflowSimulatorService,
+    // Phase 1.C — Tier 1 cron backstop for `wait_timeout_at` expiry.
+    // ScheduleModule.forRoot() is wired at app.module.ts:60 already.
+    // Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.5.
+    WorkflowWaitSweeperCron,
   ],
   controllers: [WorkflowController],
   exports: [
