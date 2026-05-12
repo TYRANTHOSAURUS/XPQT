@@ -1104,8 +1104,11 @@ interface ScopeFixture {
   /** Booking ids in id-sorted order (the order DB returns + the order the
    * plan-builder loops in). */
   bookingIds: string[];
-  /** Per-booking primary slot id. */
-  primarySlotId: (bookingId: string) => string;
+  /** Per-booking primary slot id. Return `null` to simulate a booking
+   * with no primary slot (mock returns `{data: null}` for the slot
+   * resolution query) — used to exercise the
+   * `edit_booking_scope.primary_slot_not_found` invariant. */
+  primarySlotId: (bookingId: string) => string | null;
   /** Per-booking row factory (used by both pivot read + per-occurrence
    * loadBookingAndSlot). */
   booking: (bookingId: string) => BookingRow;
@@ -1719,6 +1722,185 @@ describe('AssembleEditPlanService.assembleScopeEditPlan (Step 2F.2)', () => {
       expect(Array.isArray(entry.plan.slot_patches)).toBe(true);
       expect(typeof entry.plan._resolution_at).toBe('string');
       expect(entry.plan.approval).toBeDefined();
+      // Self-review 2026-05-12: the 00371 RPC at line 219 REJECTS scope
+      // plans whose booking patch carries `recurrence_overridden`.
+      // Assert absence on EVERY entry here (not only the dedicated
+      // happy-path test) so any future change that leaks the key into
+      // a scope plan fails fast.
+      expect(
+        Object.prototype.hasOwnProperty.call(entry.plan.booking, 'recurrence_overridden'),
+      ).toBe(false);
     }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Self-review remediation 2026-05-12 — coverage for error codes that
+  // were registered in error-codes.ts but had no direct test (silent
+  // codes). Each test exercises a real call to assembleScopeEditPlan
+  // and asserts the typed code + status surface.
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('raises edit_booking_scope.empty_scope when series resolves to 0 live bookings', async () => {
+    // Pivot exists with a valid series id, but the scope-rows read
+    // returns []  — every occurrence is cancelled or wiped between the
+    // controller's split and the assembler's read.
+    const fx: ScopeFixture = {
+      bookingIds: [SCOPE_PIVOT],
+      tenantId: TENANT,
+      primarySlotId: () => `slot-${SCOPE_PIVOT.slice(0, 8)}`,
+      booking: () =>
+        baseBooking({
+          id: SCOPE_PIVOT,
+          recurrence_series_id: SCOPE_SERIES,
+        }),
+      slot: () => baseSlot(),
+      approvals: () => [],
+      // Empty scope-rows override — the pivot read still succeeds; only
+      // the series-wide list returns [].
+      scopeRows: () => [],
+    };
+    const supabase = makeScopeSupabase(fx);
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    await expect(
+      svc.assembleScopeEditPlan(scopeArgs({ space_id: SPACE_NEW })),
+    ).rejects.toMatchObject({
+      code: 'edit_booking_scope.empty_scope',
+      status: 422,
+    });
+  });
+
+  it('raises edit_booking_scope.series_mismatch when pivot.recurrence_series_id differs from effectiveSeriesId (500)', async () => {
+    // Pivot's series id is one value; caller's effectiveSeriesId is
+    // another. Defense-in-depth invariant: the controller's split-then-
+    // pass path must keep them in sync. A mismatch indicates an internal
+    // consistency bug (500), not user error.
+    const OTHER_SERIES = '33333333-3333-4333-8333-eeeeeeeeeeee';
+    const fx: ScopeFixture = {
+      bookingIds: [SCOPE_PIVOT],
+      tenantId: TENANT,
+      primarySlotId: () => `slot-${SCOPE_PIVOT.slice(0, 8)}`,
+      booking: () =>
+        baseBooking({
+          id: SCOPE_PIVOT,
+          // Pivot's stored series id ≠ caller's effectiveSeriesId
+          // (SCOPE_SERIES, used in scopeArgs() default).
+          recurrence_series_id: OTHER_SERIES,
+        }),
+      slot: () => baseSlot(),
+      approvals: () => [],
+    };
+    const supabase = makeScopeSupabase(fx);
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    await expect(
+      svc.assembleScopeEditPlan(scopeArgs({ space_id: SPACE_NEW })),
+    ).rejects.toMatchObject({
+      code: 'edit_booking_scope.series_mismatch',
+      status: 500,
+    });
+  });
+
+  it('raises edit_booking_scope.primary_slot_not_found when a scope booking has no primary slot (500)', async () => {
+    // Two-booking series. The PIVOT has a primary slot; the OTHER
+    // booking returns null from primarySlotId — simulates a corrupt
+    // booking with zero slots (violates the 00043 ≥1-slot invariant).
+    // The assembler must raise primary_slot_not_found 500 with the
+    // offending booking_id in the detail.
+    const ORPHAN = 'bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb';
+    const fx: ScopeFixture = {
+      bookingIds: [SCOPE_PIVOT, ORPHAN].sort(),
+      tenantId: TENANT,
+      primarySlotId: (bookingId) => {
+        // Pivot has a slot; orphan returns null to trigger the gate.
+        if (bookingId === ORPHAN) return null;
+        return `slot-${bookingId.slice(0, 8)}`;
+      },
+      booking: (bookingId) =>
+        baseBooking({
+          id: bookingId,
+          recurrence_series_id: SCOPE_SERIES,
+        }),
+      slot: (slotId) => {
+        const bookingPrefix = slotId.slice(5);
+        const bookingId = [SCOPE_PIVOT, ORPHAN].find((id) =>
+          id.startsWith(bookingPrefix),
+        )!;
+        return baseSlot({ id: slotId, booking_id: bookingId });
+      },
+      approvals: () => [],
+    };
+    const supabase = makeScopeSupabase(fx);
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    await expect(
+      svc.assembleScopeEditPlan(scopeArgs({ space_id: SPACE_NEW })),
+    ).rejects.toMatchObject({
+      code: 'edit_booking_scope.primary_slot_not_found',
+      status: 500,
+      // Offender's booking_id appears in detail so operators can
+      // pinpoint which row needs slot-data repair.
+      detail: expect.stringContaining(ORPHAN),
+    });
+  });
+
+  it('SUCCEEDS at the inclusive N=200 boundary (mirror of N=201 rejection)', async () => {
+    // Codex 2026-05-12: the N>200 rejection is asserted; the inclusive
+    // success at N=200 is the sibling boundary. Build a 200-booking
+    // series fixture (same shape as the N=201 test, minus one row) and
+    // verify the assembler returns 200 plans without throwing.
+    const ids = Array.from({ length: 200 }, (_, i) =>
+      `${String(i + 1).padStart(8, '0').slice(0, 8)}-aaaa-4aaa-8aaa-aaaaaaaaaaaa`,
+    );
+    ids[0] = SCOPE_PIVOT;
+    const fx: ScopeFixture = {
+      bookingIds: ids,
+      tenantId: TENANT,
+      primarySlotId: (bookingId) => `slot-${bookingId.slice(0, 8)}`,
+      booking: (bookingId) =>
+        baseBooking({
+          id: bookingId,
+          recurrence_series_id: SCOPE_SERIES,
+        }),
+      slot: (slotId) => {
+        // Each slot's booking_id must match the bookingId the loop is
+        // processing, so loadBookingAndSlot's cross-booking guard
+        // (assemble-edit-plan.service.ts:858) doesn't trip. Reverse-
+        // derive the booking id from the slot id prefix the same way
+        // the 5-occurrence fixture does.
+        const bookingPrefix = slotId.slice(5); // strip 'slot-'
+        const bookingId = ids.find((id) => id.startsWith(bookingPrefix))!;
+        return baseSlot({ id: slotId, booking_id: bookingId });
+      },
+      approvals: () => [],
+    };
+    const supabase = makeScopeSupabase(fx);
+    const svc = makeService({
+      supabase,
+      bookingFlow: makeBookingFlow(),
+      ruleResolver: makeRuleResolver(outcome()),
+      conflict: makeConflict(),
+    });
+
+    const result = await svc.assembleScopeEditPlan(
+      scopeArgs({ space_id: SPACE_NEW }),
+    );
+    expect(result.rpc_plans).toHaveLength(200);
+    expect(result.series_id).toBe(SCOPE_SERIES);
   });
 });

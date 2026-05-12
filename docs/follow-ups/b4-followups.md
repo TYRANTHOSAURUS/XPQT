@@ -279,3 +279,48 @@ Concurrency probe additions (commit-set with 00371):
   deterministic `waitForRowLockBlocker(pid)` polling on
   `pg_stat_activity` for `wait_event_type='Lock' AND wait_event IN
   ('transactionid', 'tuple')`. Removes CI flakiness under load.
+
+## Step 2F.2 — assembleScopeEditPlan deferred items
+
+### splitSeries belongs at the controller (Step 2F.3), not the assembler
+
+The assembler is a pure plan-builder. `RecurrenceService.splitSeries`
+(`apps/api/src/modules/reservations/recurrence.service.ts:761`) commits
+side effects (writes to `recurrence_series`, `bookings`, `audit_events`).
+If splitSeries lived inside `assembleScopeEditPlan`, a **dry-run
+preview** ("show me what 52 occurrences would change") would silently
+fork the series — catastrophic for a preview UI button.
+
+Decision: the Step 2F.3 controller resolves `effectiveSeriesId`:
+
+- `scope='series'` → pivot booking's current `recurrence_series_id` (no
+  split)
+- `scope='this_and_following'` → call `splitSeries(pivotBookingId)` on
+  the **commit** path only (never dry-run)
+
+The assembler accepts `effectiveSeriesId` as input. It is contract-pure.
+
+### Resolver-outcome hoist (deferred perf optimisation)
+
+For an N-occurrence series edit, `assembleScopeEditPlan` calls
+`buildSingleSlotPlan` N times. Each call runs `RuleResolverService.resolve`
+independently. For weekly series where every occurrence has the same
+day-of-week + time-of-day, the resolver outcome is provably identical
+across all N — resolving once and broadcasting would save ~N-1 resolver
+round-trips.
+
+Caveats:
+
+- Daily series spanning weekdays may hit day-of-week rules differently
+  per occurrence — NO hoist safe.
+- For weekly/biweekly/monthly with identical recurrence-rule semantics —
+  hoist safe.
+
+Defer to Step 2F.4 (smoke probes). If 200-occurrence series scope edits
+exceed an acceptable p95 latency budget (target: <2s end-to-end),
+implement the hoist with:
+
+- A "resolver invariance" check (`recurrence_rule.frequency === 'weekly'
+  && weekday count === 1` → hoist; else per-occurrence)
+- Mock test fidelity: include both hoist-eligible and non-eligible
+  series fixtures, with diverging per-occurrence rules

@@ -337,15 +337,19 @@ export class AssembleEditPlanService {
    * series-wide; per-occurrence override would corrupt the projection
    * semantics.
    *
-   * Pre-flight B.4.A.5 gate at TS layer: after building all plans, scan
-   * for any plan where `new_outcome === 'require_approval' AND
+   * Pre-flight B.4.A.5 gate at TS layer: evaluated INSIDE the per-
+   * occurrence loop, immediately after each plan is built. Raises
+   * `booking.edit_requires_notification_dispatch` 422 on the FIRST
+   * occurrence where `new_outcome === 'require_approval' AND
    * (old_outcome !== 'require_approval' OR chain_config_changed === true)`.
-   * If found, raise `booking.edit_requires_notification_dispatch` 422
-   * with the offending booking_id in detail. Same predicate as editOne
-   * (reservation.service.ts:1000-1003) and editSlot (:1358-1361).
-   * Mirrors the §3.6.5 row 2/7/8 emit-site refusal — until B.4.A.5
-   * ships notification dispatch, ANY occurrence that would emit
-   * `booking.approval_required` blocks the whole scope edit.
+   * Same predicate as editOne (reservation.service.ts:1000-1003) and
+   * editSlot (:1358-1361). Mirrors the §3.6.5 row 2/7/8 emit-site
+   * refusal — until B.4.A.5 ships notification dispatch, ANY occurrence
+   * that would emit `booking.approval_required` blocks the whole scope
+   * edit. Self-review 2026-05-12: moved from post-loop to in-loop so a
+   * 200-occurrence series where occurrence #1 trips the gate doesn't
+   * spend ~199 wasted resolver+conflict+approval round-trips before
+   * failing. Worst case (offender at position N) is unchanged.
    *
    * Perf budget: N × (6-8 DB round-trips). For typical 12-52 weekly
    * series, ~70-400 round-trips at ~5ms each on remote Supabase. The
@@ -514,24 +518,22 @@ export class AssembleEditPlanService {
           auto_set_recurrence_overridden: false,
         },
       );
-      rpc_plans.push({ booking_id: bookingId, plan });
-    }
-
-    // ── F. Pre-flight B.4.A.5 gate at TS layer ────────────────────────
-    // Same predicate as editOne (reservation.service.ts:1000-1003) and
-    // editSlot (:1358-1361). If ANY occurrence would emit
-    // `booking.approval_required` (row 2/7/8 of §3.6.5), refuse the
-    // whole scope edit. Without notification dispatch, the chain rows
-    // would commit without any approver being notified — a silent
-    // stall worse than a clean 422.
-    //
-    // We surface the FIRST offending occurrence in the detail so the
-    // operator can identify which occurrence flipped (typically a
-    // room change on a single occurrence in the middle of the series
-    // hits an approval rule). The remaining offenders, if any, are
-    // not enumerated — the operator will see them after fixing the
-    // first one (the gate fires again on retry).
-    for (const { booking_id, plan } of rpc_plans) {
+      // ── F. Pre-flight B.4.A.5 gate at TS layer (in-loop early-exit) ─
+      // Same predicate as editOne (reservation.service.ts:1000-1003) and
+      // editSlot (:1358-1361). If THIS occurrence would emit
+      // `booking.approval_required` (row 2/7/8 of §3.6.5), refuse the
+      // whole scope edit on the first offender. Without notification
+      // dispatch, the chain rows would commit without any approver being
+      // notified — a silent stall worse than a clean 422.
+      //
+      // Self-review 2026-05-12: evaluated INSIDE the loop (was a post-
+      // loop scan that built all N plans first). Best case is up to
+      // ~200× faster fail when the first occurrence would flip;
+      // worst case (offender at position N) is identical work. The
+      // detail surfaces the offender's booking_id so the operator
+      // can identify which occurrence flipped (typically a room
+      // change that hits an approval rule). Remaining offenders, if
+      // any, are not enumerated — the gate fires again on retry.
       const wouldEmitApprovalRequired =
         plan.approval.new_outcome === 'require_approval' &&
         (plan.approval.old_outcome !== 'require_approval' ||
@@ -542,11 +544,13 @@ export class AssembleEditPlanService {
           422,
           {
             detail:
-              `Occurrence ${booking_id} would change approval requirements. ` +
+              `Occurrence ${bookingId} would change approval requirements. ` +
               `Ask the rooms admin to remove approval from this room, or pick a different room.`,
           },
         );
       }
+
+      rpc_plans.push({ booking_id: bookingId, plan });
     }
 
     return { series_id: args.effectiveSeriesId, rpc_plans };
