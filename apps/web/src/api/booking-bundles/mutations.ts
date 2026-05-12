@@ -61,7 +61,8 @@ export function useCancelBundle() {
       // tears it down.
       qc.invalidateQueries({ queryKey: roomBookingKeys.detail(id) });
       qc.invalidateQueries({ queryKey: roomBookingKeys.lists() });
-      qc.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'scheduler-window'] });
+      // /full-review v4 I6 — legacy `scheduler-window` invalidation
+      // dropped (no live subscribers; see room-booking/mutations.ts).
       qc.invalidateQueries({ queryKey: ticketKeys.all });
       qc.invalidateQueries({ queryKey: approvalKeys.all });
     },

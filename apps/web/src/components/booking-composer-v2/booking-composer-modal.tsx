@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Dialog,
   DialogContent,
@@ -115,6 +115,7 @@ export function BookingComposerModal({
 }: BookingComposerModalProps) {
   const isMobile = useIsMobile();
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const composer = useBookingDraft({
     seed: initialDraft
       ? { ...initialDraft }
@@ -146,19 +147,30 @@ export function BookingComposerModal({
     : null;
 
   const { data: mealWindows } = useMealWindows();
+  // /full-review v4 I4 — stabilize the meal-windows dep against ref
+  // churn. React Query's structural sharing usually preserves the
+  // reference for structurally-equal refetches, but window-focus
+  // refetches + any `select` mapper can defeat it and produce a fresh
+  // array on each tick. The signature derivation below is a small
+  // string concat per render that turns mealWindows into a stable
+  // structural key — the useMemo only invalidates when the meaningful
+  // fields actually change.
+  const mealWindowsSignature = (mealWindows ?? [])
+    .map((w) => `${w.id}:${w.active ? 1 : 0}:${w.start_time}:${w.end_time}`)
+    .join('|');
   // Narrow deps to fields getSuggestions actually inspects (startAt,
   // endAt, visitors.length on the draft, plus the room facts and meal
   // windows). Keeps unrelated mutations like `attendeeCount` typing or
   // title edits from re-running the suggestion engine on every keystroke.
   const suggestions = useMemo(
     () => getSuggestions(composer.draft, roomFacts, mealWindows ?? []),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- composer.draft narrowed by design
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- composer.draft narrowed by design + mealWindowsSignature replaces ref dep
     [
       composer.draft.startAt,
       composer.draft.endAt,
       composer.draft.visitors.length,
       roomFacts,
-      mealWindows,
+      mealWindowsSignature,
     ],
   );
 
@@ -178,6 +190,16 @@ export function BookingComposerModal({
       // Always start on the summary view; cancel→reopen shouldn't strand
       // the user in a picker that no longer matches the seeded draft.
       setPanelView('summary');
+      // /full-review v4 I7 — invalidate the spaces cache on open so the
+      // picker shows current state, not whatever was cached the last
+      // time the user opened the modal. spacesListOptions ships with a
+      // 5-min staleTime; without this, an operator who left the modal
+      // closed for 4 minutes can pick a room that was renamed or
+      // archived in the meantime, and the placeholder title ("Thomas's
+      // Maple Room booking") gets built from the stale name. The cache-
+      // race guard at submit (modal:225-232) catches the in-flight
+      // case; this closes the resolved-but-stale case.
+      void qc.invalidateQueries({ queryKey: spacesListOptions().queryKey });
     }
     // intentionally only on open edge
     // eslint-disable-next-line react-hooks/exhaustive-deps

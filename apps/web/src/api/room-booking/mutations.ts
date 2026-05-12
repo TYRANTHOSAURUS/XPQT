@@ -25,20 +25,26 @@ import type { BookingPayload, MultiRoomBookingPayload, Reservation } from './typ
 
 /**
  * Invalidate every cached read that could be affected by a write to a
- * reservation: the user-facing list, the portal picker, the desk
- * scheduler window, and the find-time / availability buckets. We
- * invalidate the whole `scheduler-window` namespace (not a specific key)
- * because the page may have multiple windows cached across day/week
- * pages and filter combinations.
+ * reservation: the user-facing list, the portal picker, the unified
+ * scheduler-data bucket, and the find-time / availability buckets.
+ *
+ * /full-review v4 I6 — dropped the legacy `scheduler-window`
+ * invalidation. That bucket is no longer subscribed by any live page
+ * (the desk scheduler cut over to `scheduler-data` in Phase 1.4 — see
+ * apps/web/src/pages/desk/scheduler/hooks/use-realtime-scheduler.ts:44
+ * which explicitly notes "scheduler-window keys are no longer used by
+ * this page"). Keeping the invalidation alive only paid for itself if
+ * some other surface still subscribed to that key — grep confirms
+ * `useSchedulerReservations` / `schedulerWindowOptions` are exported
+ * but unused. Drop. If a future surface needs the legacy bucket back,
+ * re-add the invalidation there along with the subscriber.
  */
 function invalidateAfterWrite(queryClient: QueryClient): void {
   queryClient.invalidateQueries({ queryKey: roomBookingKeys.lists() });
   queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'picker'] });
-  queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'scheduler-window'] });
   // Unified scheduler-data bucket (rooms + reservations in one round-trip).
   // Phase 1.4 wires the desk scheduler against this key, so any geometry
-  // mutation must invalidate it alongside the legacy scheduler-window
-  // bucket.
+  // mutation invalidates it.
   queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'scheduler-data'] });
   queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'availability'] });
   queryClient.invalidateQueries({ queryKey: [...roomBookingKeys.all, 'find-time'] });

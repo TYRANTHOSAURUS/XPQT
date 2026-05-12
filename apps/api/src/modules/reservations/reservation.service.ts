@@ -826,16 +826,15 @@ export class ReservationService {
       return r;
     }
 
-    // Geometry first — invokes the locked RPC + atomic mirror recompute.
-    // editSlot owns the visitor-cascade emission (I3); the once-only
-    // emission is preserved here because we don't fire it again below.
-    if (hasGeometryChange) {
-      // Resolve the booking's PRIMARY slot id to target. Same primary-
-      // slot definition as the RPC (lowest display_order, ties by
-      // created_at ascending) — but we can't piggy-back on editSlot for
-      // that lookup because editSlot takes the slot id as input. Read
-      // here once; editSlot will do its own pre-flight on that id.
-      const { data: primarySlotRow, error: slotErr } = await this.supabase.admin
+    // /full-review v4 I9 — cache the primary slot id across both
+    // branches. The geometry path and the slot-meta path each ran
+    // the identical SELECT, sequentially. For a combined patch like
+    // `{ space_id, attendee_count }` that's two round-trips for the
+    // same row. Hoist into a lazy resolver so we read once at most.
+    let cachedPrimarySlotId: string | null = null;
+    const resolvePrimarySlotId = async (): Promise<string> => {
+      if (cachedPrimarySlotId) return cachedPrimarySlotId;
+      const { data, error } = await this.supabase.admin
         .from('booking_slots')
         .select('id')
         .eq('tenant_id', tenantId)
@@ -844,10 +843,23 @@ export class ReservationService {
         .order('created_at', { ascending: true })
         .limit(1)
         .maybeSingle();
-      if (slotErr || !primarySlotRow) {
-        throw AppErrors.validationFailed('booking.no_primary_slot', { detail: `edit_failed:no_primary_slot` });
+      if (error || !data) {
+        throw AppErrors.validationFailed('booking.no_primary_slot', { detail: 'edit_failed:no_primary_slot' });
       }
-      const primarySlotId = (primarySlotRow as { id: string }).id;
+      cachedPrimarySlotId = (data as { id: string }).id;
+      return cachedPrimarySlotId;
+    };
+
+    // Geometry first — invokes the locked RPC + atomic mirror recompute.
+    // editSlot owns the visitor-cascade emission (I3); the once-only
+    // emission is preserved here because we don't fire it again below.
+    if (hasGeometryChange) {
+      // Primary slot lookup runs at most once per editOne call thanks
+      // to `cachedPrimarySlotId` above. Definition matches the RPC's
+      // (lowest display_order, ties by created_at ascending). editSlot
+      // takes the slot id as input, so we can't piggy-back on its
+      // pre-flight for that resolution.
+      const primarySlotId = await resolvePrimarySlotId();
       // Delegate. editSlot enforces canEdit (we already checked above —
       // redundant but cheap), surfaces 409 ConflictException on GiST
       // exclusion, NotFoundException on missing slot, and emits the
@@ -878,21 +890,9 @@ export class ReservationService {
     // slot. Pre-fix this happened in the same UPDATE as geometry; now
     // it's a separate write because geometry went through the RPC.
     if (Object.keys(slotMetaPatch).length > 0) {
-      // Re-resolve primary slot id (the geometry path may not have been
-      // taken). Cheap re-read — same query.
-      const { data: primarySlotRow, error: slotErr } = await this.supabase.admin
-        .from('booking_slots')
-        .select('id')
-        .eq('tenant_id', tenantId)
-        .eq('booking_id', id)
-        .order('display_order', { ascending: true })
-        .order('created_at', { ascending: true })
-        .limit(1)
-        .maybeSingle();
-      if (slotErr || !primarySlotRow) {
-        throw AppErrors.validationFailed('booking.no_primary_slot', { detail: `edit_failed:no_primary_slot` });
-      }
-      const primarySlotId = (primarySlotRow as { id: string }).id;
+      // Reuses the cached lookup if the geometry branch already ran;
+      // does a fresh SELECT only if this is the only path taken.
+      const primarySlotId = await resolvePrimarySlotId();
 
       const { error: updErr } = await this.supabase.admin
         .from('booking_slots')
