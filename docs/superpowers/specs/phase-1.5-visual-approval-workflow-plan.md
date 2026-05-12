@@ -649,8 +649,12 @@ begin
   get diagnostics v_expired_ct = row_count;
 
   -- 3. Emit instance_cancelled audit event.
-  insert into public.workflow_events (
-    tenant_id, instance_id, event_type, payload, created_at
+  --    Table is workflow_instance_events (00026); column is workflow_instance_id
+  --    (verified 2026-05-12). Pre-v4-fix the spec drafted workflow_events /
+  --    instance_id — both wrong. 'instance_cancelled' is in the event_type CHECK
+  --    set per 00376 widening.
+  insert into public.workflow_instance_events (
+    tenant_id, workflow_instance_id, event_type, payload, created_at
   ) values (
     p_tenant_id, p_instance_id, 'instance_cancelled',
     jsonb_build_object(
