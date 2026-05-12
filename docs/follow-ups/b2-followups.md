@@ -230,7 +230,27 @@ tasks DEFINED in a workflow, ZERO created on a partial-fail. Post
 Codex-S8-I3 remediation (2026-05-11) the workflow_instance HALTS at
 the `create_child_tasks` node — `status` flips to `'failed'`, a
 `node_failed` audit event is emitted (reason `dispatch_batch_failed`),
-and the workflow does NOT advance. Pre-remediation the engine
+and the workflow does NOT advance.
+
+**Latent regression closed by 00366 (2026-05-12).** The `node_failed`
+emit shipped in Step 8 was vacuously broken from 2026-05-11 →
+2026-05-12: the original CHECK constraint on `workflow_instance_events.event_type`
+(00026:7-11) didn't include `'node_failed'`, and the `emit()` helper at
+`workflow-engine.service.ts:992-994` wrapped the insert in a bare
+`try {} catch {}` ("best-effort"). Result: every halt-on-batch-failure
+event since Step 8 hit the CHECK, was rejected by Postgres, and silently
+swallowed — instances showed `status='failed'` with zero node-level
+audit evidence in the timeline. The Step 8 spec test
+(`workflow-engine.service.spec.ts:200-207`) only spied on the `emit()`
+call, not the row landing, so CI was green. **Closed by:** migration
+00366 (relaxes CHECK to include `'node_failed'`); engine `emit()` catch
+now `console.warn`s so future event_type / CHECK drift surfaces in logs;
+`history-timeline.tsx` renders `node_failed` with `XCircle` +
+"`${node_type ?? 'Node'} failed: ${payload.reason ?? 'unknown'}`". Two
+P2 polish items shipped same day (848f1915): allowlist extracted to
+`packages/shared/src/workflow.ts`, design-time validation in
+`update-ticket-form.tsx`, all-or-nothing notice in
+`create-child-tasks-form.tsx`. Pre-remediation the engine
 `console.error`'d and advanced as if children had been created,
 producing an audit-log lie. The new shape exposes the same per-task
 error codes to ops:
