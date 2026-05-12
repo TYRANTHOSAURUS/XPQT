@@ -1,10 +1,12 @@
 # Universal Workflow Architecture (Booking Workflows + Cross-Entity Spawn)
 
-**Status:** v2.1 — REMEDIATED (parallel + codex), READY FOR USER
-APPROVAL. Plan-review Checkpoint 1 complete; all CRITICAL fact-
-foundation findings + the codex BLOCKER (atomic spawn RPC) corrected
-directly; architectural pivots flagged in §9 as open questions for
-user decision.
+**Status:** v2.2 — APPROVED, READY FOR PHASE 0. Plan-review Checkpoint
+1 complete; all CRITICAL fact-foundation findings + the codex BLOCKER
+(atomic spawn RPC) corrected directly in v2/v2.1; five architectural
+pivots locked in v2.2 per user direction + codex best-in-class
+recommendations. §9 now lists only the remaining mechanical open
+questions (mostly Phase 4 design decisions); the v1/v2 architectural
+pivots are baked into §3-§7.
 
 **Authors:** Claude main (architecture decision + implementation phasing) +
 codex (spawn-and-wait nuance + workflow_instance_links table shape) +
@@ -38,6 +40,23 @@ v2 plan-review remediation (2 parallel reviewers — see revision history).
   questions for user decision (spawn-and-wait decomposition;
   cancellation default flip; pulling Phase 5 forward; multi-spawn YAGNI
   in v1; cron-vs-outbox MVP choice).
+- 2026-05-12 — **v2.2 architectural pivots locked.** Codex returned
+  decisive best-in-class recommendations on the five §9.1-9.5 open
+  questions (the user explicitly asked codex to weigh in with a
+  best-in-class framing). All five align with the project's
+  best-in-class mandate; none compound risk; they compound coherence.
+  Locked in: (a) Tier 2 outbox wake from day 1, cron as backstop;
+  (b) cancellation default `cancel_child`, `orphan_child` becomes the
+  opt-in; (c) multi-spawn aggregation deferred from v1 (schema
+  additive — ships when concrete demand surfaces); (d) spawn-and-wait
+  persists as ONE compound config but the editor renders it as TWO
+  linked visual elements (spawn box + attached wait box); (e) visual
+  approval-workflow migration pulled forward to Phase 1.5 (real admin
+  demand validates cross-entity infra). §3 (architecture), §4
+  (migrations), §6 (estimate) updated to reflect the locked decisions.
+  §9 now contains only the remaining mechanical open questions for
+  Phase 4 design time. Estimate widened from 14-20w to 15-22w one
+  engineer (Phase 1.5 inserts).
 - 2026-05-12 — **v2 codex second-opinion remediation.** Codex
   pressure-tested the v2 remediated state and surfaced one BLOCKER + 3
   CRITICAL + 5 IMPORTANT + 3 nits — all real, all corrected. BLOCKER:
@@ -506,9 +525,9 @@ create table public.workflow_instance_links (
   entity_terminal_statuses text[] null,
   wait_timeout_at          timestamptz null,
   on_timeout_branch        text null,  -- branch label in parent workflow if timeout fires
-  -- Cancellation cascade:
+  -- Cancellation cascade: default `cancel_child` (v2.2 locked) — see §3.6.
   on_parent_cancel         text not null
-    default 'orphan_child'
+    default 'cancel_child'
     check (on_parent_cancel in ('cancel_child', 'orphan_child')),
   -- Resolution audit:
   resolved_at              timestamptz null,
@@ -585,12 +604,22 @@ create trigger workflow_instance_links_assert_tenant
 
 ### 3.3 Spawn node taxonomy
 
-Two user-visible spawn nodes per cross-entity boundary:
+**Persistence shape — LOCKED v2.2: one compound spawn-wait config per
+node, rendered in the editor as two linked visual elements.** The
+node-config record carries the full spawn semantics: spawn-target
+payload + spawn_mode (`continue` | `wait`) + (when wait) wait
+condition + timeout + on_timeout_branch. Runtime reads one record;
+`workflow_instance_links` stays the single source of truth for
+parent-child genealogy + wait config. The editor renders the
+wait-variant of each spawn node as TWO visually-paired elements (a
+spawn box + an attached wait box joined by a fixed edge) so authors
+see "spawn THEN wait" as two steps with explicit branches — the
+discoverability win of decomposition without the runtime split.
 
-| Node label | spawn_mode | When to use |
-|---|---|---|
-| "Spawn X (continue immediately)" | `continue` | Parent doesn't care about child's outcome. Fire-and-forget. |
-| "Spawn X and wait" | `wait` | Parent depends on child's outcome (success/failure/cancel). Branches based on result. |
+| Node label | spawn_mode | Editor render | When to use |
+|---|---|---|---|
+| "Spawn X (continue immediately)" | `continue` | single box | Parent doesn't care about child's outcome. Fire-and-forget. |
+| "Spawn X and wait" | `wait` | two paired boxes (spawn + wait) joined by a fixed edge; the wait box owns the branch outputs (`condition_met`, `timeout`, `parent_cancelled`) | Parent depends on child's outcome (success/failure/cancel). Branches based on result. |
 
 Per cross-entity direction (5 directions for Phase 3, more later):
 
@@ -685,15 +714,17 @@ Two-tier:
     invocations (at-least-once delivery) cannot double-resume because
     only one wins the `UPDATE … WHERE resolved_at IS NULL`.
 
-**MVP boundary — surfaced to user as open question 1.** v1 draft chose
-Tier 1 cron (30s latency). Plan-review pushed back: 30s is fine for
-operator-time scenarios ("ticket waits for service-desk approval") but
-unacceptable for the most plausible booking spawn-and-wait workflow
-("requester confirms a booking → notify the host immediately"). Tier 2
-producers are already on the Phase 1 critical path because
-spawn-cancellation propagation needs the same producer events. See
-§9.1 for the recommendation. The link-row schema accommodates both
-without schema change either way.
+**MVP boundary — LOCKED v2.2: ship Tier 2 outbox-driven wake from
+day 1; Tier 1 cron rides as the durability backstop only.** 30s
+poll latency is incompatible with the best-in-class mandate ("booking
+confirmed → host notified" should be live, not on a polling clock).
+The Tier 2 producer migrations are already on Phase 1's critical
+path because spawn-cancellation propagation (§3.6) needs the same
+events. Phase 1 ships them as the wake-driver; Phase 1's smoke probe
+(`pnpm smoke:workflow-wake`) enforces producer-before-consumer. The
+link-row schema accommodates both tiers without schema change, so
+Tier 1 cron stays in place as the failsafe for dropped events / dead
+outbox workers.
 
 ### 3.6 Cancellation propagation
 
@@ -719,17 +750,17 @@ When a parent workflow_instance is cancelled (status → `cancelled`), iterate `
   - Set `resolved_at = now()`, `resolution_kind = 'parent_cancelled'`.
   - Child workflow + entity continue independently.
 
-**Default on every spawn node — surfaced to user as open question 2.**
-v1 draft chose `'orphan_child'` ("Cancellation must require explicit
-author intent."). Plan-review pushed back hard: the plausible failure
-mode is "facilities admin cancels service request, room stays booked,
-requester arrives Monday to a booked room" — a P1 user-trust bug.
-Cascade-by-default (`cancel_child`) is the natural reading of every
-other parent-child relationship in the project (the FKs added in 00367
-above are `ON DELETE SET NULL` precisely because cascade is dangerous
-for the schema, but cascade IS the right semantic for *intent-driven*
-cancellation). v2 RECOMMENDS flipping the default to `'cancel_child'`
-pending user confirmation. See §9.2.
+**Default on every spawn node — LOCKED v2.2: `'cancel_child'`.**
+Cancelling a parent workflow IS the cancellation of business intent;
+silently leaving the spawned room booked / WO dispatched / ticket open
+on a cancelled parent breaks user trust ("facilities admin cancels
+service request → requester arrives Monday to a booked room they
+thought was cancelled" is a P1 incident). The opt-in for the audit-
+keep / fire-and-forget case is `'orphan_child'`, set explicitly per
+spawn node when the child has independent value after spawn. Note the
+schema-level FKs on the polymorphic id columns stay `ON DELETE SET
+NULL` (per the 00239 lesson — DB cascade is dangerous), but the
+*semantic* cascade at the workflow layer is opt-out, not opt-in.
 
 **Cycle detection — visited-set, not just depth limit.** Plan-review
 flagged that depth-10 catches diverging chains but misses tight
@@ -746,16 +777,18 @@ Both are cheap; both are needed.
 
 ### 3.7 Multi-spawn aggregation
 
-**Surfaced to user as open question 3 (YAGNI risk).** Plan-review
-flagged this as the spec's biggest scope speculation: the only example
-("ticket workflow spawns 3 bookings for a multi-room event") is
-hypothetical, no concrete demand cited, and customer-size memory
-suggests single-vendor / single-room is the typical case. v2
-RECOMMENDS deferring the aggregation columns + logic to v1.x when
-demand surfaces. Schema is additive — the link-row columns can be
-added in a later migration without a backfill burden. v2 keeps the
-*design* documented here so the future migration is a copy-paste,
-but Phase 1 ships SINGLE-spawn only.
+**LOCKED v2.2: deferred from v1; ship single-spawn only.** Plan-review
+flagged this as the spec's biggest scope speculation; codex agreed
+("half-baked parallelism is worse than absent parallelism"). The
+example use case ("ticket workflow spawns 3 bookings for a multi-room
+event") is hypothetical, no concrete demand cited, customer-size
+memory says single-vendor / single-room is typical. Schema is
+additive — the link-row columns can be added in a later migration
+without a backfill burden. v2.2 keeps the *design* documented here so
+the future migration is a copy-paste, but Phase 1 ships SINGLE-spawn
+only. The `aggregation_*` columns and the `claim_aggregation_group_resume`
+RPC do NOT ship in Phase 0/1; the migration slot reservation (00376)
+remains in §4 as a placeholder.
 
 A ticket workflow node that spawns 3 bookings (multi-room event) writes 3 link rows with the same `aggregation_group_id` + `aggregation_strategy`.
 
@@ -1085,23 +1118,27 @@ to this spec automatically — re-confirm.
 | Phase | Subject | Estimate | Migrations |
 |---|---|---|---|
 | 0 | Schema (entity_type widening + ticket_id NOT NULL drop + 00345 index split + booking_id + workflow_instance_links + polymorphism trigger w/ INSERT+UPDATE coverage + link tenant trigger + backfill preflights) | 1.5-2 weeks | 2 |
-| 1 | Engine extension (waiting state, atomic wake claim, resume() race fix, cancel hook generalization, polymorphize hardcoded `target_entity_type`, cycle visited-set, depth limit, single-spawn only) + producer migrations for `booking.created`/`cancelled`/`status_changed` | 4-5 weeks | 1-2 (lifecycle outbox events; mandatory if Tier 2 wake ships per §9.1) |
+| 1 | Engine extension (waiting state; Tier 2 outbox wake handler with atomic claim; resume() race fix; cancel hook generalization with `cancel_child` default cascade; polymorphize hardcoded `target_entity_type`; cycle visited-set + depth limit; single-spawn only) + producer migrations for `booking.created`/`cancelled`/`status_changed` | 4-5 weeks | 2 (booking lifecycle outbox events — MANDATORY per §3.5 LOCKED Tier 2) |
+| 1.5 | Visual approval-workflow migration (`room_booking_rules.approval_config` JSON → visual workflow). Pulled forward per LOCKED v2.2 — real admin demand pressure-tests the cross-entity infra before §3 boundary nodes ship. Reuses Phase 1's `update_booking` / `cancel_booking` primary nodes via the workflow editor; introduces `approval_step` / `approval_branch` node types if not already covered by the generic `condition` + `notification` shapes. Coexists with B.4.A.5 gate at `reservation.service.ts:1213` until the gate retires. | 2-3 weeks | 1 (approval_config jsonb → visual workflow backfill migration) |
 | 2 | Booking-side primary nodes (incl. NEW `transition_booking_status` RPC + outbox emit of `booking.status_changed`) | 1.5-2 weeks | 1 (transition_booking_status RPC) |
-| 3 | Cross-entity boundary nodes — atomic per-direction `spawn_*_with_link` RPCs (5 directions × 2 modes) | 3-4 weeks | 5 (one per direction) |
-| 4 | Editor UI (entity_type picker, palette filtering, inspector polymorphism, audit-chain view, unknown-node fallback render) | 4-5 weeks | 0 |
-| 5 | (Optional, surfaced as §9.5 for ordering decision) Approval-workflow migration | 1-2 weeks | 1+ depending on backfill |
+| 3 | Cross-entity boundary nodes — atomic per-direction `spawn_*_with_link` RPCs (5 directions × 2 modes; LOCKED compound config + decomposed editor render per §3.3) | 3-4 weeks | 5 (one per direction) |
+| 4 | Editor UI (entity_type picker, palette filtering, inspector polymorphism, audit-chain view, unknown-node fallback render, paired spawn+wait visual element per §3.3) | 4-5 weeks | 0 |
 
-**Total: 14-20 working weeks for one engineer** (was 11-15; v2.1
-widened per codex review which surfaced 5 atomic-RPCs in Phase 3,
-schema generalization gaps in Phase 0, and editor unknown-node
-fallback in Phase 4). Compress to 9-13 weeks with two engineers
-(Phase 4 UI work parallelizes with Phase 1-3 backend). Includes the
-review-loop overhead per `feedback_review_loop_protocol.md`. If §9.3
-(drop multi-spawn from v1) lands, no time impact (already deferred
-per §3.7); if §9.5 (pull approval workflow forward) lands, Phase 1.5
-inserts and total stretches by 1-2w; if §9.4 lands as decomposed
-(spawn-and-wait pivot), Phase 1's wake handler simplifies (~-0.5w)
-but Phase 4 adds a second node-type to the editor (~+0.5w) — wash.
+**Total: 16-21 working weeks for one engineer** (was 14-20; v2.2
+added Phase 1.5 visual approval-workflow migration per LOCKED §9.5
+pivot). Compress to 10-14 weeks with two engineers (Phase 4 UI work
+parallelizes with Phase 1.5-3 backend). Includes the review-loop
+overhead per `feedback_review_loop_protocol.md`.
+
+**Why Phase 1.5 ordering** — pulling visual approvals forward, AFTER
+Phase 1 engine extension but BEFORE Phase 2/3 booking-side primary +
+cross-entity spawn nodes, gives the spec the strongest pressure test:
+real admins authoring real approval workflows surface design problems
+in the universal infra (palette, inspector, audit chain) before that
+infra is fanned out across the full 5 spawn directions. If Phase 1.5
+reveals an infra defect, fixing it in 3 directions (Phase 2 booking
+primaries + Phase 3 spawn boundaries not yet shipped) is cheaper than
+fixing it in 8 (everything shipped before triage).
 
 ## 7. Sequencing
 
@@ -1110,17 +1147,26 @@ but Phase 4 adds a second node-type to the editor (~+0.5w) — wash.
 1. Phase 0 (schema) MUST land before any Phase 1+ work touches
    `workflow_instances` or `workflow_instance_links`. No partial
    schema state.
-2. Phase 1 (engine) MUST land before Phase 2 (nodes that depend on
-   the engine's wait/wake mechanism don't make sense without it).
-3. Phase 2 (booking nodes) and Phase 3 (boundary nodes) can ship in
-   parallel — boundary nodes only call the spawn RPCs, not the
-   primary nodes. Sequencing by dependency: ship `update_booking` +
-   `cancel_booking` (Phase 2) before `spawn_booking_from_ticket`
-   (Phase 3) so spawn-and-wait scenarios have something to wait FOR.
-4. Phase 4 (UI) ships after Phase 3 backend is callable so the editor
-   has real APIs to surface.
-5. Phase 5 (approval migration) is OPTIONAL and probably its own
-   spec. Don't bundle.
+2. Phase 1 (engine) MUST land before Phase 1.5 (visual approval
+   workflow needs the wait/wake mechanism + cancel cascade) and
+   before Phase 2 (booking primary nodes).
+3. **Phase 1.5 (visual approval workflow) MUST land before Phase 3
+   (cross-entity spawn nodes).** This is the LOCKED §9.5 pivot —
+   real admin authoring pressure-tests the universal infra before
+   it fans out across 5 spawn directions. Phase 2 (booking primary
+   nodes) can ship in parallel with 1.5 since approval workflows
+   call `update_booking` / `cancel_booking` directly.
+4. Phase 3 (spawn boundary nodes) ships after Phase 1.5 lands + any
+   infra defects surfaced by real admin use are remediated.
+5. Phase 4 (UI) ships after Phase 3 backend is callable so the editor
+   has real APIs to surface. Phase 4 work parallelizes with Phase
+   1.5-3 backend per the §6 compression note.
+6. **B.4.A.5 gate compatibility.** Phase 1.5 must explicitly handle
+   the controller-vs-notification gate at `reservation.service.ts:1213`
+   (422 `booking.edit_requires_notification_dispatch`). Either the
+   visual approval workflow itself becomes the notification dispatch
+   path (retiring the gate), or the gate coexists pointing operators
+   to the visual workflow. Decide at Phase 1.5 plan-review time.
 
 **Per-phase review-loop protocol:**
 
@@ -1132,8 +1178,8 @@ Apply `feedback_review_loop_protocol.md` to each phase:
 
 **Producer-before-consumer (Phase 1 specifically):**
 
-If Phase 1 ships Tier 2 resume mechanism (outbox events) — recommended
-per §9.1 — the `booking.status_changed` / `booking.cancelled` /
+Phase 1 ships Tier 2 resume mechanism (outbox events) per LOCKED
+v2.2 §3.5 + §9.1. The `booking.status_changed` / `booking.cancelled` /
 `booking.created` event types must be:
 1. Registered in `apps/api/src/modules/reservations/event-types.ts`
    (mirror `BookingEditEventType` shape — likely a sibling
@@ -1171,132 +1217,56 @@ the spec's prose-only invariant doesn't structurally prevent.
 dependency) — produce `docs/follow-ups/workflow-editor-breakage-2026-05-12.md`
 before Phase 4 UI work to size what's broken vs what needs new build.
 
-## 9. Open questions
+## 9. Locked decisions + remaining open questions
 
-**§9.1-9.5 are ARCHITECTURAL PIVOTS surfaced by v2 plan-review — each
-needs explicit user decision before Phase 0 starts. v2 RECOMMENDS the
-default in each but does not silently flip the architecture.**
+### 9.A Locked architectural decisions (v2.2)
 
-### 9.1 (PIVOT) Cron poll vs outbox events for Phase 1 resume
+The five architectural pivots surfaced in v2 plan-review were resolved
+by codex's best-in-class second opinion + user direction:
 
-v1 chose Tier 1 cron (30s latency) as MVP. Plan-review pushed back:
-30s is fine for operator-time scenarios ("ticket waits for service-desk
-approval") but unacceptable for the most plausible booking
-spawn-and-wait scenario ("requester confirms a booking → notify the
-host"). 30s of dead air after clicking "confirm" reads as broken.
+| # | Decision | Locked v2.2 outcome | Section(s) reflecting |
+|---|---|---|---|
+| 9.1 | Wake mechanism | **Tier 2 outbox from day 1; cron as durability backstop** | §3.5, §4 (00369 mandatory) |
+| 9.2 | Cancellation default | **`'cancel_child'`** (opt-in `'orphan_child'` for fire-and-forget) | §3.2 column default, §3.6 |
+| 9.3 | Multi-spawn aggregation | **Deferred from v1; ship single-spawn only** (schema additive — slot 00376 reserved) | §3.7, §4 |
+| 9.4 | Spawn-and-wait shape | **Compound config persisted; editor renders as two paired visual elements** | §3.3, §3.8 |
+| 9.5 | Phase 5 ordering | **Pulled forward to Phase 1.5** (visual approval workflow); ships after Phase 1 engine, before Phase 3 spawn boundaries | §6, §7 |
 
-**v2 recommendation:** ship Tier 2 (outbox events) from day 1. Rationale:
-the producer events (`booking.status_changed`, `booking.cancelled`,
-`booking.created`) are already on the Phase 1 critical path because
-spawn-cancellation cascade in §3.6 needs them — adding the wake handler
-on top is incremental work, not new infra. Keep the Tier 1 cron poll
-as the safety net for events that get dropped from outbox (durability,
-not primary path).
+Decisions were chosen on a best-in-class framing: live wake (not 30s
+poll); cancellation matches business intent (not silent survival);
+ship coherent v1 (not half-baked parallelism); editor reflects the
+admin's mental model of "spawn THEN wait" (not a single opaque node);
+real admin demand pressure-tests the universal infra before it fans
+out (not the other way around).
 
-### 9.2 (PIVOT) Cancellation default — orphan_child vs cancel_child
+### 9.B Remaining open questions (Phase-4-time decisions, mostly)
 
-v1 said `'orphan_child'` ("Cancellation must require explicit author
-intent"). Plan-review pushed back hard: the plausible failure mode is
-"facilities admin cancels service request → room stays booked →
-requester arrives Monday to a booked room they thought they'd
-cancelled." That's a P1 user-trust bug, not a "surprising default."
-
-**v2 recommendation:** flip default to `'cancel_child'`. Rationale:
-cascade is the natural reading of every other parent-child
-relationship in the project; admins explicitly modeling a
-fire-and-forget child can opt-in to `'orphan_child'` per spawn node;
-the safety net pattern (require explicit intent for the dangerous
-choice) reverses what's safe vs surprising here.
-
-### 9.3 (PIVOT) Multi-spawn aggregation in v1 — needed or YAGNI
-
-v1 included the full aggregation surface (`all` / `any` / `first` /
-`quorum`). Plan-review pointed out the only example is hypothetical
-("multi-room event"); customer-size memory says single-vendor /
-single-room is typical. 4 columns + ~15% engine complexity for an
-unproven use case.
-
-**v2 recommendation:** drop multi-spawn from v1. Ship single-spawn
-only. The schema is additive, so adding the columns + logic later when
-demand surfaces is a clean migration. v2 keeps the *design* documented
-in §3.7 so that future migration is a copy-paste — but Phase 1 ships
-single-spawn only.
-
-### 9.4 (PIVOT) Spawn-and-wait — combined node vs decomposed primitives
-
-v1 packs spawn + wait into one node config (`spawn_mode: 'continue' |
-'wait'`). Plan-review proposed decomposition: `spawn` always continues,
-and a separate `wait_for_event` node listens for the entity-status /
-workflow-terminal condition. Reasons:
-- Today's engine has `wait_for` (line :623); generalizing it is
-  structurally cheaper than inventing a parallel waiting machinery
-  inside spawn nodes.
-- Real workflows already need "wait without spawning" (e.g., wait for
-  an Outlook sync event on a booking we did NOT create).
-- Editor UX: explicit wait node makes parent's branching obvious.
-- Link rows stay pure parent-child genealogy; wait state moves into a
-  separate `workflow_waits` table.
-
-Counter-argument: combined spawn-and-wait is a more discoverable
-primitive ("I want to spawn this and wait for it" reads naturally as
-ONE node). Decomposition forces authors to wire two nodes for what's
-conceptually one decision.
-
-**Third option (codex addition):** persist ONE compound spawn-wait
-config (the v1 shape), but render it in the editor as TWO linked
-visual elements — a spawn box and an attached wait box, joined by a
-fixed edge. Authors see "spawn THEN wait" as two visual steps
-(decomposition-friendly UX); the engine reads one config record (no
-additional wait_for table); the link row carries the wait config as
-the single source of truth. Trades editor complexity for
-runtime simplicity. Probably the right answer if the user's UX
-priority is "the editor must look like the workflow runs," but adds
-~0.5w to Phase 4.
-
-**v2 has no default recommendation here.** Three shapes work; the
-trade-off is discoverability (combined wins), primitive purity
-(decomposed wins), or compound-render (best of both, more editor
-work). User decision before Phase 1 starts.
-
-### 9.5 (PIVOT) Phase 5 ordering — defer or pull forward to Phase 1.5
-
-v1 marked the approval-config-jsonb → visual-workflow migration as
-optional / probably its own spec. Plan-review pushed back: bug #2 in
-§2 ("approval config is hand-edited JSON") is the only one in the
-inventory a real admin will notice this quarter. Phases 0-4 deliver
-generalization no admin asked for; Phase 5 delivers the user-visible
-win. Pulling forward to Phase 1.5 means real admin demand validates
-the cross-entity infra.
-
-**v2 has no default recommendation here.** The trade-off is "ship
-infra clean and risk it baking in design choices nobody pressure-tests"
-vs "ship visual-approvals first and risk infra churn from real-use
-feedback." User decision before Phase 0 starts.
-
-### 9.6-9.10 (mechanical / scoping)
-
-6. **Booking lifecycle outbox events (now mandatory if §9.1 lands).**
-   Phase 1 needs producer migrations for `booking.status_changed`,
-   `booking.cancelled`, `booking.created`. Each is a
-   producer-before-consumer item.
-7. **Multi-tenant RLS on `workflow_instance_links`.** Standard
+1. **Multi-tenant RLS on `workflow_instance_links`.** Standard
    tenant_id-scoped policy. Cross-tenant chains are forbidden by
    design; Phase 0 ships standard. Revisit if cross-team workflow
    chains within a tenant need narrower visibility.
-8. **Editor i18n scope.** New error codes ship with EN+NL; confirm
+2. **Editor i18n scope.** New error codes ship with EN+NL; confirm
    whether new node labels + inspector copy also need NL at Phase 4
    ship time vs deferred.
-9. **Compatibility with B.4.A.5 gate.** B.4 step 2D-D shipped a
-   controller-vs-notification gate at `reservation.service.ts:1213`
-   (422 `booking.edit_requires_notification_dispatch`). If §9.5 lands
-   (approval workflow pulled forward), the gate needs to retire or
-   coexist with the visual approval flow. Decide before Phase 1.5.
-10. **Audit chain UI surface.** Is the chain view a new page or an
-    expandable section in the existing audit-events feed? Phase 4
-    decision.
-11. **Spawn-and-wait UX in editor (or the decomposed equivalent per
-    §9.4).** Visual representation of the waiting state vs continue —
-    distinct node icons / border styles? Phase 4 design decision.
+3. **B.4.A.5 gate retirement vs coexistence.** Phase 1.5 must
+   explicitly decide whether the visual approval workflow itself
+   becomes the notification dispatch path (retiring the gate at
+   `reservation.service.ts:1213`), or the gate coexists pointing
+   operators at the visual workflow. Decide at Phase 1.5 plan-review
+   time.
+4. **Audit chain UI surface.** Is the chain view a new page or an
+   expandable section in the existing audit-events feed? Phase 4
+   decision.
+5. **Spawn-and-wait visual styling.** The §3.3 LOCKED decision says
+   render as two paired elements joined by a fixed edge — but the
+   specific visual treatment (icon set, border style, edge animation
+   during waiting state) is a Phase 4 design decision.
+6. **Phase 1.5 approval workflow scope ceiling.** Pulling approval
+   forward inherits the risk of "while we're here, let's also model
+   X." Phase 1.5 plan-review must explicitly enumerate what's IN
+   scope (the existing `room_booking_rules.approval_config` jsonb
+   shape) and what's deferred (any new approval primitives admins ask
+   for during pressure-test — those become a follow-up spec).
 
 ## 10. Out of scope (deferred)
 
@@ -1305,8 +1275,7 @@ feedback." User decision before Phase 0 starts.
 - Editor UI rebuild (incremental enhancement only).
 - BPMN parallel gateways with race conditions, signal events,
   escalation timer chains beyond simple spawn-and-wait timeouts.
-- Migration tooling for existing `room_booking_rules.approval_config`
-  jsonb → visual workflow definitions (Phase 5 or its own spec).
+- (Removed v2.2 — now IN scope as Phase 1.5 per LOCKED §9.5.)
 - Cross-tenant workflow chains (if a parent in tenant A spawns a
   child in tenant B — explicitly forbidden by RLS).
 - Workflow versioning / migration of in-flight instances when a
@@ -1318,23 +1287,18 @@ feedback." User decision before Phase 0 starts.
 
 ---
 
-**Status:** v2.1 — ready for user approval. Plan-review Checkpoint 1
-complete (parallel plan + approach reviewers; codex second-opinion
-remediation). 6 v1 CRITICAL findings + 1 v2 BLOCKER (atomic spawn
-RPC) + 3 v2 CRITICAL (schema generalization gaps; wake idempotency;
-tenant boundary at wake) + 8 v2 IMPORTANTs all corrected directly.
-Five architectural pivots surfaced as §9.1-9.5 for user decision (NOT
-silently flipped). After user approval: phase-by-phase implementation
-gated on user approval per phase, with the per-sub-step review loop
-(Checkpoint 2).
+**Status:** v2.2 — APPROVED, READY FOR PHASE 0. Plan-review Checkpoint
+1 complete (parallel plan + approach reviewers + codex second opinion
++ codex best-in-class recommendations on the five architectural
+pivots). 6 v1 CRITICAL findings + 1 v2 BLOCKER (atomic spawn RPC) +
+3 v2 CRITICAL (schema generalization gaps; wake idempotency; tenant
+boundary at wake) + 8 v2 IMPORTANTs corrected directly in v2/v2.1.
+Five architectural pivots LOCKED in v2.2 per user direction + codex
+recommendations (§9.A). Phase 0 + 1 + 1.5 + 2 + 3 + 4 may begin under
+the per-sub-step review loop (Checkpoint 2). Total 16-21w one
+engineer.
 
-**Citations re-verified against current code 2026-05-12 in v2.1
-remediation.** v1's claim that all citations were verified missed
-two fact-foundation errors (existing `workflow_definitions.entity_type`
-column; the 00239 CHECK-vs-FK lesson) and one factual misclassification
-(`booking.edited` as outbox event when it's only a domain_event); v2
-remediation also missed the `workflow_instances.ticket_id NOT NULL`
-schema gap and the 00345 active-uniqueness index generalization need.
-v2.1 closes both. Implementer should still re-verify file:line
-references before quoting in commit messages (citation discipline rule
-applies).
+**Citations re-verified against current code 2026-05-12 across v1 →
+v2 → v2.1 → v2.2.** Implementer should still re-verify file:line
+references before quoting in commit messages (citation discipline
+rule applies).
