@@ -52,6 +52,27 @@ real database.
 
 Exit 0 = all probes pass. Exit 1 = at least one regression.
 
+## Smoke gate (mandatory before claiming floor-plan work shipped)
+
+**Run `pnpm smoke:floor-plans` (with the dev server running) before
+claiming any work touching `FloorPlanService` / `FloorPlanDraftService`
+/ `publish_floor_plan_draft` RPC / the floor-plan editor is complete.**
+This script lives at `apps/api/scripts/smoke-floor-plans.mjs`. It mints
+a real Admin JWT, fabricates a disposable floor + child room via the
+Supabase admin client, then runs 20 probes against the live API: happy-path
+CRUD (GET draft, PATCH, publish, GET published, history), validation
+rejections (1-point polygon, unlinked polygon, cross-tenant space_id,
+space not a child of floor, duplicate space_id, publish with no image),
+cross-tenant RLS isolation (tenant B cannot see tenant A draft), atomic
+CAS / optimistic locking (If-Match stale → 409), parallel publish race
+(exactly one success), signed-URL freshness, and the direct Supabase REST
+block (RLS rejects direct INSERT into floor_plan_publish_history).
+Skips: non-admin JWT probe (P10, requires seeded non-admin user) and
+bounds-check probe (P17, DTO does not yet enforce pixel clamping).
+All fabricated test data is cleaned up on exit.
+
+Exit 0 = all probes pass. Exit 1 = at least one regression.
+
 ## Supabase: remote vs local — READ BEFORE WRITING MIGRATIONS
 
 **This project's dev environment connects to the REMOTE Supabase project**, not the local stack. `.env` points `SUPABASE_URL` at `https://iwbqnyrvycqgnatratrk.supabase.co`. The API, web, and browser all talk to the remote DB in day-to-day dev.

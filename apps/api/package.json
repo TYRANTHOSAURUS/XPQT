@@ -14,7 +14,8 @@
     "test:concurrency": "jest --config test/concurrency/jest.config.cjs --runInBand",
     "smoke:work-orders": "node scripts/smoke-work-orders.mjs",
     "smoke:tickets": "node scripts/smoke-tickets.mjs",
-    "smoke:outbox": "node scripts/smoke-outbox-roundtrip.mjs"
+    "smoke:outbox": "node scripts/smoke-outbox-roundtrip.mjs",
+    "smoke:floor-plans": "node scripts/smoke-floor-plans.mjs"
   },
   "dependencies": {
     "@azure/msal-node": "^5.1.4",
