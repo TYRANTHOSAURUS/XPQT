@@ -117,17 +117,91 @@ export function draftFromComposerSeed(seed: BookingDraftSeed = {}): BookingDraft
 }
 
 /**
- * Validation parity with the legacy `validateForSubmit`. Returns the
- * first user-facing reason the draft cannot submit, or null. The modal
- * uses this to disable Submit; field-level errors paint inline via
- * `setFormError` per the error-handling spec.
+ * Field discriminator for routing inline errors back to the right row.
+ *
+ *  - `'room'` — RoomSummaryCard / RoomPickerInline.
+ *  - `'time'` — TimeRow.
+ *  - `'attendees'` — count input (no dedicated row yet; surfaced in
+ *    the footer banner until one exists).
+ *  - `'requester'` — operator-mode header chip.
+ *  - `null` — error doesn't bind to a single field; footer banner only.
  */
-export function validateDraft(draft: BookingDraft, mode: ComposerMode): string | null {
-  if (!draft.spaceId) return 'Pick a room.';
-  if (!draft.startAt || !draft.endAt) return 'Pick a date and time.';
-  if (draft.attendeeCount < 1) return 'At least one attendee.';
+export type DraftValidationField =
+  | 'room'
+  | 'time'
+  | 'attendees'
+  | 'requester'
+  | null;
+
+export interface DraftValidationError {
+  field: DraftValidationField;
+  message: string;
+}
+
+/**
+ * Validate a draft for submission readiness. Returns the FIRST blocking
+ * error (caller-walked, not aggregated — Submit is binary). Each error
+ * carries a `field` discriminator so the modal can route it to an
+ * inline `<FieldError>` near the offending row per CLAUDE.md form
+ * mandate; the footer status line is the catch-all surface for fields
+ * that don't have a dedicated row yet (attendees, requester).
+ *
+ * Rules — in evaluation order:
+ *  1. **room** — `spaceId` is required.
+ *  2. **time** — both `startAt` and `endAt` must be present.
+ *  3. **time** — `endAt` must be strictly after `startAt`. /full-review
+ *     v4 I1 closure: the prior validator didn't block end ≤ start, so
+ *     the client could submit a negative-duration window and rely on
+ *     the server's 422 to surface it. Backend already validates (see
+ *     reservation.service.ts:699-712); this just stops the user from
+ *     burning a round-trip on a clearly-broken window.
+ *  4. **time** — `startAt` must not be in the past (60-second grace
+ *     for clock skew + first-frame seeded "now"). Same /full-review v4
+ *     I1 motivation as (3): backend will reject; surface it client-side
+ *     to short-circuit the round-trip and give a precise field-level
+ *     error instead of a generic toast.
+ *  5. **attendees** — count must be >= 1.
+ *  6. **requester** — operator mode only.
+ *
+ * NOTE on rules not enforced here:
+ *  - Visitor email is OPTIONAL in CreateInvitationPayload (apps/web/
+ *    src/api/visitors/index.ts:99-119), so a missing email is not a
+ *    draft-validity gate. The bulk-invite hook will surface per-row
+ *    server-side rejection.
+ *  - Attendee count vs room capacity is a soft warning, not a hard
+ *    block (some teams overbook intentionally; the server doesn't
+ *    enforce). Surface as a Suggested chip / inline hint in a follow-up
+ *    when the capacity-warning UX is designed.
+ */
+export function validateDraft(
+  draft: BookingDraft,
+  mode: ComposerMode,
+): DraftValidationError | null {
+  if (!draft.spaceId) {
+    return { field: 'room', message: 'Pick a room.' };
+  }
+  if (!draft.startAt || !draft.endAt) {
+    return { field: 'time', message: 'Pick a date and time.' };
+  }
+  const s = new Date(draft.startAt).getTime();
+  const e = new Date(draft.endAt).getTime();
+  if (Number.isFinite(s) && Number.isFinite(e)) {
+    if (e <= s) {
+      return { field: 'time', message: 'End time must be after start.' };
+    }
+    // 60-second grace handles clock skew between client and server plus
+    // the fresh-modal case where `nextQuarterHour()` may seed a start
+    // that's a few hundred ms behind the wall clock by the time the
+    // user clicks Submit.
+    if (s < Date.now() - 60_000) {
+      return { field: 'time', message: 'Pick a time in the future.' };
+    }
+  }
+  if (draft.attendeeCount < 1) {
+    return { field: 'attendees', message: 'At least one attendee.' };
+  }
   if (mode === 'operator' && !draft.requesterPersonId) {
-    return 'Pick who the booking is for.';
+    return { field: 'requester', message: 'Pick who the booking is for.' };
   }
   return null;
 }

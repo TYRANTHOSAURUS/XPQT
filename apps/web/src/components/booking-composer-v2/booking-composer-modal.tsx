@@ -384,6 +384,11 @@ export function BookingComposerModal({
         startAt={composer.draft.startAt}
         endAt={composer.draft.endAt}
         onChange={composer.setTime}
+        // /full-review v4 I1 — route time-class validation back to the
+        // TimeRow inline. End-before-start and date-in-past now block at
+        // the client; the legacy footer banner stays as a catch-all but
+        // the user sees the exact field highlighted at the source.
+        error={validation?.field === 'time' ? validation.message : undefined}
       />
       <RepeatRow
         rule={composer.draft.recurrence}
@@ -726,7 +731,7 @@ export function BookingComposerModal({
                 aria-live="polite"
                 className="mr-auto text-xs text-amber-700 dark:text-amber-300"
               >
-                {validation}
+                {validation.message}
               </span>
             )}
             <Button

@@ -1,7 +1,7 @@
 import { useId, useMemo, useState } from 'react';
 import { Calendar } from '@/components/ui/calendar';
 import { Button } from '@/components/ui/button';
-import { Field, FieldLabel } from '@/components/ui/field';
+import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import {
   Popover,
   PopoverContent,
@@ -13,6 +13,14 @@ export interface TimeRowProps {
   startAt: string | null;
   endAt: string | null;
   onChange: (startAt: string | null, endAt: string | null) => void;
+  /**
+   * /full-review v4 I1 — inline error slot. Modal pipes the
+   * time-class validation message here (end ≤ start, date in past)
+   * so the offending row paints `<FieldError>` directly under its
+   * controls. Footer banner is the catch-all surface; this is the
+   * source-precise one CLAUDE.md form-composition rule asks for.
+   */
+  error?: string;
 }
 
 const DAY_FORMAT = new Intl.DateTimeFormat(undefined, {
@@ -102,7 +110,7 @@ function shortTimezone(): string {
  * when the conflict-check API is integrated; in this task we render
  * slots without conflict markers.
  */
-export function TimeRow({ startAt, endAt, onChange }: TimeRowProps) {
+export function TimeRow({ startAt, endAt, onChange, error }: TimeRowProps) {
   const tzLabel = useMemo(() => shortTimezone(), []);
 
   const startDate = useMemo(
@@ -159,7 +167,7 @@ export function TimeRow({ startAt, endAt, onChange }: TimeRowProps) {
   };
 
   return (
-    <Field>
+    <Field data-invalid={error ? 'true' : undefined}>
       <FieldLabel className="text-xs text-muted-foreground">When</FieldLabel>
       <div className="flex flex-wrap items-center gap-1.5">
         <DatePopover
@@ -168,12 +176,14 @@ export function TimeRow({ startAt, endAt, onChange }: TimeRowProps) {
           dateContext={startDate}
           onPick={onPickStartDay}
           focusTarget="time-row"
+          invalid={Boolean(error)}
         />
         <TimePopover
           side="start"
           value={startAt}
           dateContext={startDate}
           onPick={onPickStartSlot}
+          invalid={Boolean(error)}
         />
         <span className="px-1 text-xs text-muted-foreground" aria-hidden>
           →
@@ -183,12 +193,14 @@ export function TimeRow({ startAt, endAt, onChange }: TimeRowProps) {
           value={endAt}
           dateContext={endDate}
           onPick={onPickEndDay}
+          invalid={Boolean(error)}
         />
         <TimePopover
           side="end"
           value={endAt}
           dateContext={endDate}
           onPick={onPickEndSlot}
+          invalid={Boolean(error)}
         />
         {tzLabel ? (
           <span
@@ -199,6 +211,7 @@ export function TimeRow({ startAt, endAt, onChange }: TimeRowProps) {
           </span>
         ) : null}
       </div>
+      {error ? <FieldError>{error}</FieldError> : null}
     </Field>
   );
 }
@@ -212,6 +225,7 @@ interface DatePopoverProps {
    *  card's "Change" action focuses `[data-focus-target="time-row"]` to
    *  jump back here from the summary view. */
   focusTarget?: string;
+  invalid?: boolean;
 }
 
 function DatePopover({
@@ -220,6 +234,7 @@ function DatePopover({
   dateContext,
   onPick,
   focusTarget,
+  invalid,
 }: DatePopoverProps) {
   const [open, setOpen] = useState(false);
   const label = formatDay(value);
@@ -233,8 +248,12 @@ function DatePopover({
             type="button"
             variant="outline"
             size="sm"
-            className="h-7 justify-start gap-1 px-2 text-xs font-normal"
+            className={cn(
+              'h-7 justify-start gap-1 px-2 text-xs font-normal',
+              invalid && 'border-destructive text-destructive hover:bg-destructive/5',
+            )}
             aria-label={`${sideLabel}: ${label}`}
+            aria-invalid={invalid || undefined}
             data-focus-target={focusTarget}
           />
         }
@@ -263,9 +282,10 @@ interface TimePopoverProps {
   value: string | null;
   dateContext: Date;
   onPick: (iso: string) => void;
+  invalid?: boolean;
 }
 
-function TimePopover({ side, value, dateContext, onPick }: TimePopoverProps) {
+function TimePopover({ side, value, dateContext, onPick, invalid }: TimePopoverProps) {
   const [open, setOpen] = useState(false);
   const label = formatTime(value);
   const sideLabel = side === 'start' ? 'Start time' : 'End time';
@@ -280,8 +300,12 @@ function TimePopover({ side, value, dateContext, onPick }: TimePopoverProps) {
             type="button"
             variant="outline"
             size="sm"
-            className="h-7 justify-start gap-1 px-2 text-xs font-normal tabular-nums"
+            className={cn(
+              'h-7 justify-start gap-1 px-2 text-xs font-normal tabular-nums',
+              invalid && 'border-destructive text-destructive hover:bg-destructive/5',
+            )}
             aria-label={`${sideLabel}: ${label}`}
+            aria-invalid={invalid || undefined}
             aria-controls={open ? listboxId : undefined}
           />
         }
