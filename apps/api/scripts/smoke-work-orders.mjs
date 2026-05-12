@@ -111,6 +111,10 @@ const GHOST_UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const PLANNING_REQUESTER_AUTH_UID = 'aa000000-0000-0000-0000-00000000a001';
 const PLANNING_REQUESTER_EMAIL = 'planning-smoke-requester@example.test';
 const PLANNING_REQUESTER_FIXTURE_WO_ID = 'aa000000-0000-0000-0000-0000000000b1';
+// public.users.id for the seed requester. Used by the optional
+// DEBUG_NEGATIVE_REQUESTER_PROBE branch to insert + clean up a
+// team_members row that grants the requester an operator path.
+const PLANNING_REQUESTER_USER_ID = 'aa000000-0000-0000-0000-0000000000a2';
 
 // ─────────────────────────────────────────────────────────────────────
 // Idempotency-key shape — kept in lockstep with @prequest/shared/idempotency
@@ -778,7 +782,30 @@ async function runPlanningProbes(headers, probe) {
 // reason — we want pass-on-exclusion, not pass-on-no-data.
 // ─────────────────────────────────────────────────────────────────────
 
-async function runPlanningRequesterProbe() {
+// Fetch the planning window for the given headers and return parsed body
+// (or null on error — the caller records the failure with the right
+// probe label).
+async function fetchPlanningWindow(headers, fromIso, toIso) {
+  const url = `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`;
+  const resp = await fetch(url, { headers });
+  if (resp.status !== 200) {
+    return { ok: false, status: resp.status, text: await resp.text() };
+  }
+  const body = await resp.json();
+  if (!body || !Array.isArray(body.planned) || !Array.isArray(body.unscheduled)) {
+    return { ok: false, status: 200, text: 'malformed response' };
+  }
+  return { ok: true, body };
+}
+
+// To run the negative-control branch (which proves the probe is
+// non-vacuous): `DEBUG_NEGATIVE_REQUESTER_PROBE=1 pnpm smoke:work-orders`.
+// The branch inserts a temporary team_members row that grants the
+// requester an operator path, re-runs the probe, asserts it now sees
+// the fixture, then drops the membership. Run manually after any change
+// to the predicate or seed. The normal smoke run (env unset) is the
+// green path only.
+async function runPlanningRequesterProbe(adminHeaders) {
   console.log('\n=== Planning requester-only probe (P0-3 — operator-only predicate) ===');
 
   // Pre-flight: confirm the fixture WO exists at the DB level so the
@@ -803,8 +830,59 @@ async function runPlanningRequesterProbe() {
     console.log(`  ✗ fixture WO tenant mismatch: ${fixture.tenant_id}`);
     return;
   }
+
+  // Bump the fixture's planned_start_at into today's UTC window. The
+  // migration sets this at migration time; on day N+1+ the value drifts
+  // out of the probe's today→tomorrow window and the empty-arrays
+  // assertion silently passes for the wrong reason (fixture filtered
+  // out by window, not by predicate). The bump lives here so the
+  // migration stays a pure seed.
+  const now = new Date();
+  const today00 = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+  const tomorrow00 = new Date(today00.getTime() + 24 * 60 * 60 * 1000);
+  const fixtureStart = new Date(today00.getTime() + 12 * 60 * 60 * 1000).toISOString();
+  const fromIso = today00.toISOString();
+  const toIso = tomorrow00.toISOString();
+
+  const { error: bumpErr } = await supa()
+    .from('work_orders')
+    .update({ planned_start_at: fixtureStart })
+    .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID);
+  if (bumpErr) {
+    results.fail += 1;
+    results.failed.push('Planning requester: fixture bump failed');
+    console.log(`  ✗ could not bump fixture into today's window: ${bumpErr.message}`);
+    return;
+  }
   results.pass += 1;
-  console.log(`  ✓ fixture WO exists with requester_person_id set (non-vacuous)`);
+  console.log(`  ✓ fixture WO bumped to ${fixtureStart} (today's window)`);
+
+  // Positive control — Admin JWT (read_all override) MUST see the
+  // fixture in `planned`. If it doesn't, the fixture isn't actually
+  // in-window or isn't readable at all, and the requester's empty
+  // result downstream is meaningless. Both halves must pass for the
+  // probe to be non-vacuous.
+  const posBody = await fetchPlanningWindow(adminHeaders, fromIso, toIso);
+  if (!posBody.ok) {
+    results.fail += 1;
+    results.failed.push('Planning requester: positive-control GET non-200');
+    console.log(`  ✗ admin positive-control GET → HTTP ${posBody.status}`);
+    console.log(`     ${(posBody.text || '').slice(0, 240)}`);
+    return;
+  }
+  const adminSeesFixture =
+    posBody.body.planned.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID) ||
+    posBody.body.unscheduled.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID);
+  if (!adminSeesFixture) {
+    results.fail += 1;
+    results.failed.push('Planning requester: positive-control missed fixture');
+    console.log(
+      `  ✗ admin (read_all) does NOT see fixture WO — probe would be vacuous; verify window + fixture state`,
+    );
+    return;
+  }
+  results.pass += 1;
+  console.log(`  ✓ admin (read_all) sees fixture WO — predicate exclusion is the only remaining question`);
 
   // Bootstrap auth.users for the requester (idempotent — see comment on
   // PLANNING_REQUESTER_AUTH_UID for why this isn't done in SQL).
@@ -833,32 +911,15 @@ async function runPlanningRequesterProbe() {
     'Content-Type': 'application/json',
   };
 
-  // Build a planning window that covers the fixture's `planned_start_at`.
-  // Migration 00381 sets it to (date_trunc('day', now utc) + 12h), so a
-  // today→tomorrow UTC window always contains it.
-  const now = new Date();
-  const today00 = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
-  const tomorrow00 = new Date(today00.getTime() + 24 * 60 * 60 * 1000);
-  const fromIso = today00.toISOString();
-  const toIso = tomorrow00.toISOString();
-
-  const url = `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`;
-  const resp = await fetch(url, { headers: reqHeaders });
-  if (resp.status !== 200) {
+  const reqBody = await fetchPlanningWindow(reqHeaders, fromIso, toIso);
+  if (!reqBody.ok) {
     results.fail += 1;
     results.failed.push('Planning requester: GET → non-200');
-    console.log(`  ✗ GET planning (requester) → HTTP ${resp.status}`);
-    console.log(`     ${(await resp.text()).slice(0, 240)}`);
+    console.log(`  ✗ GET planning (requester) → HTTP ${reqBody.status}`);
+    console.log(`     ${(reqBody.text || '').slice(0, 240)}`);
     return;
   }
-
-  const body = await resp.json();
-  if (!body || !Array.isArray(body.planned) || !Array.isArray(body.unscheduled)) {
-    results.fail += 1;
-    results.failed.push('Planning requester: malformed response');
-    console.log(`  ✗ requester planning response missing planned[] / unscheduled[]`);
-    return;
-  }
+  const body = reqBody.body;
 
   // Core assertion — operator-only predicate must exclude the fixture
   // (and every other row in the tenant, since the requester has zero
@@ -901,6 +962,99 @@ async function runPlanningRequesterProbe() {
     } else {
       results.pass += 1;
       console.log(`  ✓ requester sees lanes: [] (P1-1 forward-compat)`);
+    }
+  }
+
+  // Negative-control branch — env-gated. Codifies the "did I manually
+  // verify the probe goes red when an operator path is granted?" check.
+  // Skipped on the green path; run after any predicate or seed change.
+  if (process.env.DEBUG_NEGATIVE_REQUESTER_PROBE === '1') {
+    await runRequesterNegativeControl(reqHeaders, fromIso, toIso);
+  }
+}
+
+// Insert a team_members row that grants the seed requester an operator
+// path (team-membership branch of the operator predicate), re-assign
+// the fixture to that team, re-run the probe, assert it now sees the
+// fixture (proving the probe is non-vacuous), then clean up.
+async function runRequesterNegativeControl(reqHeaders, fromIso, toIso) {
+  console.log('\n=== Planning requester NEGATIVE control (DEBUG_NEGATIVE_REQUESTER_PROBE=1) ===');
+  const teamMemberId = crypto.randomUUID();
+  let inserted = false;
+  let reassigned = false;
+  try {
+    // tenant_id is invariant #0 — pin it explicitly on the insert.
+    const { error: insErr } = await supa().from('team_members').insert({
+      id: teamMemberId,
+      tenant_id: TENANT_ID,
+      team_id: REAL_TEAM,
+      user_id: PLANNING_REQUESTER_USER_ID,
+    });
+    if (insErr) {
+      results.fail += 1;
+      results.failed.push('Negative-control: team_members insert failed');
+      console.log(`  ✗ could not grant operator path: ${insErr.message}`);
+      return;
+    }
+    inserted = true;
+    console.log(`  ✓ inserted team_members row ${teamMemberId.slice(0, 8)}… on ${REAL_TEAM.slice(0, 8)}…`);
+
+    // The fixture's `assigned_team_id` is null by default, so team
+    // membership alone doesn't flip the predicate. Re-assign the
+    // fixture to REAL_TEAM for the duration of the control. Restored
+    // in `finally`.
+    const { error: assignErr } = await supa()
+      .from('work_orders')
+      .update({ assigned_team_id: REAL_TEAM })
+      .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID);
+    if (assignErr) {
+      results.fail += 1;
+      results.failed.push('Negative-control: fixture team-assign failed');
+      console.log(`  ✗ could not assign fixture to REAL_TEAM: ${assignErr.message}`);
+      return;
+    }
+    reassigned = true;
+
+    const probe = await fetchPlanningWindow(reqHeaders, fromIso, toIso);
+    if (!probe.ok) {
+      results.fail += 1;
+      results.failed.push('Negative-control: GET non-200');
+      console.log(`  ✗ negative-control GET → HTTP ${probe.status}`);
+      return;
+    }
+    const seesFixture =
+      probe.body.planned.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID) ||
+      probe.body.unscheduled.some((b) => b.id === PLANNING_REQUESTER_FIXTURE_WO_ID);
+    if (!seesFixture) {
+      // Probe stays green with team-membership granted → the green-path
+      // probe is vacuous: even adding a real operator path doesn't flip
+      // the predicate, so its empty-arrays assertion proves nothing.
+      results.fail += 1;
+      results.failed.push('Negative-control: probe still empty with operator path');
+      console.log(
+        `  ✗ requester with team membership + fixture re-assigned to team STILL sees no rows — probe is vacuous`,
+      );
+      return;
+    }
+    results.pass += 1;
+    console.log(`  ✓ negative-control passed: probe is non-vacuous (requester with operator path sees fixture)`);
+  } finally {
+    if (reassigned) {
+      const { error: unassignErr } = await supa()
+        .from('work_orders')
+        .update({ assigned_team_id: null })
+        .eq('id', PLANNING_REQUESTER_FIXTURE_WO_ID);
+      if (unassignErr) {
+        console.log(`  ! cleanup warn: fixture unassign failed: ${unassignErr.message}`);
+      }
+    }
+    if (inserted) {
+      const { error: delErr } = await supa().from('team_members').delete().eq('id', teamMemberId);
+      if (delErr) {
+        console.log(`  ! cleanup warn: team_members delete failed: ${delErr.message}`);
+      } else {
+        console.log(`  ✓ cleanup: team_members row removed, fixture unassigned`);
+      }
     }
   }
 }
@@ -972,7 +1126,7 @@ async function main() {
   await runCaseMutations(headers, probe);
   await runValidationProbes(headers, probe);
   await runPlanningProbes(headers, probe);
-  await runPlanningRequesterProbe();
+  await runPlanningRequesterProbe(headers);
   await runDispatchProbe(headers, probe);
 
   console.log(`\n${'='.repeat(60)}`);
