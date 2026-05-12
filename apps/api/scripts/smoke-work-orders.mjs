@@ -573,6 +573,101 @@ async function runValidationProbes(headers, probe) {
   });
 }
 
+async function runPlanningProbes(headers, probe) {
+  console.log('\n=== Planning board read path (Slice B Chunk 1) ===');
+
+  const now = new Date();
+  const today00 = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+  const tomorrow00 = new Date(today00.getTime() + 24 * 60 * 60 * 1000);
+  const fromIso = today00.toISOString();
+  const toIso = tomorrow00.toISOString();
+
+  // Happy path.
+  const happyUrl = `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`;
+  const happyResp = await fetch(happyUrl, { headers });
+  if (happyResp.status !== 200) {
+    results.fail += 1;
+    results.failed.push('Planning: happy path');
+    console.log(`  ✗ GET planning happy → HTTP ${happyResp.status}`);
+    console.log(`     ${(await happyResp.text()).slice(0, 240)}`);
+  } else {
+    const body = await happyResp.json();
+    const ok = body && Array.isArray(body.planned) && Array.isArray(body.unscheduled);
+    if (!ok) {
+      results.fail += 1;
+      results.failed.push('Planning: happy shape');
+      console.log(`  ✗ GET planning happy — response missing planned[] / unscheduled[]`);
+    } else {
+      results.pass += 1;
+      console.log(
+        `  ✓ GET planning happy → 200 (${body.planned.length} planned, ${body.unscheduled.length} unscheduled)`,
+      );
+      const allRows = [...body.planned, ...body.unscheduled];
+      const malformed = allRows.find(
+        (b) => typeof b.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(b.id),
+      );
+      if (malformed) {
+        results.fail += 1;
+        results.failed.push('Planning: block shape');
+        console.log(`  ✗ Planning block has malformed id`);
+      } else if (allRows.length > 0) {
+        results.pass += 1;
+        console.log(`  ✓ Planning blocks have well-formed ids + lane shape`);
+      }
+    }
+  }
+
+  // Window too wide (>14 days) — 400.
+  const wideToIso = new Date(today00.getTime() + 15 * 24 * 60 * 60 * 1000).toISOString();
+  await probe('Planning: 15-day window → 400', {
+    url: `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(wideToIso)}`,
+    method: 'GET',
+    expect: 'badrequest',
+  });
+
+  // from == to — 400.
+  await probe('Planning: from == to → 400', {
+    url: `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(fromIso)}`,
+    method: 'GET',
+    expect: 'badrequest',
+  });
+
+  // Missing from — 400.
+  await probe('Planning: missing from → 400', {
+    url: `${API_BASE}/api/work-orders/planning?to=${encodeURIComponent(toIso)}`,
+    method: 'GET',
+    expect: 'badrequest',
+  });
+
+  // Unknown status — 400.
+  await probe('Planning: unknown status → 400', {
+    url: `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&status=bogus`,
+    method: 'GET',
+    expect: 'badrequest',
+  });
+
+  // Valid status filter — 200 and only matching categories.
+  const statusUrl = `${API_BASE}/api/work-orders/planning?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&status=new&status=assigned`;
+  const statusResp = await fetch(statusUrl, { headers });
+  if (statusResp.status === 200) {
+    const body = await statusResp.json();
+    const allowed = new Set(['new', 'assigned']);
+    const violator = body.planned.find((b) => !allowed.has(b.status_category));
+    if (violator) {
+      results.fail += 1;
+      results.failed.push('Planning: status filter leak');
+      console.log(`  ✗ Planning status filter leaked: got ${violator.status_category}`);
+    } else {
+      results.pass += 1;
+      console.log(`  ✓ Planning status filter — only new/assigned in planned[]`);
+    }
+  } else {
+    results.fail += 1;
+    results.failed.push('Planning: valid status filter');
+    console.log(`  ✗ GET planning status filter → HTTP ${statusResp.status}`);
+  }
+}
+
 async function runDispatchProbe(headers, probe) {
   console.log('\n=== Dispatch (creating a child WO) ===');
 
@@ -639,6 +734,7 @@ async function main() {
   await runWorkOrderMutations(headers, probe);
   await runCaseMutations(headers, probe);
   await runValidationProbes(headers, probe);
+  await runPlanningProbes(headers, probe);
   await runDispatchProbe(headers, probe);
 
   console.log(`\n${'='.repeat(60)}`);
