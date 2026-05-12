@@ -1358,6 +1358,10 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
             child_entity_id: 'bk-1',
             on_parent_cancel: 'cancel_child',
           }],
+          // Codex IMPORTANT 2: resolveLinkRow now uses .is('resolved_at', null)
+          // + .select().maybeSingle() — provide a non-null updateResult so the
+          // mock returns a row and link_resolved emits.
+          updateResult: [{ id: 'link-1' }],
         },
       },
       rpcResults: { delete_booking_with_guard: { data: { kind: 'rolled_back' } } },
@@ -1427,6 +1431,7 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
             child_entity_id: 'bk-1',
             on_parent_cancel: 'cancel_child',
           }],
+          updateResult: [{ id: 'link-1' }],
         },
       },
       rpcResults: {
@@ -1499,6 +1504,7 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
             child_entity_id: 'tk-child',
             on_parent_cancel: 'cancel_child',
           }],
+          updateResult: [{ id: 'link-1' }],
         },
       },
     });
@@ -1541,6 +1547,7 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
             child_entity_id: 'bk-1',
             on_parent_cancel: 'orphan_child',
           }],
+          updateResult: [{ id: 'link-1' }],
         },
       },
     });
@@ -1574,6 +1581,11 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
             { id: 'link-2', child_instance_id: null, child_entity_kind: 'booking',    child_entity_id: 'bk-2', on_parent_cancel: 'orphan_child' },
             { id: 'link-3', child_instance_id: null, child_entity_kind: 'work_order', child_entity_id: 'wo-1', on_parent_cancel: 'cancel_child' },
           ],
+          // Note: the mock returns updateResult[0] for every UPDATE on
+          // this table. The three resolveLinkRow calls each see {id:'link-1'},
+          // which is fine — we're only asserting the emit count, not
+          // which row was returned.
+          updateResult: [{ id: 'link-1' }],
         },
       },
       rpcResults: { delete_booking_with_guard: { data: { kind: 'rolled_back' } } },
@@ -1621,9 +1633,13 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
     expect(events.filter((e) => e.event_type === 'link_resolved')).toHaveLength(0);
   });
 
-  it('recursive cancel with cycle: visited-set short-circuits', async () => {
-    // Construct a cyclic chain by feeding cancelInstance a visited set that
-    // already includes the visit key. Direct test of the defensive guard.
+  it('recursive cancel with cycle: visited-set short-circuits (keyed by instance_id)', async () => {
+    // Codex BLOCKER remediation (2026-05-12): the visited-set key changed
+    // from `${entity_kind}:${entity_id}` to `instance_id` so cascaded
+    // cancels into a child workflow whose driving entity row was
+    // deleted (booking_id ON DELETE SET NULL) still get a unique key.
+    // Construct a cyclic chain by pre-seeding the visited set with the
+    // instance id that the cascade would re-visit.
     const { supabase, dispatchService, slaService } = makeCancelDeps({
       tables: {
         workflow_instances: {
@@ -1636,10 +1652,12 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
     const events = captureEmits(engine);
     jest.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const visited = new Set<string>(['case:tk-1']);
+    const visited = new Set<string>(['wi-1']);
     await engine.cancelInstance('case', 'tk-1', 'ten1', 'admin', undefined, visited);
 
-    // Should NOT have hit the lookup or emitted any event.
+    // Should NOT have emitted any event — the cancelInstance lookup
+    // resolves to wi-1, then cancelInstanceById sees wi-1 in visited
+    // and short-circuits before claim/emit.
     expect(events).toHaveLength(0);
   });
 
@@ -1686,6 +1704,110 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
       triggered_by_link_id: 'link-X',
       parent_instance_id: 'wi-parent',
     });
+  });
+
+  it('BLOCKER fix: cascade with booking child (entity deleted + booking_id SET NULL) STILL cancels child workflow_instance via instance-id path', async () => {
+    // Codex BLOCKER (2026-05-12). Repro: delete_booking_with_guard
+    // succeeds (booking gone, workflow_instances.booking_id ON DELETE
+    // SET NULL → NULL). With the old code, the cascade re-derived the
+    // child workflow_instance by the polymorphic FK
+    // `cancelInstance('booking', child_entity_id, …)` → 0 rows → silent
+    // no-op → child workflow_instance left active forever. New code
+    // calls `cancelInstanceById(link.child_instance_id, …)` directly.
+    //
+    // The mock here simulates the post-delete state: wi-child has
+    // entity_kind='booking' but booking_id=NULL (FK detached). An
+    // entity-FK lookup `WHERE booking_id=$bookingId` would not match.
+    // We must still cancel wi-child by its known id.
+    const { supabase, dispatchService, slaService } = makeCancelDeps({
+      tables: {
+        workflow_instances: {
+          rows: [
+            { id: 'wi-parent', status: 'active', tenant_id: 'ten1', entity_kind: 'booking', booking_id: 'bk-parent' },
+            // wi-child: booking_id is NULL — the booking row was deleted
+            // by delete_booking_with_guard and the FK was SET NULL.
+            { id: 'wi-child',  status: 'active', tenant_id: 'ten1', entity_kind: 'booking', booking_id: null },
+          ],
+          updateResult: [{ id: 'wi-parent' }],
+        },
+        workflow_instance_links: {
+          rows: [{
+            id: 'link-orphan',
+            parent_instance_id: 'wi-parent',
+            child_instance_id: 'wi-child',
+            child_entity_kind: 'booking',
+            child_entity_id: 'bk-child-gone',
+            on_parent_cancel: 'cancel_child',
+          }],
+          updateResult: [{ id: 'link-orphan' }],
+        },
+      },
+      rpcResults: {
+        // Booking already deleted before the cascade; the cascade calls
+        // the guard which raises `booking.not_found` (treated as 'ok').
+        delete_booking_with_guard: { data: null, error: { message: 'booking.not_found', code: 'P0002' } },
+      },
+    });
+    const engine = new WorkflowEngineService(supabase as never, dispatchService as never, slaService as never);
+    const events = captureEmits(engine);
+
+    await engine.cancelInstance('booking', 'bk-parent', 'ten1', 'admin');
+
+    // Both instance_cancelled events must fire — parent + the orphaned
+    // child wi-child — even though wi-child's booking_id is NULL.
+    const cancelled = events.filter((e) => e.event_type === 'instance_cancelled');
+    expect(cancelled).toHaveLength(2);
+    // Parent first, then child (cascade order).
+    expect(cancelled[0].instanceId).toBe('wi-parent');
+    expect(cancelled[1].instanceId).toBe('wi-child');
+    // Child cancel carries cascade context.
+    expect(cancelled[1].payload?.triggered_by_link_id).toBe('link-orphan');
+    expect(cancelled[1].payload?.parent_instance_id).toBe('wi-parent');
+    // Link resolves cleanly (booking treated as already-gone).
+    expect(events.filter((e) => e.event_type === 'link_resolved')).toHaveLength(1);
+  });
+
+  it('IMPORTANT 2 fix: resolveLinkRow on already-resolved link (concurrent wake) does NOT emit duplicate link_resolved', async () => {
+    // Codex IMPORTANT 2 (2026-05-12). Wake handler at :304 claims the
+    // link first → row's resolved_at is now non-null. Our cancel
+    // cascade follows; UPDATE with `.is('resolved_at', null)` matches
+    // ZERO rows. We must NOT emit `link_resolved` (the wake path
+    // already did) — that would produce a duplicate audit event.
+    const { supabase, dispatchService, slaService } = makeCancelDeps({
+      tables: {
+        workflow_instances: {
+          rows: [{ id: 'wi-parent', status: 'active', tenant_id: 'ten1', entity_kind: 'case', case_id: 'tk-parent' }],
+          updateResult: [{ id: 'wi-parent' }],
+        },
+        workflow_instance_links: {
+          rows: [{
+            id: 'link-raced',
+            parent_instance_id: 'wi-parent',
+            child_instance_id: null,
+            child_entity_kind: 'booking',
+            child_entity_id: 'bk-1',
+            on_parent_cancel: 'orphan_child',
+          }],
+          // Mock returns null for the UPDATE...RETURNING — simulating
+          // the wake handler having already flipped resolved_at, so
+          // our `.is('resolved_at', null)` filter matches zero rows.
+          updateResult: null,
+        },
+      },
+    });
+    const engine = new WorkflowEngineService(supabase as never, dispatchService as never, slaService as never);
+    const events = captureEmits(engine);
+
+    await engine.cancelInstance('case', 'tk-parent', 'ten1', 'admin');
+
+    // Parent cancel still emits. But the link_resolved emit MUST be
+    // suppressed — the wake handler already emitted it for the
+    // 'condition_met' resolution.
+    expect(events.filter((e) => e.event_type === 'instance_cancelled')).toHaveLength(1);
+    expect(events.filter((e) => e.event_type === 'link_resolved')).toHaveLength(0);
+    // No pending-error emit either — the zero-row return is a normal
+    // race, not a failure.
+    expect(events.filter((e) => e.event_type === 'link_pending_entity_cancel')).toHaveLength(0);
   });
 });
 
@@ -1790,6 +1912,48 @@ describe('WorkflowEngineService.checkSpawnLinkSafety — Phase 1.B (§3.6)', () 
     const { engine } = setup({ id: 'p', status: 'active', tenant_id: 'OTHER' }, []);
     const res = await engine.checkSpawnLinkSafety('p', 'ten1', 'booking', 'bk-1');
     expect(res).toEqual({ ok: false, reason: 'parent_terminated' });
+  });
+
+  it('IMPORTANT 1 fix: cycle_detected on self-spawn at chain root (parent has no inbound link)', async () => {
+    // Codex IMPORTANT 1 (2026-05-12). Repro: parent at chain root
+    // (entity_kind='case', case_id='A') tries to spawn ('case', 'A')
+    // — its own entity. Old code: walked ancestors via inbound link,
+    // found none, returned ok. New code adds the parent's OWN entity
+    // to the cycle check before the walk so self-spawn-at-root is
+    // detected at depth=0.
+    const { engine } = setup(
+      { id: 'p', status: 'active', tenant_id: 'ten1', entity_kind: 'case', case_id: 'case-A' },
+      [],
+    );
+    const res = await engine.checkSpawnLinkSafety('p', 'ten1', 'case', 'case-A');
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toBe('cycle_detected');
+      expect(res.depth).toBe(0);
+    }
+  });
+
+  it('IMPORTANT 1 fix: self-spawn-at-root works across all entity kinds (booking)', async () => {
+    const { engine } = setup(
+      { id: 'p', status: 'active', tenant_id: 'ten1', entity_kind: 'booking', booking_id: 'bk-X' },
+      [],
+    );
+    const res = await engine.checkSpawnLinkSafety('p', 'ten1', 'booking', 'bk-X');
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toBe('cycle_detected');
+    }
+  });
+
+  it('IMPORTANT 1: self-spawn at root with NON-matching child entity stays ok (no false positive)', async () => {
+    // Counter-test: same parent shape but candidate child is a DIFFERENT
+    // entity id — the new self-spawn check must not over-trigger.
+    const { engine } = setup(
+      { id: 'p', status: 'active', tenant_id: 'ten1', entity_kind: 'case', case_id: 'case-A' },
+      [],
+    );
+    const res = await engine.checkSpawnLinkSafety('p', 'ten1', 'case', 'case-OTHER');
+    expect(res.ok).toBe(true);
   });
 });
 
