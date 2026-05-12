@@ -15,7 +15,8 @@
     "smoke:work-orders": "node scripts/smoke-work-orders.mjs",
     "smoke:tickets": "node scripts/smoke-tickets.mjs",
     "smoke:outbox": "node scripts/smoke-outbox-roundtrip.mjs",
-    "smoke:edit-booking-scope": "node scripts/smoke-edit-booking-scope.mjs"
+    "smoke:edit-booking-scope": "node scripts/smoke-edit-booking-scope.mjs",
+    "smoke:edit-booking": "node scripts/smoke-edit-booking.mjs"
   },
   "dependencies": {
     "@azure/msal-node": "^5.1.4",

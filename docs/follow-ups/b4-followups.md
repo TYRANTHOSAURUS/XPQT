@@ -24,6 +24,20 @@ Fixture seed bypasses `POST /reservations` and writes the recurrence_series + 5 
 
 CLAUDE.md "Smoke gate" section updated to mandate the probe before claiming any work touching `ReservationService.editScope` / `assembleScopeEditPlan` / `edit_booking_scope` RPC is complete.
 
+## Tier B item #3 — `pnpm smoke:edit-booking` sibling probe — CLOSED (2026-05-12)
+
+Closing-retro §10 item #10 (single-occurrence smoke probe for editOne + editSlot) shipped at `apps/api/scripts/smoke-edit-booking.mjs`. Exposed as `pnpm --filter @prequest/api smoke:edit-booking` (also wired at the workspace root). Sibling to `smoke-edit-booking-scope.mjs` — same fixture pattern (psql-seeded with `session_replication_role='replica'`), same Admin JWT mint, same LIFO finally cleanup.
+
+20 scenarios across two fixtures + an op-discrimination probe:
+
+- **Fixture A** (single booking + 1 slot, +130d on ROOM_HUDDLE) drives 11 editOne probes: setup verification, edit space_id, idempotency replay, payload-mismatch (409 `command_operations.payload_mismatch`), geometry shift, invalid_window (start>=end), invalid_window (parse-fail `start_at='invalid-date'`), invalid_space_id (empty string), reference.not_in_tenant (freshly-minted ghost-uuid space_id), booking_not_found (freshly-minted ghost-uuid booking id), missing X-Client-Request-Id.
+- **Fixture B** (single booking + 2 slots, +131d, primary on ROOM_HUDDLE display_order=0 + non-primary on ROOM_BOARD display_order=1 — both seeded explicitly so the primary-slot selector at `assemble-edit-plan.service.ts:558-571` resolves deterministically) drives 8 editSlot probes: setup verification, edit non-primary slot.space_id (verify primary unchanged), URL mismatch (Fixture A's slotId + Fixture B's bookingId → `booking_slot.url_mismatch`), MIN(slots) rollup on non-primary start_at shift, idempotency replay (cached), payload-mismatch (409), invalid_space_id (empty string), missing X-Client-Request-Id.
+- **Op-discrimination probe** (1 scenario): fires `editOne(crid=X)` on Fixture A + `editSlot(crid=X)` on Fixture B non-primary slot — verifies both `command_operations` rows exist for crid=X with distinct prefixes (`booking:edit:one:` + `booking:edit:slot:`). Locks the Step 2F.3 cross-op key-namespacing contract from `packages/shared/src/idempotency.ts:374-382`.
+
+Citations baked into the script header: `apps/api/src/modules/reservations/reservation.controller.ts:301-380`, `apps/api/src/modules/reservations/reservation.service.ts:600-1450`, `packages/shared/src/idempotency.ts:331-382`, `supabase/migrations/00364_edit_booking_rpc_v4.sql`. Both fixtures intentionally have no linked services / orders / work_orders so the 00364 RPC's §10.c-§10.d cleanup branches are no-ops on these bookings — cascade behaviour is covered by the assembler unit tests + the scope smoke.
+
+CLAUDE.md "Smoke gate" section updated to mandate the probe before claiming any work touching `ReservationService.editOne` / `ReservationService.editSlot` / `assembleEditPlan` (kinds `'one'` + `'slot'`) / the `edit_booking` RPC is complete.
+
 ## Step 2F.3 — shipped (2026-05-12)
 
 `POST /reservations/:id/edit-scope` cut over from `BookingFlowService.editScope` (bare-UPDATE, deleted) to `ReservationService.editScope` → `assembleScopeEditPlan` → `edit_booking_scope` RPC (00371 v2).
