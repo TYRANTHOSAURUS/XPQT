@@ -1,8 +1,8 @@
 /**
- * B.4.A.3 concurrency probe — edit_booking RPC v2.
+ * B.4.A.4 concurrency probe — edit_booking RPC v4.
  *
- * Spec ref: docs/follow-ups/b4-booking-edit-pipeline.md §3.2 + §3.4.
- * Migration: supabase/migrations/00362_edit_booking_rpc_v2.sql (supersedes 00361).
+ * Spec ref: docs/follow-ups/b4-booking-edit-pipeline.md §3.2 + §3.4 + §3.6.5.
+ * Migration: supabase/migrations/00364_edit_booking_rpc_v4.sql (supersedes 00363).
  *
  * Harness pattern mirrors create_booking_with_attach_plan.spec.ts (00309)
  * + grant_booking_approval.spec.ts (00310) + reclassify_ticket.spec.ts
@@ -24,8 +24,21 @@
  *      'validate_entity_in_tenant.space_not_in_tenant'.
  *   6. Cancelled booking — booking.status='cancelled' on entry → 422
  *      'booking.cancelled_cannot_edit'.
- *   7. Approval-flip deferral — approval_outcome_changed=true → 422
- *      'edit_booking.approval_reconciliation_required'.
+ *   7. §3.6.5 Row 2 — allow→require_approval (none) — insert chain;
+ *      status='pending_approval'; emit booking.approval_required.
+ *  18. §3.6.5 Row 3 — require_approval→allow (pending) — expire chain;
+ *      status='confirmed'.
+ *  19. §3.6.5 Row 6 — require_approval→require_approval (pending, same
+ *      config) — preserve in-flight grants.
+ *  20. §3.6.5 Row 7 — require_approval→require_approval (pending, diff
+ *      config) — expire old chain + insert fresh chain; emit.
+ *  21. §3.6.5 Row 8 (DANGEROUS GAP) — require_approval→require_approval
+ *      (terminal_approved, diff config) — expire approved rows + insert
+ *      fresh chain; status flips back to 'pending_approval'; emit.
+ *  22. §3.6.5 Row 9 — terminal_rejected → booking.cancelled_cannot_edit.
+ *  23. §3.6.5 Row 10 — new_outcome=deny → edit_booking.deny_on_edit.
+ *  24. Cross-tenant person approver — validate_entity_in_tenant.person_not_in_tenant.
+ *  25. Cross-tenant team approver — validate_entity_in_tenant.team_not_in_tenant.
  *   8. Booking not found — random uuid → 'edit_booking.not_found'.
  *   9. Invalid plan shape — missing booking object → 400
  *      'edit_booking.invalid_plan_shape'.
@@ -468,10 +481,84 @@ async function seedAssetReservationForBooking(
 }
 
 /**
+ * Build an approval block for the EditPlan (v4 §3.6.5 contract). Defaults
+ * to the no-op tuple (allow → allow, none, chain unchanged) so scenarios
+ * that don't care about approvals exercise §3.6.5 Row 1.
+ */
+type ApproverSeed = { type: 'person' | 'team'; id: string };
+type ApprovalOutcome = 'allow' | 'require_approval' | 'deny';
+
+function buildApprovalBlock(opts: {
+  oldOutcome?: ApprovalOutcome;
+  newOutcome?: ApprovalOutcome;
+  chainConfigChanged?: boolean;
+  newChainConfig?: {
+    requiredApprovers: ApproverSeed[];
+    threshold?: 'all' | 'any';
+  } | null;
+}): Record<string, unknown> {
+  const newChainConfig = opts.newChainConfig
+    ? {
+        required_approvers: opts.newChainConfig.requiredApprovers,
+        threshold: opts.newChainConfig.threshold ?? 'all',
+      }
+    : null;
+  return {
+    old_outcome: opts.oldOutcome ?? 'allow',
+    new_outcome: opts.newOutcome ?? 'allow',
+    chain_config_changed: opts.chainConfigChanged ?? false,
+    new_chain_config: newChainConfig,
+  };
+}
+
+/**
+ * Seed an approvals chain (single chain_id, N rows) anchored to a booking
+ * with a given status. Used by the §3.6.5 scenarios so the RPC can classify
+ * the pre-edit approvals state correctly. Tenant cleanup of approvals is
+ * handled by seedBaseFixture.
+ */
+async function seedBookingApprovalChain(
+  pool: Pool,
+  base: BaseFixture,
+  bookingId: string,
+  rows: Array<{
+    status: 'pending' | 'approved' | 'rejected' | 'delegated' | 'expired';
+    approverPersonId?: string | null;
+    approverTeamId?: string | null;
+    parallelGroup?: string | null;
+  }>,
+): Promise<{ chainId: string }> {
+  const chainId = randomUUID();
+  for (const row of rows) {
+    await pool.query(
+      `insert into public.approvals
+         (tenant_id, target_entity_type, target_entity_id,
+          approval_chain_id, parallel_group,
+          approver_person_id, approver_team_id, status)
+       values ($1, 'booking', $2, $3, $4, $5, $6, $7)`,
+      [
+        base.tenantId,
+        bookingId,
+        chainId,
+        row.parallelGroup ?? `parallel-${bookingId}`,
+        row.approverPersonId ?? null,
+        row.approverTeamId ?? null,
+        row.status,
+      ],
+    );
+  }
+  return { chainId };
+}
+
+/**
  * Build a minimal-but-valid EditPlan that moves the slot's space (and
  * therefore bookings.location_id) to a target space, leaves the time
  * window intact, and bumps the calendar_etag. All optional arrays default
  * to empty so the test asserts the location-only branch in isolation.
+ *
+ * v4 (§3.6.5): replaces the boolean `approval_outcome_changed` with the
+ * structured `approval` block. Default approval is allow→allow (Row 1
+ * no-op) so existing scenarios stay untouched.
  */
 function buildLocationSwapPlan(args: {
   bookingId: string;
@@ -485,7 +572,7 @@ function buildLocationSwapPlan(args: {
   costCenterId?: string | null;
   appliedRuleIds?: string[];
   calendarEtag?: string;
-  approvalOutcomeChanged?: boolean;
+  approval?: Record<string, unknown>;
   clientRequestId?: string;
 }): Record<string, unknown> {
   const startAt = args.startAtIso ?? '2026-10-01T10:00:00Z';
@@ -494,7 +581,7 @@ function buildLocationSwapPlan(args: {
     _resolution_at: args.resolutionAtIso,
     rule_outcome_fingerprint: 'fingerprint-test',
     client_request_id: args.clientRequestId ?? 'edit-test-crid',
-    approval_outcome_changed: args.approvalOutcomeChanged ?? false,
+    approval: args.approval ?? buildApprovalBlock({}),
     booking: {
       location_id: args.toSpaceId,
       start_at: startAt,
@@ -792,31 +879,80 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
     expect(result.error.message).toContain('booking.cancelled_cannot_edit');
   });
 
-  // ── Scenario 7: approval-flip deferral ───────────────────────────────
-  it('approval-flip deferral — approval_outcome_changed=true raises edit_booking.approval_reconciliation_required', async () => {
-    const base = await seedBaseFixture(pool, `edit-approval-flip-${Date.now()}`);
+  // ── Scenario 7 (v4 §3.6.5 Row 2): allow → require_approval, none ─────
+  // INSERT new approvals chain; bookings.status → 'pending_approval';
+  // booking.approval_required outbox event emitted with chain_id +
+  // approver_ids payload.
+  it('§3.6.5 Row 2 — allow→require_approval (none) inserts fresh chain + emits approval_required', async () => {
+    const base = await seedBaseFixture(pool, `edit-row2-${Date.now()}`);
     const booking = await seedConfirmedBooking(pool, base);
     const targetSpaceId = await seedTargetMeetingRoom(pool, base);
+
     const plan = buildLocationSwapPlan({
       bookingId: booking.bookingId,
       slotId: booking.slotId,
       fromSpaceId: base.spaceId,
       toSpaceId: targetSpaceId,
       resolutionAtIso: '2026-09-15T00:00:00Z',
-      approvalOutcomeChanged: true,
+      approval: buildApprovalBlock({
+        oldOutcome: 'allow',
+        newOutcome: 'require_approval',
+        chainConfigChanged: true,
+        newChainConfig: {
+          requiredApprovers: [{ type: 'person', id: base.personId }],
+          threshold: 'all',
+        },
+      }),
     });
-    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-approval-flip');
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-row2');
 
-    const result = await runRpcCapture(pool, 'public.edit_booking', [
+    const result = await runRpcCapture<EditResult>(pool, 'public.edit_booking', [
       booking.bookingId,
       plan,
       base.tenantId,
       null,
       idempotencyKey,
     ]);
-    expect(result.kind).toBe('error');
-    if (result.kind !== 'error') return;
-    expect(result.error.message).toContain('edit_booking.approval_reconciliation_required');
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.follow_ups).toContain('booking.approval_required');
+
+    // Booking status flipped to pending_approval.
+    const bookingRow = await pool.query<{ status: string }>(
+      'select status from public.bookings where id = $1',
+      [booking.bookingId],
+    );
+    expect(bookingRow.rows[0].status).toBe('pending_approval');
+
+    // Exactly one approvals row exists; pending; chain_id set; parallel_group set.
+    const approvalRows = await pool.query<{
+      status: string;
+      approval_chain_id: string;
+      parallel_group: string | null;
+      approver_person_id: string | null;
+      approver_team_id: string | null;
+    }>(
+      `select status, approval_chain_id, parallel_group, approver_person_id, approver_team_id
+         from public.approvals
+        where tenant_id = $1 and target_entity_id = $2 and target_entity_type = 'booking'`,
+      [base.tenantId, booking.bookingId],
+    );
+    expect(approvalRows.rows).toHaveLength(1);
+    expect(approvalRows.rows[0].status).toBe('pending');
+    expect(approvalRows.rows[0].approval_chain_id).not.toBeNull();
+    expect(approvalRows.rows[0].parallel_group).toBe(`parallel-${booking.bookingId}`);
+    expect(approvalRows.rows[0].approver_person_id).toBe(base.personId);
+
+    // Outbox event payload sanity.
+    const outboxRows = await pool.query<{ event_type: string; payload: Record<string, unknown> }>(
+      `select event_type, payload from outbox.events
+        where tenant_id = $1 and aggregate_id = $2 and event_type = 'booking.approval_required'`,
+      [base.tenantId, booking.bookingId],
+    );
+    expect(outboxRows.rows).toHaveLength(1);
+    expect(outboxRows.rows[0].payload.booking_id).toBe(booking.bookingId);
+    expect(outboxRows.rows[0].payload.chain_id).toBe(approvalRows.rows[0].approval_chain_id);
+    expect(Array.isArray(outboxRows.rows[0].payload.approver_ids)).toBe(true);
   });
 
   // ── Scenario 8: booking not found ────────────────────────────────────
@@ -852,9 +988,11 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
     const booking = await seedConfirmedBooking(pool, base);
     const malformedPlan = {
       _resolution_at: '2026-09-15T00:00:00Z',
-      approval_outcome_changed: false,
+      approval: { old_outcome: 'allow', new_outcome: 'allow', chain_config_changed: false },
       slot_patches: [],
-      // booking object intentionally missing
+      // booking object intentionally missing — first check in §0 ordering
+      // (the `booking` jsonb-object check fires before slot_patches /
+      // approval shape checks per 00364:177-185).
     } as Record<string, unknown>;
     const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-ips');
 
@@ -1038,7 +1176,7 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
       _resolution_at: '2026-09-15T00:00:00Z',
       rule_outcome_fingerprint: 'fingerprint-repoint',
       client_request_id: 'edit-repoint-crid',
-      approval_outcome_changed: false,
+      approval: buildApprovalBlock({}),
       booking: {
         // Required keys (v2 Fix 2). Same space + same window → no
         // location_changed / cost_changed emits, so the outbox row count
@@ -1141,7 +1279,7 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
       _resolution_at: '2026-09-15T00:00:00Z',
       rule_outcome_fingerprint: 'fingerprint-wo-leak',
       client_request_id: 'edit-wo-leak-crid',
-      approval_outcome_changed: false,
+      approval: buildApprovalBlock({}),
       booking: {
         location_id: base.spaceId,
         start_at: '2026-10-01T10:00:00Z',
@@ -1223,7 +1361,7 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
       _resolution_at: '2026-09-15T00:00:00Z',
       rule_outcome_fingerprint: 'fingerprint-order-leak',
       client_request_id: 'edit-order-leak-crid',
-      approval_outcome_changed: false,
+      approval: buildApprovalBlock({}),
       booking: {
         location_id: base.spaceId,
         start_at: '2026-10-01T10:00:00Z',
@@ -1293,7 +1431,7 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
       _resolution_at: '2026-09-15T00:00:00Z',
       rule_outcome_fingerprint: 'fingerprint-asset-leak',
       client_request_id: 'edit-asset-leak-crid',
-      approval_outcome_changed: false,
+      approval: buildApprovalBlock({}),
       booking: {
         location_id: base.spaceId,
         start_at: '2026-10-01T10:00:00Z',
@@ -1401,5 +1539,444 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
       [booking.bookingId],
     );
     expect(bookingRow.rows[0].location_id).toBe(base.spaceId);
+  });
+
+  // ── Scenario 18 (§3.6.5 Row 3): require_approval → allow, pending ────
+  it('§3.6.5 Row 3 — require_approval→allow (pending) expires chain + status=confirmed', async () => {
+    const base = await seedBaseFixture(pool, `edit-row3-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    // Seed an in-flight approval row + flip booking to pending_approval
+    // so the pre-edit state mirrors a real require_approval scenario.
+    const { chainId } = await seedBookingApprovalChain(pool, base, booking.bookingId, [
+      { status: 'pending', approverPersonId: base.personId, parallelGroup: 'old-parallel' },
+    ]);
+    await pool.query(`update public.bookings set status='pending_approval' where id=$1`, [
+      booking.bookingId,
+    ]);
+
+    const plan = buildLocationSwapPlan({
+      bookingId: booking.bookingId,
+      slotId: booking.slotId,
+      fromSpaceId: base.spaceId,
+      toSpaceId: base.spaceId,
+      resolutionAtIso: '2026-09-15T00:00:00Z',
+      approval: buildApprovalBlock({
+        oldOutcome: 'require_approval',
+        newOutcome: 'allow',
+        chainConfigChanged: true,
+        newChainConfig: null,
+      }),
+    });
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-row3');
+
+    const result = await runRpcCapture<EditResult>(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.follow_ups).not.toContain('booking.approval_required');
+
+    // The original pending row is now 'expired' with the canonical
+    // superseded_by_edit comment.
+    const approvalRows = await pool.query<{
+      status: string;
+      approval_chain_id: string;
+      comments: string | null;
+    }>(
+      `select status, approval_chain_id, comments
+         from public.approvals
+        where tenant_id = $1 and target_entity_id = $2`,
+      [base.tenantId, booking.bookingId],
+    );
+    expect(approvalRows.rows).toHaveLength(1);
+    expect(approvalRows.rows[0].status).toBe('expired');
+    expect(approvalRows.rows[0].approval_chain_id).toBe(chainId);
+    expect(approvalRows.rows[0].comments).toContain('superseded_by_edit');
+
+    // Booking flipped to 'confirmed'.
+    const bookingRow = await pool.query<{ status: string }>(
+      'select status from public.bookings where id = $1',
+      [booking.bookingId],
+    );
+    expect(bookingRow.rows[0].status).toBe('confirmed');
+  });
+
+  // ── Scenario 19 (§3.6.5 Row 6): same-config preserve ──────────────────
+  it('§3.6.5 Row 6 — require_approval→require_approval (pending, same config) preserves chain', async () => {
+    const base = await seedBaseFixture(pool, `edit-row6-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    const { chainId } = await seedBookingApprovalChain(pool, base, booking.bookingId, [
+      { status: 'pending', approverPersonId: base.personId },
+    ]);
+    await pool.query(`update public.bookings set status='pending_approval' where id=$1`, [
+      booking.bookingId,
+    ]);
+
+    // chain_config_changed=false → preserve. new_chain_config can be null;
+    // RPC won't insert.
+    const plan = buildLocationSwapPlan({
+      bookingId: booking.bookingId,
+      slotId: booking.slotId,
+      fromSpaceId: base.spaceId,
+      toSpaceId: base.spaceId,
+      resolutionAtIso: '2026-09-15T00:00:00Z',
+      approval: buildApprovalBlock({
+        oldOutcome: 'require_approval',
+        newOutcome: 'require_approval',
+        chainConfigChanged: false,
+        newChainConfig: null,
+      }),
+    });
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-row6');
+
+    const result = await runRpcCapture<EditResult>(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.follow_ups).not.toContain('booking.approval_required');
+
+    const approvalRows = await pool.query<{
+      status: string;
+      approval_chain_id: string;
+    }>(
+      `select status, approval_chain_id
+         from public.approvals
+        where tenant_id = $1 and target_entity_id = $2`,
+      [base.tenantId, booking.bookingId],
+    );
+    expect(approvalRows.rows).toHaveLength(1);
+    expect(approvalRows.rows[0].status).toBe('pending');
+    expect(approvalRows.rows[0].approval_chain_id).toBe(chainId);
+
+    const bookingRow = await pool.query<{ status: string }>(
+      'select status from public.bookings where id = $1',
+      [booking.bookingId],
+    );
+    expect(bookingRow.rows[0].status).toBe('pending_approval');
+  });
+
+  // ── Scenario 20 (§3.6.5 Row 7): pending, diff config → expire + insert ─
+  it('§3.6.5 Row 7 — require_approval→require_approval (pending, diff config) expires + inserts fresh', async () => {
+    const base = await seedBaseFixture(pool, `edit-row7-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    const { chainId: oldChainId } = await seedBookingApprovalChain(pool, base, booking.bookingId, [
+      { status: 'pending', approverPersonId: base.personId, parallelGroup: 'old-parallel' },
+    ]);
+    await pool.query(`update public.bookings set status='pending_approval' where id=$1`, [
+      booking.bookingId,
+    ]);
+
+    const plan = buildLocationSwapPlan({
+      bookingId: booking.bookingId,
+      slotId: booking.slotId,
+      fromSpaceId: base.spaceId,
+      toSpaceId: base.spaceId,
+      resolutionAtIso: '2026-09-15T00:00:00Z',
+      approval: buildApprovalBlock({
+        oldOutcome: 'require_approval',
+        newOutcome: 'require_approval',
+        chainConfigChanged: true,
+        newChainConfig: {
+          requiredApprovers: [{ type: 'team', id: base.teamId }],
+          threshold: 'all',
+        },
+      }),
+    });
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-row7');
+
+    const result = await runRpcCapture<EditResult>(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.follow_ups).toContain('booking.approval_required');
+
+    const approvalRows = await pool.query<{
+      status: string;
+      approval_chain_id: string;
+      approver_team_id: string | null;
+      comments: string | null;
+    }>(
+      `select status, approval_chain_id, approver_team_id, comments
+         from public.approvals
+        where tenant_id = $1 and target_entity_id = $2
+        order by status`,
+      [base.tenantId, booking.bookingId],
+    );
+    // 2 rows total: 1 expired (old chain) + 1 pending (new chain).
+    expect(approvalRows.rows).toHaveLength(2);
+    const expired = approvalRows.rows.find((r) => r.status === 'expired');
+    const pending = approvalRows.rows.find((r) => r.status === 'pending');
+    expect(expired).toBeDefined();
+    expect(pending).toBeDefined();
+    expect(expired!.approval_chain_id).toBe(oldChainId);
+    expect(expired!.comments).toContain('superseded_by_edit');
+    expect(pending!.approval_chain_id).not.toBe(oldChainId);
+    expect(pending!.approver_team_id).toBe(base.teamId);
+
+    const bookingRow = await pool.query<{ status: string }>(
+      'select status from public.bookings where id = $1',
+      [booking.bookingId],
+    );
+    expect(bookingRow.rows[0].status).toBe('pending_approval');
+  });
+
+  // ── Scenario 21 (§3.6.5 Row 8 — DANGEROUS GAP): terminal_approved + diff
+  // Approved chain must be expired (so the new chain owns the decision),
+  // new chain inserted, status flips BACK to pending_approval.
+  it('§3.6.5 Row 8 (DANGEROUS GAP) — terminal_approved + diff config expires approved rows + inserts fresh', async () => {
+    const base = await seedBaseFixture(pool, `edit-row8-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    // Booking is confirmed; existing approved chain is the historical
+    // approval. terminal_approved = zero pending/delegated/rejected, ≥1
+    // approved.
+    const { chainId: oldChainId } = await seedBookingApprovalChain(pool, base, booking.bookingId, [
+      { status: 'approved', approverPersonId: base.personId },
+    ]);
+
+    const plan = buildLocationSwapPlan({
+      bookingId: booking.bookingId,
+      slotId: booking.slotId,
+      fromSpaceId: base.spaceId,
+      toSpaceId: base.spaceId,
+      resolutionAtIso: '2026-09-15T00:00:00Z',
+      approval: buildApprovalBlock({
+        oldOutcome: 'require_approval',
+        newOutcome: 'require_approval',
+        chainConfigChanged: true,
+        newChainConfig: {
+          requiredApprovers: [{ type: 'team', id: base.teamId }],
+          threshold: 'all',
+        },
+      }),
+    });
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-row8');
+
+    const result = await runRpcCapture<EditResult>(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.follow_ups).toContain('booking.approval_required');
+
+    const approvalRows = await pool.query<{
+      status: string;
+      approval_chain_id: string;
+      comments: string | null;
+    }>(
+      `select status, approval_chain_id, comments
+         from public.approvals
+        where tenant_id = $1 and target_entity_id = $2
+        order by status`,
+      [base.tenantId, booking.bookingId],
+    );
+    expect(approvalRows.rows).toHaveLength(2);
+    const expired = approvalRows.rows.find((r) => r.status === 'expired');
+    const pending = approvalRows.rows.find((r) => r.status === 'pending');
+    expect(expired).toBeDefined();
+    expect(pending).toBeDefined();
+    // Dangerous-gap defining property: the historical 'approved' row was
+    // flipped to 'expired' so the new chain owns the booking. Audit log
+    // preserves it via the comment.
+    expect(expired!.approval_chain_id).toBe(oldChainId);
+    expect(expired!.comments).toContain('superseded_by_edit');
+    expect(pending!.approval_chain_id).not.toBe(oldChainId);
+
+    // Status flipped from 'confirmed' back to 'pending_approval'.
+    const bookingRow = await pool.query<{ status: string }>(
+      'select status from public.bookings where id = $1',
+      [booking.bookingId],
+    );
+    expect(bookingRow.rows[0].status).toBe('pending_approval');
+  });
+
+  // ── Scenario 22 (§3.6.5 Row 9): terminal_rejected → cancelled_cannot_edit
+  it('§3.6.5 Row 9 — terminal_rejected raises booking.cancelled_cannot_edit', async () => {
+    const base = await seedBaseFixture(pool, `edit-row9-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    // Seed a rejected row but DON'T flip bookings.status to 'cancelled'
+    // — this exercises the §3.6.5 row 9 defensive branch where the
+    // approval-grant RPC's cascade hasn't caught up. Booking status stays
+    // 'confirmed' but the approvals row says rejected.
+    await seedBookingApprovalChain(pool, base, booking.bookingId, [
+      { status: 'rejected', approverPersonId: base.personId },
+    ]);
+
+    const plan = buildLocationSwapPlan({
+      bookingId: booking.bookingId,
+      slotId: booking.slotId,
+      fromSpaceId: base.spaceId,
+      toSpaceId: base.spaceId,
+      resolutionAtIso: '2026-09-15T00:00:00Z',
+      approval: buildApprovalBlock({
+        oldOutcome: 'require_approval',
+        newOutcome: 'allow',
+        chainConfigChanged: false,
+        newChainConfig: null,
+      }),
+    });
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-row9');
+
+    const result = await runRpcCapture(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') return;
+    expect(result.error.message).toContain('booking.cancelled_cannot_edit');
+  });
+
+  // ── Scenario 23 (§3.6.5 Row 10): deny → edit_booking.deny_on_edit ────
+  it('§3.6.5 Row 10 — new_outcome=deny raises edit_booking.deny_on_edit', async () => {
+    const base = await seedBaseFixture(pool, `edit-row10-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    const targetSpaceId = await seedTargetMeetingRoom(pool, base);
+
+    const plan = buildLocationSwapPlan({
+      bookingId: booking.bookingId,
+      slotId: booking.slotId,
+      fromSpaceId: base.spaceId,
+      toSpaceId: targetSpaceId,
+      resolutionAtIso: '2026-09-15T00:00:00Z',
+      approval: buildApprovalBlock({
+        oldOutcome: 'allow',
+        newOutcome: 'deny',
+        chainConfigChanged: false,
+        newChainConfig: null,
+      }),
+    });
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-row10');
+
+    const result = await runRpcCapture(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') return;
+    expect(result.error.message).toContain('edit_booking.deny_on_edit');
+
+    // Booking row must NOT have been rewritten (the deny raise short-
+    // circuits before §10 atomic writes).
+    const bookingRow = await pool.query<{ location_id: string; status: string }>(
+      'select location_id, status from public.bookings where id = $1',
+      [booking.bookingId],
+    );
+    expect(bookingRow.rows[0].location_id).toBe(base.spaceId);
+    expect(bookingRow.rows[0].status).toBe('confirmed');
+  });
+
+  // ── Scenario 24: cross-tenant person approver rejection ──────────────
+  it('cross-tenant person approver — raises validate_entity_in_tenant.person_not_in_tenant', async () => {
+    const base = await seedBaseFixture(pool, `edit-xtenant-person-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    // Forge a person id from another tenant. seedSecondTenantSpace doesn't
+    // seed a person; for the leak shape what matters is the id IS valid
+    // syntactically but doesn't exist in this tenant. A random uuid hits
+    // the same code path (validate_entity_in_tenant.person_not_in_tenant)
+    // because the FK lookup misses.
+    const foreignPersonId = randomUUID();
+
+    const plan = buildLocationSwapPlan({
+      bookingId: booking.bookingId,
+      slotId: booking.slotId,
+      fromSpaceId: base.spaceId,
+      toSpaceId: base.spaceId,
+      resolutionAtIso: '2026-09-15T00:00:00Z',
+      approval: buildApprovalBlock({
+        oldOutcome: 'allow',
+        newOutcome: 'require_approval',
+        chainConfigChanged: true,
+        newChainConfig: {
+          requiredApprovers: [{ type: 'person', id: foreignPersonId }],
+          threshold: 'all',
+        },
+      }),
+    });
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-xtenant-person');
+
+    const result = await runRpcCapture(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') return;
+    expect(result.error.message).toContain('validate_entity_in_tenant.person_not_in_tenant');
+
+    // No approvals row inserted.
+    const approvalRows = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.approvals
+        where tenant_id = $1 and target_entity_id = $2`,
+      [base.tenantId, booking.bookingId],
+    );
+    expect(approvalRows.rows[0].n).toBe(0);
+  });
+
+  // ── Scenario 25: cross-tenant team approver rejection ────────────────
+  it('cross-tenant team approver — raises validate_entity_in_tenant.team_not_in_tenant', async () => {
+    const base = await seedBaseFixture(pool, `edit-xtenant-team-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+    const foreignTeamId = randomUUID();
+
+    const plan = buildLocationSwapPlan({
+      bookingId: booking.bookingId,
+      slotId: booking.slotId,
+      fromSpaceId: base.spaceId,
+      toSpaceId: base.spaceId,
+      resolutionAtIso: '2026-09-15T00:00:00Z',
+      approval: buildApprovalBlock({
+        oldOutcome: 'allow',
+        newOutcome: 'require_approval',
+        chainConfigChanged: true,
+        newChainConfig: {
+          requiredApprovers: [{ type: 'team', id: foreignTeamId }],
+          threshold: 'all',
+        },
+      }),
+    });
+    const idempotencyKey = buildEditBookingIdempotencyKey(booking.bookingId, 'crid-xtenant-team');
+
+    const result = await runRpcCapture(pool, 'public.edit_booking', [
+      booking.bookingId,
+      plan,
+      base.tenantId,
+      null,
+      idempotencyKey,
+    ]);
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') return;
+    expect(result.error.message).toContain('validate_entity_in_tenant.team_not_in_tenant');
+
+    const approvalRows = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.approvals
+        where tenant_id = $1 and target_entity_id = $2`,
+      [base.tenantId, booking.bookingId],
+    );
+    expect(approvalRows.rows[0].n).toBe(0);
   });
 });

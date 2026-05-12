@@ -742,20 +742,21 @@ export type KnownErrorCode =
   | 'work_order.reassign_reason_required'
   | 'work_order.rerun_resolver_unsupported'
 
-  // ─── B.4.A.3 edit_booking RPC codes (00361) ─────────────────────────────
-  // Spec: docs/follow-ups/b4-booking-edit-pipeline.md §3.2 + §3.4.
-  // approval_reconciliation_required is the explicit v1↔v2 boundary —
-  // raised when p_plan.approval_outcome_changed=true. B.4.A.4 will
-  // REMOVE this code once approval reconciliation lands inside the RPC.
-  // v3 (00363) — codex Critical 2 — new booking-scope rejections for
-  // child-row patches. NULLABLE booking_id on the three sibling tables
-  // (00278:91/116/140) meant tenant-only filtering let cross-booking
-  // patches sneak through; v3 raises these 404s when a patch references
-  // a child row not anchored to p_booking_id.
+  // ─── B.4.A edit_booking RPC codes ──────────────────────────────────────
+  // Spec: docs/follow-ups/b4-booking-edit-pipeline.md §3.2 + §3.4 + §3.6.5.
+  // v3 (00363) — codex Critical 2 — booking-scope rejections for child-row
+  // patches. NULLABLE booking_id on the three sibling tables (00278:91/
+  // 116/140) meant tenant-only filtering let cross-booking patches sneak
+  // through; v3 raises these 404s when a patch references a child row not
+  // anchored to p_booking_id.
+  // v4 (00364) — approval reconciliation per §3.6.5 lands inside the RPC.
+  // `approval_reconciliation_required` is RETIRED (no TS callers; lived
+  // only in registries). `deny_on_edit` is the new 422 raised when the
+  // rule resolver's new outcome is `deny` for the edit target (Row 10).
   | 'edit_booking.actor_not_found'
   | 'edit_booking.not_found'
   | 'edit_booking.invalid_plan_shape'
-  | 'edit_booking.approval_reconciliation_required'
+  | 'edit_booking.deny_on_edit'
   | 'edit_booking.work_order_not_in_booking'
   | 'edit_booking.order_not_in_booking'
   | 'edit_booking.asset_reservation_not_in_booking';
@@ -1323,11 +1324,14 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'validate_entity_in_tenant.booking_rule_not_in_tenant',
   'validate_entity_in_tenant.cost_center_not_in_tenant',
   'validate_entity_in_tenant.team_not_in_tenant',
-  // B.4.A.3 edit_booking RPC codes (00361).
+  // B.4.A edit_booking RPC codes (00361 v1 → 00364 v4).
   'edit_booking.actor_not_found',
   'edit_booking.not_found',
   'edit_booking.invalid_plan_shape',
-  'edit_booking.approval_reconciliation_required',
+  // v4 (00364): deny-on-edit per §3.6.5 Row 10. Replaces v3's
+  // `approval_reconciliation_required` (RETIRED — see edit_booking RPC
+  // header for the supersession comment).
+  'edit_booking.deny_on_edit',
   // v3 (00363) — codex Critical 2 — booking-scope rejections.
   'edit_booking.work_order_not_in_booking',
   'edit_booking.order_not_in_booking',

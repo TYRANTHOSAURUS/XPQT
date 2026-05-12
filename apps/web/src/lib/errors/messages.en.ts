@@ -1642,9 +1642,11 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't save the booking",
     detail: 'The edit request was malformed. Refresh the page and try again.',
   },
-  'edit_booking.approval_reconciliation_required': {
-    title: "Couldn't save the booking — approval change",
-    detail: 'This edit changes the approval requirement. Approval-reconciling edits are not yet supported; revert the change or wait for the next release.',
+  // v4 (00364) — §3.6.5 Row 10. Replaces v3's
+  // `approval_reconciliation_required` (RETIRED).
+  'edit_booking.deny_on_edit': {
+    title: "Couldn't save the booking",
+    detail: "This edit isn't allowed by the rules for this room.",
   },
   // v3 (00363) — codex Critical 2 — booking-scope rejections for child-row
   // patches. The plan referenced a work order / order / asset reservation

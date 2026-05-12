@@ -1621,9 +1621,11 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon de reservering niet opslaan',
     detail: 'Het bewerkingsverzoek was niet correct. Vernieuw de pagina en probeer het opnieuw.',
   },
-  'edit_booking.approval_reconciliation_required': {
-    title: 'Kon de reservering niet opslaan — goedkeuring gewijzigd',
-    detail: 'Deze wijziging verandert de goedkeuringseis. Wijzigingen die de goedkeuringsstroom raken zijn nog niet ondersteund; draai de wijziging terug of wacht op de volgende release.',
+  // v4 (00364) — §3.6.5 Row 10. Replaces v3's
+  // `approval_reconciliation_required` (RETIRED).
+  'edit_booking.deny_on_edit': {
+    title: 'Kon de reservering niet opslaan',
+    detail: 'Deze wijziging is niet toegestaan voor deze ruimte volgens de regels.',
   },
   // v3 (00363) — codex Critical 2 — booking-scope rejections.
   'edit_booking.work_order_not_in_booking': {

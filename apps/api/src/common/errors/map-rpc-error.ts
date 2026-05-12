@@ -215,14 +215,13 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // because the request payload is valid but the booking state blocks the
   // action (same shape as reclassify_ticket.terminal_ticket).
   'booking.cancelled_cannot_edit': 422,
-  // B.4.A.3 — edit_booking RPC (00361). Raised when the plan reports
-  // approval_outcome_changed=true. v1 explicitly defers §3.6.5 approval
-  // reconciliation to B.4.A.4 — this code is the loud boundary between
-  // them. B.4.A.4 ships the chain-expire / chain-insert logic and
-  // REMOVES this code from the registry. Until then, the controller-
-  // layer error handler should catch this and surface a "retry after
-  // approval reconciliation ships" message.
-  'edit_booking.approval_reconciliation_required': 422,
+  // B.4.A.4 — edit_booking RPC (00364). Raised when the rule resolver's
+  // new outcome is `deny` for the edit target (§3.6.5 Row 10). Mirrors
+  // CREATE: deny is a hard 422 — no actor-override path here (override
+  // is a separate concern, B.4.D follow-up). Replaces v3's
+  // `approval_reconciliation_required` (RETIRED — approval reconciliation
+  // now happens inside the RPC per §3.6.5 decision table).
+  'edit_booking.deny_on_edit': 422,
   // B.2.A semantic re-derivation gates — RPCs raise these when the
   // TS-side plan disagrees with the server's recomputation at write time
   // (workflow/SLA/scope-override changed, effective location resolved

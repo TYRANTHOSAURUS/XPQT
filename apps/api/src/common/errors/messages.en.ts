@@ -1718,16 +1718,16 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't dispatch",
     detail: 'The team is not part of this tenant.',
   },
-  // ─── B.4.A.3 edit_booking RPC (00361) ────────────────────────────────────
+  // ─── B.4.A edit_booking RPC (00361 v1 → 00364 v4) ───────────────────────
   // actor_not_found: the JWT's auth_uid has no users row in the tenant.
   //   Defense-in-depth — TS auth guard normally rejects this earlier.
   // not_found: the booking row is missing or in a different tenant.
   //   Mirrors booking.not_found shape with the RPC-specific namespace.
   // invalid_plan_shape: the TS-built plan failed top-level structural
   //   validation (missing booking object, slot_patches array, etc.).
-  // approval_reconciliation_required: the plan reports a rule-outcome
-  //   change that crosses the approval boundary. v1 explicitly defers
-  //   §3.6.5 reconciliation to B.4.A.4; this title surfaces that boundary.
+  // deny_on_edit: §3.6.5 Row 10 — rule resolver's new outcome is `deny`
+  //   for the edit target. Hard 422; pick a different room or revert the
+  //   change. Replaces v3's `approval_reconciliation_required` (RETIRED).
   'edit_booking.actor_not_found': {
     title: "Couldn't save the booking",
     detail: 'Your account is not registered in this tenant. Sign in again or contact an administrator.',
@@ -1740,9 +1740,9 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save the booking",
     detail: 'The edit request was malformed. Refresh the page and try again.',
   },
-  'edit_booking.approval_reconciliation_required': {
-    title: "Couldn't save the booking — approval change",
-    detail: 'This edit changes the approval requirement. Approval-reconciling edits are not yet supported; revert the change or wait for the next release.',
+  'edit_booking.deny_on_edit': {
+    title: "Couldn't save the booking",
+    detail: "This edit isn't allowed by the rules for this room.",
   },
   // v3 (00363) — codex Critical 2 — booking-scope rejections. The plan
   // referenced a child row (work order / order / asset reservation) that
