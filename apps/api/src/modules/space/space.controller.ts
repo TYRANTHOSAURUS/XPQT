@@ -40,6 +40,11 @@ export class SpaceController {
     return this.spaceService.bulkUpdate(dto);
   }
 
+  @Get(':id/children')
+  async children(@Param('id') id: string) {
+    return this.spaceService.listChildren(id);
+  }
+
   @Get(':id')
   async getById(@Param('id') id: string) {
     return this.spaceService.getById(id);

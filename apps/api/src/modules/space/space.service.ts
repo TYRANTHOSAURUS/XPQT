@@ -165,6 +165,17 @@ export class SpaceService {
     return { results };
   }
 
+  async listChildren(parentId: string) {
+    const tenant = TenantContext.current();
+    const { data } = await this.supabase.admin
+      .from('spaces')
+      .select('id, name, type, capacity')
+      .eq('parent_id', parentId)
+      .eq('tenant_id', tenant.id)
+      .order('name');
+    return data ?? [];
+  }
+
   private async assertValidParent(parentId: string | null, childType: SpaceType) {
     if (parentId === null) {
       if (!isValidSpaceParent(null, childType)) {
