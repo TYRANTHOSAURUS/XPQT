@@ -661,6 +661,56 @@ async function runWorkOrderMutations(headers, probe) {
     }
   }
 
+  // Full-review I5 (2026-05-12) — verify the 'detail' source path
+  // end-to-end. The previous probe only covered _source: 'board' via the
+  // planning-board surface; the detail-page surface (PlanField in
+  // ticket-detail.tsx:348) was wired but unverified. Probe shape mirrors
+  // the board probe — different timestamp so the no-op fast path can't
+  // mask a regression, audit row append-only so no teardown required.
+  const auditProbeDetailStart = new Date(Date.now() + 9 * 86400000).toISOString();
+  const auditProbeDetail = await probeAndAssertCommandOp(
+    probe,
+    'WO: plan PATCH with _source=detail → 200',
+    {
+      url: `${API_BASE}/api/work-orders/${WO_ID}`,
+      body: { planned_start_at: auditProbeDetailStart, _source: 'detail' },
+    },
+    TENANT_ID,
+    'work_order',
+    WO_ID,
+  );
+  if (auditProbeDetail.ok) {
+    const { data: detailAuditRows, error: detailAuditErr } = await supa()
+      .from('ticket_activities')
+      .select('metadata, created_at')
+      .eq('tenant_id', TENANT_ID)
+      .eq('ticket_id', WO_ID)
+      .eq('activity_type', 'system_event')
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (detailAuditErr) {
+      results.fail += 1;
+      results.failed.push('WO: audit row source=detail (query error)');
+      console.log(`  ✗ WO: audit row source=detail (query error: ${detailAuditErr.message})`);
+    } else if (!detailAuditRows || detailAuditRows.length === 0) {
+      results.fail += 1;
+      results.failed.push('WO: audit row source=detail (no row)');
+      console.log(`  ✗ WO: audit row source=detail — no ticket_activities row after PATCH`);
+    } else {
+      const meta = detailAuditRows[0].metadata ?? {};
+      if (meta.event === 'plan_changed' && meta.source === 'detail') {
+        results.pass += 1;
+        console.log(`  ✓ WO: audit row metadata.source=detail (event=plan_changed)`);
+      } else {
+        results.fail += 1;
+        results.failed.push('WO: audit row source=detail (wrong shape)');
+        console.log(
+          `  ✗ WO: audit row source=detail — got event=${meta.event} source=${meta.source}`,
+        );
+      }
+    }
+  }
+
   // Invalid _source must reject at the controller layer before any RPC
   // call lands. Defense in depth: even though the RPC re-validates,
   // the controller's enum gate is what users hit first.
