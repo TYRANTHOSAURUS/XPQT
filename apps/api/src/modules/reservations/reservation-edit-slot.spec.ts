@@ -2,24 +2,82 @@ import { AppError } from '../../common/errors';
 import { ReservationService } from './reservation.service';
 import { TenantContext } from '../../common/tenant-context';
 import type { ActorContext } from './dto/types';
+import type {
+  EditPlan,
+  EditPlanApproval,
+} from './edit-plan.types';
 
 // Phase 1.4 — Bug #2 (slot-first scheduler).
 //
 // Spec for ReservationService.editSlot — the slot-targeted edit path that
 // replaces the booking-id PATCH /reservations/:id when geometry is being
-// edited. The four scenarios mirror the contract in
-// docs/superpowers/plans/2026-05-04-architecture-phase-1-correctness-bugs.md
-// "Phase 1.4 — Tests (TDD)":
+// edited.
 //
-//   1. Happy path: edit slot B (non-primary) of a multi-room booking. Asserts
-//      RPC called with correct args (slot id, patch); returns the projected
-//      Reservation reflecting the new slot times.
-//   2. Slot not found → NotFoundException with code booking_slot.not_found.
-//   3. GiST conflict (SQLSTATE 23P01) → ConflictException with code
-//      booking.slot_conflict.
-//   4. URL mismatch — bookingId in URL ≠ slot.booking_id from DB →
-//      BadRequestException with code booking_slot.url_mismatch. The service
-//      enforces this so the controller doesn't have to load the slot twice.
+// B.4 step 2D-D — cutover from `edit_booking_slot` (00291) to
+// `edit_booking` (00364) via AssembleEditPlanService. The mocks now stub
+// `assembleEditPlan` + `supabase.rpc('edit_booking', ...)` instead of
+// `edit_booking_slot`. Mocking the higher-level service (rather than its
+// internals) keeps tests stable across future plan-builder refactors.
+//
+// Scenarios preserved:
+//   1. Happy path: edit slot B (non-primary) of a multi-room booking →
+//      RPC `edit_booking` called with the assembled plan + idempotency
+//      key; returns the projected Reservation reflecting the new slot
+//      times.
+//   2. Slot not found → AppError booking_slot.not_found.
+//   3. GiST conflict (SQLSTATE 23P01) → AppError booking.slot_conflict
+//      (preserved special-case; the new RPC propagates 23P01 the same
+//      way).
+//   4. URL mismatch — bookingId ≠ slot.booking_id → AppError
+//      booking_slot.url_mismatch.
+//
+// New scenario:
+//   5. B.4.A.5 controller-vs-notification gate — edit whose plan would
+//      emit `booking.approval_required` (rows 2/7/8 of §3.6.5) is
+//      rejected 503 before any RPC fires.
+
+const CLIENT_REQUEST_ID = 'cccccccc-1111-4111-8111-cccccccccccc';
+
+/** Produce an EditPlan that AssembleEditPlanService might return for a
+ * geometry-only slot edit. Tests override `approval` to exercise the
+ * B.4.A.5 gate. */
+function makeEditPlan(opts: {
+  bookingId: string;
+  slotId: string;
+  spaceId: string;
+  startAt: string;
+  endAt: string;
+  approval?: EditPlanApproval;
+}): EditPlan {
+  return {
+    booking: {
+      location_id: opts.spaceId,
+      start_at: opts.startAt,
+      end_at: opts.endAt,
+      cost_amount_snapshot: null,
+      policy_snapshot: { matched_rule_ids: [], effects_seen: [] },
+      applied_rule_ids: [],
+    },
+    slot_patches: [
+      {
+        slot_id: opts.slotId,
+        space_id: opts.spaceId,
+        start_at: opts.startAt,
+        end_at: opts.endAt,
+      },
+    ],
+    asset_reservation_patches: [],
+    order_patches: [],
+    work_order_sla_patches: [],
+    _resolution_at: '2026-05-01T08:00:00.000Z',
+    approval: opts.approval ?? {
+      old_outcome: 'allow',
+      new_outcome: 'allow',
+      chain_config_changed: false,
+      new_chain_config: null,
+    },
+  };
+}
 
 describe('ReservationService.editSlot', () => {
   const TENANT = { id: 'T', slug: 't', tier: 'standard' as const };
@@ -123,10 +181,12 @@ describe('ReservationService.editSlot', () => {
    *   2. booking_slots.select(SLOT_WITH_BOOKING_SELECT)... .order().order().limit(1).maybeSingle() —
    *      findByIdOrThrow projection read after the RPC succeeds (used by
    *      auth + the response).
-   *   3. supabase.rpc('edit_booking_slot', {...}) — the atomic write.
+   *   3. supabase.rpc('edit_booking', {...}) — the atomic write
+   *      (B.4 step 2D-D — replaces 'edit_booking_slot').
    *
    * Visibility / user lookup go through ReservationVisibilityService which
-   * we mock separately.
+   * we mock separately. AssembleEditPlanService is mocked separately too —
+   * the supabase mock no longer needs to satisfy the plan-builder's reads.
    */
   function makeSupabase(opts?: {
     slotPreflight?: { booking_id: string } | null;
@@ -250,15 +310,56 @@ describe('ReservationService.editSlot', () => {
     };
   }
 
-  function buildService(supabase: ReturnType<typeof makeSupabase>, visibility: ReturnType<typeof makeVisibility>, conflict: ReturnType<typeof makeConflictGuard>) {
+  /**
+   * AssembleEditPlanService mock factory. The default returns a passthrough
+   * plan for an `allow → allow` edit; tests can override `approvalOverride`
+   * to drive the B.4.A.5 gate.
+   */
+  function makeAssembleEditPlan(opts?: {
+    approvalOverride?: EditPlanApproval;
+    /** Force the assembler to throw — exercises the plan-build error
+     * propagation path. */
+    throwOnAssemble?: AppError;
+  }) {
+    const assembleEditPlan = jest.fn(async (args: {
+      bookingId: string;
+      tenantId: string;
+      slotId: string;
+      patch: { kind: 'slot'; space_id?: string; start_at?: string; end_at?: string };
+    }) => {
+      if (opts?.throwOnAssemble) throw opts.throwOnAssemble;
+      return makeEditPlan({
+        bookingId: args.bookingId,
+        slotId: args.slotId,
+        spaceId: args.patch.space_id ?? SPACE_ORIGINAL,
+        startAt: args.patch.start_at ?? '2026-05-01T11:00:00Z',
+        endAt: args.patch.end_at ?? '2026-05-01T12:00:00Z',
+        approval: opts?.approvalOverride,
+      });
+    });
+    return { assembleEditPlan };
+  }
+
+  function buildService(
+    supabase: ReturnType<typeof makeSupabase>,
+    visibility: ReturnType<typeof makeVisibility>,
+    conflict: ReturnType<typeof makeConflictGuard>,
+    assemble?: ReturnType<typeof makeAssembleEditPlan>,
+  ) {
+    const planMock = assemble ?? makeAssembleEditPlan();
     return new ReservationService(
       supabase as never,
       conflict as never,
       visibility as never,
+      undefined, // recurrence
+      undefined, // notifications
+      undefined, // bundleCascade
+      undefined, // bundleEventBus
+      planMock as never,
     );
   }
 
-  it('happy path: edits non-primary slot via RPC and returns the projected Reservation', async () => {
+  it('happy path: edits non-primary slot via edit_booking RPC + returns the projected Reservation', async () => {
     const updatedStart = '2026-05-01T11:00:00Z';
     const updatedEnd = '2026-05-01T12:00:00Z';
     const supabase = makeSupabase({
@@ -272,19 +373,28 @@ describe('ReservationService.editSlot', () => {
     const svc = buildService(supabase, visibility, conflict);
 
     const result = await TenantContext.run(TENANT, () =>
-      svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), {
+      svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
         start_at: updatedStart,
         end_at: updatedEnd,
       }),
     );
 
-    // RPC was called with the exact contract: slot id + patch + tenant.
-    const rpcCall = supabase.calls.rpc.find((c) => c.fn === 'edit_booking_slot');
+    // B.4 step 2D-D: the RPC is now `edit_booking` and the args carry
+    // the assembled plan + the deterministic idempotency key built from
+    // (bookingId, clientRequestId).
+    const rpcCall = supabase.calls.rpc.find((c) => c.fn === 'edit_booking');
     expect(rpcCall).toBeDefined();
-    expect(rpcCall!.args).toMatchObject({
-      p_slot_id: SLOT_B,
-      p_patch: { start_at: updatedStart, end_at: updatedEnd },
-      p_tenant_id: TENANT.id,
+    const args = rpcCall!.args as Record<string, unknown>;
+    expect(args.p_booking_id).toBe(BOOKING_ID);
+    expect(args.p_tenant_id).toBe(TENANT.id);
+    expect(args.p_actor_user_id).toBe('U');
+    expect(args.p_idempotency_key).toBe(`booking:edit:${BOOKING_ID}:${CLIENT_REQUEST_ID}`);
+    const plan = args.p_plan as EditPlan;
+    expect(plan.slot_patches).toHaveLength(1);
+    expect(plan.slot_patches[0]).toMatchObject({
+      slot_id: SLOT_B,
+      start_at: updatedStart,
+      end_at: updatedEnd,
     });
 
     // Returned Reservation reflects the slot's new geometry. The
@@ -293,6 +403,106 @@ describe('ReservationService.editSlot', () => {
     expect(result.slot_id).toBe(SLOT_B);
     expect(result.start_at).toBe(updatedStart);
     expect(result.end_at).toBe(updatedEnd);
+  });
+
+  // B.4 step 2D-D — controller-vs-notification gate (B.4.A.5).
+  // When the plan would emit booking.approval_required (rows 2/7/8 of
+  // §3.6.5), the service rejects 503 BEFORE any RPC call. Verifies that
+  // the gate fires for all three trigger conditions.
+  it('B.4.A.5 gate: allow → require_approval rejects 503 before RPC fires', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility({ canEdit: true });
+    const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlan({
+      approvalOverride: {
+        old_outcome: 'allow',
+        new_outcome: 'require_approval',
+        chain_config_changed: false,
+        new_chain_config: {
+          required_approvers: [{ type: 'person', id: 'P1' }],
+          threshold: 'all',
+        },
+      },
+    });
+    const svc = buildService(supabase, visibility, conflict, assemble);
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
+          start_at: '2026-05-01T11:00:00Z',
+        }),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AppError);
+    expect(caught).toMatchObject({
+      code: 'booking.edit_requires_notification_dispatch',
+      status: 503,
+    });
+    // Critical: no RPC fired. The whole point of the pre-flight is to
+    // avoid producing the very event the gate is suppressing.
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
+  });
+
+  it('B.4.A.5 gate: require_approval → require_approval with chain_config_changed rejects 503', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility({ canEdit: true });
+    const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlan({
+      approvalOverride: {
+        old_outcome: 'require_approval',
+        new_outcome: 'require_approval',
+        chain_config_changed: true,
+        new_chain_config: {
+          required_approvers: [{ type: 'team', id: 'TX' }],
+          threshold: 'any',
+        },
+      },
+    });
+    const svc = buildService(supabase, visibility, conflict, assemble);
+
+    let caught: unknown = null;
+    try {
+      await TenantContext.run(TENANT, () =>
+        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
+          start_at: '2026-05-01T11:00:00Z',
+        }),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toMatchObject({
+      code: 'booking.edit_requires_notification_dispatch',
+      status: 503,
+    });
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
+  });
+
+  it('B.4.A.5 gate: require_approval → require_approval with SAME config (Row 6 preserve) PASSES', async () => {
+    // Row 6 (preserve in-flight): no INSERT, no emit. The gate must NOT
+    // fire — the edit proceeds normally.
+    const supabase = makeSupabase();
+    const visibility = makeVisibility({ canEdit: true });
+    const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlan({
+      approvalOverride: {
+        old_outcome: 'require_approval',
+        new_outcome: 'require_approval',
+        chain_config_changed: false,
+        new_chain_config: null,
+      },
+    });
+    const svc = buildService(supabase, visibility, conflict, assemble);
+
+    await TenantContext.run(TENANT, () =>
+      svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
+        start_at: '2026-05-01T11:00:00Z',
+      }),
+    );
+
+    expect(supabase.calls.rpc.find((c) => c.fn === 'edit_booking')).toBeDefined();
   });
 
   it('throws NotFoundException(booking_slot.not_found) when the slot is not in this tenant', async () => {
@@ -304,7 +514,7 @@ describe('ReservationService.editSlot', () => {
     let caught: unknown = null;
     try {
       await TenantContext.run(TENANT, () =>
-        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), {
+        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
           start_at: '2026-05-01T11:00:00Z',
         }),
       );
@@ -322,6 +532,9 @@ describe('ReservationService.editSlot', () => {
   });
 
   it('maps GiST exclusion (23P01) to ConflictException(booking.slot_conflict)', async () => {
+    // B.4 step 2D-D — the GiST exclusion is preserved as the only
+    // TS-side special case post-cutover; the new RPC propagates 23P01
+    // the same way 00291 did.
     const supabase = makeSupabase({
       rpcResponse: {
         data: null,
@@ -335,7 +548,7 @@ describe('ReservationService.editSlot', () => {
     let caught: unknown = null;
     try {
       await TenantContext.run(TENANT, () =>
-        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), {
+        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
           start_at: '2026-05-01T11:00:00Z',
         }),
       );
@@ -360,7 +573,7 @@ describe('ReservationService.editSlot', () => {
     let caught: unknown = null;
     try {
       await TenantContext.run(TENANT, () =>
-        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), {
+        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
           start_at: '2026-05-01T11:00:00Z',
         }),
       );
@@ -375,32 +588,22 @@ describe('ReservationService.editSlot', () => {
     expect(supabase.calls.rpc).toHaveLength(0);
   });
 
-  // /full-review v3 closure C1 — cross-tenant space-id validation.
+  // B.4 step 2D-D — cross-tenant space-id validation post-cutover.
   //
-  // Pre-fix: editSlot forwarded patch.space_id straight to the RPC, and
-  // the RPC's UPDATE booking_slots SET space_id = ... only had the FK
-  // constraint to prove the space existed. A space_id from a different
-  // tenant satisfied the FK, so the row landed and the booking's
-  // location_id (when primary) mirrored a foreign tenant's space —
-  // tenant isolation breach.
-  //
-  // Post-fix (00294): RPC validates (id, tenant_id, active, reservable)
-  // and raises P0001 with hint 'space.invalid_or_cross_tenant'. The TS
-  // service maps this to BadRequestException(booking.slot_space_invalid).
-  it('maps cross-tenant space_id (P0001 / space.invalid_or_cross_tenant) to BadRequestException(booking.slot_space_invalid)', async () => {
-    // Plan A.4 / Commit 7 added a TS-layer pre-flight that catches the
-    // cross-tenant case before the RPC fires. This test still pins the
-    // RPC-side mapping behavior (race window where space becomes
-    // cross-tenant between pre-flight + RPC, or admin bypass paths).
-    // Use SPACE_VALID so the pre-flight passes, then have the RPC raise
-    // P0001 to exercise the mapping.
+  // The TS-layer assertTenantOwned pre-flight catches the cross-tenant
+  // case before the RPC fires (preserved from pre-cutover). When the
+  // RPC IS reached (race window or admin bypass), the new RPC raises
+  // `validate_entity_in_tenant.space_not_in_tenant` (404) — surfaced via
+  // mapRpcErrorToAppError. The legacy `booking.slot_space_invalid`
+  // (400) raise is RETIRED; the cleaner 404 from the canonical
+  // tenant-validate helper replaces it.
+  it('maps RPC validate_entity_in_tenant.space_not_in_tenant to 404', async () => {
     const supabase = makeSupabase({
       rpcResponse: {
         data: null,
         error: {
           code: 'P0001',
-          message: 'space_invalid',
-          hint: 'space.invalid_or_cross_tenant',
+          message: 'validate_entity_in_tenant.space_not_in_tenant',
         },
       },
     });
@@ -411,7 +614,7 @@ describe('ReservationService.editSlot', () => {
     let caught: unknown = null;
     try {
       await TenantContext.run(TENANT, () =>
-        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), {
+        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
           space_id: SPACE_VALID,
         }),
       );
@@ -420,52 +623,12 @@ describe('ReservationService.editSlot', () => {
     }
     expect(caught).toBeInstanceOf(AppError);
     expect(caught).toMatchObject({
-      code: 'booking.slot_space_invalid',
-      status: 400,
+      code: 'validate_entity_in_tenant.space_not_in_tenant',
+      status: 404,
     });
   });
 
-  it('maps inactive/non-reservable space_id (same P0001) to booking.slot_space_invalid', async () => {
-    // The RPC's validation block is one branch — it doesn't differentiate
-    // "wrong tenant" from "inactive" from "non-reservable" (correctly:
-    // the caller has no need-to-know, and same UI fix in all cases). All
-    // three surface as the same BadRequestException(slot_space_invalid).
-    // Pre-flight uses SPACE_VALID so we test the RPC-side mapping.
-    const supabase = makeSupabase({
-      rpcResponse: {
-        data: null,
-        error: {
-          code: 'P0001',
-          message: 'space_invalid',
-          hint: 'space.invalid_or_cross_tenant',
-        },
-      },
-    });
-    const visibility = makeVisibility();
-    const conflict = makeConflictGuard();
-    const svc = buildService(supabase, visibility, conflict);
-
-    let caught: unknown = null;
-    try {
-      await TenantContext.run(TENANT, () =>
-        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), {
-          space_id: SPACE_VALID,
-        }),
-      );
-    } catch (e) {
-      caught = e;
-    }
-    expect(caught).toBeInstanceOf(AppError);
-    expect(caught).toMatchObject({
-      code: 'booking.slot_space_invalid',
-      status: 400,
-    });
-  });
-
-  it('happy path: valid same-tenant active reservable space_id passes through (no error mapping fires)', async () => {
-    // Confirm the existing happy path still works post-C1. RPC returns
-    // success → no mapping branch fires → editSlot returns the
-    // projected Reservation as before.
+  it('happy path: valid same-tenant active reservable space_id passes through', async () => {
     const newSpace = SPACE_VALID;
     const supabase = makeSupabase({
       projectionRow: {
@@ -478,17 +641,18 @@ describe('ReservationService.editSlot', () => {
     const svc = buildService(supabase, visibility, conflict);
 
     const result = await TenantContext.run(TENANT, () =>
-      svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), {
+      svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
         space_id: newSpace,
       }),
     );
 
-    const rpcCall = supabase.calls.rpc.find((c) => c.fn === 'edit_booking_slot');
+    const rpcCall = supabase.calls.rpc.find((c) => c.fn === 'edit_booking');
     expect(rpcCall).toBeDefined();
-    expect(rpcCall!.args).toMatchObject({
-      p_slot_id: SLOT_B,
-      p_patch: { space_id: newSpace },
-      p_tenant_id: TENANT.id,
+    const args = rpcCall!.args as Record<string, unknown>;
+    const plan = args.p_plan as EditPlan;
+    expect(plan.slot_patches[0]).toMatchObject({
+      slot_id: SLOT_B,
+      space_id: newSpace,
     });
     expect(result.id).toBe(BOOKING_ID);
     expect(result.space_id).toBe(newSpace);
@@ -503,7 +667,7 @@ describe('ReservationService.editSlot', () => {
     let caught: unknown = null;
     try {
       await TenantContext.run(TENANT, () =>
-        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), {
+        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
           start_at: '2026-05-01T11:00:00Z',
         }),
       );
@@ -520,21 +684,21 @@ describe('ReservationService.editSlot', () => {
 });
 
 // /full-review v3 closure C2 regression — editOne(geometry) MUST go
-// through the edit_booking_slot RPC, not write the slot row directly
-// and mirror booking.start_at = patch.start_at literally.
+// through the edit_booking RPC (B.4 step 2D-D), not write the slot row
+// directly.
 //
 // Pre-fix behaviour:
 //   editOne would UPDATE booking_slots[primary] SET start_at=X
 //   and UPDATE bookings SET start_at=X.
 // For multi-slot bookings that's wrong: bookings.start_at MUST be
-// MIN(booking_slots.start_at). The 00291 RPC enforces that mirror
-// inside the same transaction; the C2 fix routes editOne's geometry
-// keys through editSlot(...) so the RPC owns the mirror recompute.
+// MIN(booking_slots.start_at). The RPC enforces that mirror inside the
+// same transaction; the C2 fix routes editOne's geometry keys through
+// editSlot → edit_booking RPC so the RPC owns the mirror recompute.
 //
 // Test verifies: a multi-slot booking edited via editOne with a
-// start_at causes supabase.rpc('edit_booking_slot', ...) to be called,
-// AND no direct booking_slots.update for geometry columns happens, AND
-// no direct bookings.update for start_at/end_at happens.
+// start_at causes supabase.rpc('edit_booking', ...) to be called, AND
+// no direct booking_slots.update for geometry columns happens, AND no
+// direct bookings.update for start_at/end_at happens.
 describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => {
   const TENANT = { id: 'T-c2', slug: 't', tier: 'standard' as const };
   const BOOKING_ID = 'B-c2';
@@ -546,6 +710,50 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
       person_id: 'P',
       is_service_desk: false,
       has_override_rules: false,
+      // B.4 step 2D-D — editOne forwards actor.client_request_id into
+      // its editSlot delegation; without this the editOne path raises
+      // command_operations.unexpected_state.
+      client_request_id: CLIENT_REQUEST_ID,
+    };
+  }
+
+  /** Default plan-builder mock for the C2 describe block — passthrough
+   * allow→allow plan that lets the RPC fire. */
+  function makeAssembleEditPlanC2() {
+    return {
+      assembleEditPlan: jest.fn(async (args: {
+        bookingId: string;
+        tenantId: string;
+        slotId: string;
+        patch: { kind: 'slot'; space_id?: string; start_at?: string; end_at?: string };
+      }) => ({
+        booking: {
+          location_id: args.patch.space_id ?? 'space-orig',
+          start_at: args.patch.start_at ?? '2026-05-01T09:00:00Z',
+          end_at: args.patch.end_at ?? '2026-05-01T10:00:00Z',
+          cost_amount_snapshot: null,
+          policy_snapshot: { matched_rule_ids: [], effects_seen: [] },
+          applied_rule_ids: [],
+        },
+        slot_patches: [
+          {
+            slot_id: args.slotId,
+            space_id: args.patch.space_id ?? 'space-orig',
+            start_at: args.patch.start_at ?? '2026-05-01T09:00:00Z',
+            end_at: args.patch.end_at ?? '2026-05-01T10:00:00Z',
+          },
+        ],
+        asset_reservation_patches: [],
+        order_patches: [],
+        work_order_sla_patches: [],
+        _resolution_at: '2026-05-01T08:00:00Z',
+        approval: {
+          old_outcome: 'allow' as const,
+          new_outcome: 'allow' as const,
+          chain_config_changed: false,
+          new_chain_config: null,
+        },
+      })),
     };
   }
 
@@ -632,7 +840,9 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
     const admin = {
       rpc: (fn: string, args: unknown) => {
         calls.rpc.push({ fn, args });
-        if (fn === 'edit_booking_slot' && opts?.postRpcEmbed) {
+        // B.4 step 2D-D — RPC name is now `edit_booking`. Same swap-on-
+        // success pattern.
+        if (fn === 'edit_booking' && opts?.postRpcEmbed) {
           currentEmbed = opts.postRpcEmbed;
         }
         return Promise.resolve(rpcResponse);
@@ -717,30 +927,38 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
     };
   }
 
-  it('editOne with start_at delegates to edit_booking_slot RPC (no direct slot/booking write of geometry)', async () => {
+  it('editOne with start_at delegates to edit_booking RPC (no direct slot/booking write of geometry)', async () => {
     const newStart = '2026-05-01T11:00:00Z';
     const supabase = makeSupabase({
       postRpcEmbed: makeSlotEmbed({ start_at: newStart }),
     });
     const visibility = makeVisibility();
     const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlanC2();
     const svc = new ReservationService(
       supabase as never,
       conflict as never,
       visibility as never,
+      undefined, undefined, undefined, undefined,
+      assemble as never,
     );
 
     await TenantContext.run(TENANT, () =>
       svc.editOne(BOOKING_ID, makeActor(), { start_at: newStart }),
     );
 
-    // RPC must have fired with the geometry patch.
-    const rpcCalls = supabase.calls.rpc.filter((c) => c.fn === 'edit_booking_slot');
+    // RPC must have fired through the new edit_booking path with the
+    // assembled plan + idempotency key shape from
+    // buildEditBookingIdempotencyKey.
+    const rpcCalls = supabase.calls.rpc.filter((c) => c.fn === 'edit_booking');
     expect(rpcCalls).toHaveLength(1);
-    expect(rpcCalls[0].args).toMatchObject({
-      p_slot_id: PRIMARY_SLOT,
-      p_patch: { start_at: newStart },
-      p_tenant_id: TENANT.id,
+    const args = rpcCalls[0].args as Record<string, unknown>;
+    expect(args.p_booking_id).toBe(BOOKING_ID);
+    expect(args.p_idempotency_key).toBe(`booking:edit:${BOOKING_ID}:${CLIENT_REQUEST_ID}`);
+    const plan = args.p_plan as EditPlan;
+    expect(plan.slot_patches[0]).toMatchObject({
+      slot_id: PRIMARY_SLOT,
+      start_at: newStart,
     });
 
     // No direct booking_slots.update with geometry keys (those are now
@@ -802,20 +1020,24 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
     };
     const visibility = makeVisibility();
     const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlanC2();
     const svc = new ReservationService(
       supabase as never,
       conflict as never,
       visibility as never,
+      undefined, undefined, undefined, undefined,
+      assemble as never,
     );
 
     await TenantContext.run(TENANT, () =>
       svc.editOne(BOOKING_ID, makeActor(), { space_id: newSpace }),
     );
 
-    const rpcCalls = supabase.calls.rpc.filter((c) => c.fn === 'edit_booking_slot');
+    const rpcCalls = supabase.calls.rpc.filter((c) => c.fn === 'edit_booking');
     expect(rpcCalls).toHaveLength(1);
-    expect(rpcCalls[0].args).toMatchObject({
-      p_patch: { space_id: newSpace },
+    const plan = (rpcCalls[0].args as Record<string, unknown>).p_plan as EditPlan;
+    expect(plan.slot_patches[0]).toMatchObject({
+      space_id: newSpace,
     });
   });
 
@@ -834,10 +1056,13 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
     const supabase = makeSupabase();
     const visibility = makeVisibility();
     const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlanC2();
     const svc = new ReservationService(
       supabase as never,
       conflict as never,
       visibility as never,
+      undefined, undefined, undefined, undefined,
+      assemble as never,
     );
 
     let caught: unknown = null;
@@ -859,9 +1084,9 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
 
     // Critical: NEITHER geometry NOR meta committed. The pre-fix bug
     // was a half-applied write — geometry through the RPC, meta failed.
-    // Assert no edit_booking_slot RPC, no booking_slots UPDATE, no
-    // bookings UPDATE.
-    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking_slot')).toHaveLength(0);
+    // Assert no edit_booking RPC, no booking_slots UPDATE, no bookings
+    // UPDATE.
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
     expect(supabase.calls.bookingSlotsUpdate).toHaveLength(0);
     expect(supabase.calls.bookingsUpdate).toHaveLength(0);
   });
@@ -870,10 +1095,13 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
     const supabase = makeSupabase();
     const visibility = makeVisibility();
     const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlanC2();
     const svc = new ReservationService(
       supabase as never,
       conflict as never,
       visibility as never,
+      undefined, undefined, undefined, undefined,
+      assemble as never,
     );
 
     let caught: unknown = null;
@@ -892,7 +1120,7 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
       code: 'booking.invalid_window',
       status: 400,
     });
-    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking_slot')).toHaveLength(0);
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
     expect(supabase.calls.bookingSlotsUpdate).toHaveLength(0);
     expect(supabase.calls.bookingsUpdate).toHaveLength(0);
   });
@@ -901,10 +1129,13 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
     const supabase = makeSupabase();
     const visibility = makeVisibility();
     const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlanC2();
     const svc = new ReservationService(
       supabase as never,
       conflict as never,
       visibility as never,
+      undefined, undefined, undefined, undefined,
+      assemble as never,
     );
 
     await TenantContext.run(TENANT, () =>
@@ -912,7 +1143,7 @@ describe('ReservationService.editOne — geometry delegates to RPC (C2)', () => 
     );
 
     // No RPC call — meta-only path doesn't touch geometry.
-    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking_slot')).toHaveLength(0);
+    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
     // The slot meta update DOES happen (legacy path stays).
     expect(supabase.calls.bookingSlotsUpdate.some((p) => {
       const obj = p as Record<string, unknown>;

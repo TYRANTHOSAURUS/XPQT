@@ -28,8 +28,14 @@ function makeActor(): ActorContext {
     user_id: 'U',
     person_id: 'P',
     is_service_desk: false,
-    has_override_rules: false };
+    has_override_rules: false,
+    // B.4 step 2D-D — editOne forwards client_request_id into editSlot;
+    // editSlot itself takes the crid as a positional arg. The actor field
+    // covers the editOne path; editSlot test calls below pass it positionally.
+    client_request_id: 'cccccccc-1111-4111-8111-cccccccccccc' };
 }
+
+const CLIENT_REQUEST_ID = 'cccccccc-1111-4111-8111-cccccccccccc';
 
 type Row = Record<string, unknown>;
 type RowsByTable = Record<string, Row[]>;
@@ -124,10 +130,52 @@ function makeVisibility(canEdit = true) {
 function makeService(supabase: ReturnType<typeof makeSupabase>, visibility = makeVisibility()) {
   const conflict = {
     isExclusionViolation: jest.fn(() => false) };
+  // B.4 step 2D-D — plan-builder mock. Pre-flights (assertTenantOwned on
+  // space_id) run BEFORE plan-build, so rejection-class tests in this
+  // file never reach the mock. The "lets it through" test DOES — it
+  // gets a passthrough plan (allow→allow) so the B.4.A.5 gate doesn't
+  // fire and the editSlot path runs to the RPC.
+  const assembleEditPlan = {
+    assembleEditPlan: jest.fn(async (args: {
+      bookingId: string;
+      tenantId: string;
+      slotId: string;
+      patch: { kind: 'slot'; space_id?: string; start_at?: string; end_at?: string };
+    }) => ({
+      booking: {
+        location_id: args.patch.space_id ?? VALID_SPACE,
+        start_at: args.patch.start_at ?? '2026-05-01T09:00:00Z',
+        end_at: args.patch.end_at ?? '2026-05-01T10:00:00Z',
+        cost_amount_snapshot: null,
+        policy_snapshot: { matched_rule_ids: [], effects_seen: [] },
+        applied_rule_ids: [],
+      },
+      slot_patches: [
+        {
+          slot_id: args.slotId,
+          space_id: args.patch.space_id ?? VALID_SPACE,
+          start_at: args.patch.start_at ?? '2026-05-01T09:00:00Z',
+          end_at: args.patch.end_at ?? '2026-05-01T10:00:00Z',
+        },
+      ],
+      asset_reservation_patches: [],
+      order_patches: [],
+      work_order_sla_patches: [],
+      _resolution_at: '2026-05-01T08:00:00Z',
+      approval: {
+        old_outcome: 'allow' as const,
+        new_outcome: 'allow' as const,
+        chain_config_changed: false,
+        new_chain_config: null,
+      },
+    })),
+  };
   return new ReservationService(
     supabase.supabase as never,
     conflict as never,
     visibility as never,
+    undefined, undefined, undefined, undefined,
+    assembleEditPlan as never,
   );
 }
 
@@ -313,7 +361,7 @@ describe('ReservationService.editSlot — Plan A.4 / Commit 7 (I3)', () => {
     let caught: unknown = null;
     try {
       await TenantContext.run(TENANT, () =>
-        svc.editSlot(BOOKING_ID, SLOT_ID, makeActor(), { space_id: FOREIGN }),
+        svc.editSlot(BOOKING_ID, SLOT_ID, makeActor(), CLIENT_REQUEST_ID, { space_id: FOREIGN }),
       );
     } catch (e) {
       caught = e;
@@ -339,9 +387,16 @@ describe('ReservationService.editSlot — Plan A.4 / Commit 7 (I3)', () => {
 
     // RPC returns no error; the validator passes; the call goes through.
     await TenantContext.run(TENANT, () =>
-      svc.editSlot(BOOKING_ID, SLOT_ID, makeActor(), { space_id: VALID_SPACE_2 }),
+      svc.editSlot(BOOKING_ID, SLOT_ID, makeActor(), CLIENT_REQUEST_ID, { space_id: VALID_SPACE_2 }),
     );
+    // B.4 step 2D-D — RPC name is now `edit_booking`. The plan's
+    // slot_patches[0].space_id carries the target space (the legacy
+    // `p_patch.space_id` shape is gone). The plan-builder mock returns
+    // a passthrough plan with the patch's space_id echoed in
+    // slot_patches[0].
     expect(supabase.rpcCalls).toHaveLength(1);
-    expect((supabase.rpcCalls[0].args as { p_patch: { space_id: string } }).p_patch.space_id).toBe(VALID_SPACE_2);
+    expect(supabase.rpcCalls[0].fn).toBe('edit_booking');
+    const planArg = (supabase.rpcCalls[0].args as { p_plan: { slot_patches: Array<{ space_id: string }> } }).p_plan;
+    expect(planArg.slot_patches[0].space_id).toBe(VALID_SPACE_2);
   });
 });

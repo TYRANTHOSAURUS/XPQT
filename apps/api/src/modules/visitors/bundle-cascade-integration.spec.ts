@@ -200,30 +200,32 @@ function buildHarness(opts: {
 
   const supabase = {
     admin: {
-      // C2 closure: editOne now delegates geometry to editSlot which
-      // calls the edit_booking_slot RPC (00291 + 00293). The RPC
-      // updates one slot AND recomputes booking-level start_at/end_at/
-      // location_id mirrors atomically. Mock applies the patch to
+      // B.4 step 2D-D: editOne delegates geometry to editSlot which now
+      // calls the `edit_booking` RPC (was `edit_booking_slot` pre-cutover;
+      // 00364 supersedes 00291 + 00293). The RPC updates one slot AND
+      // recomputes booking-level mirrors atomically.
+      // Mock applies the FIRST slot_patch from the assembled plan to
       // slotRow + bookingRow so post-RPC reads reflect the new state.
-      rpc: jest.fn((fn: string, args: { p_patch?: Record<string, unknown> }) => {
-        if (fn === 'edit_booking_slot') {
-          const patch = args.p_patch ?? {};
-          if (patch.start_at !== undefined) {
-            slotRow = { ...slotRow, start_at: patch.start_at as string };
-            bookingRow = { ...bookingRow, start_at: patch.start_at as string };
+      rpc: jest.fn((fn: string, args: { p_plan?: { slot_patches?: Array<{ space_id?: string; start_at?: string; end_at?: string }> } }) => {
+        if (fn === 'edit_booking') {
+          const slotPatch = args.p_plan?.slot_patches?.[0] ?? {};
+          if (slotPatch.start_at !== undefined) {
+            slotRow = { ...slotRow, start_at: slotPatch.start_at };
+            bookingRow = { ...bookingRow, start_at: slotPatch.start_at };
           }
-          if (patch.end_at !== undefined) {
-            slotRow = { ...slotRow, end_at: patch.end_at as string };
-            bookingRow = { ...bookingRow, end_at: patch.end_at as string };
+          if (slotPatch.end_at !== undefined) {
+            slotRow = { ...slotRow, end_at: slotPatch.end_at };
+            bookingRow = { ...bookingRow, end_at: slotPatch.end_at };
           }
-          if (patch.space_id !== undefined) {
-            slotRow = { ...slotRow, space_id: patch.space_id as string };
+          if (slotPatch.space_id !== undefined) {
+            slotRow = { ...slotRow, space_id: slotPatch.space_id };
             // location_id mirrors only when the edited slot is primary.
             // The single-slot test fixture is always primary.
-            bookingRow = { ...bookingRow, location_id: patch.space_id as string };
+            bookingRow = { ...bookingRow, location_id: slotPatch.space_id };
           }
+          // 00364:1106-1129 result shape — booking jsonb + follow_ups.
           return Promise.resolve({
-            data: { slot: slotRow, booking: bookingRow },
+            data: { booking: { id: bookingRow.id }, follow_ups: [] },
             error: null });
         }
         return Promise.resolve({ data: null, error: null });
@@ -454,6 +456,45 @@ function buildHarness(opts: {
     loadContextByUserId: jest.fn(async () => ({})),
     assertVisible: () => {},
     canEdit: () => true };
+  // B.4 step 2D-D — passthrough plan-builder (allow→allow). The cascade
+  // tests assert on visitor-side adapter side-effects; the plan content
+  // doesn't drive the assertions, only the slot_patches[0] geometry
+  // (which the supabase rpc mock above echoes onto slotRow/bookingRow).
+  const assembleEditPlan = {
+    assembleEditPlan: jest.fn(async (args: {
+      bookingId: string;
+      tenantId: string;
+      slotId: string;
+      patch: { kind: 'slot'; space_id?: string; start_at?: string; end_at?: string };
+    }) => ({
+      booking: {
+        location_id: args.patch.space_id ?? bookingRow.location_id,
+        start_at: args.patch.start_at ?? bookingRow.start_at,
+        end_at: args.patch.end_at ?? bookingRow.end_at,
+        cost_amount_snapshot: null,
+        policy_snapshot: { matched_rule_ids: [], effects_seen: [] },
+        applied_rule_ids: [],
+      },
+      slot_patches: [
+        {
+          slot_id: args.slotId,
+          space_id: args.patch.space_id ?? slotRow.space_id,
+          start_at: args.patch.start_at ?? slotRow.start_at,
+          end_at: args.patch.end_at ?? slotRow.end_at,
+        },
+      ],
+      asset_reservation_patches: [],
+      order_patches: [],
+      work_order_sla_patches: [],
+      _resolution_at: '2026-04-30T09:00:00Z',
+      approval: {
+        old_outcome: 'allow' as const,
+        new_outcome: 'allow' as const,
+        chain_config_changed: false,
+        new_chain_config: null,
+      },
+    })),
+  };
   const reservationService = new ReservationService(
     supabase as never,
     { isExclusionViolation: () => false } as never,
@@ -462,6 +503,7 @@ function buildHarness(opts: {
     undefined,
     undefined,
     bus,
+    assembleEditPlan as never,
   );
 
   return {
@@ -480,7 +522,11 @@ const ACTOR = {
   user_id: USER,
   person_id: PERSON,
   is_service_desk: false,
-  has_override_rules: false };
+  has_override_rules: false,
+  // B.4 step 2D-D — editOne forwards client_request_id into the editSlot
+  // delegation; without this, editOne raises command_operations.unexpected_state
+  // and the editSlot RPC never fires.
+  client_request_id: 'cccccccc-1111-4111-8111-cccccccccccc' };
 
 // Allow the bus subscription's microtask + the adapter's async handler chain
 // to drain before assertions.

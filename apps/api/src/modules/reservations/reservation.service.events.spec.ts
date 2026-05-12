@@ -34,6 +34,10 @@ import { BundleEventBus, type BundleEvent } from '../booking-bundles/bundle-even
 import { TenantContext } from '../../common/tenant-context';
 
 const TENANT = '11111111-1111-4111-8111-111111111111';
+// B.4 step 2D-D — editSlot is now a producer route + editOne forwards
+// `actor.client_request_id` into its delegation. A stable test value
+// satisfies both call paths.
+const CLIENT_REQUEST_ID = 'cccccccc-9999-4999-8999-cccccccccccc';
 // Under canonicalisation BOOKING_ID is the id editOne receives; the
 // returned Reservation projection has booking_bundle_id === booking.id
 // (reservation-projection.ts:121), so emitted events carry this same id
@@ -135,19 +139,19 @@ function makeService(opts: {
 
   const supabase = {
     admin: {
-      // C2 closure: editOne now delegates geometry to editSlot, which
-      // calls the edit_booking_slot RPC instead of writing the slot row
-      // directly. The RPC is the atomicity primitive (00291 + 00293
-      // lock); on success we mark postUpdate=true so the post-RPC
-      // findByIdOrThrowAtSlot read returns the new geometry.
+      // B.4 step 2D-D — editOne delegates geometry to editSlot, which
+      // now calls the `edit_booking` RPC (was `edit_booking_slot` pre-
+      // cutover). Same swap-on-success semantics: on success we mark
+      // postUpdate=true so the post-RPC findByIdOrThrowAtSlot read
+      // returns the new geometry.
       rpc: jest.fn((fn: string, _args: unknown) => {
-        if (fn === 'edit_booking_slot') {
+        if (fn === 'edit_booking') {
           if (opts.updateError) {
             return Promise.resolve({ data: null, error: opts.updateError });
           }
           postUpdate = true;
           return Promise.resolve({
-            data: { slot: buildSlotEmbed(), booking: null },
+            data: { booking: { id: BOOKING_ID }, follow_ups: [] },
             error: null,
           });
         }
@@ -335,6 +339,49 @@ function makeService(opts: {
   const captured: BundleEvent[] = [];
   const sub = eventBus.events$.subscribe((e) => captured.push(e));
 
+  // B.4 step 2D-D — assembleEditPlan mock returns a passthrough
+  // allow→allow plan so the B.4.A.5 gate doesn't fire and the rest of
+  // the editSlot path runs as before. The slot/booking patch values
+  // mirror the test's intended target; the visitor cascade reads from
+  // the post-RPC findByIdOrThrowAtSlot projection (driven by `updatedSlot`
+  // / `updatedBooking` in the supabase mock above), so the plan's own
+  // values don't drive the assertions in this spec.
+  const assembleEditPlan = {
+    assembleEditPlan: jest.fn(async (args: {
+      bookingId: string;
+      tenantId: string;
+      slotId: string;
+      patch: { kind: 'slot'; space_id?: string; start_at?: string; end_at?: string };
+    }) => ({
+      booking: {
+        location_id: args.patch.space_id ?? SPACE_OLD,
+        start_at: args.patch.start_at ?? baseSlot.start_at,
+        end_at: args.patch.end_at ?? baseSlot.end_at,
+        cost_amount_snapshot: null,
+        policy_snapshot: { matched_rule_ids: [], effects_seen: [] },
+        applied_rule_ids: [],
+      },
+      slot_patches: [
+        {
+          slot_id: args.slotId,
+          space_id: args.patch.space_id ?? SPACE_OLD,
+          start_at: args.patch.start_at ?? baseSlot.start_at,
+          end_at: args.patch.end_at ?? baseSlot.end_at,
+        },
+      ],
+      asset_reservation_patches: [],
+      order_patches: [],
+      work_order_sla_patches: [],
+      _resolution_at: '2026-05-01T08:00:00Z',
+      approval: {
+        old_outcome: 'allow' as const,
+        new_outcome: 'allow' as const,
+        chain_config_changed: false,
+        new_chain_config: null,
+      },
+    })),
+  };
+
   const svc = new ReservationService(
     supabase as never,
     conflict as never,
@@ -343,6 +390,7 @@ function makeService(opts: {
     undefined,
     undefined,
     eventBus,
+    assembleEditPlan as never,
   );
 
   return { svc, captured, unsubscribe: () => sub.unsubscribe() };
@@ -353,6 +401,9 @@ const ACTOR = {
   person_id: PERSON_ID,
   is_service_desk: false,
   has_override_rules: false,
+  // B.4 step 2D-D — editOne forwards client_request_id into the editSlot
+  // delegation; without this, editOne raises command_operations.unexpected_state.
+  client_request_id: CLIENT_REQUEST_ID,
 };
 
 describe('ReservationService.editOne — slice 4 visitor cascade emission', () => {
@@ -511,7 +562,7 @@ describe('ReservationService.editSlot — visitor cascade emission (I3)', () => 
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editSlot(BOOKING_ID, PRIMARY_SLOT_ID, ACTOR, { start_at: newStart }),
+        () => svc.editSlot(BOOKING_ID, PRIMARY_SLOT_ID, ACTOR, CLIENT_REQUEST_ID, { start_at: newStart }),
       );
       const moved = captured.filter((e) => e.kind === 'bundle.line.moved');
       // Exactly one per visitor — guards against the double-fire that
@@ -542,7 +593,7 @@ describe('ReservationService.editSlot — visitor cascade emission (I3)', () => 
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editSlot(BOOKING_ID, PRIMARY_SLOT_ID, ACTOR, { space_id: SPACE_NEW }),
+        () => svc.editSlot(BOOKING_ID, PRIMARY_SLOT_ID, ACTOR, CLIENT_REQUEST_ID, { space_id: SPACE_NEW }),
       );
       const roomChanges = captured.filter((e) => e.kind === 'bundle.line.room_changed');
       expect(roomChanges).toHaveLength(2);
@@ -660,12 +711,14 @@ describe('ReservationService.editSlot — I1 target-slot cascade', () => {
     const supabase = {
       admin: {
         rpc: jest.fn((fn: string) => {
-          if (fn === 'edit_booking_slot') {
+          if (fn === 'edit_booking') {
+            // B.4 step 2D-D — RPC name swap. The new RPC's success
+            // payload shape is { booking: {...}, follow_ups: [], ... }
+            // (00364:1106-1129); the post-RPC slot projection is read
+            // back via findByIdOrThrowAtSlot, so the data here is
+            // unused by the cascade assertions.
             return Promise.resolve({
-              data: {
-                slot: buildSlotEmbed(slotBPre, opts.targetPatch),
-                booking: null,
-              },
+              data: { booking: { id: BOOKING_ID }, follow_ups: [] },
               error: null,
             });
           }
@@ -841,6 +894,44 @@ describe('ReservationService.editSlot — I1 target-slot cascade', () => {
     const captured: BundleEvent[] = [];
     const sub = eventBus.events$.subscribe((e) => captured.push(e));
 
+    // B.4 step 2D-D — passthrough plan (allow→allow) so the gate
+    // doesn't fire and the editSlot path runs end-to-end.
+    const assembleEditPlan = {
+      assembleEditPlan: jest.fn(async (args: {
+        bookingId: string;
+        tenantId: string;
+        slotId: string;
+        patch: { kind: 'slot'; space_id?: string; start_at?: string; end_at?: string };
+      }) => ({
+        booking: {
+          location_id: args.patch.space_id ?? slotBPre.space_id,
+          start_at: args.patch.start_at ?? slotBPre.start_at,
+          end_at: args.patch.end_at ?? slotBPre.end_at,
+          cost_amount_snapshot: null,
+          policy_snapshot: { matched_rule_ids: [], effects_seen: [] },
+          applied_rule_ids: [],
+        },
+        slot_patches: [
+          {
+            slot_id: args.slotId,
+            space_id: args.patch.space_id ?? slotBPre.space_id,
+            start_at: args.patch.start_at ?? slotBPre.start_at,
+            end_at: args.patch.end_at ?? slotBPre.end_at,
+          },
+        ],
+        asset_reservation_patches: [],
+        order_patches: [],
+        work_order_sla_patches: [],
+        _resolution_at: '2026-05-01T08:00:00Z',
+        approval: {
+          old_outcome: 'allow' as const,
+          new_outcome: 'allow' as const,
+          chain_config_changed: false,
+          new_chain_config: null,
+        },
+      })),
+    };
+
     const svc = new ReservationService(
       supabase as never,
       conflict as never,
@@ -849,6 +940,7 @@ describe('ReservationService.editSlot — I1 target-slot cascade', () => {
       undefined,
       undefined,
       eventBus,
+      assembleEditPlan as never,
     );
 
     return { svc, captured, unsubscribe: () => sub.unsubscribe() };
@@ -862,7 +954,7 @@ describe('ReservationService.editSlot — I1 target-slot cascade', () => {
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editSlot(BOOKING_ID, SLOT_B, ACTOR, { start_at: newStart }),
+        () => svc.editSlot(BOOKING_ID, SLOT_B, ACTOR, CLIENT_REQUEST_ID, { start_at: newStart }),
       );
 
       const moved = captured.filter((e) => e.kind === 'bundle.line.moved');
@@ -890,7 +982,7 @@ describe('ReservationService.editSlot — I1 target-slot cascade', () => {
     try {
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
-        () => svc.editSlot(BOOKING_ID, SLOT_B, ACTOR, { space_id: ROOM_NEW }),
+        () => svc.editSlot(BOOKING_ID, SLOT_B, ACTOR, CLIENT_REQUEST_ID, { space_id: ROOM_NEW }),
       );
       const roomChanges = captured.filter((e) => e.kind === 'bundle.line.room_changed');
       expect(roomChanges.length).toBeGreaterThan(0);
