@@ -4,6 +4,7 @@ import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { SettingsRow, SettingsRowValue } from '@/components/ui/settings-row';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { polygonArea } from '@/components/floor-plan/lib/polygon-geometry';
@@ -12,6 +13,18 @@ import { withErrorHandling } from '@/lib/errors';
 import type { DesignerState } from './types';
 import type { RenderHint } from '@/api/floor-plans/types';
 import type { Space } from '@/api/spaces';
+
+type SpaceType = 'room' | 'meeting_room' | 'desk' | 'parking_space' | 'common_area' | 'storage_room' | 'technical_room';
+
+const SPACE_TYPE_LABELS: Record<SpaceType, string> = {
+  room: 'Room',
+  meeting_room: 'Meeting room',
+  desk: 'Desk',
+  parking_space: 'Parking space',
+  common_area: 'Common area',
+  storage_room: 'Storage',
+  technical_room: 'Technical room',
+};
 
 type Props = { floorSpaceId: string; state: DesignerState; dispatch: React.Dispatch<any> };
 
@@ -28,6 +41,11 @@ export function PolygonInspector({ floorSpaceId, state, dispatch }: Props) {
   const idx = state.selectedPolygonIndex;
   const polygon = idx === null ? null : (state.polygons[idx] ?? null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createName, setCreateName] = useState('');
+  // Default the create-type by polygon size: small polygon (probably a stamped seat) → desk,
+  // medium-to-large → meeting_room. The user can change it.
+  const [createType, setCreateType] = useState<SpaceType>('meeting_room');
   const qc = useQueryClient();
 
   const { data: floorChildren = [] } = useFloorChildren(floorSpaceId);
@@ -43,24 +61,24 @@ export function PolygonInspector({ floorSpaceId, state, dispatch }: Props) {
   // Unlinked children available for selection
   const availableSpaces = floorChildren.filter((s) => !linkedSpaceIds.has(s.id));
 
-  const createDeskMutation = useMutation<Space, Error, void>({
-    mutationFn: async () => {
-      // Determine next desk sequence number based on existing desks on this floor
-      const deskCount = floorChildren.filter((s) => s.type === 'desk').length;
+  const createSpaceMutation = useMutation<Space, Error, { name: string; type: SpaceType }>({
+    mutationFn: async (input) => {
       return apiFetch<Space>('/spaces', {
         method: 'POST',
         body: JSON.stringify({
-          type: 'desk',
+          type: input.type,
           parent_id: floorSpaceId,
-          name: `Desk ${deskCount + 1}`,
+          name: input.name.trim(),
         }),
       });
     },
     onSuccess: (newSpace) => {
       qc.invalidateQueries({ queryKey: ['spaces', floorSpaceId, 'children'] });
       dispatch({ type: 'update-polygon', index: idx!, patch: { space_id: newSpace.id } });
+      setCreateOpen(false);
+      setCreateName('');
     },
-    ...withErrorHandling({ actionTitle: "Couldn't create desk" }),
+    ...withErrorHandling({ actionTitle: "Couldn't create space" }),
   });
 
   if (polygon === null) {
@@ -73,10 +91,6 @@ export function PolygonInspector({ floorSpaceId, state, dispatch }: Props) {
   }
 
   const hint: RenderHint = polygon.render_hint ?? 'default';
-  const isUnlinked = !polygon.space_id;
-  // Show create-desk button if unlinked and no unlinked desk exists on this floor
-  const unlinkedDesks = availableSpaces.filter((s) => s.type === 'desk');
-  const showCreateDesk = isUnlinked && unlinkedDesks.length === 0;
 
   return (
     <div className="border-l border-border bg-background overflow-y-auto">
@@ -120,17 +134,75 @@ export function PolygonInspector({ floorSpaceId, state, dispatch }: Props) {
             </SelectContent>
           </Select>
 
-          {/* B.9.b: Inline create-desk affordance */}
-          {showCreateDesk && (
+          {/* Inline create-space affordance — always available so the admin can
+              author a floor end-to-end without bouncing to /admin/locations.
+              Persona: Facilities Admin's "clone, don't bounce" JTBD. */}
+          {!createOpen ? (
             <Button
               variant="outline"
               size="sm"
               className="mt-1.5 w-full text-xs"
-              disabled={createDeskMutation.isPending}
-              onClick={() => createDeskMutation.mutate()}
+              onClick={() => {
+                setCreateOpen(true);
+                // Suggest the polygon's likely type from its render hint
+                if (polygon.render_hint === 'seat') setCreateType('desk');
+                else if (polygon.render_hint === 'parking') setCreateType('parking_space');
+                else setCreateType('meeting_room');
+              }}
             >
-              {createDeskMutation.isPending ? 'Creating…' : 'Create new desk and link'}
+              + Create new space here
             </Button>
+          ) : (
+            <div className="mt-2 space-y-2 rounded-md border border-border bg-muted/30 p-2">
+              <Field>
+                <FieldLabel htmlFor="new-space-name">Name</FieldLabel>
+                <Input
+                  id="new-space-name"
+                  value={createName}
+                  onChange={(e) => setCreateName(e.target.value)}
+                  placeholder="e.g. Aurora"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && createName.trim()) {
+                      createSpaceMutation.mutate({ name: createName, type: createType });
+                    } else if (e.key === 'Escape') {
+                      setCreateOpen(false);
+                      setCreateName('');
+                    }
+                  }}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="new-space-type">Type</FieldLabel>
+                <Select value={createType} onValueChange={(v) => setCreateType(v as SpaceType)}>
+                  <SelectTrigger id="new-space-type">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(SPACE_TYPE_LABELS).map(([v, label]) => (
+                      <SelectItem key={v} value={v}>{label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  className="flex-1"
+                  disabled={!createName.trim() || createSpaceMutation.isPending}
+                  onClick={() => createSpaceMutation.mutate({ name: createName, type: createType })}
+                >
+                  {createSpaceMutation.isPending ? 'Creating…' : 'Create + link'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => { setCreateOpen(false); setCreateName(''); }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
           )}
         </Field>
 

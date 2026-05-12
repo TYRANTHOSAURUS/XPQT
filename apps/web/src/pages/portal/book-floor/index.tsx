@@ -24,9 +24,10 @@
  *
  * If any step breaks at /portal/book/floor manual test, file a bug.
  */
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Maximize2, Map } from 'lucide-react';
+import { ArrowLeft, Maximize2, Map, Search, X } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import { PortalPage } from '@/components/portal/portal-page';
 import { usePortal } from '@/providers/portal-provider';
 import { useAuth } from '@/providers/auth-provider';
@@ -230,6 +231,46 @@ export function PortalBookFloor() {
     [isMobile],
   );
 
+  // Text search — power-user shortcut so daily bookers who know the room
+  // name don't have to navigate spatially. Persona: Requester #1's
+  // "fewest clicks possible" JTBD.
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q || !publishedPlan) return [];
+    return publishedPlan.spaces
+      .filter((s) => s.name.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [searchQuery, publishedPlan]);
+
+  const pickSearchResult = useCallback(
+    (spaceId: string) => {
+      setSearchQuery('');
+      setSearchOpen(false);
+      handleSpaceClick(spaceId);
+    },
+    [handleSpaceClick],
+  );
+
+  // Cmd/Ctrl-K opens the search input.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setSearchOpen(true);
+        setTimeout(() => searchInputRef.current?.focus(), 0);
+      } else if (e.key === 'Escape' && searchOpen) {
+        setSearchOpen(false);
+        setSearchQuery('');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [searchOpen]);
+
   // Fit-to-screen: reset by re-mounting ZoomPanLayer via key
   const [zoomKey, setZoomKey] = useState(0);
 
@@ -283,6 +324,65 @@ export function PortalBookFloor() {
           Tap a room to book it for the selected time window.
         </p>
       </header>
+
+      {/* Search shortcut — power-user JTBD ("fewest clicks possible"). Cmd-K to open. */}
+      {publishedPlan && (
+        <div className="relative mb-3">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              ref={searchInputRef}
+              value={searchQuery}
+              onChange={(e) => { setSearchQuery(e.target.value); setSearchOpen(true); }}
+              onFocus={() => setSearchOpen(true)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && searchResults.length > 0) {
+                  pickSearchResult(searchResults[0].id);
+                }
+              }}
+              placeholder="Search rooms by name…"
+              className="pl-8 pr-16 h-9"
+              aria-label="Search rooms"
+            />
+            <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center gap-0.5 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+              ⌘K
+            </kbd>
+            {searchQuery && (
+              <button
+                aria-label="Clear search"
+                onClick={() => { setSearchQuery(''); searchInputRef.current?.focus(); }}
+                className="absolute right-10 top-1/2 -translate-y-1/2 rounded hover:bg-muted p-0.5"
+              >
+                <X className="size-3.5 text-muted-foreground" />
+              </button>
+            )}
+          </div>
+          {searchOpen && searchResults.length > 0 && (
+            <ul
+              role="listbox"
+              className="absolute z-10 mt-1 w-full max-h-64 overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            >
+              {searchResults.map((s) => (
+                <li key={s.id}>
+                  <button
+                    type="button"
+                    onClick={() => pickSearchResult(s.id)}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-muted"
+                  >
+                    <span>{s.name}</span>
+                    <span className="text-xs text-muted-foreground capitalize">{s.type.replace('_', ' ')}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {searchOpen && searchQuery && searchResults.length === 0 && (
+            <div className="absolute z-10 mt-1 w-full rounded-md border border-border bg-popover shadow-md px-3 py-2 text-sm text-muted-foreground">
+              No rooms match "{searchQuery}"
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Floor switcher + building picker */}
       {buildingId && (
