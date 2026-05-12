@@ -9,6 +9,7 @@ import { ToolDock } from './tool-dock';
 import { PolygonInspector } from './polygon-inspector';
 import { DesignerCanvas } from './designer-canvas';
 import { PublishDialog } from './publish-dialog';
+import { HistoryDialog } from './history-dialog';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/lib/toast';
 import type { ToolKind } from './types';
@@ -19,6 +20,7 @@ export function FloorPlanDesigner({ floorSpaceId, floorName, backTo }: Props) {
   const draft = useFloorPlanDraft(floorSpaceId);
   const { state, dispatch, isSaving } = useDesignerState(floorSpaceId, draft.data);
   const [publishOpen, setPublishOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Tenant ID comes from the loaded draft (already tenant-scoped)
@@ -143,6 +145,9 @@ export function FloorPlanDesigner({ floorSpaceId, floorName, backTo }: Props) {
           </span>
         </div>
         <div className="flex gap-2">
+          <Button onClick={() => setHistoryOpen(true)} size="sm" variant="outline">
+            History
+          </Button>
           <Button onClick={() => setPublishOpen(true)} size="sm">
             Publish
           </Button>
@@ -163,6 +168,11 @@ export function FloorPlanDesigner({ floorSpaceId, floorName, backTo }: Props) {
         onOpenChange={setPublishOpen}
         floorSpaceId={floorSpaceId}
         draft={draft.data}
+      />
+      <HistoryDialog
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        floorSpaceId={floorSpaceId}
       />
     </div>
   );

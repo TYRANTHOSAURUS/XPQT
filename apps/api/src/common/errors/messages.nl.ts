@@ -1812,6 +1812,18 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Plattegronden laden mislukt',
     detail: 'De lijst met plattegronden kon niet worden geladen. Probeer het opnieuw.',
   },
+  'floor_plan.history.not_found': {
+    title: 'Publicatiegeschiedenisinvoer niet gevonden',
+    detail: 'De geselecteerde publicatieopname bestaat niet meer.',
+  },
+  'floor_plan.history.cross_tenant': {
+    title: 'Plattegrond herstellen mislukt',
+    detail: 'U heeft geen toestemming om deze opname te herstellen.',
+  },
+  'floor_plan.restore_failed': {
+    title: 'Plattegrond herstellen mislukt',
+    detail: 'De plattegrond kon niet worden hersteld. Probeer het opnieuw.',
+  },
 };
 
 /**

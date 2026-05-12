@@ -87,4 +87,12 @@ export class FloorPlanController {
     const tenantId = TenantContext.current().id;
     return this.plan.listPublishHistory(id, tenantId);
   }
+
+  /** POST /floors/:floorSpaceId/plan/history/:historyId/restore — atomically restore a snapshot. */
+  @Post('history/:historyId/restore')
+  async restore(@Param('historyId') historyId: string, @Req() req: Request) {
+    await this.permissions.requirePermission(req, 'floor_plans.admin');
+    const tenantId = TenantContext.current().id;
+    return this.plan.restorePublish(historyId, tenantId);
+  }
 }

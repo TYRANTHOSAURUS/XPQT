@@ -109,6 +109,18 @@ export class FloorPlanService {
     });
   }
 
+  async restorePublish(historyId: string, _tenantId: string) {
+    const client = this.supabase.admin;
+    const { error } = await client.rpc('restore_floor_plan_publish', { p_history_id: historyId });
+    if (error) {
+      const code = (error as { code?: string }).code ?? '';
+      if (code === 'P0002') throw AppErrors.notFoundWithCode('floor_plan.history.not_found');
+      if (code === '42501') throw AppErrors.forbidden('floor_plan.history.cross_tenant');
+      throw AppErrors.server('floor_plan.restore_failed');
+    }
+    return { ok: true };
+  }
+
   async listPublishHistory(floorSpaceId: string, tenantId: string) {
     const client = this.supabase.admin;
     const { data } = await client

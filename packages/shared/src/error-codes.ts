@@ -805,7 +805,10 @@ export type KnownErrorCode =
   | 'floor_plan.publish.invalid_polygons'
   | 'floor_plan.publish.cross_tenant'
   | 'floor_plan.publish_failed'
-  | 'floor_plan.list_failed';
+  | 'floor_plan.list_failed'
+  | 'floor_plan.history.not_found'
+  | 'floor_plan.history.cross_tenant'
+  | 'floor_plan.restore_failed';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1404,6 +1407,9 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'floor_plan.publish.cross_tenant',
   'floor_plan.publish_failed',
   'floor_plan.list_failed',
+  'floor_plan.history.not_found',
+  'floor_plan.history.cross_tenant',
+  'floor_plan.restore_failed',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

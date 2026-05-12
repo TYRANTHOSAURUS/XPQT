@@ -1852,6 +1852,18 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't load floor plans",
     detail: "We couldn't load the floor plans list. Try again in a moment.",
   },
+  'floor_plan.history.not_found': {
+    title: 'Publish history entry not found',
+    detail: 'The selected publish snapshot no longer exists.',
+  },
+  'floor_plan.history.cross_tenant': {
+    title: "Couldn't restore floor plan",
+    detail: "You don't have permission to restore this snapshot.",
+  },
+  'floor_plan.restore_failed': {
+    title: "Couldn't restore floor plan",
+    detail: "The floor plan couldn't be restored. Try again in a moment.",
+  },
 };
 
 /**
