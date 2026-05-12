@@ -10,6 +10,7 @@ import {
   Req,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { Public } from '../auth/public.decorator';
 import { PermissionGuard } from '../../common/permission-guard';
 import { TenantContext } from '../../common/tenant-context';
 import { FloorPlanService } from './floor-plan.service';
@@ -31,6 +32,7 @@ export class FloorPlanController {
   ) {}
 
   /** GET /floors/:floorSpaceId/plan — public read, no admin permission required. */
+  @Public()
   @Get()
   async getPublished(@Param('floorSpaceId') id: string) {
     const tenantId = TenantContext.current().id;
