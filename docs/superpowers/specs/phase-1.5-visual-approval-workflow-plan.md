@@ -2,7 +2,12 @@
 
 **Status:** v4 LOCKED — Checkpoint-1 plan-review complete after 4 rounds (3 codex + 1 self). Implementation in flight.
 
-**v4 → impl-time slot bump (2026-05-13):** v4 originally allocated migrations 00382 + 00383. Between plan-lock (2026-05-12) and implementation start (2026-05-13), the planning-board cleanup workstream consumed 00382 (`work_orders_plan_version.sql`) and 00383 (`update_entity_combined_v6.sql`). Per latest-prefix discipline, **Phase 1.5 now owns 00399 + 00400** in the actual on-disk migration sequence. **All slot references throughout this document — including the BLOCKER/CRITICAL discussions in §0 — were rewritten 00382→00399, 00383→00400 in one pass on 2026-05-13.** That global rewrite makes some §0 phrasing read as if v3 specified 00399; that's an artefact of the rewrite, not history. The real v3→v4 slot bump (which originally renumbered v3's 00381 → v4's 00382) is now described in §0's "Migration slots have shifted (again, and again)" bullet, which is the canonical history.
+**v4 → impl-time slot bumps (2026-05-13):** v4 originally allocated migrations 00382 + 00383. The migration sequence has bumped twice during implementation:
+
+1. **First bump (early 2026-05-13):** planning-board cleanup consumed 00382 (`work_orders_plan_version.sql`) and 00383 (`update_entity_combined_v6.sql`). Phase 1.5 reclaimed 00399 + 00400.
+2. **Second bump (mid 2026-05-13):** the parallel B.4.A.5 workstream (b4a5-step-h, "lift edit-booking gate") claimed slot 00399 (`edit_booking_scope_lift_b4a5_gate.sql`, in flight uncommitted in the working tree) before Phase 1.5 6.B finished writing its migration. **Phase 1.5 now owns 00400 + 00401** in the actual on-disk migration sequence.
+
+**All slot references throughout this document — including the BLOCKER/CRITICAL discussions in §0 — were rewritten in two passes on 2026-05-13** (00382→00399→00400 for the schema migration; 00383→00400→00401 for the grant_booking_approval v2 supersession). The global rewrite makes some §0 phrasing read as if v3 specified 00400 or 00401; that's a rewrite artefact, not history. The real v3→v4 slot bump (which originally renumbered v3's 00381 → v4's 00382) is described in §0's "Migration slots have shifted" bullet, which is the canonical history.
 
 **Parent spec:** [`docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md`](2026-05-12-universal-workflow-architecture-design.md) — §6 (Phase 1.5 row), §7 item 6 (B.4.A.5 gate compatibility), §9.A item 9.5 (locked: pull approval migration forward), §9.B item 3 (gate retirement vs coexistence — open), §9.B item 6 (scope-ceiling mandate). **Parent-spec invariant pulled in by v4: lines 60–67 + 801–808 — "Multi-step writes are PL/pgSQL RPCs, not TS pipelines."**
 
@@ -14,15 +19,15 @@
 
 Closure log against the round-3 codex review (2 BLOCKERS + 4 CRITICAL + 1 IMPORTANT). v4 ran **self-full-review BEFORE codex this time** per `feedback_self_review_in_long_spec_loops.md`.
 
-**BLOCKER 1 — `ensureForRule()` TS multi-write violates parent spec invariant.** v3's `ensureForRule()` shape: `SELECT MAX(version) → INSERT new definition → UPDATE prior to status='archived' → UPDATE rule.workflow_definition_id`. Four separate supabase-js calls. Parent spec (2026-05-12-universal-workflow-architecture-design.md:60-67, :801-808) + project CLAUDE.md ("Multi-step writes are PL/pgSQL RPCs, not TS pipelines") forbid this shape — concurrent admin edits race on `MAX(version)`, a TS-side failure between the second INSERT and the third UPDATE leaves half-committed state, and the audit trail spans two write contexts. **Closure:** v4 moves the entire dance into a PL/pgSQL RPC `public.ensure_room_booking_rule_workflow_definition(p_rule_id uuid, p_tenant_id uuid, p_graph_definition jsonb)`. Body: `SELECT … FROM room_booking_rules WHERE id=p_rule_id AND tenant_id=p_tenant_id FOR UPDATE` (acquires row lock), then `SELECT COALESCE(MAX(version),0)+1` (under the lock — race-free), then INSERT new definition row, then UPDATE prior rows for the same `source_rule_id` to `status='archived'` WHERE no in-flight instance references them, then UPDATE the rule's FK, then RETURN the new id. All five steps in one transaction. TS-side `ApprovalConfigCompilerService` becomes **pure compile-only** (ApprovalConfig → graph_definition jsonb); persistence atomicity lives in Postgres. Ships in 00399 alongside the schema changes. Updates §2.6.5, §2.6.6, §6.A.X, §6.B, §6.E. Concurrent-update test added to §7.2. **R4 (the risk-register item that previously claimed SERIALIZABLE-isolation handled this) is rewritten — RPC + row-lock is the closure, not a TS-side isolation level.**
+**BLOCKER 1 — `ensureForRule()` TS multi-write violates parent spec invariant.** v3's `ensureForRule()` shape: `SELECT MAX(version) → INSERT new definition → UPDATE prior to status='archived' → UPDATE rule.workflow_definition_id`. Four separate supabase-js calls. Parent spec (2026-05-12-universal-workflow-architecture-design.md:60-67, :801-808) + project CLAUDE.md ("Multi-step writes are PL/pgSQL RPCs, not TS pipelines") forbid this shape — concurrent admin edits race on `MAX(version)`, a TS-side failure between the second INSERT and the third UPDATE leaves half-committed state, and the audit trail spans two write contexts. **Closure:** v4 moves the entire dance into a PL/pgSQL RPC `public.ensure_room_booking_rule_workflow_definition(p_rule_id uuid, p_tenant_id uuid, p_graph_definition jsonb)`. Body: `SELECT … FROM room_booking_rules WHERE id=p_rule_id AND tenant_id=p_tenant_id FOR UPDATE` (acquires row lock), then `SELECT COALESCE(MAX(version),0)+1` (under the lock — race-free), then INSERT new definition row, then UPDATE prior rows for the same `source_rule_id` to `status='archived'` WHERE no in-flight instance references them, then UPDATE the rule's FK, then RETURN the new id. All five steps in one transaction. TS-side `ApprovalConfigCompilerService` becomes **pure compile-only** (ApprovalConfig → graph_definition jsonb); persistence atomicity lives in Postgres. Ships in 00400 alongside the schema changes. Updates §2.6.5, §2.6.6, §6.A.X, §6.B, §6.E. Concurrent-update test added to §7.2. **R4 (the risk-register item that previously claimed SERIALIZABLE-isolation handled this) is rewritten — RPC + row-lock is the closure, not a TS-side isolation level.**
 
-**BLOCKER 2 — `chain_threshold='any'` double-resolve race under concurrent grants.** v3's 00399 supersession honoured `chain_threshold='any'` but inherited 00310's lock pattern: per-approval advisory lock (00310:86-92) + per-booking advisory lock (00310:155-158). The per-booking advisory lock is acquired AFTER the self-CAS at 00310:137-149. Two approvers grant concurrently on a chain_threshold='any' chain: T1 takes per-approval lock for A, validates state (sibling B is pending), commits CAS on A → 'approved'; meanwhile T2 takes per-approval lock for B (different key — no conflict), validates state (sibling A is pending — T1's UPDATE hasn't released yet OR T2 read snapshot pre-commit), commits CAS on B → 'approved'. Both T1 and T2 then race to take the per-booking lock; the second one through sees BOTH siblings already 'approved' but the v3 'any' branch logic was "skip the count, mark resolve directly" — it didn't re-check whether a sibling already resolved the chain. Result: both T1 and T2 emit `kind='resolved'`, both UPDATE the booking to 'confirmed', both emit `approval.granted`. Double-emit. **Closure:** v4 acquires a **per-booking row lock** (`SELECT id FROM public.bookings WHERE id=v_target_id AND tenant_id=p_tenant_id FOR UPDATE`) at the **top** of the RPC body, BEFORE the self-CAS. Under that lock, re-read sibling state (`select count(*) filter (where status='approved') AS approved_siblings, count(*) filter (where status='pending') AS pending_siblings from public.approvals where tenant_id=p_tenant_id and approval_chain_id=v_approval.approval_chain_id and id != p_approval_id`). For `chain_threshold='any'`: if `approved_siblings > 0` BEFORE this CAS, this row's grant is the loser — perform the CAS on self (to `'approved'`, for correctness of audit) but RETURN `kind='already_resolved'` without re-emitting `approval.granted` and without expiring siblings; the original winner already did. If `approved_siblings = 0`, proceed to resolve: CAS self → 'approved', expire siblings, emit `approval.granted`. The booking-level row lock serialises ALL contenders through one observation point. Updates §2.6, §6.C with explicit RPC body shape. Concurrent-grant probe added to §7.4 smoke + §7.5 concurrency. **R8 rewritten** — the closure is the booking-level row lock + re-observation under it, not advisory locks.
+**BLOCKER 2 — `chain_threshold='any'` double-resolve race under concurrent grants.** v3's 00400 supersession honoured `chain_threshold='any'` but inherited 00310's lock pattern: per-approval advisory lock (00310:86-92) + per-booking advisory lock (00310:155-158). The per-booking advisory lock is acquired AFTER the self-CAS at 00310:137-149. Two approvers grant concurrently on a chain_threshold='any' chain: T1 takes per-approval lock for A, validates state (sibling B is pending), commits CAS on A → 'approved'; meanwhile T2 takes per-approval lock for B (different key — no conflict), validates state (sibling A is pending — T1's UPDATE hasn't released yet OR T2 read snapshot pre-commit), commits CAS on B → 'approved'. Both T1 and T2 then race to take the per-booking lock; the second one through sees BOTH siblings already 'approved' but the v3 'any' branch logic was "skip the count, mark resolve directly" — it didn't re-check whether a sibling already resolved the chain. Result: both T1 and T2 emit `kind='resolved'`, both UPDATE the booking to 'confirmed', both emit `approval.granted`. Double-emit. **Closure:** v4 acquires a **per-booking row lock** (`SELECT id FROM public.bookings WHERE id=v_target_id AND tenant_id=p_tenant_id FOR UPDATE`) at the **top** of the RPC body, BEFORE the self-CAS. Under that lock, re-read sibling state (`select count(*) filter (where status='approved') AS approved_siblings, count(*) filter (where status='pending') AS pending_siblings from public.approvals where tenant_id=p_tenant_id and approval_chain_id=v_approval.approval_chain_id and id != p_approval_id`). For `chain_threshold='any'`: if `approved_siblings > 0` BEFORE this CAS, this row's grant is the loser — perform the CAS on self (to `'approved'`, for correctness of audit) but RETURN `kind='already_resolved'` without re-emitting `approval.granted` and without expiring siblings; the original winner already did. If `approved_siblings = 0`, proceed to resolve: CAS self → 'approved', expire siblings, emit `approval.granted`. The booking-level row lock serialises ALL contenders through one observation point. Updates §2.6, §6.C with explicit RPC body shape. Concurrent-grant probe added to §7.4 smoke + §7.5 concurrency. **R8 rewritten** — the closure is the booking-level row lock + re-observation under it, not advisory locks.
 
-**CRITICAL 3 — `workflow_definitions.source_rule_id` is a tenant-smuggling FK with no trigger.** v3 added tenant triggers on `approvals.workflow_instance_id` and `room_booking_rules.workflow_definition_id` (§3.2 block B) but missed the third FK: `workflow_definitions.source_rule_id`. A service-role write can insert a `workflow_definitions` row in tenant A whose `source_rule_id` points at a `room_booking_rules` row in tenant B, smuggling tenant B's rule id into tenant A's lineage chain. **Closure:** v4 adds a third trigger `assert_workflow_definitions_source_rule_tenant` following the same 00370:205-228 pattern (SECURITY DEFINER + explicit search_path + P0001 errcode). Installed in 00399 alongside the other two. §3.2 block B updated to list all three triggers. §3.4 enumerates all three tenant assertions. §7.1 adds the third-trigger refusal probe.
+**CRITICAL 3 — `workflow_definitions.source_rule_id` is a tenant-smuggling FK with no trigger.** v3 added tenant triggers on `approvals.workflow_instance_id` and `room_booking_rules.workflow_definition_id` (§3.2 block B) but missed the third FK: `workflow_definitions.source_rule_id`. A service-role write can insert a `workflow_definitions` row in tenant A whose `source_rule_id` points at a `room_booking_rules` row in tenant B, smuggling tenant B's rule id into tenant A's lineage chain. **Closure:** v4 adds a third trigger `assert_workflow_definitions_source_rule_tenant` following the same 00370:205-228 pattern (SECURITY DEFINER + explicit search_path + P0001 errcode). Installed in 00400 alongside the other two. §3.2 block B updated to list all three triggers. §3.4 enumerates all three tenant assertions. §7.1 adds the third-trigger refusal probe.
 
-**CRITICAL 4 — Cancel approval expiry is best-effort post-cancel.** v3 §5.1 + §6.A specified: after the atomic claim in `cancelInstanceById` succeeds, run a TS-side UPDATE on `approvals` to expire linked pending rows. If that second UPDATE fails (network blip, lock conflict, anything), the workflow_instance is `cancelled` but the approvals stay `pending` forever — half-state with no retry. v3 framed this as "non-fatal — log + continue." That's a hand-wave. **Closure:** v4 promotes the cancel+expire pair into one PL/pgSQL RPC `public.cancel_workflow_instance_with_approvals(p_instance_id uuid, p_tenant_id uuid, p_reason text)`. Body wraps: (a) the atomic claim UPDATE on `workflow_instances` with the same `IN ('active','waiting')` filter; (b) on successful claim, the expiry UPDATE on `approvals WHERE workflow_instance_id = p_instance_id AND status='pending' AND tenant_id = p_tenant_id`; (c) the `instance_cancelled` audit emit (insert into workflow_events). Whole thing in one tx — RPC body failure rolls everything back. TS-side `cancelInstanceById` calls the RPC for these three steps then continues with the link cascade enumeration. RPC ships in 00399. **As a backstop**, v4 ALSO schedules a cron sweeper (existing pattern from Phase 1.C `WorkflowWaitSweeperCron`): every 5min, find `approvals` rows whose `workflow_instance_id` references a `workflow_instances.status='cancelled'` row but whose own status is still 'pending', and expire them. Belt-and-suspenders. Updates §5.1 + §6.A. §7 adds fault-injection test (force the approvals UPDATE to fail mid-RPC; verify the workflow_instance status stays 'waiting' — whole tx aborted).
+**CRITICAL 4 — Cancel approval expiry is best-effort post-cancel.** v3 §5.1 + §6.A specified: after the atomic claim in `cancelInstanceById` succeeds, run a TS-side UPDATE on `approvals` to expire linked pending rows. If that second UPDATE fails (network blip, lock conflict, anything), the workflow_instance is `cancelled` but the approvals stay `pending` forever — half-state with no retry. v3 framed this as "non-fatal — log + continue." That's a hand-wave. **Closure:** v4 promotes the cancel+expire pair into one PL/pgSQL RPC `public.cancel_workflow_instance_with_approvals(p_instance_id uuid, p_tenant_id uuid, p_reason text)`. Body wraps: (a) the atomic claim UPDATE on `workflow_instances` with the same `IN ('active','waiting')` filter; (b) on successful claim, the expiry UPDATE on `approvals WHERE workflow_instance_id = p_instance_id AND status='pending' AND tenant_id = p_tenant_id`; (c) the `instance_cancelled` audit emit (insert into workflow_events). Whole thing in one tx — RPC body failure rolls everything back. TS-side `cancelInstanceById` calls the RPC for these three steps then continues with the link cascade enumeration. RPC ships in 00400. **As a backstop**, v4 ALSO schedules a cron sweeper (existing pattern from Phase 1.C `WorkflowWaitSweeperCron`): every 5min, find `approvals` rows whose `workflow_instance_id` references a `workflow_instances.status='cancelled'` row but whose own status is still 'pending', and expire them. Belt-and-suspenders. Updates §5.1 + §6.A. §7 adds fault-injection test (force the approvals UPDATE to fail mid-RPC; verify the workflow_instance status stays 'waiting' — whole tx aborted).
 
-**CRITICAL 5 — Backfill forces `chain_threshold='all'` for parallel_group=NULL rows that today encode threshold='any'.** v3 §3.2 block G sets `chain_threshold='all'` on every pre-existing pending approval. But `booking-flow.service.ts:1180` today writes `parallel_group: config.threshold === 'all' ? 'parallel-${bookingId}' : null` — so **`parallel_group IS NULL` is the today-encoded marker for threshold='any'**. v3's backfill silently rewrites those live threshold='any' chains to `chain_threshold='all'`, changing 00399's resolve semantics under tenants' feet. **Closure:** v4 backfill DERIVES `chain_threshold` from existing row shape, not a flat default. Algorithm (one SQL pass, single CTE, no per-row PL/pgSQL loop):
+**CRITICAL 5 — Backfill forces `chain_threshold='all'` for parallel_group=NULL rows that today encode threshold='any'.** v3 §3.2 block G sets `chain_threshold='all'` on every pre-existing pending approval. But `booking-flow.service.ts:1180` today writes `parallel_group: config.threshold === 'all' ? 'parallel-${bookingId}' : null` — so **`parallel_group IS NULL` is the today-encoded marker for threshold='any'**. v3's backfill silently rewrites those live threshold='any' chains to `chain_threshold='all'`, changing 00400's resolve semantics under tenants' feet. **Closure:** v4 backfill DERIVES `chain_threshold` from existing row shape, not a flat default. Algorithm (one SQL pass, single CTE, no per-row PL/pgSQL loop):
 
 ```sql
 with chain_groups as (
@@ -52,10 +57,10 @@ update public.approvals a
 
 The mapping:
 - `parallel_group IS NULL` AND >1 approvals in the group → `chain_threshold='any'` (matches today's `createApprovalRows` encoding for threshold='any').
-- `parallel_group IS NULL` AND group_cardinality=1 → `chain_threshold='all'` (any-of-1 ≡ all-of-1; pick the deterministic default that 00399's logic shortcuts identically for either).
+- `parallel_group IS NULL` AND group_cardinality=1 → `chain_threshold='all'` (any-of-1 ≡ all-of-1; pick the deterministic default that 00400's logic shortcuts identically for either).
 - `parallel_group IS NOT NULL` → `chain_threshold='all'` (today's encoding for threshold='all').
 
-Each chain emits a NOTICE during 00399 backfill (`RAISE NOTICE 'phase 1.5 chain %: parallel_group=%, group_cardinality=%, derived chain_threshold=%', cg.chain_id, cg.parallel_group, cg.group_cardinality, derived_threshold;`) so tenants can audit post-backfill. Audit SQL probe shipped in §7.2. §3.2 backfill SQL updated with the mapping algorithm. §10 removes the open question (resolved). §7.2 adds backfill-correctness test for the three mapping cases.
+Each chain emits a NOTICE during 00400 backfill (`RAISE NOTICE 'phase 1.5 chain %: parallel_group=%, group_cardinality=%, derived chain_threshold=%', cg.chain_id, cg.parallel_group, cg.group_cardinality, derived_threshold;`) so tenants can audit post-backfill. Audit SQL probe shipped in §7.2. §3.2 backfill SQL updated with the mapping algorithm. §10 removes the open question (resolved). §7.2 adds backfill-correctness test for the three mapping cases.
 
 **CRITICAL 6 — B.4.A.5's `old_workflow_definition_id` source is wrong for same-rule version bumps.** v3 §5.3 predicate compared `plan.approval.old_workflow_definition_id !== plan.approval.new_workflow_definition_id`, with both ids resolved from the rule resolver at edit time. **The bug:** `assemble-edit-plan.service.ts:730-759` re-runs the rule resolver to derive the OLD chain — but after an admin bumps version on the rule, the rule's `workflow_definition_id` FK now points at the NEW version. The "OLD" lookup reads the NEW version. The predicate sees `new_workflow_definition_id == new_workflow_definition_id` → false-negative on the gate. Bookings (00277:27-) do NOT store `workflow_definition_id`. **Closure:** v4 reads OLD `workflow_definition_id` from the booking's **live `workflow_instance`** — the actual definition the in-flight workflow is running on. Concretely, inside `assemble-edit-plan.service.ts` (and the equivalent surface in `reservation.service.ts:editOne`/`editSlot`):
 
@@ -91,7 +96,7 @@ If `liveInstance` is non-null, that's the SoT for OLD. If it's null (no in-fligh
 - AppError + 5-site registration discipline for ALL new error codes (now 7: the 5 from v3 + `workflow.definition_not_published` + `workflow.cancel_with_approvals_failed`).
 - tenant_id treatment audited on every new column, index, trigger, and RPC parameter.
 - §10 removes the resolved open question 7 (chain_threshold backfill — now closed by CRITICAL 5 algorithm); adds new open questions only where genuinely open.
-- **Migration slots have shifted (again, and again).** Between v3 plan-review and v4 plan-lock, 00381 was taken by `00381_planning_smoke_requester_seed.sql`; v4 originally allocated 00382 + 00383. Between v4 plan-lock (2026-05-12) and implementation kickoff (2026-05-13), the planning-board cleanup workstream consumed 00382 (`work_orders_plan_version.sql`) and 00383 (`update_entity_combined_v6.sql`). **Implementation-time allocation: 00399 = schema + backfill + tenant triggers + ensure-RPC + cancel-with-approvals RPC, 00400 = grant_booking_approval v2 supersession.** All operational references in §3, §6, §10, citation index rewritten 00382→00399, 00383→00400 by the impl-time bump pass; the v3→v4 BLOCKER/CRITICAL discussions above retain their original slot framing for clarity of the round-3-codex review trail. Latest-prefix discipline maintained.
+- **Migration slots have shifted (again, and again).** Between v3 plan-review and v4 plan-lock, 00381 was taken by `00381_planning_smoke_requester_seed.sql`; v4 originally allocated 00382 + 00383. Between v4 plan-lock (2026-05-12) and implementation kickoff (2026-05-13), the planning-board cleanup workstream consumed 00382 (`work_orders_plan_version.sql`) and 00383 (`update_entity_combined_v6.sql`). **Implementation-time allocation: 00400 = schema + backfill + tenant triggers + ensure-RPC + cancel-with-approvals RPC, 00401 = grant_booking_approval v2 supersession.** All operational references in §3, §6, §10, citation index rewritten 00382→00400, 00383→00401 by the impl-time bump pass; the v3→v4 BLOCKER/CRITICAL discussions above retain their original slot framing for clarity of the round-3-codex review trail. Latest-prefix discipline maintained.
 - **Estimate revised UP again.** v3 → 4-5w. **v4 → 5-6w.** Reasons documented at the close of §6: (a) `ensureForRule` promotion from TS to PL/pgSQL RPC; (b) `cancel_workflow_instance_with_approvals` RPC + backstop cron; (c) backfill mapping algorithm with three semantic cases; (d) booking-level row lock + concurrent-grant probes; (e) `old_workflow_definition_id` source change + the two new test cases; (f) `workflow.definition_not_published` 5-site registration + start-path gate. Honest, not gold-plated.
 
 ---
@@ -114,10 +119,10 @@ Phase 1.5 replaces the JSONB carrier with a polymorphic-booking visual workflow 
 
 1. **Single-rule, single-stage approval** semantics — the EXACT current `ApprovalConfig` shape (`{ required_approvers: Array<{ type: 'team' | 'person'; id: string }>; threshold: 'all' | 'any' }` per `apps/api/src/modules/room-booking-rules/dto/index.ts:24-27`).
 2. **Forward link** from `room_booking_rules` to a new `workflow_definition_id uuid` column on the rule row, defaulting to NULL. When NULL, runtime falls back to the legacy `approval_config` reader path. Backfilled rules carry the FK; admin-authored new rules also carry the FK via the new `ensure_room_booking_rule_workflow_definition` RPC (see §2.6.5).
-3. **Per-rule-version definition rows.** `workflow_definitions` gains `source_rule_id uuid NULL REFERENCES room_booking_rules(id) ON DELETE SET NULL` + reuses existing `version integer` + `status` CHECK widened to include `'archived'`. Unique index on `(tenant_id, source_rule_id, version) WHERE source_rule_id IS NOT NULL`. Migration 00399.
-4. **Threshold='any' semantics on the resolve path.** Migration 00399 adds `approvals.chain_threshold text NOT NULL DEFAULT 'all' CHECK (chain_threshold IN ('all','any'))`. Migration 00400 supersedes `grant_booking_approval` to honour the threshold — `'all'` keeps current semantics; `'any'` resolves on first approve + expires siblings; **all done under a per-booking row lock** that serialises double-resolve attempts (BLOCKER 2 closure). Backfill DERIVES `chain_threshold` from existing row shape (CRITICAL 5 closure).
-5. **Backfill migration (00399)** producing one `workflow_definitions` row (`version=1`) per `room_booking_rules` row with a non-null `approval_config`. Definitions are `entity_type='booking'`, `status='published'`, `source_rule_id=rule.id`, owned by the rule's `tenant_id`, immutable-as-Phase-1-engine-requires.
-6. **Atomic auto-recompile via PL/pgSQL RPC** (BLOCKER 1 closure). `ensure_room_booking_rule_workflow_definition(p_rule_id, p_tenant_id, p_graph_definition)` acquires a row lock on the rule, computes the next version under the lock, inserts the new definition, archives prior versions safe to archive, and flips the rule's FK — one transaction. Ships in 00399.
+3. **Per-rule-version definition rows.** `workflow_definitions` gains `source_rule_id uuid NULL REFERENCES room_booking_rules(id) ON DELETE SET NULL` + reuses existing `version integer` + `status` CHECK widened to include `'archived'`. Unique index on `(tenant_id, source_rule_id, version) WHERE source_rule_id IS NOT NULL`. Migration 00400.
+4. **Threshold='any' semantics on the resolve path.** Migration 00400 adds `approvals.chain_threshold text NOT NULL DEFAULT 'all' CHECK (chain_threshold IN ('all','any'))`. Migration 00401 supersedes `grant_booking_approval` to honour the threshold — `'all'` keeps current semantics; `'any'` resolves on first approve + expires siblings; **all done under a per-booking row lock** that serialises double-resolve attempts (BLOCKER 2 closure). Backfill DERIVES `chain_threshold` from existing row shape (CRITICAL 5 closure).
+5. **Backfill migration (00400)** producing one `workflow_definitions` row (`version=1`) per `room_booking_rules` row with a non-null `approval_config`. Definitions are `entity_type='booking'`, `status='published'`, `source_rule_id=rule.id`, owned by the rule's `tenant_id`, immutable-as-Phase-1-engine-requires.
+6. **Atomic auto-recompile via PL/pgSQL RPC** (BLOCKER 1 closure). `ensure_room_booking_rule_workflow_definition(p_rule_id, p_tenant_id, p_graph_definition)` acquires a row lock on the rule, computes the next version under the lock, inserts the new definition, archives prior versions safe to archive, and flips the rule's FK — one transaction. Ships in 00400.
 7. **Atomic cancel-with-approvals via PL/pgSQL RPC** (CRITICAL 4 closure). `cancel_workflow_instance_with_approvals(p_instance_id, p_tenant_id, p_reason)` wraps the workflow_instance claim + approvals expiry + audit emit in one tx. Plus a backstop cron sweeper following the Phase 1.C `WorkflowWaitSweeperCron` pattern.
 8. **Consumer cutover** at `booking-flow.service.ts:359-360`: if the matched rule has a `workflow_definition_id`, start a workflow_instance (entity_kind='booking', booking_id=the new booking) AND skip the legacy `createApprovalRows`. The workflow's `approval` node inserts the approval row(s). If the rule does NOT carry a `workflow_definition_id`, fall through to `createApprovalRows` (legacy path). Both shapes coexist until the legacy column is dropped in a follow-up spec.
 9. **`resume()` polymorphization in place** (Option C extended — workflow-engine.service.ts:1645-1719). Same signature; the claim returns polymorphic ids; `advance()` is called with the right entity id for the instance's `entity_kind`. Existing case-kind path unchanged in behaviour.
@@ -211,7 +216,7 @@ status: 'pending',
 
 Verified in `apps/api/src/modules/approval/approval.service.ts`:
 
-- **`:510-518`** — `if (approval.target_entity_type === 'booking')` → `grantBookingApproval` (RPC 00310 → v4 supersedes via 00400).
+- **`:510-518`** — `if (approval.target_entity_type === 'booking')` → `grantBookingApproval` (RPC 00310 → v4 supersedes via 00401).
 - **`:532-540`** — `if (approval.target_entity_type === 'ticket')` → `grantTicketApproval` (RPC 00356).
 - **`:610-624`** — visitor_invite branch.
 - **`:802-879`** — `grantBookingApproval` method body. **:847-871** — post-RPC `onApprovalDecided` fan-out on `result.kind === 'resolved'`. **This stays Phase 1.5's sole owner of resolve-notifications** (v2 CRITICAL 5 closure carried forward).
@@ -284,7 +289,7 @@ v4's predicate update (§5.3) adds `workflow_definition_id` comparison, with the
 - **:213-216** — `select public.approve_booking_setup_trigger(...)`.
 - **:244-253** — `kind='resolved'` branch.
 
-**Verified:** today the RPC fires `kind='resolved'` ONLY when (a) decision='rejected' OR (b) decision='approved' AND no siblings pending/rejected. **No path fires `kind='resolved'` on the first approve of a threshold='any' chain.** v4's 00400 (a) adds the 'any' branch under (b) a per-booking row lock (NOT advisory) acquired BEFORE the self-CAS. See §6.C.
+**Verified:** today the RPC fires `kind='resolved'` ONLY when (a) decision='rejected' OR (b) decision='approved' AND no siblings pending/rejected. **No path fires `kind='resolved'` on the first approve of a threshold='any' chain.** v4's 00401 (a) adds the 'any' branch under (b) a per-booking row lock (NOT advisory) acquired BEFORE the self-CAS. See §6.C.
 
 ### 1.10 approvals table — existing columns
 
@@ -294,7 +299,7 @@ v4's predicate update (§5.3) adds `workflow_definition_id` comparison, with the
 - :10 — `parallel_group text` — already exists.
 - :28 — `idx_approvals_chain on (approval_chain_id) where approval_chain_id is not null`.
 
-**v4 ADDS to approvals:** `workflow_instance_id uuid`, `workflow_node_id text`, `chain_threshold text NOT NULL DEFAULT 'all' CHECK (chain_threshold IN ('all','any'))`. Migration 00399. Backfill DERIVES `chain_threshold` from existing row shape (CRITICAL 5 closure).
+**v4 ADDS to approvals:** `workflow_instance_id uuid`, `workflow_node_id text`, `chain_threshold text NOT NULL DEFAULT 'all' CHECK (chain_threshold IN ('all','any'))`. Migration 00400. Backfill DERIVES `chain_threshold` from existing row shape (CRITICAL 5 closure).
 
 ### 1.11 cancelInstanceById — leaves approvals dangling (v3 IMPORTANT 7 / v4 CRITICAL 4 surface)
 
@@ -318,7 +323,7 @@ v4's predicate update (§5.3) adds `workflow_definition_id` comparison, with the
 - :10 — `status text not null default 'draft' check (status in ('draft', 'published'))`. **No `'archived'` yet.**
 - :13 — `published_at timestamptz`.
 
-**v4 needs:** widen the `status` CHECK to `('draft','published','archived')`; add `source_rule_id uuid NULL REFERENCES room_booking_rules(id) ON DELETE SET NULL`; add unique index `(tenant_id, source_rule_id, version) WHERE source_rule_id IS NOT NULL`. The pre-existing `version` column carries the lineage counter — no new column needed for `version`. Migration 00399. **Start path must reject `status != 'published'` rows** (IMPORTANT 7 closure).
+**v4 needs:** widen the `status` CHECK to `('draft','published','archived')`; add `source_rule_id uuid NULL REFERENCES room_booking_rules(id) ON DELETE SET NULL`; add unique index `(tenant_id, source_rule_id, version) WHERE source_rule_id IS NOT NULL`. The pre-existing `version` column carries the lineage counter — no new column needed for `version`. Migration 00400. **Start path must reject `status != 'published'` rows** (IMPORTANT 7 closure).
 
 ### 1.13 Tenant trigger pattern (CRITICAL 3 reference)
 
@@ -449,7 +454,7 @@ v_result := jsonb_build_object(
 );
 ```
 
-The RPC returns four kinds today: `non_booking_approved`, `already_responded`, `partial_approved`, `resolved`. **v4 extends the 00310 supersession (00400) to:** (a) honour `chain_threshold` for the `'any'` case, (b) serialise all resolution via a **per-booking ROW lock** acquired BEFORE the self-CAS (BLOCKER 2 closure), (c) re-observe sibling state under that lock to short-circuit the loser when a sibling already resolved the chain, (d) emit `outbox.emit('approval.granted', …)` on the `kind='resolved'` branch — and ONLY on that branch (no emit from the new `'already_resolved'` short-circuit path).
+The RPC returns four kinds today: `non_booking_approved`, `already_responded`, `partial_approved`, `resolved`. **v4 extends the 00310 supersession (00401) to:** (a) honour `chain_threshold` for the `'any'` case, (b) serialise all resolution via a **per-booking ROW lock** acquired BEFORE the self-CAS (BLOCKER 2 closure), (c) re-observe sibling state under that lock to short-circuit the loser when a sibling already resolved the chain, (d) emit `outbox.emit('approval.granted', …)` on the `kind='resolved'` branch — and ONLY on that branch (no emit from the new `'already_resolved'` short-circuit path).
 
 **New resolve semantics for chain_threshold='any':**
 
@@ -592,7 +597,7 @@ grant  execute on function public.ensure_room_booking_rule_workflow_definition(u
 **Called from:**
 - `RoomBookingRulesService.create` (room-booking-rules.service.ts:101-137) — after the insert succeeds, if `approval_config` is non-null: TS compiles the graph via `ApprovalConfigCompilerService.compile(...)`, then calls the RPC `ensure_room_booking_rule_workflow_definition(rule_id, tenant_id, graph_definition, rule_name)`.
 - `RoomBookingRulesService.update` (room-booking-rules.service.ts:139-) — same shape when the patch changes `approval_config`.
-- Migration 00399 backfill — calls the RPC directly inside the migration's backfill block (the same RPC; one tx; no separate PL/pgSQL helper function needed — the RPC IS the helper). One-shot backfill loops over rules and calls the RPC per rule.
+- Migration 00400 backfill — calls the RPC directly inside the migration's backfill block (the same RPC; one tx; no separate PL/pgSQL helper function needed — the RPC IS the helper). One-shot backfill loops over rules and calls the RPC per rule.
 
 **Why an RPC, not TS:** parent-spec invariant + project CLAUDE.md mandate that corruptible multi-step writes live in Postgres. This is corruptible — concurrent admin edits could mint duplicate `version` numbers; a TS-side failure between the INSERT and the FK flip would leave half-state. The row-level lock on the rule + same-tx semantics close both holes.
 
@@ -715,9 +720,9 @@ The workflow's `notification` node is NOT used in Phase 1.5 compiled graphs. The
 - **3 columns on `approvals`:** `workflow_instance_id uuid`, `workflow_node_id text`, `chain_threshold text` (CHECK).
 - **1 column on `workflow_definitions`:** `source_rule_id uuid`. Plus `status` CHECK widened to include `'archived'`. Plus unique index on `(tenant_id, source_rule_id, version)`.
 - **1 new outbox event type:** `approval.granted`, registered in `ApprovalLifecycleEventType` const.
-- **2 new PL/pgSQL RPCs (00399):** `ensure_room_booking_rule_workflow_definition` (atomic auto-recompile — BLOCKER 1) and `cancel_workflow_instance_with_approvals` (atomic cancel+expire — CRITICAL 4).
-- **1 producer migration (00400):** supersede `grant_booking_approval` to honour `chain_threshold` under a per-booking row lock with sibling re-observation (BLOCKER 2) + emit `approval.granted` on `kind='resolved'`.
-- **1 schema + backfill migration (00399):** the new columns + chain_threshold backfill via derive-algorithm + 3 tenant triggers + status CHECK widen + the two new RPCs above + per-rule call to `ensure_room_booking_rule_workflow_definition` for one-shot backfill.
+- **2 new PL/pgSQL RPCs (00400):** `ensure_room_booking_rule_workflow_definition` (atomic auto-recompile — BLOCKER 1) and `cancel_workflow_instance_with_approvals` (atomic cancel+expire — CRITICAL 4).
+- **1 producer migration (00401):** supersede `grant_booking_approval` to honour `chain_threshold` under a per-booking row lock with sibling re-observation (BLOCKER 2) + emit `approval.granted` on `kind='resolved'`.
+- **1 schema + backfill migration (00400):** the new columns + chain_threshold backfill via derive-algorithm + 3 tenant triggers + status CHECK widen + the two new RPCs above + per-rule call to `ensure_room_booking_rule_workflow_definition` for one-shot backfill.
 - **1 new consumer handler:** `WorkflowApprovalGrantedHandler`.
 - **1 new shared service:** `ApprovalConfigCompilerService` — **pure compile only**, no persistence (BLOCKER 1).
 - **1 new cron:** `ApprovalCancelSweeperCron` (CRITICAL 4 backstop).
@@ -745,7 +750,7 @@ The workflow's `notification` node is NOT used in Phase 1.5 compiled graphs. The
 
 ### 3.1 Slots — preflight
 
-**Preflight baseline (run before authoring 00399):**
+**Preflight baseline (run before authoring 00400):**
 
 ```bash
 ls supabase/migrations/ | tail -15
@@ -765,16 +770,16 @@ Verified on 2026-05-12 — output:
 00381_planning_smoke_requester_seed.sql
 ```
 
-00378, 00379, 00380, 00381 are TAKEN. 00375 is the only gap on disk — Phase 1.5 does NOT use 00375 (latest-prefix discipline). **Phase 1.5 owns 00399 + 00400.**
+00378, 00379, 00380, 00381 are TAKEN. 00375 is the only gap on disk — Phase 1.5 does NOT use 00375 (latest-prefix discipline). **Phase 1.5 owns 00400 + 00401.**
 
 | # | File | Purpose |
 |---|---|---|
-| 00399 | `room_booking_rules_workflow_definition_fk.sql` | All schema additions (rule FK, approvals link columns, workflow_definitions lineage, chain_threshold) + status CHECK widen + 3 tenant triggers + unique index + 2 new RPCs (`ensure_room_booking_rule_workflow_definition`, `cancel_workflow_instance_with_approvals`) + chain_threshold backfill via the derive algorithm + per-rule one-shot backfill via `ensure_room_booking_rule_workflow_definition`. |
-| 00400 | `grant_booking_approval_v2.sql` | Supersede 00310 to (a) acquire per-booking row lock before self-CAS, (b) re-observe sibling state under the lock, (c) honour `chain_threshold` for resolve, (d) emit `approval.granted` on `kind='resolved'` (not `'already_resolved'`). |
+| 00400 | `room_booking_rules_workflow_definition_fk.sql` | All schema additions (rule FK, approvals link columns, workflow_definitions lineage, chain_threshold) + status CHECK widen + 3 tenant triggers + unique index + 2 new RPCs (`ensure_room_booking_rule_workflow_definition`, `cancel_workflow_instance_with_approvals`) + chain_threshold backfill via the derive algorithm + per-rule one-shot backfill via `ensure_room_booking_rule_workflow_definition`. |
+| 00401 | `grant_booking_approval_v2.sql` | Supersede 00310 to (a) acquire per-booking row lock before self-CAS, (b) re-observe sibling state under the lock, (c) honour `chain_threshold` for resolve, (d) emit `approval.granted` on `kind='resolved'` (not `'already_resolved'`). |
 
-Split is intentional — 00399 is schema + the two new RPCs + backfill, 00400 is the supersession of the canonical grant RPC. A bug in 00400 doesn't roll back the backfill done in 00399.
+Split is intentional — 00400 is schema + the two new RPCs + backfill, 00401 is the supersession of the canonical grant RPC. A bug in 00401 doesn't roll back the backfill done in 00400.
 
-### 3.2 Backfill SQL shape (00399, pseudocode)
+### 3.2 Backfill SQL shape (00400, pseudocode)
 
 ```sql
 -- ── A. Schema additions ─────────────────────────────────────────────
@@ -1002,7 +1007,7 @@ notify pgrst, 'reload schema';
 
 ### 3.3 `compileApprovalConfigToGraph` — the recipe
 
-**Path (ii) — LOCKED:** **one approval node per rule.** Compile `{required_approvers, threshold}` to ONE `approval` node carrying the same approver list + threshold in node.config. The engine's `approval` executor inserts N approval rows (one per approver) with `parallel_group` populated when threshold='all', `approval_chain_id` set on every row, and `chain_threshold` matching the rule's threshold. 00400 reads `chain_threshold` and handles all-of-N OR any-of-N resolution under a per-booking row lock.
+**Path (ii) — LOCKED:** **one approval node per rule.** Compile `{required_approvers, threshold}` to ONE `approval` node carrying the same approver list + threshold in node.config. The engine's `approval` executor inserts N approval rows (one per approver) with `parallel_group` populated when threshold='all', `approval_chain_id` set on every row, and `chain_threshold` matching the rule's threshold. 00401 reads `chain_threshold` and handles all-of-N OR any-of-N resolution under a per-booking row lock.
 
 **Compiled graph shape:**
 
@@ -1033,7 +1038,7 @@ notify pgrst, 'reload schema';
 - Insert N rows, each tenant-validated (existing :1304-1321 logic, looped).
 - Set `parallel_group = node.config.threshold === 'all' ? 'wf-${node.id}-${instance.id}' : null`.
 - Set `approval_chain_id = ${one-uuid-per-execution}` (generated once per executor invocation; same value for all N rows).
-- Set `chain_threshold = node.config.threshold` (validated against `('all','any')` at compile time + DB CHECK + 00400 defense-in-depth).
+- Set `chain_threshold = node.config.threshold` (validated against `('all','any')` at compile time + DB CHECK + 00401 defense-in-depth).
 - Set `workflow_instance_id = instance.id` + `workflow_node_id = node.id` on each row.
 - Use polymorphic helper for `target_entity_type` / `target_entity_id`.
 
@@ -1041,7 +1046,7 @@ Single-executor change within the `approval` case. No new node primitives.
 
 **Edge cases:**
 - **Empty approver list.** Backfill RAISES at preflight (§3.2 block D). Steady-state `ApprovalConfigCompilerService.compile` throws `workflow_definition.compilation_failed` (422).
-- **Single approver, threshold='all' vs 'any'.** Both compile to identical graph topology; the `chain_threshold` on inserted approval rows differs. 00400 honours the threshold and resolves correctly in both cases (single-approver-any = single-approver-all = resolve immediately on first response).
+- **Single approver, threshold='all' vs 'any'.** Both compile to identical graph topology; the `chain_threshold` on inserted approval rows differs. 00401 honours the threshold and resolves correctly in both cases (single-approver-any = single-approver-all = resolve immediately on first response).
 - **Mixed person + team approvers.** Single approval node with N entries in `required_approvers`; executor loops + tenant-validates each.
 
 ### 3.4 Trigger / RLS implications
@@ -1056,9 +1061,9 @@ Single-executor change within the `approval` case. No new node primitives.
 
 ### 3.5 Re-runnability
 
-- 00399 is idempotent. **Strategy:** unique index `(tenant_id, source_rule_id, version)` + the backfill loop's `WHERE workflow_definition_id IS NULL` guard + the chain_threshold loop's `WHERE chain_threshold IS NULL` guard. Re-running 00399 on a partially-backfilled DB finds rules already linked → skips. Existing chains with chain_threshold populated → skipped.
-- 00400 (RPC supersession) is `CREATE OR REPLACE FUNCTION` — already idempotent.
-- The two new RPCs (`ensure_room_booking_rule_workflow_definition`, `cancel_workflow_instance_with_approvals`) are `CREATE OR REPLACE FUNCTION` in 00399 — also idempotent.
+- 00400 is idempotent. **Strategy:** unique index `(tenant_id, source_rule_id, version)` + the backfill loop's `WHERE workflow_definition_id IS NULL` guard + the chain_threshold loop's `WHERE chain_threshold IS NULL` guard. Re-running 00400 on a partially-backfilled DB finds rules already linked → skips. Existing chains with chain_threshold populated → skipped.
+- 00401 (RPC supersession) is `CREATE OR REPLACE FUNCTION` — already idempotent.
+- The two new RPCs (`ensure_room_booking_rule_workflow_definition`, `cancel_workflow_instance_with_approvals`) are `CREATE OR REPLACE FUNCTION` in 00400 — also idempotent.
 
 ### 3.6 db:push authorization
 
@@ -1127,9 +1132,9 @@ if (!row?.claimed) {
 ### 5.2 What Phase 1.5 surfaces that 1.B didn't catch
 
 - **Resume-on-approval semantics** — `approval.granted` outbox event + `WorkflowApprovalGrantedHandler`. The atomic-claim pattern from parent-spec §3.5 reused via resume()'s internal claim.
-- **Threshold='any' resolve path** — 00400 honours `chain_threshold` UNDER a per-booking row lock. Sibling re-observation under the lock prevents double-resolve.
+- **Threshold='any' resolve path** — 00401 honours `chain_threshold` UNDER a per-booking row lock. Sibling re-observation under the lock prevents double-resolve.
 - **Cross-tenant defense on three FK surfaces** (CRITICAL 3 closure adds the third). Triggers refuse cross-tenant writes at the SQL layer; handler defenses are the second layer.
-- **Cancel-during-grant race.** Booking gets cancelled while an approver is mid-grant. Grant takes per-approval advisory lock at 00310:86-92. Booking row lock at 00400's top. cancel_workflow_instance_with_approvals attempts row-flip on the same workflow_instance. Either order: terminal state is consistent — if cancel wins the workflow_instances UPDATE, the grant's `resume()` claim returns null and no-ops; if grant wins, the approval expires under the cancel RPC's second UPDATE only if the grant's CAS was already committed (idempotent expiry skips 'approved' rows because of `status='pending'` filter).
+- **Cancel-during-grant race.** Booking gets cancelled while an approver is mid-grant. Grant takes per-approval advisory lock at 00310:86-92. Booking row lock at 00401's top. cancel_workflow_instance_with_approvals attempts row-flip on the same workflow_instance. Either order: terminal state is consistent — if cancel wins the workflow_instances UPDATE, the grant's `resume()` claim returns null and no-ops; if grant wins, the approval expires under the cancel RPC's second UPDATE only if the grant's CAS was already committed (idempotent expiry skips 'approved' rows because of `status='pending'` filter).
 - **Cancel cascade approvals expiry.** Booking deleted while approvals are pending → cancelInstance fires → RPC atomically flips instance to 'cancelled' AND expires approvals AND emits audit. Test §7.5 makes this observable.
 
 ### 5.3 Edit-path coverage (CRITICAL 6 closure)
@@ -1181,7 +1186,7 @@ const wouldEmitApprovalRequired =
 
 ## 6. Sub-step sequencing within Phase 1.5
 
-**Eight ordered sub-steps. 6.A.X (compiler) → 6.B (migration 00399) → 6.A (engine) → 6.A.Y (start overload) → 6.C (migration 00400 + error codes) → 6.D (handler) → 6.E (cutover + auto-recompile) → 6.G (cron backstop).** Each is a CHECKPOINT-2 implementation review (full-review + codex).
+**Eight ordered sub-steps. 6.A.X (compiler) → 6.B (migration 00400) → 6.A (engine) → 6.A.Y (start overload) → 6.C (migration 00401 + error codes) → 6.D (handler) → 6.E (cutover + auto-recompile) → 6.G (cron backstop).** Each is a CHECKPOINT-2 implementation review (full-review + codex).
 
 ### 6.A.X — `ApprovalConfigCompilerService` (pure TS, zero migrations, compile-only)
 
@@ -1195,11 +1200,11 @@ const wouldEmitApprovalRequired =
 
 **Files:** `apps/api/src/modules/approval/approval-config-compiler.service.ts`, its spec. ~3-5 commits.
 
-### 6.B — Schema + backfill + RPCs (migration 00399)
+### 6.B — Schema + backfill + RPCs (migration 00400)
 
 **Scope:** the migration in §3.2. Adds all new columns + 3 tenant triggers + status CHECK widen + unique index + **2 new RPCs** (`ensure_room_booking_rule_workflow_definition`, `cancel_workflow_instance_with_approvals`) + per-rule backfill via the first RPC + chain_threshold backfill via the DERIVE algorithm.
 
-**Files:** `supabase/migrations/00399_room_booking_rules_workflow_definition_fk.sql`. ~5-7 commits (the migration is one file but iterations through review will be common; the two RPCs add bulk).
+**Files:** `supabase/migrations/00400_room_booking_rules_workflow_definition_fk.sql`. ~5-7 commits (the migration is one file but iterations through review will be common; the two RPCs add bulk).
 
 **Review checkpoint:** implementation-review on the migration SQL (codex MUST review SQL — both RPC bodies, all three tenant triggers, the chain_threshold DERIVE algorithm). Run `pnpm db:reset` locally for SQL validation; push to remote ONLY after both reviewers green.
 
@@ -1237,7 +1242,7 @@ const wouldEmitApprovalRequired =
 
 **Files:** `apps/api/src/modules/workflow/workflow.service.ts`, `apps/api/src/modules/workflow/workflow-engine.service.ts`. ~5-7 commits.
 
-### 6.C — Producer: grant_booking_approval v2 (migration 00400)
+### 6.C — Producer: grant_booking_approval v2 (migration 00401)
 
 **Scope:**
 - Supersession of 00310 (`CREATE OR REPLACE FUNCTION public.grant_booking_approval(...)`):
@@ -1270,7 +1275,7 @@ const wouldEmitApprovalRequired =
   - **`workflow.cancel_with_approvals_failed` (500)** **NEW v4 (CRITICAL 4)**
   - The 5 sites per code: TS const in `packages/shared/src/error-codes.ts`, EN message in `messages.en.ts`, NL message in `messages.nl.ts`, AppErrors factory in `apps/api/src/common/errors/app-error.ts`, downstream consumer (handler / service / executor).
 
-**Files:** `supabase/migrations/00400_grant_booking_approval_v2.sql`, `apps/api/src/modules/approval/event-types.ts` (NEW), error-code registry (5 sites × 7 codes — though `chain.threshold_invalid` was already in v3's 5-code list; v4 adds 2 to the v3 list of 5 → 7 total). ~12-15 commits.
+**Files:** `supabase/migrations/00401_grant_booking_approval_v2.sql`, `apps/api/src/modules/approval/event-types.ts` (NEW), error-code registry (5 sites × 7 codes — though `chain.threshold_invalid` was already in v3's 5-code list; v4 adds 2 to the v3 list of 5 → 7 total). ~12-15 commits.
 
 **Review checkpoint:** implementation-review. Codex MUST review the booking row lock placement, the re-observation count under the lock, the `'already_resolved'` no-emit semantics, and the tenant assertions.
 
@@ -1347,15 +1352,15 @@ const wouldEmitApprovalRequired =
   - Pre-existing chain with `parallel_group IS NULL` AND 1 approver → derived `chain_threshold='all'`.
   - Pre-existing chain with `parallel_group IS NOT NULL` → derived `chain_threshold='all'`.
   - Audit query (shippable as a manual probe): `SELECT chain_id, parallel_group, group_cardinality, chain_threshold FROM (subquery) — group by chain_threshold`.
-- **Idempotency.** Re-run 00399 → no new rows; backfill loop `WHERE workflow_definition_id IS NULL` skips; chain_threshold loop `WHERE chain_threshold IS NULL` skips.
+- **Idempotency.** Re-run 00400 → no new rows; backfill loop `WHERE workflow_definition_id IS NULL` skips; chain_threshold loop `WHERE chain_threshold IS NULL` skips.
 - **Auto-recompile lineage via RPC** (BLOCKER 1 closure). RoomBookingRulesService.update() bumps approval_config → TS compiles graph → `ensure_room_booking_rule_workflow_definition` mints version=2 → prior version=1 archived IFF no in-flight refs → rule.workflow_definition_id flips to version=2's id. Unit test.
 - **Auto-recompile preserves in-flight.** Same flow with one workflow_instance still `waiting` against version=1 → prior version=1 stays `published` (not archived) → in-flight resume() continues to resolve against version=1.
 - **Concurrent auto-recompile (BLOCKER 1 race)** **NEW v4**. Two concurrent calls to `ensure_room_booking_rule_workflow_definition` on the same rule. Row lock serialises. First commits version=2; second commits version=3. Both versions present; rule FK ends at version=3. Unique index on `(tenant_id, source_rule_id, version)` is the final defense — never collides because of the lock-serialised `MAX(version)+1`.
 
 ### 7.3 Integration (real-DB)
 
-- **Happy path (threshold='all'):** create rule with chain_threshold='all' + 2 approvers, create booking matching the rule → workflow starts → both grant → 00400 fires `kind='resolved'` → approval.granted emits → handler resumes → booking `confirmed`.
-- **Happy path (threshold='any'):** rule + 3 approvers, threshold='any' → first approver grants → 00400's `'any'` branch fires `kind='resolved'` immediately → expires siblings → approval.granted emits → handler resumes → booking `confirmed`.
+- **Happy path (threshold='all'):** create rule with chain_threshold='all' + 2 approvers, create booking matching the rule → workflow starts → both grant → 00401 fires `kind='resolved'` → approval.granted emits → handler resumes → booking `confirmed`.
+- **Happy path (threshold='any'):** rule + 3 approvers, threshold='any' → first approver grants → 00401's `'any'` branch fires `kind='resolved'` immediately → expires siblings → approval.granted emits → handler resumes → booking `confirmed`.
 - **Concurrent threshold='any' grant** **NEW v4 (BLOCKER 2)**. 3 approvers race-grant 'approved'. The booking row lock serialises: exactly ONE returns `kind='resolved'`; the others return `kind='already_resolved'`; ONLY ONE `approval.granted` emit; booking `confirmed`; siblings expired exactly once. Test asserts exactly 1 outbox event row was inserted.
 - **Reject path (either threshold):** rejection → workflow `end_failure` + booking `cancelled` + siblings expired.
 - **Legacy fall-through.** Rule with `approval_config` but NULL `workflow_definition_id` → `createApprovalRows` fires. `chain_threshold` correctly set on inserted rows.
@@ -1410,7 +1415,7 @@ Mints real Admin JWT, runs full mutation matrix against live API. **16 probes mi
 | R5 | Status='archived' rows accidentally resume. | resume() always re-reads workflow_definition by `id`. Archiving is a soft-delete marker for admin UI + the START path. **Start path refuses archived definitions** (IMPORTANT 7 closure). |
 | R6 | Backfill produces a workflow_definition that an admin then edits the rule against — drift. | `ensure_room_booking_rule_workflow_definition` archives the prior IFF no in-flight references AND supersedes with the new one — all atomically in one tx. In-flight instances stay on archived versions (immutable invariant); new bookings start on the active version. |
 | R7 | `kind='resolved'` path is the only `approval.granted` emit site. | Phase 1.5 in-scope is grant-only. Expiry / manual-close paths NOT a known path today; if they become real, sibling spec adds emit site. |
-| R8 | **(REWRITTEN v4)** threshold='any' chain race — two approvers both POST 'approved' concurrently; double-resolve. | 00400 acquires **per-booking ROW lock** (`SELECT id FROM bookings WHERE id=v_target_id AND tenant_id=p_tenant_id FOR UPDATE`) at the top of the RPC body, BEFORE the per-approval advisory lock + self-CAS. Under that lock, re-read sibling state (`count(*) filter (where status='approved')`). If sibling already resolved, return `kind='already_resolved'` without re-emitting or expiring. Test §7.3 + §7.4 probe 15 cover. Advisory locks from 00310 inherited for the SAME-approval-id case; the booking row lock is the additive layer for the cross-sibling-id case. |
+| R8 | **(REWRITTEN v4)** threshold='any' chain race — two approvers both POST 'approved' concurrently; double-resolve. | 00401 acquires **per-booking ROW lock** (`SELECT id FROM bookings WHERE id=v_target_id AND tenant_id=p_tenant_id FOR UPDATE`) at the top of the RPC body, BEFORE the per-approval advisory lock + self-CAS. Under that lock, re-read sibling state (`count(*) filter (where status='approved')`). If sibling already resolved, return `kind='already_resolved'` without re-emitting or expiring. Test §7.3 + §7.4 probe 15 cover. Advisory locks from 00310 inherited for the SAME-approval-id case; the booking row lock is the additive layer for the cross-sibling-id case. |
 | R9 | **(NEW v4)** `cancel_workflow_instance_with_approvals` RPC failure mid-call leaves half-state. | RPC body is one tx — failure rolls back the claim. TS-side `cancelInstanceById` surfaces `workflow.cancel_with_approvals_failed`; caller decides retry. **ApprovalCancelSweeperCron** is the backstop for any non-RPC drift (manual SQL workflow_instance flips, pre-Phase-1.5 rows). Test §7.1 fault-injection + §7.3 cancel-cascade-fault-injection cover. |
 | R10 | **(NEW v4)** `workflow_definitions.source_rule_id` is a tenant-smuggling FK with no trigger. | `assert_workflow_definitions_source_rule_tenant` trigger (CRITICAL 3 closure). Same SECURITY DEFINER pattern as the other two. Test §7.1 + smoke probe (third trigger refusal) cover. |
 | R11 | **(NEW v4)** B.4.A.5 predicate false-negatives on rule version bumps during in-flight workflow. | OLD `workflow_definition_id` sourced from the live `workflow_instance`, NOT the rule's current FK (CRITICAL 6 closure). Test §7.3 scenario (b') + §7.4 smoke probe 11 cover. |
@@ -1460,7 +1465,7 @@ All citations re-verified against `main` HEAD post-3bea158a on 2026-05-12 IN THI
 
 **Verification queries used in this v4 pass:**
 
-- `ls supabase/migrations/ | tail -15` — 00378–00381 confirmed taken. Phase 1.5 owns 00399 + 00400. (v3 owned 00381 + 00399 — bumped.)
+- `ls supabase/migrations/ | tail -15` — 00378–00381 confirmed taken. Phase 1.5 owns 00400 + 00401. (v3 owned 00381 + 00400 — bumped.)
 - `grep -n "async resume\|async start\b\|case 'notification'\|case 'approval'\|case 'condition'\|cancelInstance\|cancelInstanceById\|projectLegacyEntityType\|WorkflowEntityKind\b\|polymorphicIdColumn\|startForTicket" apps/api/src/modules/workflow/workflow-engine.service.ts` — engine line locations re-verified.
 - `grep -n "ticket_id\|startForTicket\|advance(\|executeNode(\|RETURNING\|workflow_definition_id" apps/api/src/modules/workflow/workflow-engine.service.ts` — resume() body lines :1645-1719 + advance() signature :925 confirmed.
 - `grep -n "createApprovalRows\|onApprovalRequested\|parallel_group\|approval_chain_id\|approvalConfig" apps/api/src/modules/reservations/booking-flow.service.ts` — `:359-360` consumer, `:382-388` notify, `:1173-1194` createApprovalRows, `:1180` parallel_group encoding.
@@ -1494,11 +1499,11 @@ All citations re-verified against `main` HEAD post-3bea158a on 2026-05-12 IN THI
 - `supabase/migrations/00310_grant_booking_approval_rpc.sql:114-120` — `kind='non_booking_approved'`.
 - `supabase/migrations/00310_grant_booking_approval_rpc.sql:125-131` — `kind='already_responded'`.
 - `supabase/migrations/00310_grant_booking_approval_rpc.sql:137-149` — CAS update.
-- `supabase/migrations/00310_grant_booking_approval_rpc.sql:155-158` — per-booking advisory lock (the BLOCKER 2 site — v4's 00400 replaces with row lock).
+- `supabase/migrations/00310_grant_booking_approval_rpc.sql:155-158` — per-booking advisory lock (the BLOCKER 2 site — v4's 00401 replaces with row lock).
 - `supabase/migrations/00310_grant_booking_approval_rpc.sql:162-172` — sibling expiry on rejection.
 - `supabase/migrations/00310_grant_booking_approval_rpc.sql:173-187` — all-of-N count + `kind='partial_approved'`.
 - `supabase/migrations/00310_grant_booking_approval_rpc.sql:213-216` — `approve_booking_setup_trigger` call.
-- `supabase/migrations/00310_grant_booking_approval_rpc.sql:244-253` — `kind='resolved'` (v4 extends in 00400).
+- `supabase/migrations/00310_grant_booking_approval_rpc.sql:244-253` — `kind='resolved'` (v4 extends in 00401).
 - `supabase/migrations/00369_workflow_polymorphism_booking.sql` — Phase 0 widening for booking entity_kind.
 - `supabase/migrations/00370_workflow_instance_links.sql:205-228` — tenant trigger pattern (mirror for v4's three triggers — pattern confirmed SECURITY DEFINER + explicit search_path + P0001).
 - `supabase/migrations/00372_create_booking_emit_lifecycle.sql` — `booking.created` outbox producer.
@@ -1563,8 +1568,8 @@ All citations re-verified against `main` HEAD post-3bea158a on 2026-05-12 IN THI
 
 **Future files (explicit "will exist after implementation"):**
 
-- `supabase/migrations/00399_room_booking_rules_workflow_definition_fk.sql` — FUTURE (schema + backfill + 3 triggers + 2 RPCs).
-- `supabase/migrations/00400_grant_booking_approval_v2.sql` — FUTURE (RPC supersession for `chain_threshold` + booking row lock + `approval.granted` emit).
+- `supabase/migrations/00400_room_booking_rules_workflow_definition_fk.sql` — FUTURE (schema + backfill + 3 triggers + 2 RPCs).
+- `supabase/migrations/00401_grant_booking_approval_v2.sql` — FUTURE (RPC supersession for `chain_threshold` + booking row lock + `approval.granted` emit).
 - `apps/api/src/modules/approval/event-types.ts` — FUTURE, `ApprovalLifecycleEventType` const.
 - `apps/api/src/modules/approval/approval-config-compiler.service.ts` — FUTURE, **pure compile** service.
 - `apps/api/src/modules/approval/approval-config-compiler.service.spec.ts` — FUTURE, fixture matrix + parity test with SQL block E assembly.
@@ -1574,9 +1579,9 @@ All citations re-verified against `main` HEAD post-3bea158a on 2026-05-12 IN THI
 
 **Pinned constants (v4):**
 
-- **Slots owned:** 00399 (schema + 2 RPCs + backfill + 3 triggers), 00400 (grant_booking_approval v2 with booking row lock).
+- **Slots owned:** 00400 (schema + 2 RPCs + backfill + 3 triggers), 00401 (grant_booking_approval v2 with booking row lock).
 - **Smoke probe count:** 16 (minimum) — v3's 14 + concurrent-threshold='any' probe + start-path-archived-refusal probe.
-- **Sub-steps:** 6.A.X (compiler — pure) → 6.B (migration 00399) → 6.A (engine) → 6.A.Y (start overload) → 6.C (migration 00400 + error codes) → 6.D (handler) → 6.E (cutover + auto-recompile RPC call) → 6.G (cron backstop). Sub-step 6.F (deleted in v3) stays deleted.
+- **Sub-steps:** 6.A.X (compiler — pure) → 6.B (migration 00400) → 6.A (engine) → 6.A.Y (start overload) → 6.C (migration 00401 + error codes) → 6.D (handler) → 6.E (cutover + auto-recompile RPC call) → 6.G (cron backstop). Sub-step 6.F (deleted in v3) stays deleted.
 - **Estimate:** 5-6 working weeks, ~55-75 commits.
 - **Tenant triggers count:** 3 (CRITICAL 3 closure adds the third for `workflow_definitions.source_rule_id`).
 - **PL/pgSQL RPCs net-new:** 3 — `ensure_room_booking_rule_workflow_definition` (BLOCKER 1), `cancel_workflow_instance_with_approvals` (CRITICAL 4), `grant_booking_approval` v2 supersession (BLOCKER 2).
