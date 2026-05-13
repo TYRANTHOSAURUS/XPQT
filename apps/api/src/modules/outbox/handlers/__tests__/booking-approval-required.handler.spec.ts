@@ -242,3 +242,735 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// B.4.A.5 sub-step D — dispatch path tests
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Spec: /tmp/b4a5-plan-v2.md sub-step D.
+//
+// Coverage (11 scenarios per the brief):
+//   1. Happy path — 1 person → 1 dispatch.
+//   2. Happy path — team approver fan-out → N dispatches.
+//   3. Happy path — mixed person + team → union dispatched.
+//   4. Chain already resolved (status='approved'/'rejected') → no-op.
+//   5. Chain rows missing entirely → no-op.
+//   6. Person approver has no users row in tenant → that approver skipped,
+//      others dispatched.
+//   7. Booking deleted between RPC + handler drain → enrichment returns
+//      null → no-op.
+//   8. Per-user dispatch failure → other users still get dispatched.
+//   9. Idempotency key shape = `<event.id>:<userId>`.
+//  10. Locale 'en' default (no users.locale_preference column today).
+//  11. Tenant slug forwarded from TenantContext (or empty when unset).
+//
+// These complement the existing 17 validation-only tests above by exercising
+// the DI-wired dispatch path. Existing tests construct
+// `new BookingApprovalRequiredHandler()` (no DI) and verify the validation-
+// only branch; new tests inject mocked SupabaseService + NotificationsService
+// + ConfigService and exercise the full re-read + fan-out + dispatch flow.
+
+import type { NotificationsService } from '../../../notifications';
+import type { SupabaseService } from '../../../../common/supabase/supabase.service';
+import type { ConfigService } from '@nestjs/config';
+import { TenantContext } from '../../../../common/tenant-context';
+
+const USER_A = 'aa000000-0000-4000-8000-000000000001';
+const USER_B = 'aa000000-0000-4000-8000-000000000002';
+const USER_C = 'aa000000-0000-4000-8000-000000000003';
+const TEAM_X = 'aa000000-0000-4000-8000-00000000000a';
+const SPACE_ID = 'aa000000-0000-4000-8000-000000000010';
+
+interface ApprovalRow {
+  id: string;
+  status: 'pending' | 'approved' | 'rejected' | 'expired';
+  approver_person_id: string | null;
+  approver_team_id: string | null;
+}
+
+interface UserRow {
+  id: string;
+  person_id?: string | null;
+  email: string | null;
+}
+
+interface BookingRow {
+  id: string;
+  tenant_id: string;
+  title: string | null;
+  location_id: string;
+  requester_person_id: string;
+  start_at: string;
+  end_at: string;
+}
+
+interface SpaceRow {
+  id: string;
+  name: string;
+}
+
+interface PersonRow {
+  id: string;
+  first_name: string | null;
+  last_name: string | null;
+}
+
+interface DispatchHarnessOpts {
+  approvals?: ApprovalRow[] | null;
+  approvalsError?: { message: string } | null;
+  personUsers?: UserRow[];
+  personUsersError?: { message: string } | null;
+  teamMembers?: Array<{ user_id: string; team_id: string }>;
+  teamUsers?: UserRow[];
+  booking?: BookingRow | null;
+  bookingError?: { message: string } | null;
+  space?: SpaceRow | null;
+  requester?: PersonRow | null;
+  /** When true, the dispatch fn throws on the n-th call (1-indexed). */
+  failDispatchOn?: number[];
+}
+
+interface DispatchCallCapture {
+  tenantId: string;
+  userId: string;
+  locale: 'en' | 'nl';
+  eventKind: string;
+  payload: Record<string, unknown>;
+  idempotencyKey: string;
+  context: { entityType: string; entityId: string; tenantSlug: string };
+}
+
+function makeDispatchHarness(opts: DispatchHarnessOpts) {
+  const dispatchCalls: DispatchCallCapture[] = [];
+  const fromTables: string[] = [];
+
+  const supabase: SupabaseService = {
+    admin: {
+      from: jest.fn((table: string) => {
+        fromTables.push(table);
+        if (table === 'approvals') {
+          // .eq().eq() chain returning {data, error}.
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: async () => ({
+                  data: opts.approvals ?? [],
+                  error: opts.approvalsError ?? null,
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'users') {
+          // Two usage shapes: by person_id IN (persons), or by id IN (users).
+          return {
+            select: () => ({
+              eq: () => ({
+                in: async (col: string, ids: string[]) => {
+                  if (col === 'person_id') {
+                    const rows = (opts.personUsers ?? []).filter((u) =>
+                      ids.includes(u.person_id as string),
+                    );
+                    return { data: rows, error: opts.personUsersError ?? null };
+                  }
+                  if (col === 'id') {
+                    const rows = (opts.teamUsers ?? []).filter((u) =>
+                      ids.includes(u.id),
+                    );
+                    return { data: rows, error: null };
+                  }
+                  return { data: [], error: null };
+                },
+              }),
+            }),
+          };
+        }
+        if (table === 'team_members') {
+          return {
+            select: () => ({
+              eq: () => ({
+                in: async () => ({
+                  data: opts.teamMembers ?? [],
+                  error: null,
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'bookings') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: opts.booking ?? null,
+                    error: opts.bookingError ?? null,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'spaces') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: opts.space ?? null,
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'persons') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: opts.requester ?? null,
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        throw new Error('unexpected table: ' + table);
+      }),
+    },
+  } as unknown as SupabaseService;
+
+  const failOn = new Set(opts.failDispatchOn ?? []);
+  const notifications = {
+    dispatch: jest.fn(async (args: DispatchCallCapture) => {
+      const idx = dispatchCalls.length + 1;
+      dispatchCalls.push(args);
+      if (failOn.has(idx)) {
+        throw new Error('simulated_dispatch_failure_at_' + idx);
+      }
+      return {
+        channelId: 'email' as const,
+        externalId: 'rs_' + idx,
+        delivered: true,
+      };
+    }),
+  } as unknown as NotificationsService;
+
+  const config = {
+    get: jest.fn((key: string) => {
+      if (key === 'FRONTEND_BASE_URL') return 'https://app.example.com';
+      return undefined;
+    }),
+  } as unknown as ConfigService;
+
+  return {
+    supabase,
+    notifications,
+    config,
+    dispatchCalls,
+    fromTables,
+  };
+}
+
+const FULL_BOOKING: BookingRow = {
+  id: BOOKING_ID,
+  tenant_id: TENANT_ID,
+  title: 'Quarterly review',
+  location_id: SPACE_ID,
+  requester_person_id: APPROVER_A, // any person id; unused for matching
+  start_at: '2026-05-13T09:00:00Z',
+  end_at: '2026-05-13T10:30:00Z',
+};
+const FULL_SPACE: SpaceRow = { id: SPACE_ID, name: 'Boardroom 4' };
+const FULL_REQUESTER: PersonRow = {
+  id: APPROVER_A,
+  first_name: 'Marleen',
+  last_name: 'Visser',
+};
+
+const TENANT_INFO = {
+  id: TENANT_ID,
+  slug: 'acme',
+  tier: 'standard' as const,
+};
+
+function withTenant<T>(fn: () => Promise<T>): Promise<T> {
+  return TenantContext.run(TENANT_INFO, fn);
+}
+
+describe('BookingApprovalRequiredHandler.handle — B.4.A.5 sub-step D dispatch', () => {
+  describe('happy paths', () => {
+    it('1 person approver → 1 dispatch with enriched payload + en locale', async () => {
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: APPROVER_A,
+            approver_team_id: null,
+          },
+        ],
+        personUsers: [{ id: USER_A, person_id: APPROVER_A, email: 'a@example.com' }],
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      await withTenant(() =>
+        handler.handle(
+          makeEvent(
+            {},
+            { approver_person_ids: [APPROVER_A], approver_team_ids: [] },
+          ),
+        ),
+      );
+
+      expect(h.dispatchCalls).toHaveLength(1);
+      const call = h.dispatchCalls[0];
+      expect(call.userId).toBe(USER_A);
+      expect(call.tenantId).toBe(TENANT_ID);
+      expect(call.locale).toBe('en');
+      expect(call.eventKind).toBe('booking.approval_required');
+      expect(call.idempotencyKey).toBe(`${EVENT_ID}:${USER_A}`);
+      expect(call.payload).toMatchObject({
+        bookingId: BOOKING_ID,
+        chainId: CHAIN_ID,
+        bookingTitle: 'Quarterly review',
+        requesterName: 'Marleen Visser',
+        spaceName: 'Boardroom 4',
+        startAt: '2026-05-13T09:00:00Z',
+        endAt: '2026-05-13T10:30:00Z',
+      });
+      expect((call.payload as { approvalCtaUrl: string }).approvalCtaUrl).toBe(
+        `https://app.example.com/desk/approvals/${encodeURIComponent(CHAIN_ID)}`,
+      );
+      expect(call.context).toEqual({
+        entityType: 'booking',
+        entityId: BOOKING_ID,
+        tenantSlug: 'acme',
+      });
+    });
+
+    it('team approver with N members → N dispatches', async () => {
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: null,
+            approver_team_id: TEAM_X,
+          },
+        ],
+        teamMembers: [
+          { user_id: USER_A, team_id: TEAM_X },
+          { user_id: USER_B, team_id: TEAM_X },
+          { user_id: USER_C, team_id: TEAM_X },
+        ],
+        teamUsers: [
+          { id: USER_A, email: 'a@example.com' },
+          { id: USER_B, email: 'b@example.com' },
+          { id: USER_C, email: 'c@example.com' },
+        ],
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      await withTenant(() =>
+        handler.handle(
+          makeEvent(
+            {},
+            { approver_person_ids: [], approver_team_ids: [TEAM_X] },
+          ),
+        ),
+      );
+
+      expect(h.dispatchCalls).toHaveLength(3);
+      const userIds = h.dispatchCalls.map((c) => c.userId).sort();
+      expect(userIds).toEqual([USER_A, USER_B, USER_C].sort());
+    });
+
+    it('mixed person + team → union of users dispatched (deduped)', async () => {
+      // USER_A appears on BOTH the person side and the team side; it must
+      // be dispatched only ONCE.
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: APPROVER_A,
+            approver_team_id: null,
+          },
+          {
+            id: 'app2',
+            status: 'pending',
+            approver_person_id: null,
+            approver_team_id: TEAM_X,
+          },
+        ],
+        personUsers: [{ id: USER_A, person_id: APPROVER_A, email: 'a@example.com' }],
+        teamMembers: [
+          { user_id: USER_A, team_id: TEAM_X },
+          { user_id: USER_B, team_id: TEAM_X },
+        ],
+        teamUsers: [
+          { id: USER_A, email: 'a@example.com' },
+          { id: USER_B, email: 'b@example.com' },
+        ],
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      await withTenant(() =>
+        handler.handle(
+          makeEvent(
+            {},
+            {
+              approver_person_ids: [APPROVER_A],
+              approver_team_ids: [TEAM_X],
+            },
+          ),
+        ),
+      );
+
+      expect(h.dispatchCalls).toHaveLength(2);
+      const userIds = h.dispatchCalls.map((c) => c.userId).sort();
+      expect(userIds).toEqual([USER_A, USER_B].sort());
+    });
+  });
+
+  describe('no-op short-circuits (no dispatch)', () => {
+    it('no-ops when chain is fully resolved (no pending rows)', async () => {
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'approved',
+            approver_person_id: APPROVER_A,
+            approver_team_id: null,
+          },
+        ],
+        personUsers: [{ id: USER_A, person_id: APPROVER_A, email: 'a@example.com' }],
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      await withTenant(() => handler.handle(makeEvent()));
+      expect(h.dispatchCalls).toHaveLength(0);
+    });
+
+    it('no-ops when chain rows are missing entirely', async () => {
+      const h = makeDispatchHarness({
+        approvals: [],
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      await withTenant(() => handler.handle(makeEvent()));
+      expect(h.dispatchCalls).toHaveLength(0);
+    });
+
+    it('no-ops when booking is hard-deleted between RPC + handler drain', async () => {
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: APPROVER_A,
+            approver_team_id: null,
+          },
+        ],
+        personUsers: [{ id: USER_A, person_id: APPROVER_A, email: 'a@example.com' }],
+        booking: null, // ← simulates hard-delete race
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      await withTenant(() =>
+        handler.handle(
+          makeEvent(
+            {},
+            { approver_person_ids: [APPROVER_A], approver_team_ids: [] },
+          ),
+        ),
+      );
+      expect(h.dispatchCalls).toHaveLength(0);
+    });
+
+    it('no-ops when no approver resolves to a user (e.g. external persons)', async () => {
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: APPROVER_A,
+            approver_team_id: null,
+          },
+        ],
+        personUsers: [], // ← person has no users row
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      await withTenant(() =>
+        handler.handle(
+          makeEvent(
+            {},
+            { approver_person_ids: [APPROVER_A], approver_team_ids: [] },
+          ),
+        ),
+      );
+      expect(h.dispatchCalls).toHaveLength(0);
+    });
+  });
+
+  describe('partial resolution + per-user isolation', () => {
+    it('person without users row is silently skipped; others still dispatched', async () => {
+      // APPROVER_A resolves to USER_A; APPROVER_B does NOT resolve (no
+      // users row). Expected: 1 dispatch for USER_A.
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: APPROVER_A,
+            approver_team_id: null,
+          },
+          {
+            id: 'app2',
+            status: 'pending',
+            approver_person_id: APPROVER_B,
+            approver_team_id: null,
+          },
+        ],
+        personUsers: [{ id: USER_A, person_id: APPROVER_A, email: 'a@example.com' }],
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      await withTenant(() =>
+        handler.handle(
+          makeEvent(
+            {},
+            {
+              approver_person_ids: [APPROVER_A, APPROVER_B],
+              approver_team_ids: [],
+            },
+          ),
+        ),
+      );
+      expect(h.dispatchCalls).toHaveLength(1);
+      expect(h.dispatchCalls[0].userId).toBe(USER_A);
+    });
+
+    it('per-user dispatch failure does not block other users', async () => {
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: null,
+            approver_team_id: TEAM_X,
+          },
+        ],
+        teamMembers: [
+          { user_id: USER_A, team_id: TEAM_X },
+          { user_id: USER_B, team_id: TEAM_X },
+          { user_id: USER_C, team_id: TEAM_X },
+        ],
+        teamUsers: [
+          { id: USER_A, email: 'a@example.com' },
+          { id: USER_B, email: 'b@example.com' },
+          { id: USER_C, email: 'c@example.com' },
+        ],
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+        failDispatchOn: [2], // ← second user's dispatch throws
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      const warnSpy = jest
+        .spyOn(
+          (handler as unknown as { log: { warn: (msg: string) => void } }).log,
+          'warn',
+        )
+        .mockImplementation(() => undefined);
+      try {
+        await expect(
+          withTenant(() =>
+            handler.handle(
+              makeEvent(
+                {},
+                { approver_person_ids: [], approver_team_ids: [TEAM_X] },
+              ),
+            ),
+          ),
+        ).resolves.toBeUndefined();
+
+        // All 3 dispatch calls were attempted (2nd threw, 1st + 3rd succeeded).
+        expect(h.dispatchCalls).toHaveLength(3);
+        // Warn fired for the failed user.
+        const warnMessages = warnSpy.mock.calls
+          .map((c) => c[0] as string)
+          .filter((m) => m.includes('per_user_dispatch_failed'));
+        expect(warnMessages).toHaveLength(1);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
+
+  describe('idempotency + locale + context', () => {
+    it('idempotency key is `<event.id>:<userId>` for each dispatch', async () => {
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: null,
+            approver_team_id: TEAM_X,
+          },
+        ],
+        teamMembers: [
+          { user_id: USER_A, team_id: TEAM_X },
+          { user_id: USER_B, team_id: TEAM_X },
+        ],
+        teamUsers: [
+          { id: USER_A, email: 'a@example.com' },
+          { id: USER_B, email: 'b@example.com' },
+        ],
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      await withTenant(() =>
+        handler.handle(
+          makeEvent(
+            {},
+            { approver_person_ids: [], approver_team_ids: [TEAM_X] },
+          ),
+        ),
+      );
+      const keys = h.dispatchCalls.map((c) => c.idempotencyKey).sort();
+      expect(keys).toEqual(
+        [`${EVENT_ID}:${USER_A}`, `${EVENT_ID}:${USER_B}`].sort(),
+      );
+    });
+
+    it('locale defaults to "en" (no users.locale_preference column today)', async () => {
+      // Plan-review I6: locale resolution NEVER throws; v1 always 'en'
+      // because the column does not exist on the users table yet.
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: APPROVER_A,
+            approver_team_id: null,
+          },
+        ],
+        personUsers: [{ id: USER_A, person_id: APPROVER_A, email: 'a@example.com' }],
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      await withTenant(() =>
+        handler.handle(
+          makeEvent(
+            {},
+            { approver_person_ids: [APPROVER_A], approver_team_ids: [] },
+          ),
+        ),
+      );
+      expect(h.dispatchCalls).toHaveLength(1);
+      expect(h.dispatchCalls[0].locale).toBe('en');
+    });
+
+    it('tenantSlug is forwarded from TenantContext, empty string when unset', async () => {
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: APPROVER_A,
+            approver_team_id: null,
+          },
+        ],
+        personUsers: [{ id: USER_A, person_id: APPROVER_A, email: 'a@example.com' }],
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      // No TenantContext.run wrapper — handler must NOT throw, and must
+      // pass an empty tenantSlug downstream (email channel ignores it).
+      await handler.handle(
+        makeEvent(
+          {},
+          { approver_person_ids: [APPROVER_A], approver_team_ids: [] },
+        ),
+      );
+      expect(h.dispatchCalls).toHaveLength(1);
+      expect(h.dispatchCalls[0].context.tenantSlug).toBe('');
+    });
+  });
+});

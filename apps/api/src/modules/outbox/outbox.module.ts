@@ -1,5 +1,6 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { RoutingModule } from '../routing/routing.module';
 import { ServiceRoutingModule } from '../service-routing/service-routing.module';
 import { SlaModule } from '../sla/sla.module';
@@ -57,12 +58,17 @@ import { OutboxWorker } from './outbox.worker';
  *     Sets `tickets.routing_status='idle'` on success or `'failed'` on
  *     resolver / RPC errors. B.2.A.Step11 commit 1.
  *   - BookingApprovalRequiredHandler — drains `booking.approval_required`
- *     events emitted by `edit_booking` (00364:1059-1080) when a §3.6.5
- *     row 2/7/8 outcome flipped a booking to require_approval. v1 is a
- *     registration STUB (validates payload + tenant boundary, logs);
- *     notification dispatch lands in B.4.A.5. Required pre-cutover per
- *     event-types.ts:40-51 — without it, edit-driven approval flips
- *     stall silently. B.4.A.4.
+ *     events emitted by `edit_booking` v5 (00394:974-993) when a §3.6.5
+ *     row 2/7/8 outcome flipped a booking to require_approval. B.4.A.5
+ *     sub-step D: re-reads approval state for chain_id (architect C3
+ *     sla-timer-repoint pattern), resolves person + team approvers to
+ *     users (tenant-filtered), enriches the typed payload (booking +
+ *     space + requester JOINs), and dispatches one email per resolved
+ *     user via NotificationsService — with idempotencyKey =
+ *     `<event.id>:<userId>` so at-least-once outbox retries stay
+ *     exactly-once at Resend. Per-user dispatch failures are isolated.
+ *     Inbox rows are written atomically by the producer RPC (Hybrid C).
+ *     B.4.A.5 supersedes the B.4.A.4 stub.
  *   - WorkflowSpawnWakeOnBookingCreated/Cancelled/StatusChangedHandler —
  *     three thin shells around WorkflowSpawnWakeCore (Universal Workflow
  *     Architecture Phase 1.A; spec
@@ -100,6 +106,7 @@ import { OutboxWorker } from './outbox.worker';
     DiscoveryModule,
     ServiceRoutingModule,
     RoutingModule,
+    NotificationsModule,
     forwardRef(() => SlaModule),
     forwardRef(() => WorkflowModule),
   ],
