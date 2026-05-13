@@ -19,6 +19,7 @@ import { RoutingModule } from './modules/routing/routing.module';
 import { SlaModule } from './modules/sla/sla.module';
 import { ApprovalModule } from './modules/approval/approval.module';
 import { NotificationModule } from './modules/notification/notification.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { ReportingModule } from './modules/reporting/reporting.module';
 import { PersonModule } from './modules/person/person.module';
@@ -72,6 +73,7 @@ import { MaintenanceModule } from './modules/maintenance/maintenance.module';
     SlaModule,
     ApprovalModule,
     NotificationModule,
+    NotificationsModule,
     WorkflowModule,
     ReportingModule,
     PersonModule,

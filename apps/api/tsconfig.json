@@ -10,10 +10,11 @@
     "experimentalDecorators": true,
     "declaration": false,
     "declarationMap": false,
+    "jsx": "react-jsx",
     "paths": {
       "@/*": ["src/*"]
     }
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "test", "**/*.spec.ts", "**/__tests__/**"]
+  "exclude": ["node_modules", "dist", "test", "**/*.spec.ts", "**/*.spec.tsx", "**/__tests__/**"]
 }
