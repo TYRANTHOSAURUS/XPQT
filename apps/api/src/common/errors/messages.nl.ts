@@ -1805,6 +1805,17 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     detail:
       'Deze wijziging verandert de goedkeuringsregels. Vraag de ruimte-beheerder om goedkeuring voor deze ruimte uit te zetten, of kies een andere ruimte.',
   },
+  // B.4.A.5 sub-step D self-review remediation (CODE-I5). Worker-emit only;
+  // generieke server-class voice — de traceId leidt ops naar de onderliggende
+  // leesfout.
+  'users.lookup_failed': {
+    title: 'Kon de notificatie niet verzenden',
+    detail: 'We konden de ontvangers niet opzoeken. Probeer het over een moment opnieuw.',
+  },
+  'booking.read_failed': {
+    title: 'Kon de notificatie niet verzenden',
+    detail: 'We konden de reserveringsgegevens niet lezen. Probeer het over een moment opnieuw.',
+  },
 
   // ─── floor_plan ──────────────────────────────────────────────────────────
   'floor_plan.draft.not_found': {

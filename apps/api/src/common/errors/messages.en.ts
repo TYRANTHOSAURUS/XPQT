@@ -1845,6 +1845,17 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save the booking",
     detail: "We couldn't read this booking's approval state. Try again in a moment.",
   },
+  // B.4.A.5 sub-step D self-review remediation (CODE-I5). Worker-emit only;
+  // user voice mirrors approval.read_failed (generic server-class) — the
+  // traceId attached by the filter routes ops to the underlying read error.
+  'users.lookup_failed': {
+    title: "Couldn't send the notification",
+    detail: "We couldn't look up the recipients. Try again in a moment.",
+  },
+  'booking.read_failed': {
+    title: "Couldn't send the notification",
+    detail: "We couldn't read the booking details. Try again in a moment.",
+  },
 
   // ─── floor_plan ──────────────────────────────────────────────────────────
   'floor_plan.draft.not_found': {

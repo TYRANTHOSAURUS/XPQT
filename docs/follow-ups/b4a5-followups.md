@@ -41,3 +41,75 @@ catches `@react-email/render` upgrade regressions. The TypeScript
 compiler catches JSX-runtime config drift at build time. The remaining
 risk is "the runtime config is fine, ts-jest agrees, but `tsc` produces
 a different module shape" — narrow enough to defer.
+
+## Sub-step D — outbox handler dispatch
+
+### CTA URL — swap to `/desk/approvals/<chainId>` once Sprint 2 ships
+
+**Status:** logged; current handler falls back to
+`/desk/bookings/<bookingId>?tab=approval`.
+
+**The gap.** `BookingApprovalRequiredHandler.buildApprovalCtaUrl()`
+builds the CTA URL targeting the booking detail surface because
+`/desk/approvals/<chainId>` does not exist on `main` — approvals
+Sprint 2 hasn't shipped. The current fallback works (the booking detail
+page surfaces the inline approval panel via `?tab=approval`), but the
+"approvals workspace" is the proper destination.
+
+**The fix when picked up.** In `buildApprovalCtaUrl`, swap the path
+from `/desk/bookings/<bookingId>?tab=approval` to
+`/desk/approvals/<chainId>` and drop the `bookingId` arg. The signature
+is already prepared with `void chainId;` for the swap. Update the
+single happy-path assertion in
+`booking-approval-required.handler.spec.ts` (search for
+`?tab=approval`).
+
+### Outbox max-attempts vs Resend 24h dedupe window
+
+**Status:** verified safe at current defaults; revisit on any env-knob
+bump.
+
+**The window.** `OutboxWorker.maxAttempts` defaults to `5`; backoff is
+`[30s, 2m, 10m, 1h]`. Worst-case time-to-dead-letter is
+~70 minutes — well inside the Resend `Idempotency-Key` 24h dedupe
+window.
+
+**Why this matters.** `BookingApprovalRequiredHandler` passes
+`<eventId>:<userId>` as the dispatch idempotencyKey. Resend dedupes
+on (key + payload) for 24 hours. After 24h the dedupe stops, so a
+retry past that window would deliver a duplicate email per approver.
+
+**When to re-check.**
+- `OUTBOX_MAX_ATTEMPTS` env override pushes attempts >5.
+- `OUTBOX_BACKOFF_MS` env override extends the schedule to >>1h
+  per attempt or adds a many-hour final retry.
+- Resend changes their dedupe window (currently documented as 24h —
+  re-verify when the SDK is bumped).
+
+If any of those happen, either cap retries to stay inside Resend's
+window, or add an internal idempotency cache on this handler that
+short-circuits beyond N attempts.
+
+### Per-user `users.locale_preference` override
+
+**Status:** logged; current handler reads `tenants.locale_default`
+once per event and applies that locale to every approver.
+
+**The gap.** No per-user locale override exists today — a Dutch user
+in an EN-default tenant gets EN emails. NL-primary tenants
+(`tenants.locale_default = 'nl'`) get NL across the board, which is
+the realistic shape for the Benelux market.
+
+**The fix when picked up.** When `users.locale_preference` lands on
+the `users` table:
+  1. Add `locale_preference` to both SELECTs in steps 4 + 5 of
+     `BookingApprovalRequiredHandler.handle` (marked with TODO
+     comments).
+  2. Plumb the per-user value into the userMap.
+  3. Switch the dispatch loop to prefer per-user locale, falling back
+     to the tenant locale resolved by `resolveTenantLocale()`.
+  4. Add a test scenario in `booking-approval-required.handler.spec.ts`
+     covering "user prefers NL inside EN tenant → NL email".
+
+The plumbing keeps the single tenants read as the fallback so the
+N+1 risk doesn't reappear.

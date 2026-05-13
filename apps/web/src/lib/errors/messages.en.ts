@@ -1729,6 +1729,16 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't save the booking",
     detail: "We couldn't read this booking's approval state. Try again in a moment.",
   },
+  // B.4.A.5 sub-step D self-review remediation (CODE-I5). Worker-emit only;
+  // mirrors API copy so render fallbacks match.
+  'users.lookup_failed': {
+    title: "Couldn't send the notification",
+    detail: "We couldn't look up the recipients. Try again in a moment.",
+  },
+  'booking.read_failed': {
+    title: "Couldn't send the notification",
+    detail: "We couldn't read the booking details. Try again in a moment.",
+  },
   // B.4 step 2D-D — controller-vs-notification gate (B.4.A.5 sequencing).
   // self-review I1 + I2 (2026-05-12): now 422 (validation) — the edit
   // would change approval requirements but B.4.A.5 hasn't shipped

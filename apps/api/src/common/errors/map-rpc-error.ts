@@ -297,6 +297,12 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // constructs AppError with status=500 via AppErrors.server; this entry
   // is defense-in-depth for any future RPC raise of the same code.
   'approval.read_failed': 500,
+  // B.4.A.5 sub-step D self-review remediation (CODE-I5). Split out from
+  // the original `email.dispatch_failed` blanket so dashboards can isolate
+  // a DB read failure from an email-channel rejection. Worker emit only;
+  // never returned by an HTTP route — defense-in-depth.
+  'users.lookup_failed': 500,
+  'booking.read_failed': 500,
   // B.4 Step 2F.2 — assembleScopeEditPlan defense-in-depth 500s.
   // series_mismatch: pivot booking's recurrence_series_id != caller's
   // effectiveSeriesId. Internal consistency bug; should never happen post

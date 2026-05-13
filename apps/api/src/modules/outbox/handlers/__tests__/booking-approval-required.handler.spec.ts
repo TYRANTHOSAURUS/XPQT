@@ -4,23 +4,30 @@ import {
 } from '../booking-approval-required.handler';
 import { DeadLetterError } from '../../dead-letter.error';
 import type { OutboxEvent } from '../../outbox.types';
+import type { NotificationsService } from '../../../notifications';
+import type { SupabaseService } from '../../../../common/supabase/supabase.service';
+import type { ConfigService } from '@nestjs/config';
+import { TenantContext } from '../../../../common/tenant-context';
 
 /**
- * B.4.A.4 — `BookingApprovalRequiredHandler.handle` tests.
+ * B.4.A.4 + B.4.A.5 — `BookingApprovalRequiredHandler.handle` tests.
  *
  * Producer: supabase/migrations/00394_edit_booking_rpc_v5.sql:974-993
  *           (post-B.4.A.5-sub-step-B; supersedes 00364 v4).
  * Event literal: apps/api/src/modules/reservations/event-types.ts:51
  *                (`BookingEditEventType.ApprovalRequired`).
  *
- * v1 is a registration stub — covers:
- *   1. Happy path: well-formed payload resolves without throwing.
- *   2. Tenant smuggling defense (event vs payload mismatch).
- *   3. Malformed payload — missing/invalid uuid, empty approver list,
- *      bad started_at — terminal dead-letter (producer contract bug).
+ * Coverage:
+ *   - Validation gates (tenant smuggling defense, payload shape, legacy
+ *     v4 backward-compat shim) — exercised against the same handler with
+ *     minimal mocks. Self-review C1 dropped @Optional() DI, so every
+ *     handler instance now has injected services.
+ *   - Sub-step D dispatch path (re-read + fan-out + per-user email).
  *
- * Notification dispatch is NOT exercised here — it lands in B.4.A.5 and
- * gets its own integration coverage at that point.
+ * The minimal mock returns empty arrays from the approvals re-read (causes
+ * the "chain_not_found" no-op short-circuit) when validation is what's
+ * being tested. That keeps the validation tests focused on payload shape
+ * without exercising the dispatch path.
  */
 
 const TENANT_ID = 'a1111111-1111-4111-8111-111111111111';
@@ -66,22 +73,77 @@ function makeEvent(
   };
 }
 
-describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
-  describe('happy path (stub)', () => {
+// ─────────────────────────────────────────────────────────────────────────
+// Minimal handler factory — for tests that only exercise the validation
+// gates upstream of the supabase reads. Self-review C1: @Optional() is
+// gone, so every handler instance must inject its three deps.
+//
+// The supabase mock returns empty `approvals` so validation-passing events
+// short-circuit at the chain_not_found no-op (step 3) without exercising
+// the dispatch path. notifications.dispatch is never called in these
+// tests.
+// ─────────────────────────────────────────────────────────────────────────
+function makeMinimalSupabase(): SupabaseService {
+  return {
+    admin: {
+      from: jest.fn((table: string) => {
+        if (table === 'approvals') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: async () => ({ data: [], error: null }),
+              }),
+            }),
+          };
+        }
+        // Unreachable in these tests — every validation-passing event
+        // short-circuits at the empty approvals read above.
+        throw new Error('unexpected table in minimal mock: ' + table);
+      }),
+    },
+  } as unknown as SupabaseService;
+}
+
+function makeMinimalNotifications(): NotificationsService {
+  return {
+    dispatch: jest.fn(async () => ({
+      channelId: 'email' as const,
+      externalId: 'rs_unused',
+      delivered: true,
+    })),
+  } as unknown as NotificationsService;
+}
+
+function makeMinimalConfig(): ConfigService {
+  return {
+    get: jest.fn(() => undefined),
+  } as unknown as ConfigService;
+}
+
+function makeMinimalHandler(): BookingApprovalRequiredHandler {
+  return new BookingApprovalRequiredHandler(
+    makeMinimalSupabase(),
+    makeMinimalNotifications(),
+    makeMinimalConfig(),
+  );
+}
+
+describe('BookingApprovalRequiredHandler.handle (validation gates)', () => {
+  describe('happy path (validation passes; chain re-read no-op)', () => {
     it('accepts a well-formed event without throwing', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
     });
 
     it('accepts a single-approver event', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       await expect(
         handler.handle(makeEvent({}, { approver_person_ids: [APPROVER_A], approver_team_ids: [] })),
       ).resolves.toBeUndefined();
     });
 
     it('accepts a team-only event', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       await expect(
         handler.handle(makeEvent({}, { approver_person_ids: [], approver_team_ids: [APPROVER_A] })),
       ).resolves.toBeUndefined();
@@ -90,7 +152,7 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
 
   describe('tenant smuggling defense', () => {
     it('dead-letters when payload.tenant_id != event.tenant_id', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const event = makeEvent({}, { tenant_id: OTHER_TENANT_ID });
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
@@ -98,31 +160,31 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
 
   describe('payload shape — terminal dead-letters', () => {
     it('dead-letters on missing booking_id', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const event = makeEvent({}, { booking_id: undefined as unknown as string });
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
 
     it('dead-letters on non-uuid booking_id', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const event = makeEvent({}, { booking_id: 'not-a-uuid' });
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
 
     it('dead-letters on missing chain_id', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const event = makeEvent({}, { chain_id: undefined as unknown as string });
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
 
     it('dead-letters when both approver arrays are empty', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const event = makeEvent({}, { approver_person_ids: [], approver_team_ids: [] });
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
 
     it('dead-letters on missing approver_person_ids', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const event = makeEvent(
         {},
         { approver_person_ids: undefined as unknown as string[] },
@@ -131,7 +193,7 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
     });
 
     it('dead-letters on missing approver_team_ids', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const event = makeEvent(
         {},
         { approver_team_ids: undefined as unknown as string[] },
@@ -140,25 +202,25 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
     });
 
     it('dead-letters when an approver person id is not a uuid', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const event = makeEvent({}, { approver_person_ids: [APPROVER_A, 'bogus'] });
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
 
     it('dead-letters when an approver team id is not a uuid', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const event = makeEvent({}, { approver_team_ids: ['bogus'] });
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
 
     it('dead-letters on unparseable started_at', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const event = makeEvent({}, { started_at: 'not-a-date' });
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
 
     it('dead-letters on missing started_at', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const event = makeEvent({}, { started_at: undefined as unknown as string });
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
@@ -173,7 +235,7 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
   // the drain window closes.
   describe('legacy v4 backward-compat shim', () => {
     it('legacy approver_ids payload accepted as person_ids with warn log', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const warnSpy = jest
         .spyOn((handler as unknown as { log: { warn: (msg: string) => void } }).log, 'warn')
         .mockImplementation(() => undefined);
@@ -204,7 +266,7 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
     });
 
     it('legacy shim does not fire when split arrays are present (no warn)', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const warnSpy = jest
         .spyOn((handler as unknown as { log: { warn: (msg: string) => void } }).log, 'warn')
         .mockImplementation(() => undefined);
@@ -228,7 +290,7 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
     });
 
     it('legacy shim still validates uuid shape on the salvaged person ids', async () => {
-      const handler = new BookingApprovalRequiredHandler();
+      const handler = makeMinimalHandler();
       const event = makeEvent(
         {},
         {
@@ -247,10 +309,10 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
 // B.4.A.5 sub-step D — dispatch path tests
 // ─────────────────────────────────────────────────────────────────────────
 //
-// Spec: /tmp/b4a5-plan-v2.md sub-step D.
+// Spec: /tmp/b4a5-plan-v2.md sub-step D + self-review remediation v2.
 //
-// Coverage (11 scenarios per the brief):
-//   1. Happy path — 1 person → 1 dispatch.
+// Coverage:
+//   1. Happy path — 1 person → 1 dispatch (en locale).
 //   2. Happy path — team approver fan-out → N dispatches.
 //   3. Happy path — mixed person + team → union dispatched.
 //   4. Chain already resolved (status='approved'/'rejected') → no-op.
@@ -261,19 +323,11 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
 //      null → no-op.
 //   8. Per-user dispatch failure → other users still get dispatched.
 //   9. Idempotency key shape = `<event.id>:<userId>`.
-//  10. Locale 'en' default (no users.locale_preference column today).
+//  10. Locale 'en' default + NL tenant gets NL.
 //  11. Tenant slug forwarded from TenantContext (or empty when unset).
-//
-// These complement the existing 17 validation-only tests above by exercising
-// the DI-wired dispatch path. Existing tests construct
-// `new BookingApprovalRequiredHandler()` (no DI) and verify the validation-
-// only branch; new tests inject mocked SupabaseService + NotificationsService
-// + ConfigService and exercise the full re-read + fan-out + dispatch flow.
-
-import type { NotificationsService } from '../../../notifications';
-import type { SupabaseService } from '../../../../common/supabase/supabase.service';
-import type { ConfigService } from '@nestjs/config';
-import { TenantContext } from '../../../../common/tenant-context';
+//  12. (self-review I7) Transient supabase read errors throw AppError
+//      (outbox retry picks up): approvals re-read, person_users lookup,
+//      team_members lookup, booking enrichment.
 
 const USER_A = 'aa000000-0000-4000-8000-000000000001';
 const USER_B = 'aa000000-0000-4000-8000-000000000002';
@@ -315,17 +369,25 @@ interface PersonRow {
   last_name: string | null;
 }
 
+interface TenantRow {
+  id: string;
+  locale_default: string | null;
+}
+
 interface DispatchHarnessOpts {
   approvals?: ApprovalRow[] | null;
   approvalsError?: { message: string } | null;
   personUsers?: UserRow[];
   personUsersError?: { message: string } | null;
   teamMembers?: Array<{ user_id: string; team_id: string }>;
+  teamMembersError?: { message: string } | null;
   teamUsers?: UserRow[];
+  teamUsersError?: { message: string } | null;
   booking?: BookingRow | null;
   bookingError?: { message: string } | null;
   space?: SpaceRow | null;
   requester?: PersonRow | null;
+  tenant?: TenantRow | null;
   /** When true, the dispatch fn throws on the n-th call (1-indexed). */
   failDispatchOn?: number[];
 }
@@ -368,12 +430,18 @@ function makeDispatchHarness(opts: DispatchHarnessOpts) {
               eq: () => ({
                 in: async (col: string, ids: string[]) => {
                   if (col === 'person_id') {
+                    if (opts.personUsersError) {
+                      return { data: null, error: opts.personUsersError };
+                    }
                     const rows = (opts.personUsers ?? []).filter((u) =>
                       ids.includes(u.person_id as string),
                     );
-                    return { data: rows, error: opts.personUsersError ?? null };
+                    return { data: rows, error: null };
                   }
                   if (col === 'id') {
+                    if (opts.teamUsersError) {
+                      return { data: null, error: opts.teamUsersError };
+                    }
                     const rows = (opts.teamUsers ?? []).filter((u) =>
                       ids.includes(u.id),
                     );
@@ -390,8 +458,8 @@ function makeDispatchHarness(opts: DispatchHarnessOpts) {
             select: () => ({
               eq: () => ({
                 in: async () => ({
-                  data: opts.teamMembers ?? [],
-                  error: null,
+                  data: opts.teamMembersError ? null : opts.teamMembers ?? [],
+                  error: opts.teamMembersError ?? null,
                 }),
               }),
             }),
@@ -434,6 +502,20 @@ function makeDispatchHarness(opts: DispatchHarnessOpts) {
                     data: opts.requester ?? null,
                     error: null,
                   }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === 'tenants') {
+          // Locale resolution: single SELECT id, locale_default WHERE id =
+          // tenantId. .eq().maybeSingle() chain.
+          return {
+            select: () => ({
+              eq: () => ({
+                maybeSingle: async () => ({
+                  data: opts.tenant ?? { id: TENANT_ID, locale_default: 'en' },
+                  error: null,
                 }),
               }),
             }),
@@ -549,8 +631,11 @@ describe('BookingApprovalRequiredHandler.handle — B.4.A.5 sub-step D dispatch'
         startAt: '2026-05-13T09:00:00Z',
         endAt: '2026-05-13T10:30:00Z',
       });
+      // Self-review I4: CTA falls back to /desk/bookings/<bookingId>?tab=
+      // approval until /desk/approvals/<chainId> ships in approvals
+      // Sprint 2.
       expect((call.payload as { approvalCtaUrl: string }).approvalCtaUrl).toBe(
-        `https://app.example.com/desk/approvals/${encodeURIComponent(CHAIN_ID)}`,
+        `https://app.example.com/desk/bookings/${encodeURIComponent(BOOKING_ID)}?tab=approval`,
       );
       expect(call.context).toEqual({
         entityType: 'booking',
@@ -907,9 +992,9 @@ describe('BookingApprovalRequiredHandler.handle — B.4.A.5 sub-step D dispatch'
       );
     });
 
-    it('locale defaults to "en" (no users.locale_preference column today)', async () => {
-      // Plan-review I6: locale resolution NEVER throws; v1 always 'en'
-      // because the column does not exist on the users table yet.
+    it('locale defaults to "en" from tenants.locale_default', async () => {
+      // Self-review C2/C3 + I2: per-user resolveUserLocale removed; locale
+      // now comes from tenants.locale_default (single read per event).
       const h = makeDispatchHarness({
         approvals: [
           {
@@ -923,6 +1008,7 @@ describe('BookingApprovalRequiredHandler.handle — B.4.A.5 sub-step D dispatch'
         booking: FULL_BOOKING,
         space: FULL_SPACE,
         requester: FULL_REQUESTER,
+        tenant: { id: TENANT_ID, locale_default: 'en' },
       });
       const handler = new BookingApprovalRequiredHandler(
         h.supabase,
@@ -939,6 +1025,52 @@ describe('BookingApprovalRequiredHandler.handle — B.4.A.5 sub-step D dispatch'
       );
       expect(h.dispatchCalls).toHaveLength(1);
       expect(h.dispatchCalls[0].locale).toBe('en');
+    });
+
+    it('locale is "nl" when tenants.locale_default is "nl" (Benelux)', async () => {
+      // Self-review I2: NL-primary tenants get NL emails. Memory:
+      // project_market_benelux.md.
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: null,
+            approver_team_id: TEAM_X,
+          },
+        ],
+        teamMembers: [
+          { user_id: USER_A, team_id: TEAM_X },
+          { user_id: USER_B, team_id: TEAM_X },
+        ],
+        teamUsers: [
+          { id: USER_A, email: 'a@example.com' },
+          { id: USER_B, email: 'b@example.com' },
+        ],
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+        tenant: { id: TENANT_ID, locale_default: 'nl' },
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      await withTenant(() =>
+        handler.handle(
+          makeEvent(
+            {},
+            { approver_person_ids: [], approver_team_ids: [TEAM_X] },
+          ),
+        ),
+      );
+      // Both dispatch calls share the tenant locale (single read, applied
+      // to every approver — no per-user N+1).
+      expect(h.dispatchCalls).toHaveLength(2);
+      for (const call of h.dispatchCalls) {
+        expect(call.locale).toBe('nl');
+      }
     });
 
     it('tenantSlug is forwarded from TenantContext, empty string when unset', async () => {
@@ -971,6 +1103,160 @@ describe('BookingApprovalRequiredHandler.handle — B.4.A.5 sub-step D dispatch'
       );
       expect(h.dispatchCalls).toHaveLength(1);
       expect(h.dispatchCalls[0].context.tenantSlug).toBe('');
+    });
+  });
+
+  // ── Self-review CODE-I7: transient supabase read errors throw AppError so
+  //    the outbox retry picks them up. Pre-fix, the harness exposed the
+  //    knobs (approvalsError + bookingError) but NO test exercised them — a
+  //    refactor that converted a throw to log+return would have passed
+  //    silently.
+  //    These tests also pin the new error code split (CODE-I5):
+  //      - approvals re-read failure → approval.read_failed (NOT
+  //        email.dispatch_failed)
+  //      - users + team_members lookup failures → users.lookup_failed
+  //      - booking enrichment failure → booking.read_failed
+  describe('transient supabase read errors throw AppError (self-review I7)', () => {
+    it('approvals re-read returns error → handler throws (outbox retries)', async () => {
+      const h = makeDispatchHarness({
+        approvals: null,
+        approvalsError: { message: 'pgcode 57014: query timed out' },
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      let captured: unknown;
+      try {
+        await withTenant(() => handler.handle(makeEvent()));
+      } catch (e) {
+        captured = e;
+      }
+      expect(captured).toBeDefined();
+      // CODE-I5: dedicated approval.read_failed — NOT the generic
+      // email.dispatch_failed blanket.
+      expect((captured as { code?: string }).code).toBe('approval.read_failed');
+      expect(h.dispatchCalls).toHaveLength(0);
+    });
+
+    it('person users lookup returns error → handler throws (outbox retries)', async () => {
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: APPROVER_A,
+            approver_team_id: null,
+          },
+        ],
+        personUsersError: { message: 'pgcode 53300: too many connections' },
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      let captured: unknown;
+      try {
+        await withTenant(() =>
+          handler.handle(
+            makeEvent(
+              {},
+              { approver_person_ids: [APPROVER_A], approver_team_ids: [] },
+            ),
+          ),
+        );
+      } catch (e) {
+        captured = e;
+      }
+      expect(captured).toBeDefined();
+      expect((captured as { code?: string }).code).toBe('users.lookup_failed');
+      expect(h.dispatchCalls).toHaveLength(0);
+    });
+
+    it('team_members lookup returns error → handler throws (outbox retries)', async () => {
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: null,
+            approver_team_id: TEAM_X,
+          },
+        ],
+        teamMembersError: { message: 'pgcode 57014: query timed out' },
+        booking: FULL_BOOKING,
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      let captured: unknown;
+      try {
+        await withTenant(() =>
+          handler.handle(
+            makeEvent(
+              {},
+              { approver_person_ids: [], approver_team_ids: [TEAM_X] },
+            ),
+          ),
+        );
+      } catch (e) {
+        captured = e;
+      }
+      expect(captured).toBeDefined();
+      expect((captured as { code?: string }).code).toBe('users.lookup_failed');
+      expect(h.dispatchCalls).toHaveLength(0);
+    });
+
+    it('booking enrichment returns error → handler throws (outbox retries)', async () => {
+      const h = makeDispatchHarness({
+        approvals: [
+          {
+            id: 'app1',
+            status: 'pending',
+            approver_person_id: APPROVER_A,
+            approver_team_id: null,
+          },
+        ],
+        personUsers: [{ id: USER_A, person_id: APPROVER_A, email: 'a@example.com' }],
+        booking: null,
+        bookingError: { message: 'pgcode 53300: too many connections' },
+        space: FULL_SPACE,
+        requester: FULL_REQUESTER,
+      });
+      const handler = new BookingApprovalRequiredHandler(
+        h.supabase,
+        h.notifications,
+        h.config,
+      );
+      let captured: unknown;
+      try {
+        await withTenant(() =>
+          handler.handle(
+            makeEvent(
+              {},
+              { approver_person_ids: [APPROVER_A], approver_team_ids: [] },
+            ),
+          ),
+        );
+      } catch (e) {
+        captured = e;
+      }
+      expect(captured).toBeDefined();
+      // CODE-I5: dedicated booking.read_failed (was email.dispatch_failed).
+      expect((captured as { code?: string }).code).toBe('booking.read_failed');
+      expect(h.dispatchCalls).toHaveLength(0);
     });
   });
 });

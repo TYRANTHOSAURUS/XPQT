@@ -824,6 +824,19 @@ export type KnownErrorCode =
   // docs/follow-ups/b4-followups.md "Sequencing — controller cutover
   // MUST land in or after notification dispatch (B.4.A.5)".
   | 'booking.edit_requires_notification_dispatch'
+  // B.4.A.5 sub-step D self-review remediation (CODE-I5).
+  // The original handler raised `email.dispatch_failed` for any supabase
+  // read failure during the dispatch flow. SREs couldn't tell apart a DB
+  // blip from an actual email-channel rejection. These codes split the
+  // call sites so dashboards / alert routes can isolate read failures.
+  // All 500 server-class — outbox retries pick them up; user payload is
+  // fine. Worker emit only; never returned by an HTTP route.
+  // - users.lookup_failed: persons→users join OR team_members→users
+  //   join failed (which side surfaces in the AppError detail).
+  // - booking.read_failed: enrichment read of the booking / space /
+  //   requester rows failed.
+  | 'users.lookup_failed'
+  | 'booking.read_failed'
 
   // ─── floor_plan ──────────────────────────────────────────────────────────
   | 'floor_plan.draft.not_found'
@@ -1526,6 +1539,12 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'approval.read_failed',
   // B.4 step 2D-D — see KnownErrorCode union for rationale.
   'booking.edit_requires_notification_dispatch',
+  // B.4.A.5 sub-step D self-review remediation (CODE-I5). Split out from
+  // the original `email.dispatch_failed` blanket so SREs can isolate
+  // read-side failures from email-channel failures. See KnownErrorCode
+  // union for per-code rationale.
+  'users.lookup_failed',
+  'booking.read_failed',
   // floor_plan module — A.9
   'floor_plan.draft.not_found',
   'floor_plan.draft.create_failed',

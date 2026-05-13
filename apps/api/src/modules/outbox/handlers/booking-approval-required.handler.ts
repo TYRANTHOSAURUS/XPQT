@@ -1,4 +1,4 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AppErrors } from '../../../common/errors';
 import { TenantContext } from '../../../common/tenant-context';
@@ -27,7 +27,7 @@ import type { OutboxEvent } from '../outbox.types';
  *
  * ── B.4.A.5 sub-step D — what this handler does ─────────────────────────
  *
- * 1. Validate payload + tenant boundary (kept from B.4.A.4 stub).
+ * 1. Validate payload + tenant boundary.
  * 2. Re-read approval state for `chain_id` (architect C3 — mirrors
  *    sla-timer-repoint.handler.ts:84-101). If chain is fully resolved or
  *    rows are missing → no-op (NOT retry). Catches the race where the
@@ -38,7 +38,8 @@ import type { OutboxEvent } from '../outbox.types';
  * 4. Resolve `approver_team_ids` → fan out via `team_members` join in TS
  *    (mirrors approval.service.ts:184-233 pattern). Tenant-filter every
  *    JOIN — tenant_id is the #0 invariant.
- * 5. Union of person + team users; fetch email + (future) locale.
+ * 5. Union of person + team users; resolve tenant locale ONCE (NOT per
+ *    user) — see "Locale resolution" below.
  * 6. Enrich payload (booking + space + requester JOINs) → typed
  *    `BookingApprovalRequiredPayload` consumed by NotificationsService /
  *    TemplateResolverService.
@@ -73,13 +74,20 @@ import type { OutboxEvent } from '../outbox.types';
  * trusted only to scope the user lookup — the lookup itself is tenant-
  * filtered, so a smuggled cross-tenant id resolves to zero rows.
  *
- * ── Locale resolution (plan-review I6) ──────────────────────────────────
+ * ── Locale resolution (self-review C2/C3 + I2) ──────────────────────────
  *
- * `users.locale_preference` does NOT exist on the `users` table today
- * (verified: only `tenants.locale_default` is registered). v1 always
- * defaults the per-user locale to 'en'. When a user-locale column is
- * added later, the lookup happens in `resolveUserLocale()` below — one
- * place to update.
+ * v1 derives the per-user locale from `tenants.locale_default` (already on
+ * the tenants table at 00001_tenants.sql:20). The fetch happens ONCE per
+ * event — not per user — so a 50-approver team event still issues a single
+ * tenants read instead of 50. NL-primary tenants get NL emails (per
+ * memory project_market_benelux.md).
+ *
+ * When `users.locale_preference` lands on the users table, the per-user
+ * override is a single LEFT JOIN added to the user fetches in steps
+ * 5/6 — call sites are marked with TODO comments below.
+ *
+ * Plan-review I6: locale resolution NEVER throws. A missing/unparseable
+ * tenants row falls back to 'en'.
  *
  * ── Idempotency (plan-review I4) ────────────────────────────────────────
  *
@@ -89,6 +97,12 @@ import type { OutboxEvent } from '../outbox.types';
  * approvers stays exactly-once at the email provider (Resend dedupes
  * within 24h on key + payload). The inbox row's idempotency is handled
  * by the partial unique index in 00391 (handler doesn't write inbox).
+ *
+ * Outbox max-attempt + backoff configuration (worker.ts:33 + 47) defaults
+ * to ~70 minutes worst case (5 attempts × {30s, 2m, 10m, 1h}); well inside
+ * Resend's 24h dedupe window. Followup logged in
+ * docs/follow-ups/b4a5-followups.md to verify on any future bump to the
+ * env knobs.
  *
  * ── Per-user isolation ──────────────────────────────────────────────────
  *
@@ -163,9 +177,9 @@ export class BookingApprovalRequiredHandler
   private readonly log = new Logger(BookingApprovalRequiredHandler.name);
 
   constructor(
-    @Optional() private readonly supabase?: SupabaseService,
-    @Optional() private readonly notifications?: NotificationsService,
-    @Optional() private readonly config?: ConfigService,
+    private readonly supabase: SupabaseService,
+    private readonly notifications: NotificationsService,
+    private readonly config: ConfigService,
   ) {}
 
   async handle(event: OutboxEvent<BookingApprovalRequiredPayload>): Promise<void> {
@@ -261,29 +275,9 @@ export class BookingApprovalRequiredHandler
       );
     }
 
-    // ── 3. DI presence check ─────────────────────────────────────────────
-    //
-    // Constructor uses @Optional() so the validation-only path stays unit-
-    // testable without DI. Production path requires all three: supabase
-    // for re-reads, notifications for dispatch, config for WEB_BASE_URL.
-    // Missing any of them is a wiring bug (the module declared the
-    // dependency but the test forgot to inject) — terminal.
-    if (!this.supabase || !this.notifications) {
-      // Validation-only path (legacy stub-style tests). No-op + log so
-      // existing call-sites that construct without DI keep working. The
-      // outbox.module.ts wiring guarantees DI in the live worker.
-      this.log.log(
-        `booking.approval_required validation-only (no DI; sub-step D dispatch path skipped): ` +
-          `booking=${booking_id} chain=${chain_id} ` +
-          `persons=${approver_person_ids.length} teams=${approver_team_ids.length} ` +
-          `started_at=${started_at} event=${event.id}`,
-      );
-      return;
-    }
-
     const tenantId = event.tenant_id;
 
-    // ── 4. Re-read approval state (architect C3) ─────────────────────────
+    // ── 3. Re-read approval state (architect C3) ─────────────────────────
     //
     // Mirror sla-timer-repoint.handler.ts:84-101. Catches:
     //   - chain rows deleted (booking cancelled between RPC + drain)
@@ -297,8 +291,10 @@ export class BookingApprovalRequiredHandler
       .eq('approval_chain_id', chain_id);
 
     if (apprErr) {
-      // Transient — let the outbox retry pick it up.
-      throw AppErrors.server('email.dispatch_failed', {
+      // Transient — let the outbox retry pick it up. Self-review CODE-I5:
+      // dedicated `approval.read_failed` so SREs can isolate this from the
+      // email-channel `email.dispatch_failed` blanket.
+      throw AppErrors.server('approval.read_failed', {
         detail: `approval_re_read_failed: ${apprErr.message}`,
       });
     }
@@ -320,7 +316,11 @@ export class BookingApprovalRequiredHandler
       return;
     }
 
-    // ── 5. Resolve approver_person_ids → users (tenant-scoped) ───────────
+    // ── 4. Resolve approver_person_ids → users (tenant-scoped) ───────────
+    //
+    // TODO(self-review C2/C3): when users.locale_preference column lands,
+    // add it to the SELECT here + plumb it through the userMap so per-user
+    // overrides take precedence over tenants.locale_default below.
     const personIds = approver_person_ids;
     const personUserMap = new Map<string, { id: string; email: string | null }>();
     if (personIds.length > 0) {
@@ -330,7 +330,7 @@ export class BookingApprovalRequiredHandler
         .eq('tenant_id', tenantId)
         .in('person_id', personIds);
       if (personErr) {
-        throw AppErrors.server('email.dispatch_failed', {
+        throw AppErrors.server('users.lookup_failed', {
           detail: `person_user_lookup_failed: ${personErr.message}`,
         });
       }
@@ -343,11 +343,14 @@ export class BookingApprovalRequiredHandler
       }
     }
 
-    // ── 6. Resolve approver_team_ids → users via team_members ────────────
+    // ── 5. Resolve approver_team_ids → users via team_members ────────────
     //
     // Mirrors approval.service.ts:184-233 pattern. Tenant-filter every
     // JOIN. supabase.admin bypasses RLS, so the explicit `.eq('tenant_id',
     // ...)` is the boundary.
+    //
+    // TODO(self-review C2/C3): same as step 4 — add users.locale_preference
+    // to the second SELECT when the column lands.
     const teamIds = approver_team_ids;
     const teamUserMap = new Map<string, { id: string; email: string | null }>();
     if (teamIds.length > 0) {
@@ -357,7 +360,7 @@ export class BookingApprovalRequiredHandler
         .eq('tenant_id', tenantId)
         .in('team_id', teamIds);
       if (teamErr) {
-        throw AppErrors.server('email.dispatch_failed', {
+        throw AppErrors.server('users.lookup_failed', {
           detail: `team_members_lookup_failed: ${teamErr.message}`,
         });
       }
@@ -371,7 +374,7 @@ export class BookingApprovalRequiredHandler
           .eq('tenant_id', tenantId)
           .in('id', memberUserIds);
         if (teamUsersErr) {
-          throw AppErrors.server('email.dispatch_failed', {
+          throw AppErrors.server('users.lookup_failed', {
             detail: `team_user_fetch_failed: ${teamUsersErr.message}`,
           });
         }
@@ -381,7 +384,7 @@ export class BookingApprovalRequiredHandler
       }
     }
 
-    // ── 7. Union of person + team users ──────────────────────────────────
+    // ── 6. Union of person + team users ──────────────────────────────────
     const allUsers = new Map<string, { id: string; email: string | null }>();
     for (const [id, u] of personUserMap) allUsers.set(id, u);
     for (const [id, u] of teamUserMap) allUsers.set(id, u);
@@ -398,6 +401,17 @@ export class BookingApprovalRequiredHandler
       );
       return;
     }
+
+    // ── 7. Resolve tenant locale ONCE (self-review C2/C3 + I2) ───────────
+    //
+    // Single tenants read; same locale applied to every approver. NL-primary
+    // tenants get NL emails. When users.locale_preference lands, the per-user
+    // override picks it up via the SELECTs in steps 4/5 — and falls back to
+    // this tenant locale when null.
+    //
+    // Plan-review I6: locale resolution NEVER throws — a transient tenants
+    // read failure falls back to 'en' and logs a warn line.
+    const tenantLocale = await this.resolveTenantLocale(tenantId, event.id);
 
     // ── 8. Enrich payload (booking + space + requester) ──────────────────
     const enriched = await this.enrichPayload({
@@ -435,12 +449,11 @@ export class BookingApprovalRequiredHandler
     let dispatched = 0;
     let failed = 0;
     for (const user of allUsers.values()) {
-      const locale = await this.resolveUserLocale(user.id, tenantId);
       try {
         await this.notifications.dispatch({
           tenantId,
           userId: user.id,
-          locale,
+          locale: tenantLocale,
           eventKind: 'booking.approval_required',
           payload: enriched,
           idempotencyKey: `${event.id}:${user.id}`,
@@ -501,7 +514,7 @@ export class BookingApprovalRequiredHandler
     bookingId: string;
     chainId: string;
   }): Promise<TemplatePayload | null> {
-    const supa = this.supabase!.admin;
+    const supa = this.supabase.admin;
 
     // Single round-trip: select booking with the columns we need + join
     // spaces (location_id) + persons (requester_person_id).
@@ -515,7 +528,10 @@ export class BookingApprovalRequiredHandler
       .maybeSingle();
 
     if (error) {
-      throw AppErrors.server('email.dispatch_failed', {
+      // Self-review CODE-I5: dedicated `booking.read_failed` so SREs can
+      // tell apart a booking-row read failure from an email-channel
+      // rejection.
+      throw AppErrors.server('booking.read_failed', {
         detail: `booking_enrich_read_failed: ${error.message}`,
       });
     }
@@ -549,12 +565,12 @@ export class BookingApprovalRequiredHandler
     ]);
 
     if (spaceRes.error) {
-      throw AppErrors.server('email.dispatch_failed', {
+      throw AppErrors.server('booking.read_failed', {
         detail: `space_enrich_read_failed: ${spaceRes.error.message}`,
       });
     }
     if (requesterRes.error) {
-      throw AppErrors.server('email.dispatch_failed', {
+      throw AppErrors.server('booking.read_failed', {
         detail: `requester_enrich_read_failed: ${requesterRes.error.message}`,
       });
     }
@@ -588,22 +604,51 @@ export class BookingApprovalRequiredHandler
       spaceName: space.name,
       startAt: b.start_at,
       endAt: b.end_at,
-      approvalCtaUrl: this.buildApprovalCtaUrl(args.chainId),
+      approvalCtaUrl: this.buildApprovalCtaUrl(args.chainId, b.id),
     };
   }
 
   /**
-   * Per-user locale lookup. v1: always 'en' — `users.locale_preference`
-   * does not exist on the `users` table today (only `tenants.locale_default`
-   * is registered). Centralised here so adding a per-user locale column
-   * later is a one-line edit.
+   * Resolve the tenant's default locale (single read, applied to every
+   * approver). Self-review C2/C3 + I2: the per-user `resolveUserLocale` was
+   * a hidden N+1 risk + always returned 'en' even for NL-primary tenants —
+   * both fixed here.
    *
-   * Plan-review I6: NEVER throws on locale resolution.
+   * `tenants.locale_default` exists on the tenants table at
+   * 00001_tenants.sql:20 (NOT NULL DEFAULT 'en'). Only 'en' and 'nl' are
+   * supported in the template registry today; any other value falls back
+   * to 'en' with a warn line so ops can spot tenants with bad config.
+   *
+   * Plan-review I6: NEVER throws. A transient tenants read failure falls
+   * back to 'en' and logs warn — outbox retry handles persistent failures
+   * via subsequent reads (e.g. the approvals re-read above).
    */
-  private async resolveUserLocale(
-    _userId: string,
-    _tenantId: string,
+  private async resolveTenantLocale(
+    tenantId: string,
+    eventId: string,
   ): Promise<'en' | 'nl'> {
+    const { data, error } = await this.supabase.admin
+      .from('tenants')
+      .select('id, locale_default')
+      .eq('id', tenantId)
+      .maybeSingle();
+    if (error || !data) {
+      this.log.warn(
+        `tenant_locale_lookup_failed_falling_back_to_en event=${eventId} ` +
+          `tenant=${tenantId} error=${error?.message ?? 'no_row'}`,
+      );
+      return 'en';
+    }
+    const locale = (data as { locale_default?: string | null }).locale_default;
+    if (locale === 'nl') return 'nl';
+    if (locale === 'en') return 'en';
+    // Tenant has a locale this notification channel doesn't render yet.
+    // Surface a warn line and fall back to 'en' rather than dead-letter —
+    // approvers still get an email, just in English.
+    this.log.warn(
+      `tenant_locale_unsupported_falling_back_to_en event=${eventId} ` +
+        `tenant=${tenantId} locale=${locale}`,
+    );
     return 'en';
   }
 
@@ -612,20 +657,44 @@ export class BookingApprovalRequiredHandler
    *
    * Uses `FRONTEND_BASE_URL` (canonical — documented in .env.example) with
    * `WEB_BASE_URL` as a fallback (already used by visitor-email.worker.ts).
-   * Defaults to `http://localhost:5173` for unit tests / pre-config envs.
    *
-   * Currently links to the booking detail page (`/desk/bookings/...`) —
-   * `/desk/approvals/<chainId>` ships in the approvals spec Sprint 2,
-   * which is not yet on main (architect I1 in /tmp/b4a5-plan-v2.md
-   * sub-step F). Until then, the booking detail surface IS the action
-   * surface.
+   * Self-review I3: in non-test environments the handler hard-fails when
+   * BOTH env vars are unset — a localhost CTA in a production email is
+   * worse than the email never landing. In test env the localhost fallback
+   * stays so jest specs that don't inject a ConfigService keep working.
+   *
+   * Self-review I4: the approvals route (`/desk/approvals/<chainId>`) is
+   * the target once approvals Sprint 2 ships. Until then, the CTA falls
+   * back to the booking detail surface (`/desk/bookings/<bookingId>?tab=
+   * approval`) — that route exists today and surfaces the inline approval
+   * panel. TODO logged in docs/follow-ups/b4a5-followups.md.
    */
-  private buildApprovalCtaUrl(chainId: string): string {
+  private buildApprovalCtaUrl(chainId: string, bookingId: string): string {
     const base =
-      this.config?.get<string>('FRONTEND_BASE_URL') ??
-      this.config?.get<string>('WEB_BASE_URL') ??
-      'http://localhost:5173';
-    const trimmedBase = base.replace(/\/+$/, '');
-    return `${trimmedBase}/desk/approvals/${encodeURIComponent(chainId)}`;
+      this.config.get<string>('FRONTEND_BASE_URL') ??
+      this.config.get<string>('WEB_BASE_URL') ??
+      null;
+    let resolvedBase: string;
+    if (base !== null && typeof base === 'string' && base.length > 0) {
+      resolvedBase = base;
+    } else if (process.env.NODE_ENV === 'test') {
+      // Tests intentionally don't always inject a ConfigService — fallback
+      // keeps the existing spec setup working.
+      resolvedBase = 'http://localhost:5173';
+    } else {
+      // Non-test env without either env var is a deploy misconfig — better
+      // to fail loudly than send broken-link emails. Outbox retries pick
+      // it up; the alarm fires after maxAttempts.
+      throw AppErrors.server('email.dispatch_failed', {
+        detail:
+          'frontend_base_url_unset: neither FRONTEND_BASE_URL nor WEB_BASE_URL is set',
+      });
+    }
+    const trimmedBase = resolvedBase.replace(/\/+$/, '');
+    // TODO: when /desk/approvals/<chainId> ships (approvals Sprint 2),
+    // swap the path to use chainId and drop the bookingId arg. Followup
+    // logged in docs/follow-ups/b4a5-followups.md.
+    void chainId; // keeps the signature stable for the swap
+    return `${trimmedBase}/desk/bookings/${encodeURIComponent(bookingId)}?tab=approval`;
   }
 }
