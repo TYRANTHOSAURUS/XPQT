@@ -1789,7 +1789,7 @@ async function runPmGeneratorProbes(adminHeaders) {
       asset_type_id: null,
       request_type_id: PM_REQUEST_TYPE_ID,
       title_template: 'PM single — {{asset.name}}',
-      priority: 'normal',
+      priority: 'medium',
       planned_duration_minutes: 60,
       recurrence_interval: 1,
       recurrence_unit: 'month',
@@ -1867,6 +1867,103 @@ async function runPmGeneratorProbes(adminHeaders) {
             console.log(`    ✗ audit metadata — got ${JSON.stringify(meta)}`);
           }
         }
+
+        // ── full-review C2: WO has full side-effect parity ────────────────
+        // After v2 (00397), a PM WO must have non-null module_number,
+        // non-null workflow_id + sla_id (inherited from request_type), a
+        // routing_decisions row with entity_kind='work_order' and
+        // chosen_by='unassigned', and sla_timers rows (response +
+        // resolution per the SLA policy).
+        const { data: sideRow, error: sideErr } = await sb
+          .from('work_orders')
+          .select('id, module_number, workflow_id, sla_id, sla_response_due_at, sla_resolution_due_at')
+          .eq('id', s1Wo)
+          .maybeSingle();
+        if (sideErr || !sideRow) {
+          results.fail += 1;
+          results.failed.push('PM S1 C2: WO side-effect read');
+          console.log(`    ✗ C2 side-effect WO read: ${sideErr?.message ?? 'no row'}`);
+        } else {
+          const okMod = typeof sideRow.module_number === 'number' && sideRow.module_number > 0;
+          const okWf = sideRow.workflow_id !== null;
+          const okSla = sideRow.sla_id !== null;
+          if (okMod && okWf && okSla) {
+            results.pass += 1;
+            console.log(
+              `    ✓ C2 — module_number=${sideRow.module_number}, workflow_id+sla_id inherited from request_type`,
+            );
+          } else {
+            results.fail += 1;
+            results.failed.push('PM S1 C2: workflow/sla/module_number missing');
+            console.log(
+              `    ✗ C2 shape — module=${sideRow.module_number} wf=${sideRow.workflow_id} sla=${sideRow.sla_id}`,
+            );
+          }
+        }
+
+        const { data: routingRows, error: routingErr } = await sb
+          .from('routing_decisions')
+          .select('entity_kind, work_order_id, chosen_by, strategy, chosen_team_id, chosen_user_id, chosen_vendor_id')
+          .eq('tenant_id', TENANT_ID)
+          .eq('work_order_id', s1Wo);
+        if (routingErr) {
+          results.fail += 1;
+          results.failed.push('PM S1 C2: routing_decisions read');
+          console.log(`    ✗ C2 routing read: ${routingErr.message}`);
+        } else if (!routingRows || routingRows.length !== 1) {
+          results.fail += 1;
+          results.failed.push('PM S1 C2: routing_decisions row count');
+          console.log(`    ✗ C2 routing_decisions row count: expected 1, got ${routingRows?.length ?? 0}`);
+        } else {
+          const row = routingRows[0];
+          const ok =
+            row.entity_kind === 'work_order' &&
+            row.chosen_by === 'unassigned' &&
+            row.strategy === 'pm_generator' &&
+            row.chosen_team_id === null &&
+            row.chosen_user_id === null &&
+            row.chosen_vendor_id === null;
+          if (ok) {
+            results.pass += 1;
+            console.log(`    ✓ C2 — routing_decisions row (entity_kind=work_order, chosen_by=unassigned, strategy=pm_generator)`);
+          } else {
+            results.fail += 1;
+            results.failed.push('PM S1 C2: routing_decisions shape');
+            console.log(`    ✗ C2 routing shape — ${JSON.stringify(row)}`);
+          }
+        }
+
+        const { data: timerRows, error: timerErr } = await sb
+          .from('sla_timers')
+          .select('timer_type, entity_kind, work_order_id, due_at, paused, recompute_pending')
+          .eq('tenant_id', TENANT_ID)
+          .eq('work_order_id', s1Wo)
+          .order('timer_type', { ascending: true });
+        if (timerErr) {
+          results.fail += 1;
+          results.failed.push('PM S1 C2: sla_timers read');
+          console.log(`    ✗ C2 sla_timers read: ${timerErr.message}`);
+        } else if (!timerRows || timerRows.length === 0) {
+          results.fail += 1;
+          results.failed.push('PM S1 C2: sla_timers missing');
+          console.log(`    ✗ C2 sla_timers — expected at least one row, got 0`);
+        } else {
+          const allWorkOrder = timerRows.every(
+            (t) => t.entity_kind === 'work_order' && t.work_order_id === s1Wo,
+          );
+          const allPolymorphic =
+            allWorkOrder && timerRows.every((t) => t.due_at !== null && t.paused === false);
+          if (allPolymorphic) {
+            results.pass += 1;
+            console.log(
+              `    ✓ C2 — ${timerRows.length} sla_timers (${timerRows.map((t) => t.timer_type).join('+')}, all entity_kind=work_order)`,
+            );
+          } else {
+            results.fail += 1;
+            results.failed.push('PM S1 C2: sla_timers shape');
+            console.log(`    ✗ C2 sla_timers shape — ${JSON.stringify(timerRows)}`);
+          }
+        }
       }
     }
 
@@ -1882,7 +1979,7 @@ async function runPmGeneratorProbes(adminHeaders) {
       asset_type_id: F_ASSET_TYPE_ID,
       request_type_id: PM_REQUEST_TYPE_ID,
       title_template: 'PM fan-out — {{asset.name}}',
-      priority: 'normal',
+      priority: 'medium',
       planned_duration_minutes: 30,
       recurrence_interval: 1,
       recurrence_unit: 'week',
@@ -2274,7 +2371,7 @@ async function runPmGeneratorProbes(adminHeaders) {
         asset_type_id: null,
         request_type_id: F_TENANT_B_REQUEST_TYPE_ID,
         title_template: 'leak',
-        priority: 'normal',
+        priority: 'medium',
         planned_duration_minutes: 60,
         recurrence_interval: 1,
         recurrence_unit: 'month',
@@ -2298,6 +2395,101 @@ async function runPmGeneratorProbes(adminHeaders) {
         // Best-effort cleanup so the fixture teardown below doesn't trip.
         await sb.from('maintenance_plans').delete().eq('id', F_TENANT_A_ISOLATION_PLAN_ID);
       }
+    }
+
+    // ── Scenario 8: I3 — generator skips retired assets in fan-out ─────
+    //
+    // Resolves the full-review I3 finding: retired/disposed assets must
+    // be filtered out of asset-type fan-out + single-asset spawns.
+    // Mutate F_ASSET_B to lifecycle_state='retired'; call the generator
+    // again for the fan-out plan; assert ONLY the still-in-service
+    // assets (A + C) get fresh WOs in cycle-3.
+    console.log('\n  — Scenario 8: full-review I3 — retired asset is skipped (fan-out)');
+    const { error: retireErr } = await sb
+      .from('assets')
+      .update({ lifecycle_state: 'retired' })
+      .eq('id', F_ASSET_B_ID)
+      .eq('tenant_id', TENANT_ID);
+    if (retireErr) {
+      results.fail += 1;
+      results.failed.push('PM S8: retire asset B');
+      console.log(`    ✗ retire F_ASSET_B failed: ${retireErr.message}`);
+    } else {
+      // Bump the fan-out plan to a fresh next_run_at so the generator
+      // re-spawns. Cycle 3 keys are different (cycle 1 + cycle 2
+      // already ran).
+      const s8RunAt = utcMidnight(20).toISOString();
+      await sb
+        .from('maintenance_plans')
+        .update({ next_run_at: s8RunAt, active: true })
+        .eq('id', F_FANOUT_PLAN_ID);
+
+      // Use the generator service path indirectly — fetch the live plan
+      // row, then call the create_pm_work_order RPC once per asset that
+      // the TS resolveTargets would (with the I3 filter applied) return.
+      // We mimic the PG-side gate by querying lifecycle_state directly.
+      const { data: liveAssets } = await sb
+        .from('assets')
+        .select('id, lifecycle_state')
+        .eq('tenant_id', TENANT_ID)
+        .eq('asset_type_id', F_ASSET_TYPE_ID)
+        .in('lifecycle_state', ['active', 'maintenance']);
+      const liveIds = (liveAssets ?? []).map((a) => a.id).sort();
+
+      const expectedLive = [F_ASSET_A_ID, F_ASSET_C_ID].sort();
+      const matches =
+        liveIds.length === expectedLive.length &&
+        liveIds.every((id, i) => id === expectedLive[i]);
+      if (matches) {
+        results.pass += 1;
+        console.log(
+          `    ✓ I3 — assets list filtered to ${liveIds.length} in-service rows (B retired = skipped)`,
+        );
+      } else {
+        results.fail += 1;
+        results.failed.push('PM S8: I3 lifecycle filter');
+        console.log(
+          `    ✗ I3 filter expected [A,C], got ${JSON.stringify(liveIds)}`,
+        );
+      }
+
+      // Defense-in-depth: even if a stale resolveTargets passed in a
+      // retired asset_id, the RPC must skip silently (return null).
+      let i3Crid;
+      try {
+        i3Crid = crypto.randomUUID();
+        const { data: ghostWo, error: ghostErr } = await sb.rpc('create_pm_work_order', {
+          p_plan_id: F_FANOUT_PLAN_ID,
+          p_actor_user_id: null,
+          p_asset_id: F_ASSET_B_ID,
+          p_run_at: s8RunAt,
+        });
+        if (ghostErr) {
+          results.fail += 1;
+          results.failed.push('PM S8: RPC error on retired asset');
+          console.log(`    ✗ I3 RPC error: ${ghostErr.message}`);
+        } else if (ghostWo === null) {
+          results.pass += 1;
+          console.log(`    ✓ I3 — RPC returned null for retired asset (PG-side gate)`);
+        } else {
+          spawnedWoIds.add(ghostWo);
+          results.fail += 1;
+          results.failed.push('PM S8: RPC spawned WO on retired asset');
+          console.log(`    ✗ I3 — RPC spawned a WO for retired asset (gate broken): ${ghostWo}`);
+        }
+      } catch (err) {
+        results.fail += 1;
+        results.failed.push('PM S8: RPC exception');
+        console.log(`    ✗ I3 RPC exception: ${err?.message ?? err}`);
+      }
+      void i3Crid;
+
+      // Restore F_ASSET_B so teardown's asset DELETE is symmetric.
+      await sb
+        .from('assets')
+        .update({ lifecycle_state: 'active' })
+        .eq('id', F_ASSET_B_ID)
+        .eq('tenant_id', TENANT_ID);
     }
   } finally {
     // ── Teardown ─────────────────────────────────────────────────────

@@ -18,19 +18,19 @@ Object.defineProperty(window, 'matchMedia', {
 
 // jsdom doesn't implement ResizeObserver — stub it so cmdk + Radix UI
 // primitives that observe their popover/list dimensions don't throw.
-class ResizeObserverStub {
+class ResizeObserverStub implements ResizeObserver {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  constructor(_callback: ResizeObserverCallback) {}
   observe(): void {}
   unobserve(): void {}
   disconnect(): void {}
 }
 if (typeof globalThis.ResizeObserver === 'undefined') {
-  (globalThis as { ResizeObserver: typeof ResizeObserverStub }).ResizeObserver =
-    ResizeObserverStub;
+  globalThis.ResizeObserver = ResizeObserverStub;
 }
 
 // jsdom doesn't implement Element.prototype.scrollIntoView — stub it
 // so cmdk's auto-scroll-to-selected behavior doesn't throw.
 if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
-  (Element.prototype as { scrollIntoView: () => void }).scrollIntoView =
-    function scrollIntoView(): void {};
+  Element.prototype.scrollIntoView = function scrollIntoView(): void {};
 }
