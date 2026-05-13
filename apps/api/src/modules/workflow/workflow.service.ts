@@ -1,8 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppError, AppErrors } from '../../common/errors';
 import { WorkflowValidatorService } from './workflow-validator.service';
+import { WorkflowEngineService, type WorkflowEntityKind } from './workflow-engine.service';
 
 interface Graph {
   nodes: Array<{ id: string; type: string; config: Record<string, unknown>; position?: { x: number; y: number } }>;
@@ -14,7 +15,57 @@ export class WorkflowService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly validator: WorkflowValidatorService,
+    // Phase 1.5 sub-step 6.A.Y: `start({...})` overload routes to engine.
+    // forwardRef because WorkflowEngineService also depends on this module
+    // for `workflow.service.ts`-typed reads in some test paths.
+    @Inject(forwardRef(() => WorkflowEngineService))
+    private readonly engine: WorkflowEngineService,
   ) {}
+
+  /**
+   * Phase 1.5 sub-step 6.A.Y — polymorphic start entry point.
+   *
+   * Routes by `entityKind`:
+   *   - `'case'`       → `engine.startForTicket(entityId, definitionId)`
+   *                       (legacy: entityId is the ticket/case row id).
+   *   - `'booking'`    → `engine.startForBooking(entityId, definitionId)`
+   *                       (Phase 1.5 new path; writes booking_id +
+   *                       entity_kind='booking'; gates definition status=
+   *                       'published').
+   *   - `'work_order'` → not implemented in Phase 1.5; throws
+   *                       `workflow.advance_failed`. Future Phase 1.B.x
+   *                       slice ships this.
+   *
+   * `tenantId` is honored — `TenantContext.run({...})` MUST be active at
+   * the call site (every NestJS controller path already wraps with the
+   * tenant middleware). The engine's `startFor*` methods read
+   * `TenantContext.current()` internally.
+   *
+   * Returns the inserted workflow_instances row.
+   */
+  async start(args: {
+    definitionId: string;
+    entityKind: WorkflowEntityKind;
+    entityId: string;
+    tenantId: string;
+  }): Promise<unknown> {
+    if (args.entityKind === 'case') {
+      return this.engine.startForTicket(args.entityId, args.definitionId);
+    }
+    if (args.entityKind === 'booking') {
+      return this.engine.startForBooking(args.entityId, args.definitionId);
+    }
+    if (args.entityKind === 'work_order') {
+      throw AppErrors.server('workflow.advance_failed', {
+        detail: 'work_order start not implemented in Phase 1.5',
+      });
+    }
+    // Exhaustive guard — narrow the union.
+    const _exhaustive: never = args.entityKind;
+    throw new AppError('workflow.advance_failed', 500, {
+      detail: `unknown entityKind: ${String(_exhaustive)}`,
+    });
+  }
 
   async list() {
     const tenant = TenantContext.current();

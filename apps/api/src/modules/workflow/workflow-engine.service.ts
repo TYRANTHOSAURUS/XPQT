@@ -988,6 +988,81 @@ export class WorkflowEngineService {
     return instance;
   }
 
+  /**
+   * Phase 1.5 sub-step 6.A.Y — booking-kind start path.
+   *
+   * Mirrors `startForTicket` shape with two differences:
+   *  - inserts `entity_kind='booking'` + `booking_id` instead of `ticket_id`.
+   *    The workflow_instances polymorphic CHECK at 00369:399-418 enforces
+   *    the (entity_kind, polymorphic-id) coupling.
+   *  - the definition SELECT gates `status='published'` (IMPORTANT 7 — same
+   *    gate as startForTicket added in Change 5). Archived/draft → 422
+   *    `workflow.definition_not_published`.
+   *
+   * Returns the inserted row, or `null` if the definition is missing /
+   * cross-tenant / has no nodes / has no trigger node — same shape as
+   * startForTicket's failure paths.
+   *
+   * `TenantContext.run({...})` MUST be active at the call site
+   * (controller middleware guarantees this).
+   */
+  async startForBooking(bookingId: string, workflowDefinitionId: string) {
+    const tenant = TenantContext.current();
+
+    const { data: definition } = await this.supabase.admin
+      .from('workflow_definitions')
+      .select('*')
+      .eq('id', workflowDefinitionId)
+      .eq('tenant_id', tenant.id)
+      .eq('status', 'published')
+      .maybeSingle();
+
+    if (!definition) {
+      // Differentiate "not published" vs "not found" — same shape as
+      // startForTicket's failure branch.
+      const { data: archivedOrDraft } = await this.supabase.admin
+        .from('workflow_definitions')
+        .select('status')
+        .eq('id', workflowDefinitionId)
+        .eq('tenant_id', tenant.id)
+        .maybeSingle();
+      if (archivedOrDraft) {
+        throw new AppError('workflow.definition_not_published', 422, {
+          detail: `workflow_definition ${workflowDefinitionId} has status='${(archivedOrDraft as { status: string }).status}', not 'published'`,
+        });
+      }
+      return null;
+    }
+
+    const graph = definition.graph_definition as unknown as WorkflowGraph;
+    if (!graph?.nodes?.length) return null;
+
+    const triggerNode = graph.nodes.find((n) => n.type === 'trigger');
+    if (!triggerNode) return null;
+
+    const { data: instance, error } = await this.supabase.admin
+      .from('workflow_instances')
+      .insert({
+        tenant_id: tenant.id,
+        workflow_definition_id: workflowDefinitionId,
+        workflow_version: definition.version,
+        entity_kind: 'booking',
+        booking_id: bookingId,
+        current_node_id: triggerNode.id,
+        status: 'active',
+        context: {},
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    await this.emit(instance.id, 'instance_started', { node_id: triggerNode.id, node_type: 'trigger' });
+    await this.advance(instance.id, graph, triggerNode.id, bookingId);
+
+    return instance;
+  }
+
   async advance(instanceId: string, graph: WorkflowGraph, fromNodeId: string, ticketId: string, edgeCondition?: string, ctx?: WorkflowRunContext) {
     const edges = graph.edges.filter((e) => e.from === fromNodeId);
     if (edges.length === 0) return;
