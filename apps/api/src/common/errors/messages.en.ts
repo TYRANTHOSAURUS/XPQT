@@ -1332,6 +1332,16 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   },
   'workflow_instance.not_found': { title: "Couldn't find that workflow run" },
 
+  // ─── Phase 1.5 visual approval workflow (sub-step 6.A.X) ─────────────────
+  // 422: compiler rejected an admin-edited approval_config. Inline-form
+  // surface — operator's fix is to add approvers / pick a valid threshold,
+  // not to retry.
+  'workflow_definition.compilation_failed': {
+    title: "Couldn't save approval rule",
+    detail:
+      'The approval configuration is invalid. Add at least one approver and pick a threshold of either all or any.',
+  },
+
   // ─── service-routing (Phase 7.B-1.service-routing) ───────────────────────
   service_routing_not_found: { title: "Couldn't find that routing rule" },
   service_routing_duplicate: {
@@ -1829,18 +1839,12 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     detail: 'The rule for this room requires approval but no approvers are configured. Ask an administrator to configure approvers, or pick a different room.',
   },
   // B.4 step 2D-D — controller-vs-notification gate (B.4.A.5 sequencing).
-  // ReservationService.editSlot pre-flight-rejects when the plan's
-  // approval block would emit `booking.approval_required` (Rows 2/7/8 of
-  // §3.6.5) and B.4.A.5 hasn't shipped notification dispatch yet.
-  //
-  // self-review I1 + I2 (2026-05-12): WAS class 'server' (503) with
-  // copy "Wait for the next platform update before retrying" — telling
-  // a non-technical operator to wait for an undefined event with no
-  // ETA. Now class 'validation' (422) with concrete operator action.
-  // Title names the actual blocker; detail names the two real
-  // mitigations (rooms admin removes approval, or operator picks a
-  // different room) — same shape as edit_booking.rule_missing_approvers
-  // above.
+  // Gate LIFTED by B.4.A.5 sub-step H (2026-05-13); code retained for
+  // defense-in-depth across editOne / editSlot / editScope so a future
+  // regression that re-introduces the gate reuses this title/detail
+  // rather than inventing a new one. Voice is unchanged: class
+  // 'validation' (422), actionable for the operator (rooms admin remove
+  // approval OR pick a different room).
   'booking.edit_requires_notification_dispatch': {
     title: "Edit blocked — approval changes can't be saved yet",
     detail:

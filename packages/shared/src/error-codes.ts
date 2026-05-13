@@ -448,6 +448,17 @@ export type KnownErrorCode =
   | 'workflow.invalid'
   | 'workflow_instance.not_found'
 
+  // ─── Phase 1.5 visual approval workflow (sub-step 6.A.X) ─────────────────
+  // Raised by `ApprovalConfigCompilerService.compile()` when an admin-edited
+  // `room_booking_rules.approval_config` cannot be compiled into a valid
+  // `workflow_definitions.graph_definition` — empty/missing approver list,
+  // malformed approver entry, or invalid `threshold`. 422 routes through the
+  // web renderer as class:'validation' (inline form error, not a server-class
+  // retry loop). Defense-in-depth at the DB layer: migration 00399 backfill
+  // RAISES on the same shape so a bad backfill row never reaches steady-state.
+  // Spec: docs/superpowers/specs/phase-1.5-visual-approval-workflow-plan.md §3.3 + §6.C.
+  | 'workflow_definition.compilation_failed'
+
   // ─── service-routing migration (Phase 7.B-1.service-routing) ─────────────
   | 'service_routing_not_found'
   | 'service_routing_duplicate'
@@ -828,16 +839,18 @@ export type KnownErrorCode =
   // user payload problem; surface with traceId so ops can investigate.
   | 'approval.read_failed'
   // B.4 step 2D-D — controller cutover gate (B.4.A.5 sequencing).
-  // Until B.4.A.5 ships notification dispatch (email approvers + in-app
-  // inbox), TS controllers MUST pre-flight-reject any edit whose plan
-  // would emit `booking.approval_required` (rows 2/7/8 of §3.6.5). The
-  // reject prevents an approval chain from being committed without any
-  // approver being notified — a silent stall worse than a clean 422.
-  // Validation-class 422 (not 503) routes through the web classifier as
-  // class:'validation' — surfaces inline as a form-level error with
-  // concrete operator guidance, not as a retry-loop + contact-support
-  // toast (which is what >=500 classes get). Reviewer-driven flip from
-  // 503 → 422 in commit `fb7b163f`. Reference:
+  // The original use: TS pre-flight refuse any edit whose plan would emit
+  // `booking.approval_required` (rows 2/7/8 of §3.6.5) until notification
+  // dispatch shipped (silent-stall mitigation).
+  //
+  // B.4.A.5 sub-step H (2026-05-13) LIFTED the gate at editOne / editSlot
+  // / editScope once the full notification pipeline (atomic RPC inbox
+  // INSERT in 00393/00394 + outbox handler + inbox UI + admin overrides)
+  // shipped. The code is RETAINED for defense-in-depth: any future
+  // regression that re-introduces the gate must reuse this code (not
+  // invent a new one). Validation-class 422 routes through the web
+  // classifier as class:'validation' — surfaces inline as a form-level
+  // error, not a retry-loop toast. Reference:
   // docs/follow-ups/b4-followups.md "Sequencing — controller cutover
   // MUST land in or after notification dispatch (B.4.A.5)".
   | 'booking.edit_requires_notification_dispatch'
@@ -1324,6 +1337,9 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'workflow.not_found',
   'workflow.invalid',
   'workflow_instance.not_found',
+  // Phase 1.5 visual approval workflow (sub-step 6.A.X) — see KnownErrorCode
+  // union for per-code rationale.
+  'workflow_definition.compilation_failed',
   'service_routing_not_found',
   'service_routing_duplicate',
   'service_routing_immutable_key',
@@ -1557,7 +1573,8 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   //   supabase error in loadCurrentApprovalChain.
   'edit_booking.rule_missing_approvers',
   'approval.read_failed',
-  // B.4 step 2D-D — see KnownErrorCode union for rationale.
+  // B.4 step 2D-D — see KnownErrorCode union for rationale. Gate LIFTED
+  // by B.4.A.5 sub-step H (2026-05-13); code retained for defense-in-depth.
   'booking.edit_requires_notification_dispatch',
   // B.4.A.5 sub-step D self-review remediation (CODE-I5). Split out from
   // the original `email.dispatch_failed` blanket so SREs can isolate

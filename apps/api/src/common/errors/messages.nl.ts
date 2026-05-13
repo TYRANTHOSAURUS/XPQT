@@ -1332,6 +1332,13 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   },
   'workflow_instance.not_found': { title: 'Kon die workflow-uitvoering niet vinden' },
 
+  // ─── Phase 1.5 visual approval workflow (sub-step 6.A.X) ─────────────────
+  'workflow_definition.compilation_failed': {
+    title: 'Kon de goedkeuringsregel niet opslaan',
+    detail:
+      'De goedkeuringsconfiguratie is ongeldig. Voeg minstens één goedkeurder toe en kies een drempel van alle of een van.',
+  },
+
   // ─── service-routing (Phase 7.B-1.service-routing) ───────────────────────
   service_routing_not_found: { title: 'Kon die routingregel niet vinden' },
   service_routing_duplicate: {
@@ -1805,11 +1812,9 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     detail: 'We konden de goedkeuringsstatus van deze reservering niet lezen. Probeer het over een moment opnieuw.',
   },
   // B.4 step 2D-D — controller-vs-notification gate (B.4.A.5 sequencing).
-  // self-review I1 + I2 (2026-05-12): WAS 503 with "Wacht op de
-  // volgende platformupdate" — vague + retry-loop bait. Now 422 with
-  // a concrete operator action: ask the room admin or pick another
-  // room. Voice avoids "reservering" — the suggested copy talks about
-  // the edit and the room directly.
+  // Gate LIFTED by B.4.A.5 sub-step H (2026-05-13); code retained for
+  // defense-in-depth so a future regression that re-introduces the
+  // gate reuses this title/detail.
   'booking.edit_requires_notification_dispatch': {
     title: 'Wijziging geblokkeerd — goedkeuringsregels kunnen nog niet worden opgeslagen',
     detail:
