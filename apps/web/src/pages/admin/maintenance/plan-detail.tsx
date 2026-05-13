@@ -604,7 +604,7 @@ interface AssetPickerProps {
   onSave: (next: string | null) => void;
 }
 
-interface PickerListProps {
+export interface PickerListProps {
   items: ReadonlyArray<{ id: string; label: string; sublabel?: string }>;
   isLoading: boolean;
   value: string;
@@ -612,7 +612,7 @@ interface PickerListProps {
   noun: string;
 }
 
-function PickerCommandList({ items, isLoading, value, onChange, noun }: PickerListProps) {
+export function PickerCommandList({ items, isLoading, value, onChange, noun }: PickerListProps) {
   return (
     <Command shouldFilter={true} className="rounded-md border">
       <CommandInput

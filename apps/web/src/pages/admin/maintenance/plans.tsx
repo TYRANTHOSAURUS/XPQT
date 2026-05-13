@@ -14,13 +14,6 @@ import {
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
   SettingsPageHeader,
   SettingsPageShell,
 } from '@/components/ui/settings-page';
@@ -44,6 +37,14 @@ import {
 } from '@/api/maintenance-plans';
 import { describeRecurrence } from '@/lib/maintenance-recurrence';
 import { usePageQuery } from '@/lib/errors';
+import { PickerCommandList } from './plan-detail';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 export function MaintenancePlansPage() {
   const { data, isLoading } = usePageQuery(maintenancePlansListOptions());
@@ -323,51 +324,36 @@ function CreateMaintenancePlanDialog({ open, onOpenChange }: CreateProps) {
           {targetKind === 'asset' && (
             <Field>
               <FieldLabel htmlFor="mp-create-asset">Asset</FieldLabel>
-              <Select value={assetId} onValueChange={(v) => setAssetId(v ?? '')}>
-                <SelectTrigger id="mp-create-asset">
-                  <SelectValue placeholder="Pick an asset…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(assets ?? []).map((a) => (
-                    <SelectItem key={a.id} value={a.id}>
-                      {a.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <PickerCommandList
+                items={(assets ?? []).map((a) => ({ id: a.id, label: a.name }))}
+                isLoading={!assets}
+                value={assetId}
+                onChange={setAssetId}
+                noun="assets"
+              />
             </Field>
           )}
           {targetKind === 'asset_type' && (
             <Field>
               <FieldLabel htmlFor="mp-create-asset-type">Asset type</FieldLabel>
-              <Select value={assetTypeId} onValueChange={(v) => setAssetTypeId(v ?? '')}>
-                <SelectTrigger id="mp-create-asset-type">
-                  <SelectValue placeholder="Pick an asset type…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(assetTypes ?? []).map((t) => (
-                    <SelectItem key={t.id} value={t.id}>
-                      {t.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <PickerCommandList
+                items={(assetTypes ?? []).map((t) => ({ id: t.id, label: t.name }))}
+                isLoading={!assetTypes}
+                value={assetTypeId}
+                onChange={setAssetTypeId}
+                noun="asset types"
+              />
             </Field>
           )}
           <Field>
             <FieldLabel htmlFor="mp-create-rt">Request type</FieldLabel>
-            <Select value={requestTypeId} onValueChange={(v) => setRequestTypeId(v ?? '')}>
-              <SelectTrigger id="mp-create-rt">
-                <SelectValue placeholder="Pick a request type…" />
-              </SelectTrigger>
-              <SelectContent>
-                {(requestTypes ?? []).map((rt) => (
-                  <SelectItem key={rt.id} value={rt.id}>
-                    {rt.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <PickerCommandList
+              items={(requestTypes ?? []).map((rt) => ({ id: rt.id, label: rt.name }))}
+              isLoading={!requestTypes}
+              value={requestTypeId}
+              onChange={setRequestTypeId}
+              noun="request types"
+            />
             <FieldDescription>Drives routing and SLA for every generated WO.</FieldDescription>
           </Field>
           <div className="grid grid-cols-3 gap-3">

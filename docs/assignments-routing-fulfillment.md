@@ -644,8 +644,13 @@ where ticket_id = '<ticket-uuid>'
 order by decided_at desc;
 ```
 
-- `strategy` — `fixed` | `asset` | `location` | `auto` | `rule`.
-- `chosen_by` — `rule` | `asset_override` | `asset_type_default` | `location_team` | `parent_location_team` | `space_group_team` | `domain_fallback` | `request_type_default` | `unassigned`.
+- `strategy` — `fixed` | `asset` | `location` | `auto` | `rule` | `manual` | `pm_generator`.
+  - `manual` — written by manual reassignment (see §6 reassignment).
+  - `pm_generator` — written by `create_pm_work_order` (00398) when the
+    PM cron spawns a preventive work order. PM-WOs don't run the
+    resolver; the row captures provenance + always lands as
+    `chosen_by='unassigned'` so the operator triages.
+- `chosen_by` — `rule` | `asset_override` | `asset_type_default` | `location_team` | `parent_location_team` | `space_group_team` | `domain_fallback` | `request_type_default` | `unassigned` | `manual_reassign`.
 - `trace` — full ordered list of every step the resolver considered, with match/miss reasons.
 - `context` — snapshot of request_type / domain / priority / asset / location used.
 
