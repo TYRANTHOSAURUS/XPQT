@@ -1357,6 +1357,11 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't cancel that workflow",
     detail: 'A server problem stopped the cancellation. Try again in a moment.',
   },
+  // 500: engine internal failure during advance/resume — defensive raise.
+  'workflow.advance_failed': {
+    title: "Couldn't run the workflow",
+    detail: 'The workflow engine ran into a problem. Try again in a moment.',
+  },
 
   // ─── service-routing (Phase 7.B-1.service-routing) ───────────────────────
   service_routing_not_found: { title: "Couldn't find that routing rule" },

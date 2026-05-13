@@ -473,6 +473,12 @@ export type KnownErrorCode =
   // + approvals expiry. Surfaces a `traceId` to the operator.
   | 'workflow.cancel_with_approvals_failed'
 
+  // 500: engine internal failure during advance/resume — defensive raise
+  // points where the polymorphic entityId is missing on a row we just
+  // claimed, or a workflow_instance can't be read in the resolver. Spec:
+  // phase-1.5-visual-approval-workflow-plan.md §2.4 + §3.3.
+  | 'workflow.advance_failed'
+
   // ─── service-routing migration (Phase 7.B-1.service-routing) ─────────────
   | 'service_routing_not_found'
   | 'service_routing_duplicate'
@@ -1356,9 +1362,11 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   // union for per-code rationale.
   'workflow_definition.compilation_failed',
   // Phase 1.5 visual approval workflow (sub-step 6.A) — startForTicket gate
-  // + cancelInstanceById RPC delegation. See KnownErrorCode union for rationale.
+  // + cancelInstanceById RPC delegation + defensive advance/resume raises.
+  // See KnownErrorCode union for rationale.
   'workflow.definition_not_published',
   'workflow.cancel_with_approvals_failed',
+  'workflow.advance_failed',
   'service_routing_not_found',
   'service_routing_duplicate',
   'service_routing_immutable_key',

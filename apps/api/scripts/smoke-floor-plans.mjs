@@ -578,9 +578,42 @@ async function p16_casStaleUpdate(token, floorId) {
   }
 }
 
-async function p17_boundsCheck(token) {
-  const name = 'P17: PATCH polygon with points outside image bounds → 422';
-  skip(name, 'DTO does not yet enforce pixel-boundary clamping; follow-up TODO to add superRefine check');
+async function p17_boundsCheck(token, floorId, roomId) {
+  const name = 'P17: PATCH polygon with points outside image bounds → 422 point_out_of_bounds';
+  // Ensure a draft exists with known dimensions.
+  await api('GET', `/api/floors/${floorId}/plan/draft`, { token });
+  const setupR = await api('PATCH', `/api/floors/${floorId}/plan/draft`, {
+    token,
+    body: { image_url: 'floor-plans/smoke-test.png', width_px: 800, height_px: 600 },
+  });
+  if (setupR.status !== 200) {
+    fail(name, `setup PATCH failed: HTTP ${setupR.status}`);
+    return;
+  }
+  // PATCH polygon with one point well outside the 800×600 bounds.
+  const r = await api('PATCH', `/api/floors/${floorId}/plan/draft`, {
+    token,
+    body: {
+      polygons: [{
+        space_id: roomId,
+        points: [
+          { x: 10, y: 10 },
+          { x: 50, y: 10 },
+          { x: 9999, y: 9999 }, // way outside bounds
+        ],
+      }],
+    },
+  });
+  if (r.status === 422 || r.status === 400) {
+    const code = r.body?.code ?? '';
+    if (code.includes('point_out_of_bounds')) {
+      pass(name);
+    } else {
+      fail(name, `rejected but wrong code: ${code}`);
+    }
+  } else {
+    fail(name, `expected 422/400, got HTTP ${r.status}: ${JSON.stringify(r.body).slice(0, 120)}`);
+  }
 }
 
 async function p18_publishNoImage(token, floorId) {
@@ -743,11 +776,16 @@ async function p23_availabilityMineAfterBooking(token, floorId, roomId) {
       skip(name, 'room has no published polygon in floor plan — state not visible; acceptable');
       return booking.id;
     }
-    if (space.state === 'mine') {
-      pass(name);
-    } else {
+    if (space.state !== 'mine') {
       fail(name, `expected state 'mine', got '${space.state}'`);
+      return booking.id;
     }
+    // 00400 — mine_booking_id must be populated and match the caller's booking.
+    if (space.mine_booking_id !== booking.id) {
+      fail(name, `state 'mine' but mine_booking_id mismatch: got '${space.mine_booking_id}', expected '${booking.id}'`);
+      return booking.id;
+    }
+    pass(name);
     return booking.id;
   } catch (e) {
     fail(name, String(e));
@@ -937,7 +975,8 @@ async function main() {
     await deleteDraft(floorId);
     await p16_casStaleUpdate(token, floorId);
 
-    await p17_boundsCheck(token);
+    await deleteDraft(floorId);
+    await p17_boundsCheck(token, floorId, roomId);
 
     await deleteDraft(floorId);
     await p18_publishNoImage(token, floorId);

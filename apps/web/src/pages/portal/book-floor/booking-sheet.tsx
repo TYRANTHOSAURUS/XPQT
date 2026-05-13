@@ -20,8 +20,8 @@ import { Button } from '@/components/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
-import { toastCreated, toastError } from '@/lib/toast';
-import { useCreateBooking } from '@/api/room-booking';
+import { toastCreated, toastError, toastRemoved } from '@/lib/toast';
+import { useCreateBooking, useCancelBooking, useRestoreBooking } from '@/api/room-booking';
 import type { PublishedFloorPlan } from '@/api/floor-plans/types';
 
 // ---------------------------------------------------------------------------
@@ -36,6 +36,13 @@ interface BookingSheetProps {
   spaceId: string | null;
   plan: PublishedFloorPlan | null;
   requesterPersonId: string;
+  /**
+   * When the tapped polygon is the caller's own booking (state='mine' on the
+   * availability row), the page passes the booking id here. The sheet switches
+   * to "your booking" mode with Cancel + Manage CTAs instead of the create
+   * pill row.
+   */
+  existingBookingId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,11 +115,15 @@ export function BookingSheet({
   spaceId,
   plan,
   requesterPersonId,
+  existingBookingId,
 }: BookingSheetProps) {
   const navigate = useNavigate();
   const createBooking = useCreateBooking();
+  const cancelBooking = useCancelBooking();
+  const restoreBooking = useRestoreBooking();
 
   const space = plan?.spaces.find((s) => s.id === spaceId) ?? null;
+  const inCancelMode = existingBookingId != null;
 
   // ---------------------------------------------------------------------------
   // Time pill state
@@ -144,6 +155,35 @@ export function BookingSheet({
   // ---------------------------------------------------------------------------
   // When the sheet opens, snap the "now" pill to the current time
   // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // Cancel an existing booking (state='mine' tap path)
+  // ---------------------------------------------------------------------------
+  function handleCancel() {
+    if (!existingBookingId) return;
+    const id = existingBookingId;
+    cancelBooking.mutate(
+      { id, scope: 'this' },
+      {
+        onSuccess: () => {
+          onOpenChange(false);
+          toastRemoved('Booking', {
+            verb: 'cancelled',
+            onUndo: () => restoreBooking.mutate(id),
+          });
+        },
+        onError: (err: unknown) => {
+          toastError("Couldn't cancel booking", { error: err as Error });
+        },
+      },
+    );
+  }
+
+  function handleManage() {
+    if (!existingBookingId) return;
+    onOpenChange(false);
+    navigate(`/portal/me/bookings/${existingBookingId}`);
+  }
 
   // ---------------------------------------------------------------------------
   // Submit
@@ -228,6 +268,34 @@ export function BookingSheet({
             </div>
           )}
 
+          {/* Cancel-mode panel — taps on the caller's own booking. */}
+          {inCancelMode ? (
+            <div className="space-y-3">
+              <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+                This room is currently booked by you. Cancel to free it for
+                others, or open the booking to manage attendees and services.
+              </div>
+              <div className="flex flex-col gap-2">
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={handleManage}
+                  disabled={cancelBooking.isPending}
+                >
+                  Manage booking
+                </Button>
+                <Button
+                  variant="destructive"
+                  className="w-full"
+                  onClick={handleCancel}
+                  disabled={cancelBooking.isPending}
+                >
+                  {cancelBooking.isPending ? 'Cancelling…' : 'Cancel booking'}
+                </Button>
+              </div>
+            </div>
+          ) : (
+          <>
           {/* Time pill row */}
           <div className="mb-3 flex gap-2">
             {(
@@ -293,6 +361,8 @@ export function BookingSheet({
               ? 'Booking…'
               : `Book ${space?.name ?? 'room'}`}
           </Button>
+          </>
+          )}
         </div>
       </SheetContent>
     </Sheet>

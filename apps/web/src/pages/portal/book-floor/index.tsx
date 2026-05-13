@@ -20,7 +20,7 @@
  * 3. Tap available polygon → BookingSheet slides up
  * 4. Tap "Book {room}" → toast "Booking created" with View action
  * 5. Sheet closes; polygon turns blue (state: 'mine') within 2s via realtime
- * 6. Tap polygon again → sheet shows the booking's window with cancel action (TODO: cancel wiring)
+ * 6. Tap polygon again → sheet shows the booking with Manage + Cancel CTAs (state='mine' branch).
  *
  * If any step breaks at /portal/book/floor manual test, file a bug.
  */
@@ -64,9 +64,9 @@ function defaultWindow(): { start: Date; end: Date } {
 
 /** Map SpaceAvailability[] from the API into the SpaceState[] shape FloorPlanCanvas expects */
 function mapAvailabilityToStates(
-  spaces: Array<{ space_id: string; state: AvailabilityState; free_at?: string | null }>,
+  spaces: Array<{ id: string; state: AvailabilityState; free_at?: string | null }>,
 ): Array<{ spaceId: string; state: AvailabilityState; freeAt?: string | null }> {
-  return spaces.map((s) => ({ spaceId: s.space_id, state: s.state, freeAt: s.free_at ?? null }));
+  return spaces.map((s) => ({ spaceId: s.id, state: s.state, freeAt: s.free_at ?? null }));
 }
 
 /** Build occupancy-by-floor-id from heatmap data (average occupancy for the window) */
@@ -189,7 +189,7 @@ export function PortalBookFloor() {
 
   // Heatmap average occupancy for the floor switcher
   const avgOccupancy = useMemo(() => {
-    const buckets = availability.data?.heatmap ?? [];
+    const buckets = availability.data?.crowd_heatmap ?? [];
     if (!buckets.length) return 0;
     return buckets.reduce((acc, b) => acc + b.occupancy, 0) / buckets.length;
   }, [availability.data]);
@@ -219,16 +219,34 @@ export function PortalBookFloor() {
 
   const requesterPersonId = person?.id ?? null;
 
+  // Look up the selected space's availability row (carries state + mine_booking_id).
+  const selectedAvailability = useMemo(() => {
+    if (!selectedSpaceId) return null;
+    return availability.data?.spaces.find((s) => s.id === selectedSpaceId) ?? null;
+  }, [availability.data, selectedSpaceId]);
+
+  const existingBookingId =
+    selectedAvailability?.state === 'mine'
+      ? selectedAvailability.mine_booking_id ?? null
+      : null;
+
   const handleSpaceClick = useCallback(
     (spaceId: string) => {
       setSelectedSpaceId(spaceId);
+      const sp = availability.data?.spaces.find((s) => s.id === spaceId);
+      // Desktop shortcut: a 'mine' polygon jumps straight to the manage-booking
+      // detail page rather than opening the create composer.
+      if (!isMobile && sp?.state === 'mine' && sp.mine_booking_id) {
+        navigate(`/portal/me/bookings/${sp.mine_booking_id}`);
+        return;
+      }
       if (isMobile) {
         setSheetOpen(true);
       } else {
         setComposerOpen(true);
       }
     },
-    [isMobile],
+    [isMobile, availability.data, navigate],
   );
 
   // Text search — power-user shortcut so daily bookers who know the room
@@ -404,7 +422,7 @@ export function PortalBookFloor() {
         <TimeScrubber
           value={timeWindow}
           onChange={handleTimeChange}
-          heatmap={availability.data?.heatmap ?? []}
+          heatmap={availability.data?.crowd_heatmap ?? []}
         />
       </div>
 
@@ -447,13 +465,14 @@ export function PortalBookFloor() {
         </div>
       )}
 
-      {/* Mobile bottom sheet */}
+      {/* Mobile bottom sheet — renders cancel mode when the tapped space is the caller's own booking. */}
       <BookingSheet
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         spaceId={selectedSpaceId}
         plan={publishedPlan ?? null}
         requesterPersonId={requesterPersonId ?? ''}
+        existingBookingId={existingBookingId}
       />
 
       {/* Desktop composer modal — pre-seeded with selected space + window */}

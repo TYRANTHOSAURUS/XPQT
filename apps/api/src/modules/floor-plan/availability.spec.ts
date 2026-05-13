@@ -33,15 +33,15 @@ const WIN_END = '2026-05-12T10:00:00Z';
 
 function makeAvailableResponse() {
   return {
-    spaces: [{ space_id: SPACE_ID, name: 'Room A', capacity: 8, state: 'available', free_at: null }],
-    heatmap: buildHeatmap(),
+    spaces: [{ id: SPACE_ID, name: 'Room A', capacity: 8, state: 'available', free_at: null }],
+    crowd_heatmap: buildHeatmap(),
   };
 }
 
 function buildHeatmap() {
-  // 13 buckets: hours 7..19 inclusive
+  // 13 buckets: hours 7..19 inclusive — matches RPC 00375 (returns { hour, occupancy }).
   return Array.from({ length: 13 }, (_, i) => ({
-    bucket: `2026-05-12T${String(7 + i).padStart(2, '0')}:00:00Z`,
+    hour: 7 + i,
     occupancy: 0,
   }));
 }
@@ -127,8 +127,8 @@ describe('FloorPlanService.getAvailability', () => {
     const deps = makeSupabase({
       rpcResponse: {
         data: {
-          spaces: [{ space_id: SPACE_ID, name: 'Room A', capacity: 8, state: 'mine', free_at: null }],
-          heatmap: buildHeatmap(),
+          spaces: [{ id: SPACE_ID, name: 'Room A', capacity: 8, state: 'mine', free_at: null }],
+          crowd_heatmap: buildHeatmap(),
         },
         error: null,
       },
@@ -143,8 +143,8 @@ describe('FloorPlanService.getAvailability', () => {
     const deps = makeSupabase({
       rpcResponse: {
         data: {
-          spaces: [{ space_id: SPACE_ID, name: 'Room A', capacity: 8, state: 'booked', free_at: WIN_END }],
-          heatmap: buildHeatmap(),
+          spaces: [{ id: SPACE_ID, name: 'Room A', capacity: 8, state: 'booked', free_at: WIN_END }],
+          crowd_heatmap: buildHeatmap(),
         },
         error: null,
       },
@@ -159,8 +159,8 @@ describe('FloorPlanService.getAvailability', () => {
     const deps = makeSupabase({
       rpcResponse: {
         data: {
-          spaces: [{ space_id: SPACE_ID, name: 'Room A', capacity: 8, state: 'partial', free_at: '2026-05-12T09:30:00Z' }],
-          heatmap: buildHeatmap(),
+          spaces: [{ id: SPACE_ID, name: 'Room A', capacity: 8, state: 'partial', free_at: '2026-05-12T09:30:00Z' }],
+          crowd_heatmap: buildHeatmap(),
         },
         error: null,
       },
@@ -177,8 +177,8 @@ describe('FloorPlanService.getAvailability', () => {
     const deps = makeSupabase({
       rpcResponse: {
         data: {
-          spaces: [{ space_id: SPACE_ID, name: 'Room A', capacity: 8, state: 'available', free_at: null }],
-          heatmap: buildHeatmap(),
+          spaces: [{ id: SPACE_ID, name: 'Room A', capacity: 8, state: 'available', free_at: null }],
+          crowd_heatmap: buildHeatmap(),
         },
         error: null,
       },
@@ -193,8 +193,8 @@ describe('FloorPlanService.getAvailability', () => {
     const deps = makeSupabase({
       rpcResponse: {
         data: {
-          spaces: [{ space_id: SPACE_ID, name: 'Room A', capacity: 8, state: 'available', free_at: null }],
-          heatmap: buildHeatmap(),
+          spaces: [{ id: SPACE_ID, name: 'Room A', capacity: 8, state: 'available', free_at: null }],
+          crowd_heatmap: buildHeatmap(),
         },
         error: null,
       },
@@ -221,12 +221,14 @@ describe('FloorPlanService.getAvailability', () => {
     expect((caught as { code: string }).code).toBe('floor_plan.availability.invalid_window');
   });
 
-  it('heatmap returns exactly 13 buckets (hours 7..19)', async () => {
+  it('crowd_heatmap returns exactly 13 buckets (hours 7..19)', async () => {
     const deps = makeSupabase();
     const svc = makeService(deps);
     const result = await svc.getAvailability(FLOOR_ID, TENANT_A, USER_A, WIN_START, WIN_END);
-    const data = result as { heatmap: Array<{ bucket: string; occupancy: number }> };
-    expect(data.heatmap).toHaveLength(13);
+    const data = result as { crowd_heatmap: Array<{ hour: number; occupancy: number }> };
+    expect(data.crowd_heatmap).toHaveLength(13);
+    expect(data.crowd_heatmap[0]).toMatchObject({ hour: 7, occupancy: expect.any(Number) });
+    expect(data.crowd_heatmap[12]).toMatchObject({ hour: 19, occupancy: expect.any(Number) });
   });
 
   it('cross-tenant: tenant B params are passed through to the RPC (tenant isolation is enforced at DB layer)', async () => {

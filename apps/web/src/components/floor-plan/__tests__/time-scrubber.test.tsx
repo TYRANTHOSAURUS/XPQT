@@ -8,10 +8,10 @@ describe('TimeScrubber', () => {
   const base = new Date('2026-05-12T09:00:00');
   const end = new Date('2026-05-12T10:00:00');
   const heatmap: CrowdHeatmapBucket[] = [
-    { bucket: '2026-05-12T07:00:00', occupancy: 0.1 },
-    { bucket: '2026-05-12T08:00:00', occupancy: 0.4 },
-    { bucket: '2026-05-12T09:00:00', occupancy: 0.8 },
-    { bucket: '2026-05-12T10:00:00', occupancy: 0.6 },
+    { hour: 7, occupancy: 0.1 },
+    { hour: 8, occupancy: 0.4 },
+    { hour: 9, occupancy: 0.8 },
+    { hour: 10, occupancy: 0.6 },
   ];
 
   it('renders a bar for each heatmap bucket within range', () => {

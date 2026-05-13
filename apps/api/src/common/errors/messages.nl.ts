@@ -1348,6 +1348,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon die workflow niet annuleren',
     detail: 'Een serverprobleem heeft de annulering tegengehouden. Probeer het zo opnieuw.',
   },
+  'workflow.advance_failed': {
+    title: 'Kon de workflow niet uitvoeren',
+    detail: 'De workflow-engine liep tegen een probleem aan. Probeer het zo opnieuw.',
+  },
 
   // ─── service-routing (Phase 7.B-1.service-routing) ───────────────────────
   service_routing_not_found: { title: 'Kon die routingregel niet vinden' },

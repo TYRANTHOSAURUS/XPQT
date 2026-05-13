@@ -49,24 +49,28 @@ export type AvailabilityState =
   | 'not_bookable';
 
 export type SpaceAvailability = {
-  space_id: string;
+  /** Space UUID. Field name matches the RPC contract (00375 `cs.id`). */
+  id: string;
   name: string;
   capacity: number | null;
   state: AvailabilityState;
   /** ISO timestamp when the space next becomes free (present when state === 'booked'). */
   free_at?: string | null;
+  /** Booking id when state === 'mine' so the caller can wire a cancel action. */
+  mine_booking_id?: string | null;
 };
 
 export type CrowdHeatmapBucket = {
-  /** ISO timestamp for the start of the bucket (e.g. hourly or 15-min). */
-  bucket: string;
-  /** 0–1 occupancy ratio for this floor at this time bucket. */
+  /** Hour-of-day for this bucket (7..19 inclusive). Field name + numeric type match RPC 00375. */
+  hour: number;
+  /** 0–1 occupancy ratio for this floor at this hour. */
   occupancy: number;
 };
 
 export type FloorAvailability = {
   spaces: SpaceAvailability[];
-  heatmap: CrowdHeatmapBucket[];
+  /** Hour-by-hour occupancy buckets (7..19 inclusive). Field name matches RPC 00375. */
+  crowd_heatmap: CrowdHeatmapBucket[];
   floor: {
     image_url: string | null;
     width_px: number | null;

@@ -1,4 +1,6 @@
 import { useState, useMemo } from 'react';
+import { Link } from 'react-router-dom';
+import { Map, ChevronRight } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog';
@@ -98,6 +100,25 @@ export function SpaceDetail({ spaceId, onNavigate }: Props) {
         onArchive={handleArchive}
       />
       <SpaceMetadataStrip space={space} />
+
+      {/* Floor-specific CTA: jump straight to the floor-plan designer. Closes the
+          two-app dance ("two-app dance" was the #1 design-review finding from the
+          floor-plan workstream — Facilities Admin no longer has to leave this page). */}
+      {space.type === 'floor' && (
+        <div className="mx-6 mt-3 flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2">
+          <div className="flex items-center gap-2 text-sm">
+            <Map className="size-4 text-muted-foreground" aria-hidden />
+            <span className="font-medium">Floor plan</span>
+            <span className="text-muted-foreground">— draw room polygons + publish the map for booking.</span>
+          </div>
+          <Link
+            to={`/admin/floor-plans/${space.id}`}
+            className="inline-flex h-8 items-center gap-1 rounded-md border border-input bg-background px-3 text-xs font-medium shadow-sm hover:bg-accent hover:text-accent-foreground transition-colors"
+          >
+            Open designer <ChevronRight className="size-3.5" />
+          </Link>
+        </div>
+      )}
 
       <Tabs defaultValue="children" className="flex-1 flex flex-col overflow-hidden">
         <TabsList className="mx-6 mt-2 self-start">

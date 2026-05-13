@@ -31,10 +31,10 @@ type Props = {
 };
 
 function mapAvailability(
-  spaces: Array<{ space_id: string; state: AvailabilityState; free_at?: string | null }>,
+  spaces: Array<{ id: string; state: AvailabilityState; free_at?: string | null }>,
 ) {
   return spaces.map((s) => ({
-    spaceId: s.space_id,
+    spaceId: s.id,
     state: s.state,
     freeAt: s.free_at ?? null,
   }));
@@ -93,11 +93,11 @@ export function SchedulerFloorView({
   }, [availability.data?.spaces]);
 
   const occupancyByFloorId = useMemo(() => {
-    if (!effectiveFloorId || !availability.data?.heatmap) return {};
-    return buildOccupancyByFloor(effectiveFloorId, availability.data.heatmap);
-  }, [effectiveFloorId, availability.data?.heatmap]);
+    if (!effectiveFloorId || !availability.data?.crowd_heatmap) return {};
+    return buildOccupancyByFloor(effectiveFloorId, availability.data.crowd_heatmap);
+  }, [effectiveFloorId, availability.data?.crowd_heatmap]);
 
-  const heatmap = availability.data?.heatmap ?? [];
+  const heatmap = availability.data?.crowd_heatmap ?? [];
 
   const now = new Date();
   const isCurrentWindow =

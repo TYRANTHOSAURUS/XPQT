@@ -119,6 +119,36 @@ export class FloorPlanDraftService {
       }
     }
 
+    // Pixel-boundary check (P17). Reject points outside the floor image bounds.
+    // Effective width/height is the patch value when present, otherwise the
+    // current draft value — so a patch that adds polygons after an earlier
+    // patch set the image dimensions is still validated.
+    if (parsed.data.polygons && parsed.data.polygons.length > 0) {
+      let effectiveW = parsed.data.width_px ?? null;
+      let effectiveH = parsed.data.height_px ?? null;
+      if (effectiveW == null || effectiveH == null) {
+        const { data: current } = await client
+          .from('floor_plan_drafts')
+          .select('width_px, height_px')
+          .eq('floor_space_id', floorSpaceId)
+          .eq('tenant_id', tenantId)
+          .maybeSingle();
+        effectiveW = effectiveW ?? ((current as { width_px?: number | null } | null)?.width_px ?? null);
+        effectiveH = effectiveH ?? ((current as { height_px?: number | null } | null)?.height_px ?? null);
+      }
+      if (effectiveW != null && effectiveH != null) {
+        for (const poly of parsed.data.polygons) {
+          for (const point of poly.points) {
+            if (point.x < 0 || point.x > effectiveW || point.y < 0 || point.y > effectiveH) {
+              throw AppErrors.validationFailed('floor_plan.draft.point_out_of_bounds', {
+                detail: `Polygon for space ${poly.space_id || '(unlinked)'} has point (${point.x}, ${point.y}) outside ${effectiveW}×${effectiveH} bounds.`,
+              });
+            }
+          }
+        }
+      }
+    }
+
     // Atomic CAS: single UPDATE with updated_at filter. If ifMatch is provided
     // and doesn't match the DB row, the WHERE matches 0 rows → stale-write.
     // Without ifMatch (first caller / seed), unconditionally update (last-writer-wins).

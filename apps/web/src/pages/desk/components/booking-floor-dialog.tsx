@@ -31,10 +31,10 @@ const TIME_FMT = new Intl.DateTimeFormat(undefined, {
 });
 
 function mapAvailability(
-  spaces: Array<{ space_id: string; state: AvailabilityState; free_at?: string | null }>,
+  spaces: Array<{ id: string; state: AvailabilityState; free_at?: string | null }>,
 ) {
   return spaces.map((s) => ({
-    spaceId: s.space_id,
+    spaceId: s.id,
     state: s.state,
     freeAt: s.free_at ?? null,
   }));

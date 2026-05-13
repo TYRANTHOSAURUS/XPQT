@@ -134,15 +134,11 @@ export function TimeScrubber({
   const startX = minutesToX(startMin);
   const endX = minutesToX(endMin);
 
-  // Build heatmap bars: one per bucket
-  const bars = heatmap.map((bucket, i) => {
-    const bucketDate = new Date(bucket.bucket);
-    const bucketMin = minutesFromMidnight(bucketDate);
-    // Assume each bucket is 1 hour wide unless we can derive it
-    const nextBucket = heatmap[i + 1];
-    const nextMin = nextBucket
-      ? minutesFromMidnight(new Date(nextBucket.bucket))
-      : bucketMin + 60;
+  // Build heatmap bars: one per bucket. RPC 00375 returns hour-of-day buckets,
+  // each spanning 1 hour, for hours 7..19 inclusive.
+  const bars = heatmap.map((bucket) => {
+    const bucketMin = bucket.hour * 60;
+    const nextMin = bucketMin + 60;
     const x1 = minutesToX(bucketMin);
     const x2 = minutesToX(nextMin);
     if (x2 <= 0 || x1 >= 1) return null;
