@@ -7,6 +7,7 @@ import { WorkflowEngineService } from './workflow-engine.service';
 import { WorkflowValidatorService } from './workflow-validator.service';
 import { WorkflowSimulatorService } from './workflow-simulator.service';
 import { WorkflowWaitSweeperCron } from './workflow-wait-sweeper.cron';
+import { ApprovalCancelSweeperCron } from './approval-cancel-sweeper.cron';
 import { WorkflowController } from './workflow.controller';
 
 @Module({
@@ -23,6 +24,12 @@ import { WorkflowController } from './workflow.controller';
     // ScheduleModule.forRoot() is wired at app.module.ts:60 already.
     // Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.5.
     WorkflowWaitSweeperCron,
+    // Phase 1.5 sub-step 6.G — backstop for any drift where a
+    // workflow_instance is in status='cancelled' but linked approvals
+    // are still pending (legacy rows, manual SQL surgery, etc.).
+    // PRIMARY path is the cancel_workflow_instance_with_approvals RPC
+    // (00400 §2.6.8); this cron sweeps the residue.
+    ApprovalCancelSweeperCron,
   ],
   controllers: [WorkflowController],
   exports: [
