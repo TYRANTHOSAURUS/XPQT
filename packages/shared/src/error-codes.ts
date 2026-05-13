@@ -91,6 +91,23 @@ export type KnownErrorCode =
   | 'notification.unknown_event_kind'
   | 'notification.template_resolution_failed'
 
+  // ─── B.4.A.5 sub-step E — inbox surface ─────────────────────────────────
+  // Spec: /tmp/b4a5-plan-v2.md sub-step E.
+  //
+  // - inbox_notification.not_found (404): POST /me/inbox/:id/read targeted
+  //   an id that doesn't exist within the caller's (tenant_id, user_id)
+  //   scope. Cross-tenant ids surface as the same 404 (per spec §6.1 — do
+  //   not leak existence). RLS already gates the SELECT path; this code
+  //   exists for the explicit service-layer notFound() throw site.
+  // - inbox.not_resolvable (401): the auth.uid() in the JWT couldn't be
+  //   bridged to a `public.users` row in the current tenant. Distinct
+  //   from auth.unauthorized (no token) — token is valid but the user
+  //   isn't a member of this tenant, or the users.auth_uid bridge is
+  //   missing. Surfaces as 401 because the inbox is per-user; without a
+  //   user we have nothing to show.
+  | 'inbox_notification.not_found'
+  | 'inbox.not_resolvable'
+
   // ─── render / unknown last-resort ────────────────────────────────────────
   | 'render.failed'
   | 'unknown.server_error'
@@ -981,6 +998,9 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   // B.4.A.5 sub-step C — see KnownErrorCode union for per-code rationale.
   'notification.unknown_event_kind',
   'notification.template_resolution_failed',
+  // B.4.A.5 sub-step E — inbox surface (POST /me/inbox/:id/read 404 + JWT bridge 401).
+  'inbox_notification.not_found',
+  'inbox.not_resolvable',
   'render.failed',
   'unknown.server_error',
   'work_order.plan_invalid',

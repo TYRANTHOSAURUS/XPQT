@@ -137,6 +137,16 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon de notificatie niet verzenden',
     detail: 'De notificatie-template kon niet worden geladen. Probeer het later opnieuw.',
   },
+  // B.4.A.5 sub-step E — inbox surface (404 / 401). Gebruikersuitleg blijft
+  // generiek; de 404 lekt expliciet géén bestaan (cross-tenant ids landen ook hier).
+  'inbox_notification.not_found': {
+    title: 'Notificatie niet gevonden',
+    detail: 'We konden die notificatie niet vinden.',
+  },
+  'inbox.not_resolvable': {
+    title: 'Log opnieuw in',
+    detail: 'Je sessie mist gebruikersdetails. Log uit en weer in.',
+  },
 
   // ─── render / unknown ────────────────────────────────────────────────────
   'render.failed': {

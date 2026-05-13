@@ -137,6 +137,16 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't send the notification",
     detail: 'The notification template could not be resolved. Try again later.',
   },
+  // B.4.A.5 sub-step E — inbox surface (404 / 401). User-facing copy stays generic;
+  // the 404 specifically does NOT leak existence (cross-tenant ids surface here).
+  'inbox_notification.not_found': {
+    title: 'Notification not found',
+    detail: "We couldn't find that notification.",
+  },
+  'inbox.not_resolvable': {
+    title: 'Sign in again',
+    detail: 'Your session is missing user details. Sign out and back in.',
+  },
 
   // ─── render / unknown ────────────────────────────────────────────────────
   'render.failed': {

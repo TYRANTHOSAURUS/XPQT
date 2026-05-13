@@ -53,6 +53,7 @@ import { MailModule } from './common/mail/mail.module';
 import { OutboxModule } from './modules/outbox/outbox.module';
 import { FloorPlanModule } from './modules/floor-plan/floor-plan.module';
 import { MaintenanceModule } from './modules/maintenance/maintenance.module';
+import { InboxModule } from './modules/inbox/inbox.module';
 
 @Module({
   imports: [
@@ -107,6 +108,7 @@ import { MaintenanceModule } from './modules/maintenance/maintenance.module';
     OutboxModule,
     FloorPlanModule,
     MaintenanceModule,
+    InboxModule,
   ],
   controllers: [HealthController],
   providers: [
