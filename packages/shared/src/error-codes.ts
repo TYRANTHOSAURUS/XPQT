@@ -1616,6 +1616,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'floor_plan.draft.discard_failed',
   'floor_plan.draft.stale_update',
   'floor_plan.draft.invalid_polygons',
+  'floor_plan.draft.point_out_of_bounds',
   'floor_plan.publish.image_required',
   'floor_plan.publish.unlinked_polygons',
   'floor_plan.publish.invalid_polygons',
