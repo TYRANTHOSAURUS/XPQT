@@ -54,12 +54,19 @@ export interface WorkflowGraphDefinition {
 }
 
 /**
- * Rule type discriminator. v1 only emits `'room_booking'`-shaped graphs
- * (which happen to be identical for both rule types in Phase 1.5); the
- * discriminator exists so the sibling `service_rules.approval_config`
- * migration (Phase 1.5 §0.3 OUT-of-scope item) can reuse this compiler
- * without forking. The value is threaded into `approval_main.config.rule_type`
- * so downstream consumers can route on it.
+ * Rule type discriminator on the compiler's INPUT API only.
+ *
+ * Phase 1.5 emits identical graph shapes for both rule types — the §3.3
+ * canonical compiled graph (plan lines 1009-1026) carries only
+ * `{required_approvers, threshold}` inside `approval_main.config`, NOT
+ * `rule_type`. The 00399 SQL block E backfill matches that shape.
+ *
+ * Keeping `rule_type` as a parameter (not a graph field) gives the sibling
+ * `service_rules.approval_config` spec (plan §0.3 OUT-of-scope item) a clean
+ * call-site contract — `compile(config, { ruleName, ruleType: 'service' })`
+ * — without baking permanent metadata into the audit-unit graph. If a
+ * future phase needs `rule_type` on the graph itself, it lands then via a
+ * versioned migration + parallel compiler bump, not now.
  */
 export type ApprovalRuleType = 'room_booking' | 'service';
 
@@ -98,7 +105,11 @@ export class ApprovalConfigCompilerService {
    * @returns       `{ graphDefinition, name }`. `name = "<ruleName> approval workflow"`.
    */
   compile(config: ApprovalConfig, opts: CompileOptions): CompileResult {
-    const ruleType: ApprovalRuleType = opts.ruleType ?? 'room_booking';
+    // ruleType is accepted on the input API for sibling-spec compatibility
+    // (see {@link ApprovalRuleType}) but intentionally NOT emitted into the
+    // compiled graph — that shape is fixed by plan §3.3 lines 1009-1026 and
+    // the 00399 SQL block E backfill must produce byte-identical jsonb.
+    void (opts.ruleType ?? 'room_booking');
 
     // Validation block — fail-closed before producing any graph output.
     // Per plan §3.3 edge cases, "Empty approver list" must throw at compile
@@ -172,10 +183,6 @@ export class ApprovalConfigCompilerService {
           config: {
             required_approvers: requiredApprovers,
             threshold,
-            // rule_type is threaded through for the sibling service_rules
-            // spec (plan §0.3 OUT-of-scope item) — Phase 1.5 emits it but
-            // doesn't branch on it.
-            rule_type: ruleType,
           },
         },
         { id: 'end_success', type: 'end', config: { outcome: 'approved' } },

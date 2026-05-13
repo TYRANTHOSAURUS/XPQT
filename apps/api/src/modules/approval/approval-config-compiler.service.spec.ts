@@ -42,7 +42,6 @@ describe('ApprovalConfigCompilerService.compile', () => {
             config: {
               required_approvers: [{ type: 'person', id: 'p1' }],
               threshold: 'all',
-              rule_type: 'room_booking',
             },
           },
           { id: 'end_success', type: 'end', config: { outcome: 'approved' } },
@@ -120,7 +119,10 @@ describe('ApprovalConfigCompilerService.compile', () => {
       expect(approvalNode?.config.required_approvers).toEqual(config.required_approvers);
     });
 
-    it('rule_type defaults to "room_booking" and is threaded through node.config', () => {
+    it('ruleType is accepted on the input API but is NOT emitted to the compiled graph (plan §3.3 invariant)', () => {
+      // The compiled graph shape is fixed by plan §3.3 lines 1009-1026 and
+      // must stay byte-identical to the 00399 SQL block E backfill output.
+      // ruleType exists for sibling-spec call-site compatibility only.
       const config: ApprovalConfig = {
         required_approvers: [{ type: 'person', id: 'p1' }],
         threshold: 'all',
@@ -129,13 +131,15 @@ describe('ApprovalConfigCompilerService.compile', () => {
       const defaultApprovalNode = defaultResult.graphDefinition.nodes.find(
         (n) => n.id === 'approval_main',
       );
-      expect(defaultApprovalNode?.config.rule_type).toBe('room_booking');
+      expect(defaultApprovalNode?.config).not.toHaveProperty('rule_type');
 
       const serviceResult = svc.compile(config, { ruleName: 'r', ruleType: 'service' });
       const serviceApprovalNode = serviceResult.graphDefinition.nodes.find(
         (n) => n.id === 'approval_main',
       );
-      expect(serviceApprovalNode?.config.rule_type).toBe('service');
+      // Output shape is identical regardless of ruleType — only call-site contract differs.
+      expect(serviceApprovalNode?.config).not.toHaveProperty('rule_type');
+      expect(serviceApprovalNode?.config).toEqual(defaultApprovalNode?.config);
     });
   });
 
@@ -225,11 +229,12 @@ describe('ApprovalConfigCompilerService.compile', () => {
       };
       const { graphDefinition } = svc.compile(config, { ruleName: 'canon' });
 
-      // The canonical shape from the plan §3.3 example block, with the
-      // input ids substituted. `rule_type` is a Phase 1.5 extension over
-      // the §3.3 example (threaded for the sibling service_rules spec —
-      // see plan §0.3); the example block doesn't show it because it
-      // was authored before the discriminator was added.
+      // The canonical shape from the plan §3.3 example block (lines
+      // 1009-1026), with the input ids substituted. `approval_main.config`
+      // carries ONLY `required_approvers` + `threshold` — the discriminator
+      // `ruleType` exists on the input API but is NOT emitted to the graph
+      // (see {@link ApprovalRuleType} JSDoc). This is the byte-identical
+      // shape the 00399 block E SQL backfill must produce.
       const EXPECTED: WorkflowGraphDefinition = {
         nodes: [
           { id: 'trigger', type: 'trigger', config: {} },
@@ -242,7 +247,6 @@ describe('ApprovalConfigCompilerService.compile', () => {
                 { type: 'team', id: '22222222-2222-2222-2222-222222222222' },
               ],
               threshold: 'all',
-              rule_type: 'room_booking',
             },
           },
           { id: 'end_success', type: 'end', config: { outcome: 'approved' } },
