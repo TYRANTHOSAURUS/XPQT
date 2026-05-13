@@ -19,7 +19,7 @@ alter table public.work_orders
   add column source_asset_id uuid;
 
 comment on column public.work_orders.origin is
-  'work order genesis: reactive (manual), preventive (PM generator), corrective (PM follow-up)';
+  'work order genesis: reactive (manual), preventive (PM generator), corrective (PM follow-up). Visibility: PM-generated rows are spawned with no requester/assignee/watcher; until dispatched, they are reachable to operators via the planning predicate `work_orders_planning_visible_for_actor` (00380/00385) and to admins via `tickets.read_all`. Standard `ticket_visibility_ids` returns nothing for unassigned PM rows by design — surface them on /desk/planning, not on requester portals.';
 comment on column public.work_orders.maintenance_plan_id is
   'PM provenance — non-null for origin=preventive; FK to maintenance_plans (tenant-safe via composite)';
 comment on column public.work_orders.source_asset_id is
