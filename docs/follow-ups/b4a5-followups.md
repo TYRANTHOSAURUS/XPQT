@@ -210,3 +210,29 @@ mark member1's row read + remove member1 + member3 → only member3's
 unread row is removed (member1's read row + member2's unread row both
 survive). All triggers verified on remote via `information_schema.triggers`.
 
+## Dormant column — approvals.delegated_to_person_id
+
+**Status:** dormant on `2026-05-13`. Zero references in `apps/api/src` and
+`apps/web/src` to `delegated_to_person_id`. Delegation in the live code
+goes through a separate `delegations` table (e.g. `approval.service.ts:195`,
+`:274`, `:1053`).
+
+**The gap when activated.** If a future feature SETs
+`approvals.delegated_to_person_id` via UPDATE (e.g. to model in-chain
+delegation rather than route-the-approval-via-delegations-table), the
+00402 trigger doesn't fire (INSERT-only). The delegate would get no
+inbox notification.
+
+**The fix when picked up.** Either:
+1. Have the delegating code path also INSERT a new approvals row for the
+   delegate (the existing trigger fires on INSERT); the original row
+   transitions to `status='delegated'` as a tombstone.
+2. Add a fourth trigger `public.inbox_notify_on_approval_delegate` on
+   `approvals AFTER UPDATE OF delegated_to_person_id WHEN (NEW.delegated_to_person_id IS NOT NULL AND OLD.delegated_to_person_id IS DISTINCT FROM NEW.delegated_to_person_id)`,
+   mirroring the person fan-out from `inbox_notify_on_approval_insert`
+   but keyed off `new.delegated_to_person_id`.
+
+Option 1 is structurally cleaner (the approvals state machine stays
+event-driven on INSERT). Option 2 is more surgical. Pick when the
+feature ships.
+

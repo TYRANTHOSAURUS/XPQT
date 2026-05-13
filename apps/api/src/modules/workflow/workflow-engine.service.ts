@@ -1489,19 +1489,32 @@ export class WorkflowEngineService {
                   { entityName: 'approver team' },
                 );
               }
-              await this.supabase.admin.from('approvals').insert({
-                tenant_id: tenant.id,
-                target_entity_type: targetEntityType,
-                target_entity_id: targetEntityId,
-                approver_person_id: approverPersonId,
-                approver_team_id: approverTeamId,
-                approval_chain_id: approvalChainId,
-                parallel_group: parallelGroup,
-                chain_threshold: chainThreshold,
-                workflow_instance_id: instanceId,
-                workflow_node_id: node.id,
-                status: 'pending',
-              });
+              // Capture the INSERT error (codex review, 3-reviewer pass on
+              // B.4.A.5): the prior fire-and-forget shape transitioned the
+              // workflow_instance to 'waiting' even when the insert failed
+              // (RLS / FK / trigger). The instance was then stuck — no
+              // approvals to grant. Throw before the status transition so
+              // executeNode unwinds cleanly.
+              const { error: approvalInsertError } = await this.supabase.admin
+                .from('approvals')
+                .insert({
+                  tenant_id: tenant.id,
+                  target_entity_type: targetEntityType,
+                  target_entity_id: targetEntityId,
+                  approver_person_id: approverPersonId,
+                  approver_team_id: approverTeamId,
+                  approval_chain_id: approvalChainId,
+                  parallel_group: parallelGroup,
+                  chain_threshold: chainThreshold,
+                  workflow_instance_id: instanceId,
+                  workflow_node_id: node.id,
+                  status: 'pending',
+                });
+              if (approvalInsertError) {
+                throw AppErrors.server('workflow.advance_failed', {
+                  detail: `approvals insert failed (phase15 shape) for instance ${instanceId} node ${node.id}: ${approvalInsertError.message}`,
+                });
+              }
             }
           } else {
             // Pre-Phase-1.5 legacy single-approver shape. Unchanged from the
@@ -1532,14 +1545,24 @@ export class WorkflowEngineService {
               );
             }
             const entityKind: WorkflowEntityKind = 'case';
-            await this.supabase.admin.from('approvals').insert({
-              tenant_id: tenant.id,
-              target_entity_type: this.projectLegacyEntityType(entityKind),
-              target_entity_id: ticketId,
-              approver_person_id: approverPersonId,
-              approver_team_id: approverTeamId,
-              status: 'pending',
-            });
+            // Same error-capture as the Phase 1.5 branch above (codex review):
+            // the legacy shape also transitioned the workflow_instance to
+            // 'waiting' on insert failure, leaving the instance stuck.
+            const { error: approvalInsertError } = await this.supabase.admin
+              .from('approvals')
+              .insert({
+                tenant_id: tenant.id,
+                target_entity_type: this.projectLegacyEntityType(entityKind),
+                target_entity_id: ticketId,
+                approver_person_id: approverPersonId,
+                approver_team_id: approverTeamId,
+                status: 'pending',
+              });
+            if (approvalInsertError) {
+              throw AppErrors.server('workflow.advance_failed', {
+                detail: `approvals insert failed (legacy shape) for instance ${instanceId} node ${node.id}: ${approvalInsertError.message}`,
+              });
+            }
           }
         }
         // Cross-tenant write fix (codex post-fix review 2026-05-08): the

@@ -1177,13 +1177,25 @@ export class BookingFlowService {
   ): Promise<void> {
     const approvers = config.required_approvers ?? [];
     if (approvers.length === 0) return;
-    const parallelGroup = config.threshold === 'all' ? `parallel-${bookingId}` : null;
+    const chainThreshold: 'all' | 'any' = config.threshold ?? 'all';
+    const parallelGroup = chainThreshold === 'all' ? `parallel-${bookingId}` : null;
+    // One shared approval_chain_id per call — all approvers on a single
+    // booking share it. Mirrors the engine path at workflow-engine.service.ts.
+    // Without chain_id, the inbox fan-out trigger (00402) gates on
+    // `approval_chain_id IS NOT NULL` and silently no-ops, leaving approvers
+    // un-notified on a freshly-created booking. grant_booking_approval (00403
+    // v2) is chain_id-aware: chain_threshold='all' (the default) keeps the
+    // existing target_entity_id-grouped resolve semantics; chain_threshold
+    // ='any' uses the chain_id-grouped path. Both work with chain_id set.
+    const approvalChainId = randomUUID();
 
     const rows = approvers.map((a) => ({
       tenant_id: tenantId,
       target_entity_type: 'booking',
       target_entity_id: bookingId,
+      approval_chain_id: approvalChainId,
       parallel_group: parallelGroup,
+      chain_threshold: chainThreshold,
       approver_person_id: a.type === 'person' ? a.id : null,
       approver_team_id: a.type === 'team' ? a.id : null,
       status: 'pending',
