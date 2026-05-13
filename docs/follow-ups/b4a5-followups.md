@@ -113,3 +113,46 @@ the `users` table:
 
 The plumbing keeps the single tenants read as the fallback so the
 N+1 risk doesn't reappear.
+
+## Sub-step G — admin UI for template overrides
+
+### Live preview pane (deferred)
+
+**Status:** plan v2 §Sub-step G named a right-pane live preview of the
+rendered email HTML; sub-step G shipped the editor without it.
+
+**The gap.** The `[event-kind].tsx` editor surfaces the three override
+fields per locale but does NOT show what the final email body will
+look like with the override applied. Today the admin has to send a
+test booking through the dispatch path to see the rendered output.
+
+**Why deferred.** Real React Email render in the browser would either:
+  1. Bundle `@react-email/render` + every template TSX into the web
+     build (adds ~200KB and makes admin pages depend on server-side
+     rendering libraries), OR
+  2. Add a server endpoint `POST /admin/notification-templates/:eventKind/preview`
+     that takes draft override fields + sample payload and returns
+     rendered HTML.
+
+Option 2 is the cleaner pickup; it's straightforward — `TemplateResolverService.resolve()`
+already does the work, the new endpoint just calls it with a draft
+overrides map instead of loading from the DB.
+
+**The fix when picked up.**
+  1. Add `POST /admin/notification-templates/:eventKind/preview` —
+     body shape `{ locale, subject_override?, cta_text_override?,
+     body_intro_override? }`. Calls a new
+     `TemplateResolverService.previewWithDraftOverrides(...)` that
+     skips the DB lookup and uses the supplied draft. Returns
+     `{ subject, html, text, ctaText }`.
+  2. Switch `[event-kind].tsx` to `width="xwide"` two-column layout:
+     left = the existing FieldGroup, right = an iframe rendering
+     the latest preview HTML (debounced ~600ms after the last edit
+     so we don't spam the endpoint).
+  3. Mock booking payload comes from a static fixture in the
+     frontend (`mockBookingApprovalPayload`) — admin doesn't pick a
+     real booking; the preview is for copy-review, not data validation.
+
+The editor was shipped at `width="xwide"` with the right side empty
+so swapping in the preview doesn't require a layout change.
+

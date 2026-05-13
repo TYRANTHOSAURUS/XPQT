@@ -131,6 +131,9 @@ const WebhooksPage = lazyNamed(() => import('@/pages/admin/webhooks'), 'Webhooks
 const WebhookCreatePage = lazyNamed(() => import('@/pages/admin/webhook-create'), 'WebhookCreatePage');
 const WebhookDetailPage = lazyNamed(() => import('@/pages/admin/webhook-detail'), 'WebhookDetailPage');
 const WebhookEventsPage = lazyNamed(() => import('@/pages/admin/webhook-events'), 'WebhookEventsPage');
+// B.4.A.5 sub-step G — admin email-template overrides surface.
+const NotificationTemplatesPage = lazyNamed(() => import('@/pages/admin/notification-templates/index'), 'NotificationTemplatesPage');
+const NotificationTemplateDetailPage = lazyNamed(() => import('@/pages/admin/notification-templates/[event-kind]'), 'NotificationTemplateDetailPage');
 const PrivacyAdminPage = lazyNamed(() => import('@/pages/admin/privacy'), 'PrivacyAdminPage');
 const UsersPage = lazyNamed(() => import('@/pages/admin/users'), 'UsersPage');
 const UserDetailPage = lazyNamed(() => import('@/pages/admin/user-detail'), 'UserDetailPage');
@@ -384,6 +387,9 @@ export function App() {
                   <Route path="webhooks/new" element={<WebhookCreatePage />} />
                   <Route path="webhooks/:id" element={<WebhookDetailPage />} />
                   <Route path="webhooks/:id/events" element={<WebhookEventsPage />} />
+                  {/* B.4.A.5 sub-step G — email template overrides */}
+                  <Route path="notification-templates" element={<RouteErrorBoundary><NotificationTemplatesPage /></RouteErrorBoundary>} />
+                  <Route path="notification-templates/:eventKind" element={<RouteErrorBoundary><NotificationTemplateDetailPage /></RouteErrorBoundary>} />
                   {/* People */}
                   <Route path="users" element={<UsersPage />} />
                   <Route path="users/:id" element={<UserDetailPage />} />

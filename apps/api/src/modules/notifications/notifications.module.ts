@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MailModule } from '../../common/mail/mail.module';
+import { PermissionGuard } from '../../common/permission-guard';
 import { SupabaseModule } from '../../common/supabase/supabase.module';
 import { EmailChannel } from './channels/email.channel';
 import { NotificationsService } from './notifications.service';
 import { NotificationTemplateService } from './template-overrides.service';
+import { NotificationTemplatesController } from './template-overrides.controller';
 import { TemplateResolverService } from './templates/template-resolver.service';
 
 /**
@@ -27,14 +29,19 @@ import { TemplateResolverService } from './templates/template-resolver.service';
  */
 @Module({
   imports: [ConfigModule, MailModule, SupabaseModule],
+  controllers: [NotificationTemplatesController],
   providers: [
     EmailChannel,
     TemplateResolverService,
     NotificationsService,
-    // Self-review I6: stub shipped in sub-step C so the module exports a
-    // service token for sub-step G's admin CRUD. The contract docblock in
-    // template-overrides.service.ts is binding for sub-step G.
+    // Sub-step G: CRUD for `notification_template_overrides` plus the
+    // admin HTTP surface that drives the Email-templates settings page.
     NotificationTemplateService,
+    // PermissionGuard is module-scoped DI per the daily-list / visitors
+    // module convention. The global APP_GUARD already gates auth; this
+    // guard adds the `notifications.manage_templates` check inside each
+    // controller method (call shape mirrors daily-list-admin.controller).
+    PermissionGuard,
   ],
   exports: [NotificationsService, NotificationTemplateService],
 })

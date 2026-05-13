@@ -16,7 +16,13 @@
 
 export { NotificationsModule } from './notifications.module';
 export { NotificationsService, type DispatchArgs } from './notifications.service';
-export { NotificationTemplateService } from './template-overrides.service';
+export {
+  NotificationTemplateService,
+  type TemplateLocale,
+  type TemplateOverrideRow,
+  type TemplateOverrideUpsert,
+} from './template-overrides.service';
+export { NotificationTemplatesController } from './template-overrides.controller';
 export {
   type DispatchInput,
   type DispatchResult,
