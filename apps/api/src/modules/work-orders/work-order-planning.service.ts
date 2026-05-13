@@ -184,7 +184,6 @@ export class WorkOrderPlanningService {
       plannedBlocks,
       unscheduledBlocks,
       userMap,
-      teamMap,
       vendorMap,
     );
 
@@ -460,7 +459,6 @@ export class WorkOrderPlanningService {
     plannedBlocks: WorkOrderPlanningBlock[],
     unscheduledBlocks: WorkOrderPlanningBlock[],
     userMap: Map<string, string>,
-    teamMap: Map<string, string>,
     vendorMap: Map<string, string>,
   ): Promise<{ lanes: PlanningLaneId[]; truncated: boolean }> {
     const byKey = new Map<string, { lane: PlanningLaneId; blockCount: number }>();
@@ -507,8 +505,6 @@ export class WorkOrderPlanningService {
         );
       }
     }
-
-    void teamMap; // teamMap is unused for roster expansion (we don't lift sibling teams as lanes); kept in signature for symmetry with deriveLane.
 
     let entries = Array.from(byKey.values());
     let truncated = false;
@@ -618,14 +614,16 @@ const LANE_KIND_ORDER: Record<PlanningLaneId['kind'], number> = {
   vendor: 2,
 };
 
-function compareLanes(a: PlanningLaneId, b: PlanningLaneId): number {
+export function compareLanes(a: PlanningLaneId, b: PlanningLaneId): number {
   const ak = LANE_KIND_ORDER[a.kind];
   const bk = LANE_KIND_ORDER[b.kind];
   if (ak === -1 && bk !== -1) return -1;
   if (bk === -1 && ak !== -1) return 1;
   const labelCmp = a.label.localeCompare(b.label);
   if (labelCmp !== 0) return labelCmp;
-  return ak - bk;
+  const kindCmp = ak - bk;
+  if (kindCmp !== 0) return kindCmp;
+  return (a.id ?? '').localeCompare(b.id ?? '');
 }
 
 function uniqueIds<T>(rows: T[], picker: (row: T) => string | null | undefined): string[] {

@@ -3,7 +3,11 @@
 // deeper integration (visibility, can_plan derivation, DST math) is
 // exercised by the smoke gate against a real DB.
 
-import { WorkOrderPlanningService, type PlanningFilters } from './work-order-planning.service';
+import {
+  WorkOrderPlanningService,
+  compareLanes,
+  type PlanningFilters,
+} from './work-order-planning.service';
 import { TenantContext } from '../../common/tenant-context';
 
 const TENANT = '11111111-1111-4111-8111-111111111111';
@@ -382,5 +386,43 @@ describe('WorkOrderPlanningService — lane derivation', () => {
 
     expect(result.lanes).toHaveLength(50);
     expect(result.truncated).toBe(true);
+  });
+});
+
+describe('compareLanes — id tiebreaker (lane stability)', () => {
+  it('returns non-zero for two lanes with same kind + same label + different ids', () => {
+    const a = { kind: 'user' as const, id: 'u-aaa', label: 'Same Name' };
+    const b = { kind: 'user' as const, id: 'u-bbb', label: 'Same Name' };
+    const result = compareLanes(a, b);
+    expect(result).not.toBe(0);
+    const reversed = compareLanes(b, a);
+    expect(Math.sign(reversed)).toBe(-Math.sign(result));
+  });
+
+  it('produces a consistent total order across repeated sorts (no flicker)', () => {
+    const lanes = [
+      { kind: 'user' as const, id: 'u-3', label: 'Same' },
+      { kind: 'user' as const, id: 'u-1', label: 'Same' },
+      { kind: 'user' as const, id: 'u-2', label: 'Same' },
+    ];
+    const first = [...lanes].sort(compareLanes).map((l) => l.id);
+    const second = [...lanes].reverse().sort(compareLanes).map((l) => l.id);
+    expect(first).toEqual(second);
+  });
+
+  it('still puts unassigned first, alpha-label second, kind third', () => {
+    const lanes = [
+      { kind: 'vendor' as const, id: 'v-1', label: 'Bravo' },
+      { kind: 'unassigned' as const, id: null, label: 'Unassigned' },
+      { kind: 'user' as const, id: 'u-1', label: 'Alpha' },
+      { kind: 'team' as const, id: 't-1', label: 'Alpha' },
+    ];
+    const sorted = lanes.sort(compareLanes);
+    expect(sorted[0]?.kind).toBe('unassigned');
+    expect(sorted[1]?.kind).toBe('user');
+    expect(sorted[1]?.label).toBe('Alpha');
+    expect(sorted[2]?.kind).toBe('team');
+    expect(sorted[2]?.label).toBe('Alpha');
+    expect(sorted[3]?.kind).toBe('vendor');
   });
 });
