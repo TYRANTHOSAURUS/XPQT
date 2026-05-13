@@ -1094,6 +1094,42 @@ begin
       v_per_follow_ups := v_per_follow_ups || to_jsonb('booking.cost_changed'::text);
     end if;
 
+    -- Codex remediation: booking.approval_required emit for §3.6.5 rows
+    -- 2/7/8. v3 originally only emitted location/cost/SLA, leaving the
+    -- per-occurrence inbox INSERT block (lines 932-963) without an email
+    -- partner. When sub-step H lifts the gate at line ~562, scope edits
+    -- would inbox-without-email — half-baked. Mirror 00394:990-1008's
+    -- emit shape (split person/team arrays); idempotency_key is keyed
+    -- by booking_id so each occurrence gets its own dedup boundary
+    -- (consistent with location_changed / cost_changed above). The
+    -- `chain_config_changed` flag in the per-occurrence plan drives
+    -- v_emit_approval_required (set in the §3.6.5 lookup at lines
+    -- 502-536), so the same predicate that flipped the inbox INSERT
+    -- block on now flips the emit on. Defense-in-depth: unreachable
+    -- until sub-step H lifts the gate, but in place + pushed so the
+    -- cutover is gate-flag-only.
+    if v_emit_approval_required then
+      perform outbox.emit(
+        p_tenant_id       => p_tenant_id,
+        p_event_type      => 'booking.approval_required',
+        p_aggregate_type  => 'booking',
+        p_aggregate_id    => v_target_booking_id,
+        p_payload         => jsonb_build_object(
+          'tenant_id',           p_tenant_id,
+          'booking_id',          v_target_booking_id,
+          'chain_id',            v_new_chain_id,
+          'approver_person_ids', to_jsonb(v_approver_person_ids),
+          'approver_team_ids',   to_jsonb(v_approver_team_ids),
+          'started_at',          v_started_at,
+          'scope_series_id',     v_single_series_id
+        ),
+        p_idempotency_key => 'booking.approval_required:' || v_target_booking_id::text || ':' || p_idempotency_key,
+        p_event_version   => 1,
+        p_available_at    => null
+      );
+      v_per_follow_ups := v_per_follow_ups || to_jsonb('booking.approval_required'::text);
+    end if;
+
     for v_wo in select * from jsonb_array_elements(v_wo_patches) loop
       if coalesce((v_wo->>'needs_repoint')::boolean, false) then
         perform outbox.emit(
@@ -1164,6 +1200,6 @@ revoke all on function public.edit_booking_scope(jsonb, uuid, uuid, text, boolea
 grant  execute on function public.edit_booking_scope(jsonb, uuid, uuid, text, boolean) to service_role;
 
 comment on function public.edit_booking_scope(jsonb, uuid, uuid, text, boolean) is
-  'B.4.A.5 sub-step B — edit_booking_scope RPC v3 (supersedes 00371 v2). Hybrid C invariant: inbox_notifications row(s) inserted in the same RPC tx as the approvals row(s), defense-in-depth (the B.4.A.5 emit-site gate at line ~575 stays UP until sub-step H lifts it; the inbox INSERT block is in place + pushed so cutover is gate-flag-only). Person approver → users.person_id; team approver → team_members.user_id JOIN public.users (tenant-filtered both sides). ON CONFLICT DO NOTHING on uq_inbox_notifications_chain. Outbox payload split into approver_person_ids[] + approver_team_ids[] (the person array holds persons.id values; sub-step D fans person → user via users.person_id JOIN at dispatch time). All 00371 v2 contract preserved: stateless dry-run, payload_hash bound on p_plans only, bounded booking_not_found error, recurrence_overridden defensive guard, per-occurrence before/after snapshots, same-series check, 200-occurrence hard cap. Spec: /tmp/b4a5-plan-v2.md sub-step B.';
+  'B.4.A.5 sub-step B — edit_booking_scope RPC v3 (supersedes 00371 v2). Hybrid C invariant: inbox_notifications row(s) inserted in the same RPC tx as the approvals row(s), defense-in-depth (the B.4.A.5 emit-site gate at line ~575 stays UP until sub-step H lifts it; the inbox INSERT block is in place + pushed so cutover is gate-flag-only). Person approver → users.person_id; team approver → team_members.user_id JOIN public.users (tenant-filtered both sides). ON CONFLICT DO NOTHING on uq_inbox_notifications_chain. Outbox payload split into approver_person_ids[] + approver_team_ids[] (the person array holds persons.id values; sub-step D fans person → user via users.person_id JOIN at dispatch time). Codex remediation: per-occurrence booking.approval_required outbox emit added (mirrors 00394:990-1008) so cutover is gate-flag-only on the email path too — without the emit, sub-step H would inbox-without-email. All 00371 v2 contract preserved: stateless dry-run, payload_hash bound on p_plans only, bounded booking_not_found error, recurrence_overridden defensive guard, per-occurrence before/after snapshots, same-series check, 200-occurrence hard cap. Spec: /tmp/b4a5-plan-v2.md sub-step B.';
 
 notify pgrst, 'reload schema';

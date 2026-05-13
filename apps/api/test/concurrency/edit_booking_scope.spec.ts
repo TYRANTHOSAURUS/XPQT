@@ -34,6 +34,11 @@
  *      (proves the per-occurrence inbox INSERT block in 00395 is properly
  *      tx-scoped behind the B.4.A.5 emit-site gate; will evolve into
  *      "row count == approver count" once sub-step H lifts the gate).
+ *  18. Codex remediation — gate raise leaves outbox empty of
+ *      booking.approval_required (proves the per-occurrence emit block
+ *      added in the codex remediation is properly tx-scoped behind the
+ *      same gate; will evolve into "N events emitted with correct per-
+ *      chain payloads" once sub-step H lifts the gate).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -1462,5 +1467,81 @@ describe('edit_booking_scope RPC — concurrency + state-machine probes', () => 
       [base.tenantId],
     );
     expect(inboxCount.rows[0].n).toBe(0);
+  });
+
+  // ── Scenario 18 (codex remediation, sub-step B follow-up) ───────────
+  // Without an approval_required outbox emit in 00395, sub-step H would
+  // lift the gate and create inbox rows but no email. The emit block now
+  // lives alongside booking.location_changed / booking.cost_changed in
+  // the per-occurrence write block, gated on the SAME predicate as the
+  // inbox INSERT block (v_emit_approval_required). While the gate at
+  // 00395:~562 stays UP, the emit is unreachable — same as the inbox
+  // INSERT — so today's contract is: ZERO booking.approval_required
+  // outbox rows after a gate-tripping plan. When sub-step H lifts the
+  // gate, this test should evolve into "N events emitted with correct
+  // per-chain payloads" — N = occurrences whose plans flip rows 2/7/8
+  // (allow → require_approval or chain_config_changed). Mirror shape
+  // for edit_booking.spec.ts Scenario 7's outbox assertion.
+  it('B.4.A.5 — gate raise leaves outbox empty of booking.approval_required (per-occurrence emit covered by tx rollback)', async () => {
+    const base = await seedBaseFixture(pool, `scope-emit-gate-${Date.now()}`);
+    const fixture = await seedRecurrenceSeries(pool, base, 3);
+    const targetSpaceId = await seedTargetMeetingRoom(pool, base);
+
+    // Flip occurrences 0 + 2 (two of three) into the gate-tripping shape:
+    // allow → require_approval with chain_config_changed. The shared
+    // v_emit_approval_required predicate fires on the first one and
+    // raises — but the structural intent is that, once sub-step H lifts
+    // the gate, the per-occurrence emit block fires N times for the N
+    // occurrences whose plans flipped (here: 2 emits).
+    const plans = await buildPlansForFixture(
+      pool,
+      fixture,
+      targetSpaceId,
+      base.spaceId,
+      '2026-10-15T00:00:00Z',
+      (idx) =>
+        idx === 0 || idx === 2
+          ? buildApprovalBlock({
+              oldOutcome: 'allow',
+              newOutcome: 'require_approval',
+              chainConfigChanged: true,
+              newChainConfig: {
+                requiredApprovers: [{ type: 'person', id: base.approverPersonId }],
+                threshold: 'all',
+              },
+            })
+          : buildApprovalBlock({}),
+    );
+    const idempotencyKey = scopeIdempotencyKey(`emit-gate-${Date.now()}`);
+
+    const result = await runRpcCapture(pool, 'public.edit_booking_scope', [
+      JSON.stringify(plans),
+      base.tenantId,
+      null,
+      idempotencyKey,
+      false,
+    ]);
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') return;
+    expect(result.error.message).toContain('booking.edit_requires_notification_dispatch');
+
+    // ZERO booking.approval_required outbox rows — gate suppresses + tx
+    // rollback covers anything that would slip through.
+    const approvalEmits = await pool.query<{ n: number }>(
+      `select count(*)::int as n from outbox.events
+        where tenant_id = $1 and event_type = 'booking.approval_required'`,
+      [base.tenantId],
+    );
+    expect(approvalEmits.rows[0].n).toBe(0);
+
+    // Cross-check the existing scenario's invariant — total outbox empty
+    // for this tenant (sanity that we didn't accidentally smuggle a
+    // location_changed / cost_changed through). All emits live in the
+    // same per-occurrence block.
+    const totalEmits = await pool.query<{ n: number }>(
+      `select count(*)::int as n from outbox.events where tenant_id = $1`,
+      [base.tenantId],
+    );
+    expect(totalEmits.rows[0].n).toBe(0);
   });
 });

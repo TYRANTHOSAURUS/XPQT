@@ -47,6 +47,17 @@ import type { OutboxEvent } from '../outbox.types';
  * Service-role bypasses RLS, so tenant_id is asserted defensively at the
  * top: payload.tenant_id must equal event.tenant_id, mismatch → terminal
  * dead-letter. Same pattern as sla-timer-repoint.handler.ts:78-82.
+ *
+ * ── Legacy v4 backward-compat shim (codex remediation, drain-window only)
+ *
+ * Outbox events emitted by 00364 v4 BEFORE the v5 cutover (commits
+ * 7852ebf0 + c7ddb037 push) carry the mixed `approver_ids` field instead
+ * of the split `approver_person_ids` + `approver_team_ids`. The validation
+ * block tolerates that shape best-effort: legacy `approver_ids` is treated
+ * as person-only + a `legacy_payload_shape_detected` warn line fires. Team
+ * uuids smuggled inside legacy events fall through to user-fetch failure
+ * (logged by sub-step D's dispatch path). Remove the shim after the drain
+ * window closes (no v4-shape events remain in `outbox.events`).
  */
 
 export interface BookingApprovalRequiredPayload {
@@ -80,6 +91,17 @@ export interface BookingApprovalRequiredPayload {
   approver_team_ids: string[];
   /** ISO timestamp captured by the RPC (v_started_at). */
   started_at: string;
+  /**
+   * Legacy v4 mixed-array field (persons + teams in one bucket). Present
+   * only on outbox events emitted by 00364 v4 BEFORE the v5 cutover landed
+   * on remote (commits 7852ebf0 + c7ddb037 push). Handler treats this as
+   * `approver_person_ids` best-effort + emits a `legacy_payload_shape_
+   * detected` warn line so ops can spot drain-window events. Team uuids
+   * smuggled inside this array fall through to user-fetch failure (already
+   * logged by sub-step D's dispatch path). Remove this fallback after the
+   * v4 drain window closes — see codex remediation commit message.
+   */
+  approver_ids?: string[];
 }
 
 @Injectable()
@@ -106,7 +128,30 @@ export class BookingApprovalRequiredHandler
     // `approver_team_ids` — keys are typed at the JSON layer to drop the
     // re-classification step the handler used to do). Any shape mismatch
     // is a contract bug requiring code change, not retry.
-    const { booking_id, chain_id, approver_person_ids, approver_team_ids, started_at } = payload;
+    //
+    // Legacy v4 backward-compat shim. Codex remediation: events emitted by
+    // 00364 v4 BEFORE the v5 cutover (commits 7852ebf0 + c7ddb037 push)
+    // would otherwise dead-letter immediately on the missing split-array
+    // fields. Best-effort: treat legacy `approver_ids` as person ids + emit
+    // one warn line per drain-window event so ops can spot them. Team uuids
+    // smuggled inside the legacy array fall through to user-fetch failure
+    // (already logged by sub-step D's dispatch path). Remove this fallback
+    // after the drain window closes (no v4-shape events remain).
+    const { booking_id, chain_id, started_at } = payload;
+    let { approver_person_ids, approver_team_ids } = payload;
+    if (
+      !Array.isArray(approver_person_ids) &&
+      !Array.isArray(approver_team_ids) &&
+      Array.isArray(payload.approver_ids)
+    ) {
+      this.log.warn(
+        `legacy_payload_shape_detected — approver_ids -> approver_person_ids ` +
+          `(v4 drain-window event; team uuids inside this array will fall through ` +
+          `to user-fetch failure): event=${event.id} chain=${chain_id}`,
+      );
+      approver_person_ids = payload.approver_ids;
+      approver_team_ids = [];
+    }
 
     if (typeof booking_id !== 'string' || !UUID_RE.test(booking_id)) {
       throw new DeadLetterError(

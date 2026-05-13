@@ -885,7 +885,7 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
   // ── Scenario 7 (v4 §3.6.5 Row 2): allow → require_approval, none ─────
   // INSERT new approvals chain; bookings.status → 'pending_approval';
   // booking.approval_required outbox event emitted with chain_id +
-  // approver_ids payload.
+  // approver_person_ids[] + approver_team_ids[] payload (v5 split shape).
   it('§3.6.5 Row 2 — allow→require_approval (none) inserts fresh chain + emits approval_required', async () => {
     const base = await seedBaseFixture(pool, `edit-row2-${Date.now()}`);
     const booking = await seedConfirmedBooking(pool, base);

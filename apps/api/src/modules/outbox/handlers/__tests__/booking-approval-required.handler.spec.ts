@@ -163,4 +163,82 @@ describe('BookingApprovalRequiredHandler.handle (B.4.A.4)', () => {
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
     });
   });
+
+  // ── Codex remediation: legacy v4 backward-compat shim ────────────────
+  // Outbox events emitted by 00364 v4 BEFORE the v5 cutover landed on
+  // remote (commits 7852ebf0 + c7ddb037 push) carry the mixed
+  // `approver_ids` field instead of the split arrays. The handler tolerates
+  // that shape best-effort: legacy `approver_ids` -> `approver_person_ids`
+  // + a `legacy_payload_shape_detected` warn line. Remove this case after
+  // the drain window closes.
+  describe('legacy v4 backward-compat shim', () => {
+    it('legacy approver_ids payload accepted as person_ids with warn log', async () => {
+      const handler = new BookingApprovalRequiredHandler();
+      const warnSpy = jest
+        .spyOn((handler as unknown as { log: { warn: (msg: string) => void } }).log, 'warn')
+        .mockImplementation(() => undefined);
+      try {
+        // Simulate a v4-shape payload: no approver_person_ids /
+        // approver_team_ids, but legacy approver_ids present. Cast through
+        // unknown because the typed payload schema doesn't expose the split
+        // arrays as optional (they're required) — the runtime check is what
+        // exercises the shim.
+        const event = makeEvent(
+          {},
+          {
+            approver_person_ids: undefined as unknown as string[],
+            approver_team_ids: undefined as unknown as string[],
+            approver_ids: [APPROVER_A, APPROVER_B],
+          } as Partial<BookingApprovalRequiredPayload>,
+        );
+        await expect(handler.handle(event)).resolves.toBeUndefined();
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        const warnMsg = warnSpy.mock.calls[0][0];
+        expect(typeof warnMsg).toBe('string');
+        expect(warnMsg as string).toContain('legacy_payload_shape_detected');
+        expect(warnMsg as string).toContain(EVENT_ID);
+        expect(warnMsg as string).toContain(CHAIN_ID);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('legacy shim does not fire when split arrays are present (no warn)', async () => {
+      const handler = new BookingApprovalRequiredHandler();
+      const warnSpy = jest
+        .spyOn((handler as unknown as { log: { warn: (msg: string) => void } }).log, 'warn')
+        .mockImplementation(() => undefined);
+      try {
+        // v5-shape event with legacy approver_ids ALSO set (defensive: a
+        // producer that emits both keys must NOT trigger the shim — split
+        // arrays win).
+        const event = makeEvent(
+          {},
+          {
+            approver_person_ids: [APPROVER_A],
+            approver_team_ids: [],
+            approver_ids: [APPROVER_B],
+          } as Partial<BookingApprovalRequiredPayload>,
+        );
+        await expect(handler.handle(event)).resolves.toBeUndefined();
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('legacy shim still validates uuid shape on the salvaged person ids', async () => {
+      const handler = new BookingApprovalRequiredHandler();
+      const event = makeEvent(
+        {},
+        {
+          approver_person_ids: undefined as unknown as string[],
+          approver_team_ids: undefined as unknown as string[],
+          approver_ids: [APPROVER_A, 'not-a-uuid'],
+        } as Partial<BookingApprovalRequiredPayload>,
+      );
+      // Salvaged → flows through downstream uuid validation → dead-letters.
+      await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
+    });
+  });
 });
