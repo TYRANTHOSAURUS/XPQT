@@ -1,5 +1,6 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { ApprovalService } from './approval.service';
+import { ApprovalConfigCompilerService } from './approval-config-compiler.service';
 import { ApprovalController } from './approval.controller';
 import { TicketModule } from '../ticket/ticket.module';
 import { ReservationsModule } from '../reservations/reservations.module';
@@ -21,8 +22,14 @@ import { VisitorsModule } from '../visitors/visitors.module';
     forwardRef(() => BookingBundlesModule),
     forwardRef(() => VisitorsModule),
   ],
-  providers: [ApprovalService],
+  // ApprovalConfigCompilerService — Phase 1.5 sub-step 6.A.X. Pure-TS,
+  // zero-DI compiler that transforms `ApprovalConfig` to a
+  // `workflow_definitions.graph_definition` jsonb. Exported so the
+  // room-booking-rules service (cutover in sub-step 6.E) can call it
+  // before invoking the `ensure_room_booking_rule_workflow_definition`
+  // RPC.
+  providers: [ApprovalService, ApprovalConfigCompilerService],
   controllers: [ApprovalController],
-  exports: [ApprovalService],
+  exports: [ApprovalService, ApprovalConfigCompilerService],
 })
 export class ApprovalModule {}
