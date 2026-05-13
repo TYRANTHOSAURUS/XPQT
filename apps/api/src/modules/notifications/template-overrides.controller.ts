@@ -6,7 +6,6 @@ import {
   NotificationTemplateService,
   type TemplateLocale,
   type TemplateOverrideRow,
-  type TemplateOverrideUpsert,
 } from './template-overrides.service';
 
 /**
