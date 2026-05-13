@@ -17,6 +17,7 @@ import {
   WorkflowSpawnWakeOnBookingStatusChangedHandler,
 } from './handlers/workflow-spawn-wake.handler';
 import { WorkflowStartHandler } from './handlers/workflow-start.handler';
+import { WorkflowApprovalGrantedHandler } from './handlers/workflow-approval-granted.handler';
 import { OutboxHandlerRegistry } from './outbox-handler.registry';
 import { OutboxService } from './outbox.service';
 import { OutboxWorker } from './outbox.worker';
@@ -126,6 +127,10 @@ import { OutboxWorker } from './outbox.worker';
     WorkflowSpawnWakeOnBookingCreatedHandler,
     WorkflowSpawnWakeOnBookingCancelledHandler,
     WorkflowSpawnWakeOnBookingStatusChangedHandler,
+    // Phase 1.5 sub-step 6.D — drain 00403's `approval.granted` outbox
+    // events; calls WorkflowEngineService.resume(...) on the parent
+    // workflow_instance.
+    WorkflowApprovalGrantedHandler,
   ],
   exports: [OutboxService, OutboxHandlerRegistry],
 })
