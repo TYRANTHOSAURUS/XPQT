@@ -2,11 +2,11 @@ import { MousePointer2, Pentagon, Square, Circle, Image as ImageIcon, type Lucid
 import type { ToolKind } from './types';
 
 const TOOLS: { kind: ToolKind; label: string; shortcut: string; Icon: LucideIcon }[] = [
-  { kind: 'select',         label: 'Select',       shortcut: 'V', Icon: MousePointer2 },
-  { kind: 'draw-polygon',   label: 'Draw polygon', shortcut: 'P', Icon: Pentagon },
-  { kind: 'draw-rectangle', label: 'Rectangle',    shortcut: 'R', Icon: Square },
-  { kind: 'stamp-seat',     label: 'Stamp seat',   shortcut: 'S', Icon: Circle },
-  { kind: 'image-upload',   label: 'Image',        shortcut: 'I', Icon: ImageIcon },
+  { kind: 'select',         label: 'Select / move',         shortcut: 'V', Icon: MousePointer2 },
+  { kind: 'draw-rectangle', label: 'Room (rectangle)',      shortcut: 'R', Icon: Square },
+  { kind: 'draw-polygon',   label: 'Room (polygon)',        shortcut: 'P', Icon: Pentagon },
+  { kind: 'stamp-seat',     label: 'Seat (single click)',   shortcut: 'S', Icon: Circle },
+  { kind: 'image-upload',   label: 'Upload floor image',    shortcut: 'I', Icon: ImageIcon },
 ];
 
 type Props = { activeTool: ToolKind; dispatch: React.Dispatch<any> };

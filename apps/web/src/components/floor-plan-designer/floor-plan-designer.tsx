@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronLeft } from 'lucide-react';
+import { ChevronLeft, Undo2, Redo2 } from 'lucide-react';
 import { useFloorPlanDraft } from '@/api/floor-plans/hooks';
 import { useDesignerState } from './use-designer-state';
 import { useImageUpload } from './use-image-upload';
@@ -18,7 +18,7 @@ type Props = { floorSpaceId: string; floorName: string; backTo: string };
 
 export function FloorPlanDesigner({ floorSpaceId, floorName, backTo }: Props) {
   const draft = useFloorPlanDraft(floorSpaceId);
-  const { state, dispatch, isSaving } = useDesignerState(floorSpaceId, draft.data);
+  const { state, dispatch, isSaving, canUndo, canRedo } = useDesignerState(floorSpaceId, draft.data);
   const [publishOpen, setPublishOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -187,7 +187,30 @@ export function FloorPlanDesigner({ floorSpaceId, floorName, backTo }: Props) {
             {isSaving ? 'saving…' : 'saved'}
           </span>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={() => dispatch({ type: 'undo' })}
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8"
+            disabled={!canUndo}
+            title="Undo (⌘Z)"
+            aria-label="Undo"
+          >
+            <Undo2 className="h-4 w-4" />
+          </Button>
+          <Button
+            onClick={() => dispatch({ type: 'redo' })}
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8"
+            disabled={!canRedo}
+            title="Redo (⇧⌘Z)"
+            aria-label="Redo"
+          >
+            <Redo2 className="h-4 w-4" />
+          </Button>
+          <span className="mx-1 h-5 w-px bg-border" />
           <Button onClick={() => setHistoryOpen(true)} size="sm" variant="outline">
             History
           </Button>

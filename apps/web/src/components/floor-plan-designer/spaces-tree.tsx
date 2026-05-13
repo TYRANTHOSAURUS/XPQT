@@ -16,7 +16,10 @@ export function SpacesTree({ floorSpaceId, state, dispatch }: Props) {
 
   return (
     <div className="border-r border-border bg-background p-4 overflow-y-auto">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground mb-3">Spaces on this floor</div>
+      <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Spaces on this floor</div>
+      <p className="mb-3 text-[11px] leading-snug text-muted-foreground">
+        Green dot = polygon drawn. Click a space here to highlight its polygon on the canvas, or draw a new shape and link it from the inspector.
+      </p>
       {children.isLoading && (
         <div className="text-sm text-muted-foreground">Loading…</div>
       )}

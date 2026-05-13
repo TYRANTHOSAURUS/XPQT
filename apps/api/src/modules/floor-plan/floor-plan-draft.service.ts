@@ -123,18 +123,30 @@ export class FloorPlanDraftService {
     // Effective width/height is the patch value when present, otherwise the
     // current draft value — so a patch that adds polygons after an earlier
     // patch set the image dimensions is still validated.
+    //
+    // The current-draft lookup is defensive: a transient supabase-js failure
+    // (network blip, Cloudflare path glitch, exhausted pool) must NOT 500 the
+    // autosave path that the designer hits every 500ms. If we can't read the
+    // dimensions, we skip the bounds check for this PATCH. The CHECK at the DB
+    // layer + the next PATCH catching it are sufficient defense in depth.
     if (parsed.data.polygons && parsed.data.polygons.length > 0) {
       let effectiveW = parsed.data.width_px ?? null;
       let effectiveH = parsed.data.height_px ?? null;
       if (effectiveW == null || effectiveH == null) {
-        const { data: current } = await client
-          .from('floor_plan_drafts')
-          .select('width_px, height_px')
-          .eq('floor_space_id', floorSpaceId)
-          .eq('tenant_id', tenantId)
-          .maybeSingle();
-        effectiveW = effectiveW ?? ((current as { width_px?: number | null } | null)?.width_px ?? null);
-        effectiveH = effectiveH ?? ((current as { height_px?: number | null } | null)?.height_px ?? null);
+        try {
+          const { data: current, error: lookupErr } = await client
+            .from('floor_plan_drafts')
+            .select('width_px, height_px')
+            .eq('floor_space_id', floorSpaceId)
+            .eq('tenant_id', tenantId)
+            .maybeSingle();
+          if (!lookupErr && current) {
+            effectiveW = effectiveW ?? ((current as { width_px?: number | null }).width_px ?? null);
+            effectiveH = effectiveH ?? ((current as { height_px?: number | null }).height_px ?? null);
+          }
+        } catch {
+          // Swallow — skipping the bounds check is preferable to 500ing autosave.
+        }
       }
       if (effectiveW != null && effectiveH != null) {
         for (const poly of parsed.data.polygons) {

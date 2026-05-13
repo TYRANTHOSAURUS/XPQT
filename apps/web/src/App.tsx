@@ -418,13 +418,26 @@ export function App() {
                   <Route path="visitors/types/:id" element={<AdminVisitorTypeDetailPage />} />
                   <Route path="visitors/pools" element={<AdminVisitorPoolsPage />} />
                   <Route path="visitors/pools/:spaceId" element={<AdminVisitorPoolDetailPage />} />
-                  {/* Floor plans (B.13) */}
+                  {/* Floor plans (B.13). Index lives inside AdminLayout; the
+                       designer page (route below the AdminLayout block) is
+                       shell-exempt so it can claim the full viewport. */}
                   <Route path="floor-plans" element={<RouteErrorBoundary><FloorPlansIndexPage /></RouteErrorBoundary>} />
-                  <Route path="floor-plans/:floorSpaceId" element={<RouteErrorBoundary><FloorPlanDesignerPage /></RouteErrorBoundary>} />
                   {/* Maintenance plans (Slice C) */}
                   <Route path="maintenance/plans" element={<RouteErrorBoundary><MaintenancePlansPage /></RouteErrorBoundary>} />
                   <Route path="maintenance/plans/:id" element={<RouteErrorBoundary><MaintenancePlanDetailPage /></RouteErrorBoundary>} />
                 </Route>
+
+                {/* Floor plan designer — shell-exempt sibling of /admin so it
+                     claims the full viewport (own topbar + tool dock + inspector).
+                     Still gated by ProtectedRoute(admin). */}
+                <Route
+                  path="/admin/floor-plans/:floorSpaceId"
+                  element={
+                    <ProtectedRoute requiredRole="admin">
+                      <RouteErrorBoundary><FloorPlanDesignerPage /></RouteErrorBoundary>
+                    </ProtectedRoute>
+                  }
+                />
                 </Routes>
               </Suspense>
             </RouteErrorBoundary>
