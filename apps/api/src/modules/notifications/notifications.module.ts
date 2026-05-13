@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { MailModule } from '../../common/mail/mail.module';
 import { SupabaseModule } from '../../common/supabase/supabase.module';
 import { EmailChannel } from './channels/email.channel';
 import { NotificationsService } from './notifications.service';
+import { NotificationTemplateService } from './template-overrides.service';
 import { TemplateResolverService } from './templates/template-resolver.service';
 
 /**
@@ -24,12 +26,16 @@ import { TemplateResolverService } from './templates/template-resolver.service';
  * Exports `NotificationsService` for the outbox handler in sub-step D.
  */
 @Module({
-  imports: [MailModule, SupabaseModule],
+  imports: [ConfigModule, MailModule, SupabaseModule],
   providers: [
     EmailChannel,
     TemplateResolverService,
     NotificationsService,
+    // Self-review I6: stub shipped in sub-step C so the module exports a
+    // service token for sub-step G's admin CRUD. The contract docblock in
+    // template-overrides.service.ts is binding for sub-step G.
+    NotificationTemplateService,
   ],
-  exports: [NotificationsService],
+  exports: [NotificationsService, NotificationTemplateService],
 })
 export class NotificationsModule {}

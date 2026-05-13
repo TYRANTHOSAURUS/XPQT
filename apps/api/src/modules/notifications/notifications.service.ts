@@ -1,7 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EmailChannel } from './channels/email.channel';
 import type { DispatchInput, DispatchResult } from './channels/notification-channel.interface';
-import { TemplateResolverService } from './templates/template-resolver.service';
+import {
+  TemplateResolverService,
+  type NotificationEventKind,
+  type NotificationEventPayloads,
+} from './templates/template-resolver.service';
 
 /**
  * NotificationsService — orchestrates template resolution + per-channel dispatch.
@@ -37,7 +41,15 @@ import { TemplateResolverService } from './templates/template-resolver.service';
  * doesn't).
  */
 
-export interface DispatchArgs {
+/**
+ * Self-review I8: `eventKind` is typed as `NotificationEventKind` (the
+ * union of REGISTRY keys), and `payload` is typed via the per-kind map
+ * `NotificationEventPayloads[K]`. Compile-time catches a payload typo
+ * (was a silent `undefined` render before).
+ */
+export interface DispatchArgs<
+  K extends NotificationEventKind = NotificationEventKind,
+> {
   /** Tenant boundary. */
   tenantId: string;
   /** Recipient `public.users.id`. */
@@ -45,9 +57,9 @@ export interface DispatchArgs {
   /** Resolved locale (caller defaults to 'en' on NULL). */
   locale: 'en' | 'nl';
   /** Template kind — must be a registered key in TemplateResolverService. */
-  eventKind: string;
-  /** Typed payload for the kind. */
-  payload: Record<string, unknown>;
+  eventKind: K;
+  /** Typed payload for the kind — `NotificationEventPayloads[K]`. */
+  payload: NotificationEventPayloads[K];
   /**
    * Provider-level idempotency key. Handler convention:
    *   `<outbox_event_id>:<userId>`
@@ -68,7 +80,9 @@ export class NotificationsService {
     private readonly email: EmailChannel,
   ) {}
 
-  async dispatch(args: DispatchArgs): Promise<DispatchResult> {
+  async dispatch<K extends NotificationEventKind>(
+    args: DispatchArgs<K>,
+  ): Promise<DispatchResult> {
     // ── 1. Render. ──────────────────────────────────────────────────────
     const rendered = await this.templates.resolve({
       tenantId: args.tenantId,
@@ -93,7 +107,7 @@ export class NotificationsService {
 
     if (!result.delivered) {
       this.log.warn(
-        `notifications.dispatch.undelivered: tenant=${args.tenantId} user=${args.userId} kind=${args.eventKind} channel=${result.channelId}`,
+        `notifications.dispatch.undelivered: tenant=${args.tenantId} user=${args.userId} kind=${String(args.eventKind)} channel=${result.channelId}`,
       );
     }
     return result;

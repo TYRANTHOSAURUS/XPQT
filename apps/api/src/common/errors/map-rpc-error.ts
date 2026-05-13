@@ -353,6 +353,14 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // (fallback, STATUS_BY_CODE) tuple consistent.
   'booking.edit_failed': 500,
   'booking.cascade_cross_tenant_batch': 500,
+  // B.4.A.5 sub-step C — TemplateResolverService raises these when the
+  // (eventKind, locale) registry has no match. Programming/config error
+  // (not user-fixable); 500 + dead-letter is the right shape — the
+  // outbox handler logs + drops, ops needs to ship the missing module.
+  // TS-only raises today; defense-in-depth listing in case any future
+  // RPC raises the same code.
+  'notification.unknown_event_kind': 500,
+  'notification.template_resolution_failed': 500,
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.12
   // (Phase 1 codes). All 422 — TS-only raises today (engine.assertSpawnLinkSafe);

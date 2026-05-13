@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { AppErrors } from '../../../common/errors';
 import { MAIL_PROVIDER, type MailProvider } from '../../../common/mail/mail-provider';
 import { SupabaseService } from '../../../common/supabase/supabase.service';
@@ -37,10 +38,17 @@ import type {
  * ── User → email resolution ──
  *
  * Recipients are `public.users.id` values. The lookup filters by tenant_id
- * (memory: feedback_tenant_id_ultimate_rule — #0 invariant). If the user
- * row is missing or has no email, the channel returns `{ delivered: false }`
- * with a warn log. No throw — the outbox handler should not retry on a
- * permanent "user can't receive email" condition.
+ * (memory: feedback_tenant_id_ultimate_rule — #0 invariant).
+ *
+ * Self-review I1: distinguish PERMANENT vs TRANSIENT failure on the user
+ * lookup:
+ *   - PERMANENT (user not found, has no email column value) → return
+ *     `{ delivered: false }` with a warn. Retrying won't help — the
+ *     outbox handler logs + drops; ops triages.
+ *   - TRANSIENT (Supabase error — DB blip, network reset) → throw
+ *     `AppError(email.dispatch_failed)`. The outbox handler's retry
+ *     machinery picks it up; otherwise we'd permanently lose the
+ *     notification on a recoverable error.
  *
  * ── Vendor-error mapping ──
  *
@@ -48,6 +56,18 @@ import type {
  * We re-throw as `email.dispatch_failed` (the registered code for this
  * module's failure mode) so the outbox handler retry/dead-letter machinery
  * sees a typed AppError, not the underlying mail.* class.
+ *
+ * ── Configuration loading (self-review C2) ──
+ *
+ * Constructor reads `process.env.RESEND_FROM_EMAIL` directly was the EXACT
+ * bug pattern codex 2026-04-28 round-1 caught in `mail.module.ts:23-44` —
+ * provider/config selection at module-import time read process.env BEFORE
+ * `ConfigModule.forRoot()` loaded `.env`, leaving prod permanently bound
+ * to the dev fallback. The fix mirrors that file: inject ConfigService;
+ * read env at dispatch time (not constructor); ConfigService is sourced
+ * from `ConfigModule.forRoot({ isGlobal: true, envFilePath: ... })` in
+ * AppModule which guarantees `.env` is loaded before any provider
+ * instantiation.
  */
 
 export interface EmailChannelConfig {
@@ -61,23 +81,37 @@ export interface EmailChannelConfig {
 export class EmailChannel implements NotificationChannel {
   readonly id = 'email' as const;
   private readonly log = new Logger(EmailChannel.name);
-  private readonly config: EmailChannelConfig;
 
   constructor(
     @Inject(MAIL_PROVIDER) private readonly mail: MailProvider,
     private readonly supabase: SupabaseService,
-  ) {
-    this.config = {
-      fromEmail: process.env.RESEND_FROM_EMAIL
-        ?? process.env.RESEND_DEFAULT_FROM_EMAIL
+    private readonly config: ConfigService,
+  ) {}
+
+  /**
+   * Resolve sender config at dispatch time (NOT constructor).
+   *
+   * Self-review C2: constructor-cached `process.env.*` reads are the exact
+   * codex 2026-04-28 bug pattern. ConfigService.get reads from the
+   * already-loaded `.env` (ConfigModule.forRoot is processed before any
+   * provider construction in AppModule).
+   */
+  private resolveSenderConfig(): EmailChannelConfig {
+    return {
+      fromEmail:
+        this.config.get<string>('RESEND_FROM_EMAIL')
+        ?? this.config.get<string>('RESEND_DEFAULT_FROM_EMAIL')
         ?? 'notifications@prequest.app',
-      fromName: process.env.RESEND_FROM_NAME
-        ?? process.env.RESEND_DEFAULT_FROM_NAME
+      fromName:
+        this.config.get<string>('RESEND_FROM_NAME')
+        ?? this.config.get<string>('RESEND_DEFAULT_FROM_NAME')
         ?? 'Prequest',
     };
   }
 
   async dispatch(input: DispatchInput): Promise<DispatchResult> {
+    const senderConfig = this.resolveSenderConfig();
+
     // ── 1. Resolve user → email in tenant scope. ────────────────────────
     //
     // Cross-tenant defense: supabase.admin bypasses RLS, so we filter by
@@ -94,10 +128,13 @@ export class EmailChannel implements NotificationChannel {
       this.log.warn(
         `email.channel.user_lookup_failed: tenant=${input.tenantId} user=${input.userId} ${userError.message}`,
       );
-      // Treat as undeliverable rather than a hard failure — a transient
-      // supabase blip would otherwise dead-letter the outbox event. The
-      // outbox handler's own retry covers genuine errors.
-      return { channelId: 'email', delivered: false };
+      // Self-review I1: a Supabase error (DB blip, network reset) is a
+      // TRANSIENT failure. Throw so the outbox retry picks it up.
+      // Returning `delivered: false` here would dead-letter recoverable
+      // errors and permanently lose the notification.
+      throw AppErrors.server('email.dispatch_failed', {
+        detail: `user_lookup_failed: ${userError.message}`,
+      });
     }
 
     if (!user || !user.email) {
@@ -105,6 +142,7 @@ export class EmailChannel implements NotificationChannel {
         `email.channel.no_email: tenant=${input.tenantId} user=${input.userId} ` +
           `(user ${user ? 'has no email column value' : 'not found'})`,
       );
+      // PERMANENT: retrying won't help. Outbox handler logs + drops.
       return { channelId: 'email', delivered: false };
     }
 
@@ -118,13 +156,18 @@ export class EmailChannel implements NotificationChannel {
       const result = await this.mail.send({
         tenantId:     input.tenantId,
         to:           user.email,
-        from:         this.config.fromEmail,
-        fromName:     this.config.fromName,
+        from:         senderConfig.fromEmail,
+        fromName:     senderConfig.fromName,
         subject:      input.rendered.subject,
         textBody:     input.rendered.text,
         htmlBody:     input.rendered.html,
         idempotencyKey: input.idempotencyKey,
         messageStream: 'transactional',
+        // input.context.tenantSlug + callbackBaseUrl are reserved for the
+        // future Teams adapter (adaptive cards need to render the tenant
+        // identity in the card UI + Approve/Reject callbacks need a stable
+        // origin). Email channel intentionally ignores them — see
+        // notification-channel.interface.ts:60-69. Self-review I5.
         tags: {
           channel: 'notifications',
           entity_type: input.context.entityType,

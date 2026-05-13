@@ -10,10 +10,16 @@
  *   - User found but no email → returns delivered=false, no throw.
  *   - Cross-tenant user lookup (tenant filter applied).
  *   - Mail provider throws → re-thrown as AppError(email.dispatch_failed).
+ *   - Transient supabase user lookup error THROWS as
+ *     AppError(email.dispatch_failed) (self-review I1 — was returning
+ *     delivered:false, which dead-lettered recoverable errors).
  *   - Idempotency-Key passed through to MAIL_PROVIDER.
  *   - Tags forwarded for audit/routing.
+ *   - ConfigService injection (self-review C2 — was constructor-cached
+ *     `process.env.*` reads, the codex 2026-04-28 bug pattern).
  */
 
+import { ConfigService } from '@nestjs/config';
 import { AppError } from '../../../common/errors';
 import type { MailMessage, MailProvider } from '../../../common/mail/mail-provider';
 import { EmailChannel } from './email.channel';
@@ -34,6 +40,7 @@ function makeHarness(opts: {
   userError?: { message: string } | null;
   mailResult?: { messageId: string; acceptedAt: string };
   mailError?: Error;
+  configValues?: Record<string, string>;
 } = {}) {
   const userFilters: Array<{ id?: string; tenant_id?: string }> = [];
   const mailCalls: MailMessage[] = [];
@@ -74,9 +81,20 @@ function makeHarness(opts: {
     verifyWebhook: jest.fn(),
   };
 
-  const channel = new EmailChannel(mailProvider, supabase as never);
+  // Self-review C2: EmailChannel takes ConfigService, not raw process.env.
+  // Tests construct a stub ConfigService that reads from `configValues`
+  // (mirrors the @nestjs/config behaviour without booting the full module).
+  const config = {
+    get: jest.fn((key: string) => opts.configValues?.[key]),
+  };
 
-  return { channel, mailProvider, mailCalls, userFilters };
+  const channel = new EmailChannel(
+    mailProvider,
+    supabase as never,
+    config as unknown as ConfigService,
+  );
+
+  return { channel, mailProvider, mailCalls, userFilters, config };
 }
 
 const BASE_INPUT: DispatchInput = {
@@ -158,15 +176,27 @@ describe('EmailChannel.dispatch', () => {
     expect(mailProvider.send).not.toHaveBeenCalled();
   });
 
-  it('returns delivered=false on a transient supabase error (no throw)', async () => {
+  it('throws AppError(email.dispatch_failed) on a transient supabase error (self-review I1)', async () => {
+    // Self-review I1: transient supabase errors used to return
+    // { delivered: false } which dead-lettered recoverable errors. Now
+    // they throw so the outbox handler retry picks them up. Permanent
+    // failures (no email) still return delivered=false (see prior test).
     const { channel, mailProvider } = makeHarness({
       userError: { message: 'connection reset' },
     });
 
-    const result = await channel.dispatch(BASE_INPUT);
-
-    expect(result).toEqual({ channelId: 'email', delivered: false });
+    await expect(channel.dispatch(BASE_INPUT)).rejects.toMatchObject({
+      code: 'email.dispatch_failed',
+    });
     expect(mailProvider.send).not.toHaveBeenCalled();
+
+    // Defensive: confirm AppError type, not raw Error.
+    try {
+      await channel.dispatch(BASE_INPUT);
+    } catch (err) {
+      expect(err).toBeInstanceOf(AppError);
+      expect((err as AppError).code).toBe('email.dispatch_failed');
+    }
   });
 
   it('re-throws as AppError(email.dispatch_failed) when MAIL_PROVIDER throws', async () => {
@@ -189,39 +219,65 @@ describe('EmailChannel.dispatch', () => {
     }
   });
 
-  it('uses RESEND_FROM_EMAIL env when set', async () => {
-    const ORIG = process.env.RESEND_FROM_EMAIL;
-    process.env.RESEND_FROM_EMAIL = 'custom@prequest.app';
-    try {
-      const { channel, mailCalls } = makeHarness({
-        user: { id: USER_ID, email: 'approver@example.com' },
-      });
+  it('reads RESEND_FROM_EMAIL via ConfigService (self-review C2)', async () => {
+    // Self-review C2: was reading process.env at constructor time — the
+    // exact codex 2026-04-28 bug pattern that shipped LoggingMailProvider
+    // to prod. Now ConfigService.get is called at dispatch time, after
+    // ConfigModule.forRoot has loaded `.env`.
+    const { channel, mailCalls, config } = makeHarness({
+      user: { id: USER_ID, email: 'approver@example.com' },
+      configValues: { RESEND_FROM_EMAIL: 'custom@prequest.app' },
+    });
 
-      await channel.dispatch(BASE_INPUT);
-      expect(mailCalls[0].from).toBe('custom@prequest.app');
-    } finally {
-      if (ORIG === undefined) delete process.env.RESEND_FROM_EMAIL;
-      else process.env.RESEND_FROM_EMAIL = ORIG;
-    }
+    await channel.dispatch(BASE_INPUT);
+
+    expect(mailCalls[0].from).toBe('custom@prequest.app');
+    // ConfigService.get was actually called — not bypassed.
+    expect(config.get).toHaveBeenCalledWith('RESEND_FROM_EMAIL');
   });
 
-  it('falls back to RESEND_DEFAULT_FROM_EMAIL when RESEND_FROM_EMAIL unset', async () => {
-    const ORIG_FROM = process.env.RESEND_FROM_EMAIL;
-    const ORIG_DEFAULT = process.env.RESEND_DEFAULT_FROM_EMAIL;
-    delete process.env.RESEND_FROM_EMAIL;
-    process.env.RESEND_DEFAULT_FROM_EMAIL = 'fallback@prequest.app';
-    try {
-      const { channel, mailCalls } = makeHarness({
-        user: { id: USER_ID, email: 'approver@example.com' },
-      });
+  it('falls back to RESEND_DEFAULT_FROM_EMAIL via ConfigService', async () => {
+    const { channel, mailCalls } = makeHarness({
+      user: { id: USER_ID, email: 'approver@example.com' },
+      configValues: { RESEND_DEFAULT_FROM_EMAIL: 'fallback@prequest.app' },
+    });
 
-      await channel.dispatch(BASE_INPUT);
-      expect(mailCalls[0].from).toBe('fallback@prequest.app');
-    } finally {
-      if (ORIG_FROM !== undefined) process.env.RESEND_FROM_EMAIL = ORIG_FROM;
-      if (ORIG_DEFAULT === undefined) delete process.env.RESEND_DEFAULT_FROM_EMAIL;
-      else process.env.RESEND_DEFAULT_FROM_EMAIL = ORIG_DEFAULT;
-    }
+    await channel.dispatch(BASE_INPUT);
+    expect(mailCalls[0].from).toBe('fallback@prequest.app');
+  });
+
+  it('falls back to hard-coded default when no config provided', async () => {
+    const { channel, mailCalls } = makeHarness({
+      user: { id: USER_ID, email: 'approver@example.com' },
+      configValues: {},
+    });
+
+    await channel.dispatch(BASE_INPUT);
+    expect(mailCalls[0].from).toBe('notifications@prequest.app');
+    expect(mailCalls[0].fromName).toBe('Prequest');
+  });
+
+  it('does not cache config at construction time (self-review C2)', async () => {
+    // Regression test for the exact bug the C2 fix prevents: if config
+    // were resolved in the constructor, mutating configValues after the
+    // EmailChannel was constructed would NOT affect subsequent dispatch
+    // calls. With ConfigService.get called per-dispatch, the change is
+    // visible.
+    const configValues: Record<string, string> = {
+      RESEND_FROM_EMAIL: 'first@prequest.app',
+    };
+    const { channel, mailCalls } = makeHarness({
+      user: { id: USER_ID, email: 'approver@example.com' },
+      configValues,
+    });
+
+    await channel.dispatch(BASE_INPUT);
+    expect(mailCalls[0].from).toBe('first@prequest.app');
+
+    // Mutate config AFTER construction.
+    configValues.RESEND_FROM_EMAIL = 'second@prequest.app';
+    await channel.dispatch(BASE_INPUT);
+    expect(mailCalls[1].from).toBe('second@prequest.app');
   });
 
   it('exposes a stable channel id', () => {

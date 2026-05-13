@@ -146,6 +146,15 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: 'Live updates are paused',
     detail: 'Reconnecting in the background.',
   },
+  // B.4.A.5 sub-step C — notification template resolution.
+  'notification.unknown_event_kind': {
+    title: "Couldn't send the notification",
+    detail: 'The notification template is missing. Try again later.',
+  },
+  'notification.template_resolution_failed': {
+    title: "Couldn't send the notification",
+    detail: 'The notification template could not be resolved. Try again later.',
+  },
 
   // ─── render / unknown ────────────────────────────────────────────────────
   'render.failed': {

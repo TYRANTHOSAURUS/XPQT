@@ -125,6 +125,15 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Live updates zijn gepauzeerd',
     detail: 'Verbinding wordt op de achtergrond hersteld.',
   },
+  // B.4.A.5 sub-step C — notification template resolution.
+  'notification.unknown_event_kind': {
+    title: 'Kon de notificatie niet verzenden',
+    detail: 'De notificatie-template ontbreekt. Probeer het later opnieuw.',
+  },
+  'notification.template_resolution_failed': {
+    title: 'Kon de notificatie niet verzenden',
+    detail: 'De notificatie-template kon niet worden geladen. Probeer het later opnieuw.',
+  },
 
   // ─── render / unknown ────────────────────────────────────────────────────
   'render.failed': {

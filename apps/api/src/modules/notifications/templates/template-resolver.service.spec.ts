@@ -112,7 +112,7 @@ describe('TemplateResolverService.resolve', () => {
       tenantId: TENANT_ID,
       eventKind: 'booking.approval_required',
       locale: 'en',
-      payload: PAYLOAD as unknown as Record<string, unknown>,
+      payload: PAYLOAD,
     });
 
     expect(out.subject).toBe('Marleen Visser requests approval for Boardroom 4');
@@ -120,9 +120,10 @@ describe('TemplateResolverService.resolve', () => {
     expect(out.html).toContain('Marleen Visser');
     expect(out.html).toContain('Boardroom 4');
     expect(out.text).toContain('Marleen Visser');
-    // Default CTA text is NOT surfaced as ctaText (only override-bearing
-    // values are propagated; the default is baked into the HTML).
-    expect(out.ctaText).toBeUndefined();
+    // Self-review I2: default CTA copy IS surfaced as ctaText so Teams
+    // adapters + inbox previews + future channels see a non-undefined
+    // value. Override wins; default fills in otherwise.
+    expect(out.ctaText).toBe('Review request');
 
     // Cross-tenant defense: lookup filtered by all 3 keys.
     expect(tenantFilters[0]).toEqual({
@@ -139,7 +140,7 @@ describe('TemplateResolverService.resolve', () => {
       tenantId: TENANT_ID,
       eventKind: 'booking.approval_required',
       locale: 'nl',
-      payload: PAYLOAD as unknown as Record<string, unknown>,
+      payload: PAYLOAD,
     });
 
     expect(out.subject).toBe('Marleen Visser vraagt goedkeuring voor Boardroom 4');
@@ -147,6 +148,8 @@ describe('TemplateResolverService.resolve', () => {
     expect(out.html).toContain('reservering');
     // NL voice quality bar — uses `reservering` family, not `boeking`.
     expect(out.html).not.toMatch(/boeking/i);
+    // Self-review I2: Dutch default CTA surfaces too.
+    expect(out.ctaText).toBe('Verzoek bekijken');
   });
 
   it('applies subject override when present', async () => {
@@ -162,7 +165,7 @@ describe('TemplateResolverService.resolve', () => {
       tenantId: TENANT_ID,
       eventKind: 'booking.approval_required',
       locale: 'en',
-      payload: PAYLOAD as unknown as Record<string, unknown>,
+      payload: PAYLOAD,
     });
 
     expect(out.subject).toBe('Custom subject for {{ requesterName }}');
@@ -181,7 +184,7 @@ describe('TemplateResolverService.resolve', () => {
       tenantId: TENANT_ID,
       eventKind: 'booking.approval_required',
       locale: 'en',
-      payload: PAYLOAD as unknown as Record<string, unknown>,
+      payload: PAYLOAD,
     });
 
     expect(out.html).toContain('Approve now');
@@ -202,14 +205,16 @@ describe('TemplateResolverService.resolve', () => {
       tenantId: TENANT_ID,
       eventKind: 'booking.approval_required',
       locale: 'en',
-      payload: PAYLOAD as unknown as Record<string, unknown>,
+      payload: PAYLOAD,
     });
 
     // Default subject because empty-string was treated as null.
     expect(out.subject).toBe('Marleen Visser requests approval for Boardroom 4');
     // Default CTA, default intro.
     expect(out.html).toContain('Review request');
-    expect(out.ctaText).toBeUndefined();
+    // Self-review I2: default CTA copy is surfaced even when overrides
+    // are present-but-empty (treated as null upstream).
+    expect(out.ctaText).toBe('Review request');
   });
 
   it('treats whitespace-only overrides as null', async () => {
@@ -225,7 +230,7 @@ describe('TemplateResolverService.resolve', () => {
       tenantId: TENANT_ID,
       eventKind: 'booking.approval_required',
       locale: 'en',
-      payload: PAYLOAD as unknown as Record<string, unknown>,
+      payload: PAYLOAD,
     });
 
     expect(out.subject).toBe('Marleen Visser requests approval for Boardroom 4');
@@ -245,7 +250,7 @@ describe('TemplateResolverService.resolve', () => {
       tenantId: TENANT_ID,
       eventKind: 'booking.approval_required',
       locale: 'en',
-      payload: PAYLOAD as unknown as Record<string, unknown>,
+      payload: PAYLOAD,
     });
 
     expect(out.subject).toBe('Padded subject');
@@ -259,7 +264,7 @@ describe('TemplateResolverService.resolve', () => {
       eventKind: 'booking.approval_required',
       // Cast around the type — defensive runtime path for upstream bugs.
       locale: 'fr' as 'en',
-      payload: PAYLOAD as unknown as Record<string, unknown>,
+      payload: PAYLOAD,
     });
 
     expect(out.subject).toBe('Marleen Visser requests approval for Boardroom 4');
@@ -274,23 +279,31 @@ describe('TemplateResolverService.resolve', () => {
       tenantId: TENANT_ID,
       eventKind: 'booking.approval_required',
       locale: 'en',
-      payload: PAYLOAD as unknown as Record<string, unknown>,
+      payload: PAYLOAD,
     });
 
     expect(out.subject).toBe('Marleen Visser requests approval for Boardroom 4');
   });
 
-  it('throws on unknown event kind (config bug, not retry)', async () => {
+  it('throws AppError(notification.unknown_event_kind) on unknown kind (self-review C1)', async () => {
+    // Self-review C1: was raw `new Error()`. Now AppErrors.server with a
+    // registered code so the outbox handler / global filter sees a typed
+    // 500-class error and the operator gets a stable code in the trace.
     const { service } = makeHarness();
 
     await expect(
       service.resolve({
         tenantId: TENANT_ID,
-        eventKind: 'booking.totally_unknown',
+        // Cast around the type — runtime path for a handler that's drifted
+        // out of sync with the REGISTRY (programming error).
+        eventKind: 'booking.totally_unknown' as never,
         locale: 'en',
-        payload: PAYLOAD as unknown as Record<string, unknown>,
+        payload: PAYLOAD as never,
       }),
-    ).rejects.toThrow(/template_resolver\.unknown_event_kind/);
+    ).rejects.toMatchObject({
+      code: 'notification.unknown_event_kind',
+      status: 500,
+    });
   });
 
   it('uses the tenant_id passed in (cross-tenant defense)', async () => {
@@ -300,7 +313,7 @@ describe('TemplateResolverService.resolve', () => {
       tenantId: OTHER_TENANT_ID,
       eventKind: 'booking.approval_required',
       locale: 'en',
-      payload: PAYLOAD as unknown as Record<string, unknown>,
+      payload: PAYLOAD,
     });
 
     expect(tenantFilters[0].tenant_id).toBe(OTHER_TENANT_ID);

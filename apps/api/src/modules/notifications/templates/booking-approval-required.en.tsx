@@ -21,6 +21,11 @@ import type {
  *
  * Spec: /tmp/b4a5-plan-v2.md sub-step C.
  *
+ * TODO(b4a5-followups.md I7): the integration spec
+ * (template-resolver.integration.spec.ts) runs against the SOURCE .tsx
+ * via ts-jest, not against the BUILT dist/. A future TS-build smoke
+ * against `dist/` would close the JSX-runtime regression gap.
+ *
  * Style: minimal React Email primitives (Html / Body / Container / Text /
  * Button). Inline styles only — Email clients ignore <style> tags. Match
  * the brand tone but stay neutral: this is a transactional approval

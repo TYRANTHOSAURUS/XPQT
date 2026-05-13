@@ -75,6 +75,22 @@ export type KnownErrorCode =
   | 'email.dispatch_failed'
   | 'realtime.unavailable'
 
+  // ─── B.4.A.5 sub-step C — notification template resolution ──────────────
+  // Spec: /tmp/b4a5-plan-v2.md sub-step C (self-review remediation C1).
+  //
+  // - notification.unknown_event_kind (500): TemplateResolverService.resolve
+  //   called with an eventKind that isn't in REGISTRY. The handler's
+  //   responsibility is to pass a valid kind; an unknown kind is a
+  //   programming error / config drift, NOT something the operator can
+  //   fix. 500 + dead-letter is the right shape — retrying won't help,
+  //   ops needs to ship the missing template module.
+  // - notification.template_resolution_failed (500): the registered
+  //   localeMap exists but the locale entry is missing AND the en
+  //   fallback is also missing. Same shape as unknown_event_kind —
+  //   programming/config error, not user-fixable.
+  | 'notification.unknown_event_kind'
+  | 'notification.template_resolution_failed'
+
   // ─── render / unknown last-resort ────────────────────────────────────────
   | 'render.failed'
   | 'unknown.server_error'
@@ -949,6 +965,9 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'db.deadlock',
   'email.dispatch_failed',
   'realtime.unavailable',
+  // B.4.A.5 sub-step C — see KnownErrorCode union for per-code rationale.
+  'notification.unknown_event_kind',
+  'notification.template_resolution_failed',
   'render.failed',
   'unknown.server_error',
   'work_order.plan_invalid',

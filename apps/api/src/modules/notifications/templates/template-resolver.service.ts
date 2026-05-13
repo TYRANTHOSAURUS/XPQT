@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { render } from '@react-email/render';
 import * as React from 'react';
+import { AppErrors } from '../../../common/errors';
 import { SupabaseService } from '../../../common/supabase/supabase.service';
 import bookingApprovalRequiredEn from './booking-approval-required.en';
 import bookingApprovalRequiredNl from './booking-approval-required.nl';
@@ -42,25 +43,68 @@ import type {
  */
 
 /**
+ * Type-narrowing map: each event kind → its strongly-typed payload.
+ * Adding a new kind here is a one-liner; the type-system then propagates
+ * the new kind across `ResolveArgs` and into REGISTRY (self-review I8 —
+ * the previous `Record<string, ...>` shape lost compile-time payload
+ * checking; a typo in a payload field name silently rendered `undefined`).
+ */
+export type NotificationEventPayloads = {
+  'booking.approval_required': BookingApprovalRequiredPayload;
+};
+
+/**
  * Registry of `(eventKind, locale)` → template module. Keep this static
  * — adding a new event kind or a new locale is a deliberate code change.
+ *
+ * Self-review I8: each entry is typed via `NotificationEventPayloads[K]`
+ * so that the template module's payload contract matches its declared
+ * kind. The previous `TemplateModule<unknown>` cast hid mismatches
+ * (kind ↔ payload).
  */
-const REGISTRY: Record<string, Record<'en' | 'nl', TemplateModule<unknown> | undefined>> = {
+const REGISTRY: {
+  [K in keyof NotificationEventPayloads]: Record<
+    'en' | 'nl',
+    TemplateModule<NotificationEventPayloads[K]> | undefined
+  >;
+} = {
   'booking.approval_required': {
-    en: bookingApprovalRequiredEn as TemplateModule<unknown>,
-    nl: bookingApprovalRequiredNl as TemplateModule<unknown>,
+    en: bookingApprovalRequiredEn,
+    nl: bookingApprovalRequiredNl,
   },
 };
 
-export interface ResolveArgs {
+export type NotificationEventKind = keyof NotificationEventPayloads;
+
+export interface ResolveArgs<K extends NotificationEventKind = NotificationEventKind> {
   tenantId: string;
-  /** e.g. 'booking.approval_required' — must match a REGISTRY key. */
-  eventKind: string;
+  /** Must match a key in `NotificationEventPayloads`. */
+  eventKind: K;
   /** Pre-validated locale; unknown values default to 'en' defensively. */
   locale: 'en' | 'nl';
-  /** Typed payload — caller's responsibility to match the kind. */
-  payload: Record<string, unknown>;
+  /** Typed payload — `NotificationEventPayloads[K]`. Compile catches typos. */
+  payload: NotificationEventPayloads[K];
 }
+
+/**
+ * Default CTA copy per (eventKind, locale). Surfaced via
+ * `RenderedTemplate.ctaText` so Teams adapters + inbox previews + future
+ * channels can read the button copy independent of the rendered HTML
+ * (self-review I2 — previously `ctaText` was undefined when no override
+ * was registered, which broke any caller that relied on the field).
+ *
+ * Keep these in sync with the literal strings inside the template
+ * components (`booking-approval-required.en.tsx:75` / `.nl.tsx:69`). The
+ * test suite asserts this — drift fails CI.
+ */
+const DEFAULT_CTA_TEXT: {
+  [K in NotificationEventKind]: Record<'en' | 'nl', string>;
+} = {
+  'booking.approval_required': {
+    en: 'Review request',
+    nl: 'Verzoek bekijken',
+  },
+};
 
 @Injectable()
 export class TemplateResolverService {
@@ -68,18 +112,29 @@ export class TemplateResolverService {
 
   constructor(private readonly supabase: SupabaseService) {}
 
-  async resolve(args: ResolveArgs): Promise<RenderedTemplate> {
+  async resolve<K extends NotificationEventKind>(
+    args: ResolveArgs<K>,
+  ): Promise<RenderedTemplate> {
     const locale = args.locale === 'en' || args.locale === 'nl' ? args.locale : 'en';
 
     const localeMap = REGISTRY[args.eventKind];
     if (!localeMap) {
-      throw new Error(`template_resolver.unknown_event_kind: ${args.eventKind}`);
+      // Programming / config error: handler passed an eventKind that has
+      // no template module registered. 500 + dead-letter is the right
+      // shape — retrying won't help, ops needs to ship the missing
+      // module. Self-review C1 (was raw `new Error()`).
+      throw AppErrors.server('notification.unknown_event_kind', {
+        detail: `eventKind=${String(args.eventKind)}`,
+      });
     }
     const template = localeMap[locale] ?? localeMap.en;
     if (!template) {
-      throw new Error(
-        `template_resolver.no_template: kind=${args.eventKind} locale=${locale}`,
-      );
+      // Same shape as unknown_event_kind: the locale was missing AND the
+      // 'en' fallback was missing. Signals an incomplete template module.
+      // Self-review C1 (was raw `new Error()`).
+      throw AppErrors.server('notification.template_resolution_failed', {
+        detail: `kind=${String(args.eventKind)} locale=${locale}`,
+      });
     }
 
     // ── 1. Load tenant overrides — best-effort, never throws upstream. ──
@@ -102,20 +157,27 @@ export class TemplateResolverService {
       render(element, { plainText: true }),
     ]);
 
+    // ── 3. Resolve effective CTA text. ──────────────────────────────────
+    //
+    // Self-review I2: surface the template's DEFAULT cta even when no
+    // override is registered, so Teams adapters + inbox previews + future
+    // channels see a non-undefined value. Override wins; default fills
+    // in otherwise. ctaUrl still belongs in payload — the template
+    // component owns linking.
+    const effectiveCta =
+      overrides.ctaText ?? DEFAULT_CTA_TEXT[args.eventKind][locale];
+
     return {
       subject,
       html,
       text,
-      ctaText: overrides.ctaText ?? undefined,
-      // ctaUrl belongs in payload; the template handles linking. We surface
-      // ctaText because Teams adapters and inbox previews need the button
-      // copy independent of the rendered HTML.
+      ctaText: effectiveCta,
     };
   }
 
   private async loadOverrides(
     tenantId: string,
-    eventKind: string,
+    eventKind: NotificationEventKind,
     locale: 'en' | 'nl',
   ): Promise<TemplateOverrides> {
     try {
@@ -162,11 +224,3 @@ function normalize(value: unknown): string | null {
   const trimmed = value.trim();
   return trimmed.length === 0 ? null : trimmed;
 }
-
-/**
- * Type-narrowing helper for callers that want compile-time payload safety.
- * Today only one event kind ships; future kinds add to the union.
- */
-export type NotificationEventPayloads = {
-  'booking.approval_required': BookingApprovalRequiredPayload;
-};

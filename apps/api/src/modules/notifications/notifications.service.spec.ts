@@ -12,9 +12,21 @@
  */
 
 import { NotificationsService } from './notifications.service';
+import type { BookingApprovalRequiredPayload } from './templates/types';
 
 const TENANT_ID = '11111111-1111-4111-8111-111111111111';
 const USER_ID = '22222222-2222-4222-8222-222222222222';
+
+const PAYLOAD: BookingApprovalRequiredPayload = {
+  bookingId: 'b1',
+  chainId: 'c1',
+  bookingTitle: 'Quarterly review',
+  requesterName: 'Marleen Visser',
+  spaceName: 'Boardroom 4',
+  startAt: '2026-05-13T09:00:00Z',
+  endAt: '2026-05-13T10:30:00Z',
+  approvalCtaUrl: 'https://app.example.com/desk/approvals/abc',
+};
 
 function makeHarness() {
   const templateCalls: Array<Record<string, unknown>> = [];
@@ -52,8 +64,8 @@ const BASE_ARGS = {
   tenantId: TENANT_ID,
   userId: USER_ID,
   locale: 'en' as const,
-  eventKind: 'booking.approval_required',
-  payload: { bookingId: 'b1' },
+  eventKind: 'booking.approval_required' as const,
+  payload: PAYLOAD,
   idempotencyKey: 'evt-1:user-1',
   context: {
     entityType: 'booking',
@@ -73,7 +85,7 @@ describe('NotificationsService.dispatch', () => {
       tenantId: TENANT_ID,
       eventKind: 'booking.approval_required',
       locale: 'en',
-      payload: { bookingId: 'b1' },
+      payload: PAYLOAD,
     });
 
     expect(emailCalls).toHaveLength(1);

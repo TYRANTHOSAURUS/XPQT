@@ -62,7 +62,17 @@ export interface DispatchInput {
     entityType: string;
     /** UUID of the referenced row. */
     entityId: string;
-    /** Tenant slug for sub-domain composition in deep links. */
+    /**
+     * Tenant slug for sub-domain composition in deep links.
+     *
+     * Self-review I5: RESERVED for Teams + future channels that need to
+     * render the tenant identity in the card UI (e.g. adaptive cards
+     * include "From <Tenant Name>" in the header). Email + inbox
+     * intentionally ignore this — the rendered HTML already carries the
+     * tenant brand via the template's per-tenant overrides. Keep the
+     * field on the wire so adding Teams later is a new channel class +
+     * wiring change, not an interface change.
+     */
     tenantSlug: string;
     /** Reserved for Teams + future channels that need a stable callback origin. */
     callbackBaseUrl?: string;
