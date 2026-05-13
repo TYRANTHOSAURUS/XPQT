@@ -428,17 +428,14 @@ describe('ReservationService.editSlot', () => {
     expect(result.end_at).toBe(updatedEnd);
   });
 
-  // B.4 step 2D-D — controller-vs-notification gate (B.4.A.5).
-  // When the plan would emit booking.approval_required (rows 2/7/8 of
-  // §3.6.5), the service rejects 422 BEFORE any RPC call. Verifies that
-  // the gate fires for all three trigger conditions.
-  // self-review I1 (2026-05-12): gate now returns 422 (validation),
-  // not 503 (server). Rationale lives at map-rpc-error.ts STATUS_BY_CODE
-  // entry for booking.edit_requires_notification_dispatch — 503 routed
-  // to class 'server' with retry-loop-bait toast; 422 routes to class
-  // 'validation' with the right inline-error UX for the actual user
-  // mitigation (pick a different room or remove approval from this room).
-  it('B.4.A.5 gate: allow → require_approval rejects 422 before RPC fires', async () => {
+  // B.4.A.5 sub-step H (2026-05-13) lifted the controller-vs-notification
+  // gate at editSlot. These tests previously asserted a 422 pre-flight
+  // reject; post-H they assert the edit flows through to the RPC. The
+  // RPC writes the inbox row + emits booking.approval_required atomically
+  // (covered by the concurrency probes in apps/api/test/concurrency/
+  // edit_booking.spec.ts Scenarios 27/28/29). At this service layer the
+  // single observable behavioural change is that the RPC fires.
+  it('B.4.A.5 post-H: allow → require_approval flows through to edit_booking RPC', async () => {
     const supabase = makeSupabase();
     const visibility = makeVisibility({ canEdit: true });
     const conflict = makeConflictGuard();
@@ -455,27 +452,23 @@ describe('ReservationService.editSlot', () => {
     });
     const svc = buildService(supabase, visibility, conflict, assemble);
 
-    let caught: unknown = null;
-    try {
-      await TenantContext.run(TENANT, () =>
-        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
-          start_at: '2026-05-01T11:00:00Z',
-        }),
-      );
-    } catch (e) {
-      caught = e;
-    }
-    expect(caught).toBeInstanceOf(AppError);
-    expect(caught).toMatchObject({
-      code: 'booking.edit_requires_notification_dispatch',
-      status: 422,
-    });
-    // Critical: no RPC fired. The whole point of the pre-flight is to
-    // avoid producing the very event the gate is suppressing.
-    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
+    await TenantContext.run(TENANT, () =>
+      svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
+        start_at: '2026-05-01T11:00:00Z',
+      }),
+    );
+
+    // The edit_booking RPC fires exactly once — gate is lifted; inbox
+    // INSERT + approval-row INSERT + outbox emit all happen inside the
+    // RPC (covered by edit_booking.spec.ts Scenarios 27/28/29).
+    const rpcCalls = supabase.calls.rpc.filter((c) => c.fn === 'edit_booking');
+    expect(rpcCalls).toHaveLength(1);
+    const args = rpcCalls[0].args as Record<string, unknown>;
+    expect(args.p_booking_id).toBe(BOOKING_ID);
+    expect(args.p_tenant_id).toBe(TENANT.id);
   });
 
-  it('B.4.A.5 gate: require_approval → require_approval with chain_config_changed rejects 422', async () => {
+  it('B.4.A.5 post-H: require_approval → require_approval with chain_config_changed flows through to RPC', async () => {
     const supabase = makeSupabase();
     const visibility = makeVisibility({ canEdit: true });
     const conflict = makeConflictGuard();
@@ -492,21 +485,14 @@ describe('ReservationService.editSlot', () => {
     });
     const svc = buildService(supabase, visibility, conflict, assemble);
 
-    let caught: unknown = null;
-    try {
-      await TenantContext.run(TENANT, () =>
-        svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
-          start_at: '2026-05-01T11:00:00Z',
-        }),
-      );
-    } catch (e) {
-      caught = e;
-    }
-    expect(caught).toMatchObject({
-      code: 'booking.edit_requires_notification_dispatch',
-      status: 422,
-    });
-    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
+    await TenantContext.run(TENANT, () =>
+      svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
+        start_at: '2026-05-01T11:00:00Z',
+      }),
+    );
+
+    const rpcCalls = supabase.calls.rpc.filter((c) => c.fn === 'edit_booking');
+    expect(rpcCalls).toHaveLength(1);
   });
 
   it('B.4.A.5 gate: require_approval → require_approval with SAME config (Row 6 preserve) PASSES', async () => {
@@ -1511,16 +1497,19 @@ describe('ReservationService.editOne — patch flows through edit_booking RPC (C
     expect(supabase.calls.bookingsUpdate).toHaveLength(0);
   });
 
-  // B.4 step 2E — B.4.A.5 gate on editOne. Symmetric with editSlot at
-  // reservation.service.ts:1209-1224 — the gate fires when the plan
-  // would emit booking.approval_required (rows 2/7/8 of §3.6.5).
-  it('B.4.A.5 gate: editOne with approval-flipping plan rejects 422 BEFORE RPC fires', async () => {
+  // B.4.A.5 sub-step H (2026-05-13) lifted the editOne controller-vs-
+  // notification gate. Was: assert 422 + no RPC call. Now: the plan
+  // flows through to the RPC; chain rows + inbox rows + outbox emit
+  // happen atomically inside 00393 (covered by edit_booking.spec.ts
+  // Scenarios 27/28/29). Symmetric with the editSlot post-H invariant
+  // earlier in this file.
+  it('B.4.A.5 post-H: editOne with approval-flipping plan flows through to edit_booking RPC', async () => {
     const supabase = makeSupabase();
     const visibility = makeVisibility();
     const conflict = makeConflictGuard();
-    // Override the plan-builder mock to return a plan whose approval
-    // block satisfies the gate predicate (new=require_approval AND
-    // old≠require_approval → row 2).
+    // Plan-builder mock returns an approval block that would have
+    // tripped the pre-H gate (new=require_approval AND old≠require_approval).
+    // Post-H: the RPC fires.
     const assemble = {
       assembleEditPlan: jest.fn(async () => ({
         booking: {
@@ -1566,27 +1555,20 @@ describe('ReservationService.editOne — patch flows through edit_booking RPC (C
       assemble as never,
     );
 
-    let caught: unknown = null;
-    try {
-      await TenantContext.run(TENANT, () =>
-        svc.editOne(
-          BOOKING_ID,
-          makeActor(),
-          { start_at: '2026-05-01T11:00:00Z' },
-          CLIENT_REQUEST_ID,
-        ),
-      );
-    } catch (e) {
-      caught = e;
-    }
-    expect(caught).toBeInstanceOf(AppError);
-    expect(caught).toMatchObject({
-      code: 'booking.edit_requires_notification_dispatch',
-      status: 422,
-    });
-    // Critical: no RPC fired. The whole point of the pre-flight is to
-    // avoid producing the very event the gate is suppressing.
-    expect(supabase.calls.rpc.filter((c) => c.fn === 'edit_booking')).toHaveLength(0);
+    await TenantContext.run(TENANT, () =>
+      svc.editOne(
+        BOOKING_ID,
+        makeActor(),
+        { start_at: '2026-05-01T11:00:00Z' },
+        CLIENT_REQUEST_ID,
+      ),
+    );
+
+    // RPC fires exactly once — chain rows + inbox rows + outbox emit
+    // committed atomically inside 00393.
+    const rpcCalls = supabase.calls.rpc.filter((c) => c.fn === 'edit_booking');
+    expect(rpcCalls).toHaveLength(1);
+    expect((rpcCalls[0].args as Record<string, unknown>).p_booking_id).toBe(BOOKING_ID);
   });
 
   // B.4 step 2E — no-op patch (no keys, or all keys undefined) is

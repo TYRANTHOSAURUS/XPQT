@@ -1565,12 +1565,20 @@ describe('AssembleEditPlanService.assembleScopeEditPlan (Step 2F.2)', () => {
     });
   });
 
-  it('raises booking.edit_requires_notification_dispatch when ANY occurrence would flip approval (B.4.A.5 gate)', async () => {
+  // B.4.A.5 sub-step H (2026-05-13) lifted the in-loop pre-flight gate.
+  // Was: assembleScopeEditPlan rejected on the first approval-flipping
+  // occurrence with `booking.edit_requires_notification_dispatch` (422).
+  // Now: every occurrence's plan is built and returned; the RPC at 00394
+  // commits chain rows + writes inbox rows + emits booking.approval_required
+  // atomically per occurrence whose plan flipped (covered by
+  // apps/api/test/concurrency/edit_booking_scope.spec.ts Scenarios 17/18,
+  // inverted to post-H expectations in the same commit).
+  it('B.4.A.5 post-H: plans every occurrence even when one would flip approval', async () => {
     const fx = fiveOccurrenceFixture();
     const supabase = makeScopeSupabase(fx);
 
     // Make occurrence #3 (start_at = 2026-05-14T09:00:00Z) require approval;
-    // the rest allow. The gate must fire on that specific occurrence.
+    // the rest allow.
     const APPROVER = '99999999-9999-4999-8999-cccccccccccc';
     const ruleResolver = makeRuleResolverByStartAt(
       {
@@ -1589,24 +1597,30 @@ describe('AssembleEditPlanService.assembleScopeEditPlan (Step 2F.2)', () => {
       conflict: makeConflict(),
     });
 
-    // Find the booking id whose start_at is 2026-05-14T09:00:00Z. The
-    // fixture seeds index i → 2026-05-(12+i)T09:00:00Z; index 2 →
-    // 2026-05-14T09:00:00Z. After id-sorting, the booking with
-    // start_at=2026-05-14 may not be at index 2 of rpc_plans; pin it
-    // by direct lookup.
-    const expectedBookingId = fx.bookingIds.find((bid) => {
+    const flippingBookingId = fx.bookingIds.find((bid) => {
       const b = fx.booking(bid);
       return b.start_at === '2026-05-14T09:00:00Z';
     })!;
 
-    await expect(
-      svc.assembleScopeEditPlan(scopeArgs({ space_id: SPACE_NEW })),
-    ).rejects.toMatchObject({
-      code: 'booking.edit_requires_notification_dispatch',
-      status: 422,
-      // The offending occurrence's id must appear in the detail.
-      detail: expect.stringContaining(expectedBookingId),
-    });
+    const result = await svc.assembleScopeEditPlan(
+      scopeArgs({ space_id: SPACE_NEW }),
+    );
+
+    expect(result.rpc_plans).toHaveLength(5);
+    // Every plan flowed through — including the flipping occurrence.
+    const byId = new Map(result.rpc_plans.map((p) => [p.booking_id, p.plan]));
+    expect(byId.has(flippingBookingId)).toBe(true);
+    // The flipping occurrence carries the approval block that would have
+    // tripped the pre-H gate; the RPC at 00394 consumes it and writes
+    // chain rows + inbox rows atomically.
+    const flippingPlan = byId.get(flippingBookingId)!;
+    expect(flippingPlan.approval.new_outcome).toBe('require_approval');
+    expect(flippingPlan.approval.chain_config_changed).toBe(true);
+    // Non-flipping occurrences keep allow→allow.
+    for (const [bookingId, plan] of byId.entries()) {
+      if (bookingId === flippingBookingId) continue;
+      expect(plan.approval.new_outcome).toBe('allow');
+    }
   });
 
   it('computes cost_amount_snapshot per occurrence based on each occurrence-window × cost_per_hour', async () => {

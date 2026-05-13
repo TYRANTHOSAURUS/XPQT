@@ -96,9 +96,11 @@
  *        the Nest path-pipe rejects it before the controller runs; the
  *        response shape is framework-defined, not service-defined, so
  *        the probe yield is near zero. Established jest specs cover it.
- *      - 422 `booking.edit_requires_notification_dispatch` — needs an
- *        approval-rule-gated space; expensive fixture setup. Defer to
- *        B.4.A.5 when the gate is lifted, then probe the lift.
+ *      - 422 `booking.edit_requires_notification_dispatch` — gate
+ *        lifted by B.4.A.5 sub-step H (2026-05-13). Approval-flip
+ *        probe ADDED (see `runApprovalFlipProbe` below): extends
+ *        Fixture C past 4h to trigger seeded rule b0010002 and
+ *        asserts the 200 + approvals + inbox + outbox tuple.
  *      - NUMERIC cost round-trip — editOne doesn't accept cost as a
  *        field; cost is recomputed by the assembler from
  *        `space.cost_per_hour`. The Slice 3.1 cost-float bug is in the
@@ -161,12 +163,24 @@ const THOMAS_PERSON = 'b3a0aa30-3648-4783-92fa-973090877238';
 const ROOM_HUDDLE = '14d74559-7f91-470a-98a3-780b3e8a5349';
 const ROOM_TEAM = '6df43476-f6af-4ffa-9d39-e79c0bbb3dad';
 const ROOM_BOARD = '207242ea-48e9-41a2-a72d-5ea4192f48bf';
+// Noor — required_approver on the seeded "Long bookings need manager
+// approval" rule (`b0010002-...`, effect=require_approval, fires when
+// duration_minutes_gt > 240). The B.4.A.5 approval-flip smoke uses this
+// rule to drive an editOne-induced approval insert.
+// Citation: supabase/migrations/00133_seed_room_booking_examples.sql:99
+// (rule's approval_config.required_approvers) + Noor's users row
+// confirmed via psql on remote (person_id 95000000-..-04 → user_id
+// 95100000-..-04).
+const NOOR_PERSON = '95000000-0000-0000-0000-000000000004';
+const NOOR_USER = '95100000-0000-0000-0000-000000000004';
+const LONG_BOOKING_RULE_ID = 'b0010002-0000-0000-0000-000000000001';
 
-// Fixture anchors. +130 / +131 days future clears the scope smoke's
-// +90→+118 day window so back-to-back probes don't collide on the same
-// rooms.
+// Fixture anchors. +130 / +131 / +132 days future clears the scope
+// smoke's +90→+118 day window so back-to-back probes don't collide on
+// the same rooms.
 const FIXTURE_A_DAYS_FROM_NOW = 130;
 const FIXTURE_B_DAYS_FROM_NOW = 131;
+const FIXTURE_C_DAYS_FROM_NOW = 132;
 
 // ─────────────────────────────────────────────────────────────────────
 // Idempotency-key shape — replicated from
@@ -357,13 +371,64 @@ function seedFixtureB() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Fixture C — single non-recurring booking + 1 slot on ROOM_HUDDLE.
+// +132 days future, 1 hour duration. Used by the B.4.A.5 sub-step H
+// approval-flip probe (editOne extends end_at past +4h → triggers
+// rule b0010002 → approval insert + inbox row + outbox emit).
+//
+// Same shape as Fixture A but separated so the approval-flip side
+// effects (approvals row + inbox_notifications row + outbox event)
+// don't entangle with Fixture A's mutation scenarios.
+// ─────────────────────────────────────────────────────────────────────
+
+function seedFixtureC() {
+  const bookingId = crypto.randomUUID();
+  const slotId = crypto.randomUUID();
+  const anchor = new Date(Date.now() + FIXTURE_C_DAYS_FROM_NOW * 86400_000);
+  anchor.setUTCMinutes(0, 0, 0);
+  anchor.setUTCHours(9);
+  const startAt = anchor.toISOString();
+  const endAt = new Date(anchor.getTime() + 60 * 60_000).toISOString();
+
+  const sql = `
+    set session_replication_role = 'replica';
+    insert into public.bookings
+      (id, tenant_id, title, requester_person_id, location_id,
+       start_at, end_at, timezone, status, source, calendar_etag,
+       cost_amount_snapshot, policy_snapshot, applied_rule_ids)
+    values
+      ('${bookingId}'::uuid, '${TENANT_ID}'::uuid, 'Smoke approval-flip fixture C',
+       '${THOMAS_PERSON}'::uuid, '${ROOM_HUDDLE}'::uuid,
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz, 'UTC',
+       'confirmed', 'desk', 'smoke-etag-c-${bookingId.slice(0, 8)}',
+       100.00, '{}'::jsonb, '{}'::uuid[]);
+    insert into public.booking_slots
+      (id, tenant_id, booking_id, slot_type, space_id,
+       start_at, end_at, status, display_order)
+    values
+      ('${slotId}'::uuid, '${TENANT_ID}'::uuid, '${bookingId}'::uuid,
+       'room', '${ROOM_HUDDLE}'::uuid,
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz,
+       'confirmed', 0);
+    set session_replication_role = 'origin';
+  `;
+  runPsql(sql);
+  return { bookingId, slotId, startAt, endAt };
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Cleanup — LIFO sweep across audit_events, domain_events,
-// outbox.events, approvals, command_operations, booking_slots,
-// bookings. Best-effort: each delete batch wrapped in try/catch.
+// outbox.events, approvals, inbox_notifications, command_operations,
+// booking_slots, bookings. Best-effort: each delete batch wrapped in
+// try/catch.
 //
 // Sweeps command_operations rows keyed under any 'booking:edit:%'
 // prefix for our fixture bookings so retries / probes from prior runs
 // don't pollute future runs.
+//
+// The approval-flip probe inserts inbox_notifications rows tagged with
+// `payload.booking_id` matching a fixture booking_id; sweep them by
+// that key so we don't leak rows into Noor's real inbox.
 // ─────────────────────────────────────────────────────────────────────
 
 async function deleteFixtures(bookingIds) {
@@ -386,6 +451,10 @@ async function deleteFixtures(bookingIds) {
       where tenant_id = '${TENANT_ID}'::uuid
         and target_entity_type = 'booking'
         and target_entity_id in (${bookingIdList});
+    delete from public.inbox_notifications
+      where tenant_id = '${TENANT_ID}'::uuid
+        and event_kind = 'booking.approval_required'
+        and (payload->>'booking_id') in (${bookingIds.map((id) => `'${id}'`).join(', ')});
     delete from public.command_operations
       where tenant_id = '${TENANT_ID}'::uuid
         and (
@@ -1101,6 +1170,137 @@ async function runEditSlotProbes(probe, fixtureA, fixtureB) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Approval-flip probe — B.4.A.5 sub-step H gate-lift assertion.
+//
+// Defends against: a regression that re-introduces the 422
+// `booking.edit_requires_notification_dispatch` gate at any of the
+// four sites the sub-step H commit lifted it from. Fixture C anchors
+// a 1-hour booking; the probe PATCHes start_at/end_at to extend the
+// duration past 4h (240 min), triggering the seeded
+// "Long bookings need manager approval" rule (b0010002, effect=
+// require_approval, approver=Noor person_id 95000000-..-04). Asserts:
+//   - HTTP 200 (gate is lifted; pre-H this was 422).
+//   - One new `approvals` row scoped by (tenant_id, booking_id) with
+//     approver_person_id=NOOR_PERSON and status='pending'.
+//   - One new `inbox_notifications` row for Noor's user_id, event_kind=
+//     'booking.approval_required', payload.chain_id matching the
+//     approval row's approval_chain_id.
+//   - One new `outbox.events` row event_type='booking.approval_required'
+//     with payload.chain_id matching.
+// All assertions are tenant-scoped (#0 invariant).
+//
+// Citations:
+//   - supabase/migrations/00133_seed_room_booking_examples.sql:84-107
+//     (the rule that drives this flip).
+//   - supabase/migrations/00399_edit_booking_scope_lift_b4a5_gate.sql
+//     (scope-side gate lift; this probe covers the editOne mirror at
+//     reservation.service.ts).
+//   - supabase/migrations/00394 (or current edit_booking RPC) §3.6.5
+//     row 2 + Hybrid C atomic inbox INSERT block.
+// ─────────────────────────────────────────────────────────────────────
+
+async function readApprovalsForBooking(bookingId) {
+  const { data, error } = await supa()
+    .from('approvals')
+    .select('id, approval_chain_id, approver_person_id, status')
+    .eq('tenant_id', TENANT_ID)
+    .eq('target_entity_type', 'booking')
+    .eq('target_entity_id', bookingId);
+  if (error) throw error;
+  return data ?? [];
+}
+
+async function readInboxRowsForBooking(bookingId) {
+  // PostgREST quirk — `.filter()` on a JSON path with eq can be picky
+  // about value coercion. Fetch the small tenant-scoped event_kind set
+  // and filter in JS by booking_id (cheap, deterministic).
+  const { data, error } = await supa()
+    .from('inbox_notifications')
+    .select('id, user_id, event_kind, payload')
+    .eq('tenant_id', TENANT_ID)
+    .eq('event_kind', 'booking.approval_required');
+  if (error) throw error;
+  return (data ?? []).filter((r) => r.payload?.booking_id === bookingId);
+}
+
+async function readOutboxRowsForBooking(bookingId) {
+  const { data, error } = await supa()
+    .schema('outbox')
+    .from('events')
+    .select('id, event_type, payload')
+    .eq('tenant_id', TENANT_ID)
+    .eq('event_type', 'booking.approval_required')
+    .eq('aggregate_id', bookingId);
+  if (error) throw error;
+  return data ?? [];
+}
+
+async function runApprovalFlipProbe(probe, fixtureC) {
+  console.log('\n=== Approval-flip probe (B.4.A.5 sub-step H gate lift) ===');
+
+  // Sanity — Fixture C must start with zero approvals + zero inbox rows
+  // so post-probe deltas equal the absolute counts.
+  const apprBefore = await readApprovalsForBooking(fixtureC.bookingId);
+  passAssertion(
+    'Flip setup: 0 approvals before probe',
+    apprBefore.length === 0,
+    `count=${apprBefore.length}`,
+  );
+
+  // Extend the booking to 5h (> 240 min duration → rule b0010002 fires
+  // with effect=require_approval). The end_at moves forward; start_at
+  // stays the same. The booking-edit RPC reads the rule resolver
+  // outcome from the assembler's plan; we trust the rule to fire on
+  // duration > 240.
+  const startAt = fixtureC.startAt;
+  const newEndAtMs = new Date(startAt).getTime() + 5 * 60 * 60_000;
+  const newEndAt = new Date(newEndAtMs).toISOString();
+
+  const flipCrid = crypto.randomUUID();
+  const flipResult = await probe('Approval-flip: editOne extends duration to 5h → 200', {
+    url: `${API_BASE}/api/reservations/${fixtureC.bookingId}`,
+    body: { start_at: startAt, end_at: newEndAt },
+    clientRequestId: flipCrid,
+  });
+  if (!flipResult.ok) return;
+
+  // ── Assertion 1: one new approvals row, status=pending, approver=Noor.
+  const apprAfter = await readApprovalsForBooking(fixtureC.bookingId);
+  const noorAppr = apprAfter.find(
+    (a) => a.approver_person_id === NOOR_PERSON && a.status === 'pending',
+  );
+  passAssertion(
+    'Flip: 1 pending approval for NOOR_PERSON',
+    apprAfter.length >= 1 && Boolean(noorAppr),
+    `count=${apprAfter.length} matches=${noorAppr ? 1 : 0}`,
+  );
+  if (!noorAppr) return;
+  const chainId = noorAppr.approval_chain_id;
+
+  // ── Assertion 2: one inbox_notifications row for Noor's user_id, chain_id matches.
+  const inboxRows = await readInboxRowsForBooking(fixtureC.bookingId);
+  const noorInbox = inboxRows.find(
+    (r) => r.user_id === NOOR_USER && r.payload?.chain_id === chainId,
+  );
+  passAssertion(
+    'Flip: 1 inbox_notifications row for Noor with matching chain_id',
+    Boolean(noorInbox),
+    `inbox_count=${inboxRows.length} noorMatch=${noorInbox ? 1 : 0}`,
+  );
+
+  // ── Assertion 3: one outbox.events row with matching chain_id.
+  const outboxRows = await readOutboxRowsForBooking(fixtureC.bookingId);
+  const outboxMatch = outboxRows.find(
+    (r) => r.payload?.chain_id === chainId,
+  );
+  passAssertion(
+    "Flip: 1 outbox.events row 'booking.approval_required' with matching chain_id",
+    Boolean(outboxMatch),
+    `outbox_count=${outboxRows.length} chainMatch=${outboxMatch ? 1 : 0}`,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Op-discrimination probe — Step 2F.3 contract.
 // Fire editOne(crid=X) on Fixture A's booking AND editSlot(crid=X) on
 // Fixture B's non-primary slot. BOTH command_operations rows exist
@@ -1197,6 +1397,7 @@ async function main() {
   // would leak both fixtures.
   let fixtureA = null;
   let fixtureB = null;
+  let fixtureC = null;
   try {
     console.log('Seeding fixture A (single booking + 1 slot, +130d)…');
     fixtureA = seedFixtureA();
@@ -1207,6 +1408,10 @@ async function main() {
     console.log(
       `  booking ${fixtureB.bookingId.slice(0, 8)}… / primary ${fixtureB.primarySlotId.slice(0, 8)}… / non-primary ${fixtureB.nonPrimarySlotId.slice(0, 8)}…`,
     );
+
+    console.log('Seeding fixture C (single booking + 1 slot, +132d, approval-flip)…');
+    fixtureC = seedFixtureC();
+    console.log(`  booking ${fixtureC.bookingId.slice(0, 8)}… / slot ${fixtureC.slotId.slice(0, 8)}…`);
 
     const accessToken = await mintAdminToken();
     const headers = {
@@ -1219,9 +1424,10 @@ async function main() {
     await runEditOneProbes(probe, fixtureA, fixtureB);
     await runEditSlotProbes(probe, fixtureA, fixtureB);
     await runOpDiscriminationProbe(probe, fixtureA, fixtureB);
+    await runApprovalFlipProbe(probe, fixtureC);
   } finally {
     console.log('\nCleaning up fixtures…');
-    const idsToDelete = [fixtureA?.bookingId, fixtureB?.bookingId].filter(Boolean);
+    const idsToDelete = [fixtureA?.bookingId, fixtureB?.bookingId, fixtureC?.bookingId].filter(Boolean);
     if (idsToDelete.length > 0) {
       await deleteFixtures(idsToDelete);
     }

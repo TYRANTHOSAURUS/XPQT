@@ -133,6 +133,18 @@ const ROOM_BOARD = '207242ea-48e9-41a2-a72d-5ea4192f48bf';
 const RECURRENCE_COUNT = 5;
 const PIVOT_INDEX = 2;
 
+// ─── B.4.A.5 sub-step H approval-flip probe — fixture2 + test rule.
+// Noor — required_approver on a one-shot rule we mint per smoke run.
+// Citation: psql confirmed person_id 95000000-..-04 → user_id
+// 95100000-..-04 in tenant A.
+const NOOR_PERSON = '95000000-0000-0000-0000-000000000004';
+const NOOR_USER = '95100000-0000-0000-0000-000000000004';
+const FLIP_RECURRENCE_COUNT = 3;
+const FLIP_PIVOT_INDEX = 0;
+// Anchor the flip fixture far away from the existing +90→+118d window
+// to avoid any cross-fixture rule interaction.
+const FLIP_DAYS_FROM_NOW = 200;
+
 // ─────────────────────────────────────────────────────────────────────
 // Idempotency-key shape — replicated from
 // `packages/shared/src/idempotency.ts:331 + :374-382`. The .mjs runtime
@@ -259,6 +271,123 @@ function seedRecurringFixture() {
   `;
   runPsql(sql);
   return { seriesId, occurrences };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// B.4.A.5 sub-step H approval-flip fixture — 3-occurrence series at
+// +200d on ROOM_HUDDLE + a one-shot room_booking_rule scoped to
+// ROOM_TEAM that requires Noor's approval. Each occurrence is 1h, so
+// none of the seeded tenant-wide rules (off-hours / long-bookings)
+// fires on the source state. The probe PATCHes scope='series'
+// space_id=ROOM_TEAM, which triggers the test rule on each occurrence
+// and asserts the 200 + 3 approvals + 3 inbox rows + 3 outbox rows
+// tuple — locks in the gate-lift end-to-end through the editScope
+// per-occurrence loop.
+//
+// The test rule uses a tautology predicate `{op:eq,left:1,right:1}`
+// (always-fires) + target_scope='room' + target_id=ROOM_TEAM so it
+// only matches bookings ON the target room. Rule versions cascade on
+// rule delete (00121:42-50).
+// ─────────────────────────────────────────────────────────────────────
+
+function seedFlipFixture(testRuleId) {
+  const seriesId = crypto.randomUUID();
+  const occurrences = [];
+  const baseAnchor = new Date(Date.now() + FLIP_DAYS_FROM_NOW * 86400_000);
+  baseAnchor.setUTCMinutes(0, 0, 0);
+  baseAnchor.setUTCHours(14);
+  const baseStartMs = baseAnchor.getTime();
+  const seriesEnd = new Date(baseStartMs + FLIP_RECURRENCE_COUNT * 7 * 86400_000).toISOString();
+
+  const valuesBookings = [];
+  const valuesSlots = [];
+  for (let i = 0; i < FLIP_RECURRENCE_COUNT; i++) {
+    const bookingId = crypto.randomUUID();
+    const slotId = crypto.randomUUID();
+    const startMs = baseStartMs + i * 7 * 86400_000;
+    const endMs = startMs + 60 * 60_000;
+    const startAt = new Date(startMs).toISOString();
+    const endAt = new Date(endMs).toISOString();
+    occurrences.push({ bookingId, slotId, startAt, endAt, index: i });
+    valuesBookings.push(
+      `('${bookingId}'::uuid, '${TENANT_ID}'::uuid, 'Smoke edit-scope flip series', '${THOMAS_PERSON}'::uuid, '${ROOM_HUDDLE}'::uuid, '${startAt}'::timestamptz, '${endAt}'::timestamptz, 'UTC', 'confirmed', 'desk', 'smoke-flip-etag-${bookingId.slice(0, 8)}', 100.00, '{}'::jsonb, '{}'::uuid[], '${seriesId}'::uuid, ${i})`,
+    );
+    valuesSlots.push(
+      `('${slotId}'::uuid, '${TENANT_ID}'::uuid, '${bookingId}'::uuid, 'room', '${ROOM_HUDDLE}'::uuid, '${startAt}'::timestamptz, '${endAt}'::timestamptz, 'confirmed', 0)`,
+    );
+  }
+
+  const sql = `
+    set session_replication_role = 'replica';
+    -- One-shot test rule: any booking on ROOM_TEAM requires Noor's approval.
+    insert into public.room_booking_rules
+      (id, tenant_id, name, description, target_scope, target_id,
+       applies_when, effect, approval_config, priority, active)
+    values
+      ('${testRuleId}'::uuid, '${TENANT_ID}'::uuid,
+       'Smoke flip — ROOM_TEAM needs Noor', 'B.4.A.5 sub-step H smoke; rule deleted post-run.',
+       'room', '${ROOM_TEAM}'::uuid,
+       '{"op":"eq","left":1,"right":1}'::jsonb,
+       'require_approval',
+       '{"required_approvers":[{"type":"person","id":"${NOOR_PERSON}"}],"threshold":"any"}'::jsonb,
+       50, true);
+    insert into public.recurrence_series
+      (id, tenant_id, recurrence_rule, series_start_at, materialized_through)
+    values
+      ('${seriesId}'::uuid, '${TENANT_ID}'::uuid,
+       jsonb_build_object('frequency', 'weekly', 'interval', 1, 'count', ${FLIP_RECURRENCE_COUNT}),
+       '${new Date(baseStartMs).toISOString()}'::timestamptz,
+       '${seriesEnd}'::timestamptz);
+    insert into public.bookings
+      (id, tenant_id, title, requester_person_id, location_id,
+       start_at, end_at, timezone, status, source, calendar_etag,
+       cost_amount_snapshot, policy_snapshot, applied_rule_ids,
+       recurrence_series_id, recurrence_index)
+    values ${valuesBookings.join(', ')};
+    insert into public.booking_slots
+      (id, tenant_id, booking_id, slot_type, space_id,
+       start_at, end_at, status, display_order)
+    values ${valuesSlots.join(', ')};
+    set session_replication_role = 'origin';
+  `;
+  runPsql(sql);
+  return { seriesId, occurrences };
+}
+
+async function deleteFlipFixture(seriesId, testRuleId) {
+  const sql = `
+    set session_replication_role = 'replica';
+    delete from public.audit_events
+      where tenant_id = '${TENANT_ID}'::uuid
+        and entity_type = 'booking'
+        and entity_id in (select id from public.bookings where recurrence_series_id = '${seriesId}'::uuid);
+    delete from public.domain_events
+      where tenant_id = '${TENANT_ID}'::uuid
+        and entity_type = 'booking'
+        and entity_id in (select id from public.bookings where recurrence_series_id = '${seriesId}'::uuid);
+    delete from outbox.events
+      where tenant_id = '${TENANT_ID}'::uuid
+        and aggregate_id in (select id from public.bookings where recurrence_series_id = '${seriesId}'::uuid);
+    delete from public.approvals
+      where tenant_id = '${TENANT_ID}'::uuid
+        and target_entity_type = 'booking'
+        and target_entity_id in (select id from public.bookings where recurrence_series_id = '${seriesId}'::uuid);
+    delete from public.inbox_notifications
+      where tenant_id = '${TENANT_ID}'::uuid
+        and event_kind = 'booking.approval_required'
+        and (payload->>'booking_id')::uuid in (select id from public.bookings where recurrence_series_id = '${seriesId}'::uuid);
+    delete from public.booking_slots
+      where booking_id in (select id from public.bookings where recurrence_series_id = '${seriesId}'::uuid);
+    delete from public.bookings where recurrence_series_id = '${seriesId}'::uuid;
+    delete from public.recurrence_series where id = '${seriesId}'::uuid;
+    delete from public.room_booking_rules where id = '${testRuleId}'::uuid;
+    set session_replication_role = 'origin';
+  `;
+  try {
+    runPsql(sql);
+  } catch (e) {
+    console.log(`  ! flip fixture cleanup warn: ${e.message.slice(0, 200)}`);
+  }
 }
 
 async function deleteFixture(seriesId) {
@@ -960,6 +1089,135 @@ async function runScopeProbes(headers, probe, fixture) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Approval-flip probe — B.4.A.5 sub-step H gate-lift assertion at the
+// scope-edit pipeline.
+//
+// Defends against: a regression that re-introduces the 422
+// `booking.edit_requires_notification_dispatch` gate inside
+// `assemble-edit-plan.service.ts` (`assembleScopeEditPlan` per-
+// occurrence loop) OR the in-PG mirror at 00399 / `edit_booking_scope`.
+//
+// Fixture: 3 occurrences on ROOM_HUDDLE at +200d (well clear of the
+// existing scope smoke's +90→+118d window). A one-shot test rule
+// targets ROOM_TEAM with require_approval, approver=Noor. The probe
+// PATCHes scope='series' space_id=ROOM_TEAM — every occurrence flips
+// approval. Asserts the 200 + per-occurrence approval/inbox/outbox
+// tuple. Tenant-scoped on every read (#0 invariant).
+// ─────────────────────────────────────────────────────────────────────
+
+async function readFlipApprovalsForBookings(bookingIds) {
+  if (bookingIds.length === 0) return [];
+  const { data, error } = await supa()
+    .from('approvals')
+    .select('id, target_entity_id, approval_chain_id, approver_person_id, status')
+    .eq('tenant_id', TENANT_ID)
+    .eq('target_entity_type', 'booking')
+    .in('target_entity_id', bookingIds);
+  if (error) throw error;
+  return data ?? [];
+}
+
+async function readFlipInboxForBookings(bookingIds) {
+  if (bookingIds.length === 0) return [];
+  // PostgREST quirk — `.in()` on a JSON path doesn't reliably bind the
+  // typed array; fetch all matching event_kind rows for the tenant
+  // (small per-tenant) and filter in JS by booking_id. Safer + clearer
+  // than coaxing supabase-js's filter DSL to emit the right URL.
+  const { data, error } = await supa()
+    .from('inbox_notifications')
+    .select('id, user_id, payload')
+    .eq('tenant_id', TENANT_ID)
+    .eq('event_kind', 'booking.approval_required');
+  if (error) throw error;
+  const set = new Set(bookingIds);
+  return (data ?? []).filter((r) => set.has(r.payload?.booking_id));
+}
+
+async function readFlipOutboxForBookings(bookingIds) {
+  if (bookingIds.length === 0) return [];
+  const { data, error } = await supa()
+    .schema('outbox')
+    .from('events')
+    .select('id, aggregate_id, payload')
+    .eq('tenant_id', TENANT_ID)
+    .eq('event_type', 'booking.approval_required')
+    .in('aggregate_id', bookingIds);
+  if (error) throw error;
+  return data ?? [];
+}
+
+async function runFlipScopeProbe(probe, flipFixture) {
+  console.log('\n=== Approval-flip probe (B.4.A.5 sub-step H — scope-edit gate lift) ===');
+
+  const pivot = flipFixture.occurrences[FLIP_PIVOT_INDEX];
+  const allFlipBookingIds = flipFixture.occurrences.map((o) => o.bookingId);
+
+  // Sanity — zero approvals/inbox/outbox rows for these bookings pre-flip.
+  const apprBefore = await readFlipApprovalsForBookings(allFlipBookingIds);
+  if (apprBefore.length === 0) {
+    results.pass += 1;
+    console.log(`  ✓ Flip setup: 0 approvals before scope edit`);
+  } else {
+    results.fail += 1;
+    results.failed.push('Flip setup: approvals leaked from prior run');
+    console.log(`  ✗ Flip setup: ${apprBefore.length} approvals (expected 0)`);
+  }
+
+  const flipCrid = crypto.randomUUID();
+  const flipUrl = `${API_BASE}/api/reservations/${pivot.bookingId}/edit-scope`;
+  const flipResult = await probe('Flip scope=series: 3 occurrences move to ROOM_TEAM → 200', {
+    url: flipUrl,
+    body: { scope: 'series', space_id: ROOM_TEAM },
+    clientRequestId: flipCrid,
+  });
+  if (!flipResult.ok) return;
+
+  // ── Assertion 1: ≥3 pending approvals across the 3 bookings, all for Noor.
+  const apprAfter = await readFlipApprovalsForBookings(allFlipBookingIds);
+  const noorAppr = apprAfter.filter(
+    (a) => a.approver_person_id === NOOR_PERSON && a.status === 'pending',
+  );
+  const distinctBookings = new Set(noorAppr.map((a) => a.target_entity_id));
+  if (distinctBookings.size === FLIP_RECURRENCE_COUNT) {
+    results.pass += 1;
+    console.log(`  ✓ Flip: ${FLIP_RECURRENCE_COUNT} pending approvals for NOOR across ${distinctBookings.size} bookings`);
+  } else {
+    results.fail += 1;
+    results.failed.push('Flip: approvals count');
+    console.log(`  ✗ Flip: noor-pending-approvals across ${distinctBookings.size} distinct bookings (expected ${FLIP_RECURRENCE_COUNT})`);
+  }
+
+  // ── Assertion 2: ≥3 inbox_notifications rows for Noor with payload.chain_id
+  //    matching one of the approval rows.
+  const inboxRows = await readFlipInboxForBookings(allFlipBookingIds);
+  const chainIds = new Set(noorAppr.map((a) => a.approval_chain_id));
+  const noorInbox = inboxRows.filter(
+    (r) => r.user_id === NOOR_USER && chainIds.has(r.payload?.chain_id),
+  );
+  if (noorInbox.length >= FLIP_RECURRENCE_COUNT) {
+    results.pass += 1;
+    console.log(`  ✓ Flip: ${noorInbox.length} inbox_notifications rows for Noor with matching chain_ids`);
+  } else {
+    results.fail += 1;
+    results.failed.push('Flip: inbox row count');
+    console.log(`  ✗ Flip: ${noorInbox.length} matching inbox rows (expected ≥${FLIP_RECURRENCE_COUNT})`);
+  }
+
+  // ── Assertion 3: ≥3 outbox.events rows event_type=booking.approval_required
+  //    with payload.chain_id matching one of the approval rows.
+  const outboxRows = await readFlipOutboxForBookings(allFlipBookingIds);
+  const matchingOutbox = outboxRows.filter((r) => chainIds.has(r.payload?.chain_id));
+  if (matchingOutbox.length >= FLIP_RECURRENCE_COUNT) {
+    results.pass += 1;
+    console.log(`  ✓ Flip: ${matchingOutbox.length} outbox.events rows 'booking.approval_required' with matching chain_ids`);
+  } else {
+    results.fail += 1;
+    results.failed.push('Flip: outbox row count');
+    console.log(`  ✗ Flip: ${matchingOutbox.length} matching outbox rows (expected ≥${FLIP_RECURRENCE_COUNT})`);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Main
 // ─────────────────────────────────────────────────────────────────────
 
@@ -989,10 +1247,16 @@ async function main() {
   // is on disk. Pre-fix, a Supabase auth outage between seeding and
   // probing would leak the recurring fixture.
   let fixture = null;
+  let flipFixture = null;
+  const flipTestRuleId = crypto.randomUUID();
   try {
     console.log('Seeding recurring-booking fixture (5 occurrences, 1 week apart)…');
     fixture = seedRecurringFixture();
     console.log(`  series ${fixture.seriesId.slice(0, 8)}… / pivot ${fixture.occurrences[PIVOT_INDEX].bookingId.slice(0, 8)}…`);
+
+    console.log('Seeding approval-flip fixture (3 occurrences at +200d + test rule)…');
+    flipFixture = seedFlipFixture(flipTestRuleId);
+    console.log(`  series ${flipFixture.seriesId.slice(0, 8)}… / rule ${flipTestRuleId.slice(0, 8)}…`);
 
     const accessToken = await mintAdminToken();
     const headers = {
@@ -1003,6 +1267,7 @@ async function main() {
     const probe = makeProber(headers);
 
     await runScopeProbes(headers, probe, fixture);
+    await runFlipScopeProbe(probe, flipFixture);
   } finally {
     // Always clean up the fixture, even on failure, so the next run
     // starts clean. The cleanup also sweeps any command_operations
@@ -1011,6 +1276,10 @@ async function main() {
     if (fixture) {
       console.log('\nCleaning up fixture…');
       await deleteFixture(fixture.seriesId);
+    }
+    if (flipFixture) {
+      console.log('Cleaning up flip fixture + test rule…');
+      await deleteFlipFixture(flipFixture.seriesId, flipTestRuleId);
     }
   }
 

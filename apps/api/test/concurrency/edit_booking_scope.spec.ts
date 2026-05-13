@@ -16,7 +16,9 @@
  *   4. 5-occurrence series, dry_run=false       — committed:5; 5 slot rows + 5 audit + 5 domain.
  *   5. 5-occurrence series, one cancelled       — raises booking.cancelled_cannot_edit; FULL rollback.
  *   6. 5-occurrence series, mixed_series        — raises edit_booking_scope.mixed_series; no writes.
- *   7. 5-occurrence series, B.4.A.5 emit-site   — raises booking.edit_requires_notification_dispatch.
+ *   7. 5-occurrence series, B.4.A.5 emit-site   — gate lifted in sub-step H (00399);
+ *      approval-flipping occurrence commits + writes one inbox row + one outbox emit;
+ *      other occurrences commit cleanly.
  *   8. Concurrent scope edits, overlapping series + different keys — second blocks on advisory lock.
  *   9. Idempotency replay (same key, same payload) — second returns cached_result.
  *  10. Idempotency mismatch (same key, different payload) — payload_mismatch.
@@ -30,15 +32,12 @@
  *      (00371): dry-run is stateless w.r.t. command_operations — a
  *      subsequent commit on the same key MUST insert + write, not
  *      short-circuit on a stale dry-run row.
- *  17. B.4.A.5 sub-step B — gate raise leaves inbox_notifications empty
- *      (proves the per-occurrence inbox INSERT block in 00395 is properly
- *      tx-scoped behind the B.4.A.5 emit-site gate; will evolve into
- *      "row count == approver count" once sub-step H lifts the gate).
- *  18. Codex remediation — gate raise leaves outbox empty of
- *      booking.approval_required (proves the per-occurrence emit block
- *      added in the codex remediation is properly tx-scoped behind the
- *      same gate; will evolve into "N events emitted with correct per-
- *      chain payloads" once sub-step H lifts the gate).
+ *  17. B.4.A.5 sub-step H — approval-flipping occurrence writes one inbox row per
+ *      person approver (scope variant of edit_booking.spec.ts Scenario 27).
+ *  18. B.4.A.5 sub-step H — approval-flipping occurrences emit one
+ *      booking.approval_required outbox event per flipped occurrence
+ *      (N=2 in this fixture). Per-occurrence payload carries the correct
+ *      chain_id, approver_person_ids[], approver_team_ids[].
  */
 
 import { randomUUID } from 'node:crypto';
@@ -233,6 +232,35 @@ async function seedRecurrenceSeries(
   });
 
   return { seriesId, occurrences };
+}
+
+/**
+ * Seed a public.users row backed by a person record so the RPC's
+ * `users.person_id = v_approver_id` JOIN (in the inbox INSERT block) finds
+ * it. Mirrors seedAuthUser in edit_booking.spec.ts — duplicated locally
+ * because the harness doesn't expose a shared helper. Cleanup deletes
+ * domain/audit rows scoped by actor before the user delete to dodge FK
+ * violations under reverse-insertion cleanup ordering.
+ */
+async function seedAuthUser(
+  pool: Pool,
+  tenantId: string,
+  personId: string,
+): Promise<{ userId: string; authUid: string }> {
+  const userId = randomUUID();
+  const authUid = randomUUID();
+  await pool.query(
+    `insert into public.users
+       (id, tenant_id, person_id, auth_uid, email, status)
+     values ($1, $2, $3, $4, $5, 'active')`,
+    [userId, tenantId, personId, authUid, `scope-actor-${userId.slice(0, 8)}@concurrency.test`],
+  );
+  registerCleanup(async () => {
+    await pool.query('delete from public.domain_events where actor_user_id = $1', [userId]);
+    await pool.query('delete from public.audit_events where actor_user_id = $1', [userId]);
+    await pool.query('delete from public.users where id = $1', [userId]);
+  });
+  return { userId, authUid };
 }
 
 async function seedTargetMeetingRoom(pool: Pool, base: BaseFixture): Promise<string> {
@@ -711,86 +739,134 @@ describe('edit_booking_scope RPC — concurrency + state-machine probes', () => 
     expect(auditCount.rows[0].n).toBe(0);
   });
 
-  // ── Scenario 7: B.4.A.5 emit-site predicate on occurrence 3 ──────────
-  // §3.6.5 Row 2 — allow → require_approval — would emit
-  // booking.approval_required. RPC must refuse before the write block.
-  it('B.4.A.5 emit-site predicate fires on one occurrence — raises booking.edit_requires_notification_dispatch', async () => {
+  // ── Scenario 7: B.4.A.5 emit-site on one occurrence (post sub-step H) ──
+  // §3.6.5 Row 2 — allow → require_approval on occurrence 3. Sub-step H
+  // (00399) lifted the controller-vs-notification gate, so the RPC now
+  // commits all five occurrences and writes chain rows + inbox row +
+  // outbox emit for the flipping occurrence atomically. Other occurrences
+  // (allow → allow) commit cleanly with no approvals / inbox / emit.
+  it('B.4.A.5 post-H: approval-flipping occurrence commits + writes inbox row + emits outbox event', async () => {
     const base = await seedBaseFixture(pool, `scope-b4a5-${Date.now()}`);
     const fixture = await seedRecurrenceSeries(pool, base, 5);
     const targetSpaceId = await seedTargetMeetingRoom(pool, base);
 
-    const offendingBookingId = fixture.occurrences[2].bookingId;
+    const flippingBookingId = fixture.occurrences[2].bookingId;
 
-    // Make occurrence 3 trip the gate: allow → require_approval.
+    // Wire the approver person to a real users row so the RPC's
+    // `users.person_id = v_approver_id` JOIN (in the inbox INSERT block)
+    // finds a target user. seedAuthUser returns { userId, authUid }; we
+    // keep the user — the inbox INSERT targets users.id.
+    const { userId: approverUserId } = await seedAuthUser(
+      pool,
+      base.tenantId,
+      base.approverPersonId,
+    );
+
+    // Make occurrence 3 flip: allow → require_approval. Use the
+    // approverPersonId (backed by a users row) so the inbox INSERT JOIN
+    // succeeds.
     const plans = await buildPlansForFixture(pool, fixture, targetSpaceId, base.spaceId, '2026-10-15T00:00:00Z', (idx) =>
       idx === 2
         ? buildApprovalBlock({
             oldOutcome: 'allow',
             newOutcome: 'require_approval',
             chainConfigChanged: true,
-            newChainConfig: { requiredApprovers: [{ type: 'person', id: base.personId }], threshold: 'all' },
+            newChainConfig: {
+              requiredApprovers: [{ type: 'person', id: base.approverPersonId }],
+              threshold: 'all',
+            },
           })
         : buildApprovalBlock({}),
     );
     const idempotencyKey = scopeIdempotencyKey(`b4a5-${Date.now()}`);
 
-    const result = await runRpcCapture(pool, 'public.edit_booking_scope', [
+    const result = await runRpcCapture<CommitResult>(pool, 'public.edit_booking_scope', [
       JSON.stringify(plans),
       base.tenantId,
       null,
       idempotencyKey,
       false,
     ]);
-    expect(result.kind).toBe('error');
-    if (result.kind !== 'error') return;
-    expect(result.error.message).toContain('booking.edit_requires_notification_dispatch');
-    expect(result.error.message).toContain(offendingBookingId);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.committed).toBe(5);
 
-    // No writes anywhere — even occurrences 0/1 (allow→allow, would
-    // commit cleanly) must roll back.
+    // All five occurrences must now have moved to the target space.
     const slotChanged = await pool.query<{ n: number }>(
       `select count(*)::int as n from public.booking_slots
         where tenant_id = $1 and space_id = $2`,
       [base.tenantId, targetSpaceId],
     );
-    expect(slotChanged.rows[0].n).toBe(0);
+    expect(slotChanged.rows[0].n).toBe(5);
 
-    // v2 I4 — tighter rollback assertions: zero domain_events, zero
-    // outbox rows, zero audit rows, zero approvals, and every booking
-    // row's location_id unchanged (none should have moved).
-    const auditCount = await pool.query<{ n: number }>(
-      `select count(*)::int as n from public.audit_events where tenant_id = $1`,
+    // Exactly one approval row — for the flipping occurrence.
+    const approvalRows = await pool.query<{
+      target_entity_id: string;
+      approver_person_id: string | null;
+      approval_chain_id: string;
+      status: string;
+    }>(
+      `select target_entity_id, approver_person_id, approval_chain_id, status
+         from public.approvals where tenant_id = $1`,
       [base.tenantId],
     );
-    expect(auditCount.rows[0].n).toBe(0);
+    expect(approvalRows.rows).toHaveLength(1);
+    expect(approvalRows.rows[0].target_entity_id).toBe(flippingBookingId);
+    expect(approvalRows.rows[0].approver_person_id).toBe(base.approverPersonId);
+    expect(approvalRows.rows[0].status).toBe('pending');
+    const chainId = approvalRows.rows[0].approval_chain_id;
+
+    // Exactly one inbox row — Hybrid C invariant. Person approver path
+    // → one users row → one inbox row, keyed by (tenant, user, event,
+    // chain_id).
+    const inboxRows = await pool.query<{
+      user_id: string;
+      event_kind: string;
+      payload: Record<string, unknown>;
+    }>(
+      `select user_id, event_kind, payload
+         from public.inbox_notifications
+        where tenant_id = $1 and payload->>'chain_id' = $2`,
+      [base.tenantId, chainId],
+    );
+    expect(inboxRows.rows).toHaveLength(1);
+    expect(inboxRows.rows[0].user_id).toBe(approverUserId);
+    expect(inboxRows.rows[0].event_kind).toBe('booking.approval_required');
+    expect(inboxRows.rows[0].payload.booking_id).toBe(flippingBookingId);
+    expect(inboxRows.rows[0].payload.approver_person_id).toBe(base.approverPersonId);
+
+    // Exactly one booking.approval_required outbox emit — same chain_id,
+    // booking_id matches the flipping occurrence, approver_person_ids
+    // carries the one person, approver_team_ids is empty.
+    const approvalEmits = await pool.query<{
+      aggregate_id: string;
+      payload: Record<string, unknown>;
+    }>(
+      `select aggregate_id, payload
+         from outbox.events
+        where tenant_id = $1 and event_type = 'booking.approval_required'`,
+      [base.tenantId],
+    );
+    expect(approvalEmits.rows).toHaveLength(1);
+    expect(approvalEmits.rows[0].aggregate_id).toBe(flippingBookingId);
+    expect(approvalEmits.rows[0].payload.chain_id).toBe(chainId);
+    expect(approvalEmits.rows[0].payload.approver_person_ids).toEqual([base.approverPersonId]);
+    expect(approvalEmits.rows[0].payload.approver_team_ids).toEqual([]);
+
+    // Five audit + five domain rows (one per committed occurrence).
+    const auditCount = await pool.query<{ n: number }>(
+      `select count(*)::int as n from public.audit_events
+        where tenant_id = $1 and event_type = 'booking.edited'`,
+      [base.tenantId],
+    );
+    expect(auditCount.rows[0].n).toBe(5);
 
     const domainCount = await pool.query<{ n: number }>(
-      `select count(*)::int as n from public.domain_events where tenant_id = $1`,
+      `select count(*)::int as n from public.domain_events
+        where tenant_id = $1 and event_type = 'booking.edited'`,
       [base.tenantId],
     );
-    expect(domainCount.rows[0].n).toBe(0);
-
-    const outboxCount = await pool.query<{ n: number }>(
-      `select count(*)::int as n from outbox.events where tenant_id = $1`,
-      [base.tenantId],
-    );
-    expect(outboxCount.rows[0].n).toBe(0);
-
-    const approvalsCount = await pool.query<{ n: number }>(
-      `select count(*)::int as n from public.approvals where tenant_id = $1`,
-      [base.tenantId],
-    );
-    expect(approvalsCount.rows[0].n).toBe(0);
-
-    const bookingRows = await pool.query<{ location_id: string }>(
-      `select location_id from public.bookings
-        where recurrence_series_id = $1
-        order by recurrence_index asc`,
-      [fixture.seriesId],
-    );
-    for (const row of bookingRows.rows) {
-      expect(row.location_id).toBe(base.spaceId);
-    }
+    expect(domainCount.rows[0].n).toBe(5);
   });
 
   // ── Scenario 8: concurrent scope edits, different idempotency keys ───
@@ -1413,20 +1489,25 @@ describe('edit_booking_scope RPC — concurrency + state-machine probes', () => 
     expect(result.value.committed).toBe(200);
   }, 120_000);
 
-  // ── Scenario 17 (B.4.A.5 sub-step B): inbox tx-scope on gate raise ──────
-  // The B.4.A.5 emit-site gate at 00395:~575-580 stays UP in v3 — the
-  // inbox INSERT block in the per-occurrence loop is defense-in-depth
-  // (unreachable until sub-step H lifts the gate). This test pins the
-  // contract that as long as the gate is up, an approval-flipping plan
-  // raises and writes ZERO inbox rows. When sub-step H lifts the gate,
-  // this test should evolve into "inbox row count == approver count" —
-  // the scope variant of the edit_booking.spec.ts Scenario 27 probe.
-  it('B.4.A.5 — gate raise leaves inbox_notifications empty (tx rollback covers the inbox INSERT block)', async () => {
-    const base = await seedBaseFixture(pool, `scope-inbox-gate-${Date.now()}`);
+  // ── Scenario 17 (B.4.A.5 sub-step H): inbox row count == approver count ──
+  // Sub-step H (00399) lifted the B.4.A.5 emit-site gate at 00395:~562.
+  // The per-occurrence inbox INSERT block in the RPC now writes one row
+  // per approver, atomically with the approvals row, in the same RPC tx.
+  // Person approver path — scope variant of the edit_booking.spec.ts
+  // Scenario 27 probe.
+  it('B.4.A.5 — approval-flipping occurrence writes one inbox row per person approver', async () => {
+    const base = await seedBaseFixture(pool, `scope-inbox-${Date.now()}`);
     const fixture = await seedRecurrenceSeries(pool, base, 3);
     const targetSpaceId = await seedTargetMeetingRoom(pool, base);
 
-    // Make occurrence 1 trip the gate.
+    const { userId: approverUserId } = await seedAuthUser(
+      pool,
+      base.tenantId,
+      base.approverPersonId,
+    );
+    const flippingBookingId = fixture.occurrences[1].bookingId;
+
+    // Make occurrence 1 flip.
     const plans = await buildPlansForFixture(
       pool,
       fixture,
@@ -1446,53 +1527,67 @@ describe('edit_booking_scope RPC — concurrency + state-machine probes', () => 
             })
           : buildApprovalBlock({}),
     );
-    const idempotencyKey = scopeIdempotencyKey(`inbox-gate-${Date.now()}`);
+    const idempotencyKey = scopeIdempotencyKey(`inbox-${Date.now()}`);
 
-    const result = await runRpcCapture(pool, 'public.edit_booking_scope', [
+    const result = await runRpcCapture<CommitResult>(pool, 'public.edit_booking_scope', [
       JSON.stringify(plans),
       base.tenantId,
       null,
       idempotencyKey,
       false,
     ]);
-    expect(result.kind).toBe('error');
-    if (result.kind !== 'error') return;
-    expect(result.error.message).toContain('booking.edit_requires_notification_dispatch');
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.committed).toBe(3);
 
-    // ZERO inbox rows in this tenant — the gate fires before the per-occurrence
-    // write block (and even if it didn't, the failed RPC tx would roll the
-    // INSERT back).
-    const inboxCount = await pool.query<{ n: number }>(
-      `select count(*)::int as n from public.inbox_notifications where tenant_id = $1`,
-      [base.tenantId],
+    const chainRow = await pool.query<{ approval_chain_id: string }>(
+      `select approval_chain_id from public.approvals
+        where tenant_id = $1 and target_entity_id = $2 limit 1`,
+      [base.tenantId, flippingBookingId],
     );
-    expect(inboxCount.rows[0].n).toBe(0);
+    expect(chainRow.rows).toHaveLength(1);
+    const chainId = chainRow.rows[0].approval_chain_id;
+
+    // Exactly 1 inbox row — person approver = 1 user.
+    const inboxRows = await pool.query<{
+      user_id: string;
+      event_kind: string;
+      payload: Record<string, unknown>;
+    }>(
+      `select user_id, event_kind, payload
+         from public.inbox_notifications
+        where tenant_id = $1 and payload->>'chain_id' = $2`,
+      [base.tenantId, chainId],
+    );
+    expect(inboxRows.rows).toHaveLength(1);
+    expect(inboxRows.rows[0].user_id).toBe(approverUserId);
+    expect(inboxRows.rows[0].event_kind).toBe('booking.approval_required');
+    expect(inboxRows.rows[0].payload.booking_id).toBe(flippingBookingId);
+    expect(inboxRows.rows[0].payload.chain_id).toBe(chainId);
+    expect(inboxRows.rows[0].payload.approver_person_id).toBe(base.approverPersonId);
   });
 
-  // ── Scenario 18 (codex remediation, sub-step B follow-up) ───────────
-  // Without an approval_required outbox emit in 00395, sub-step H would
-  // lift the gate and create inbox rows but no email. The emit block now
-  // lives alongside booking.location_changed / booking.cost_changed in
-  // the per-occurrence write block, gated on the SAME predicate as the
-  // inbox INSERT block (v_emit_approval_required). While the gate at
-  // 00395:~562 stays UP, the emit is unreachable — same as the inbox
-  // INSERT — so today's contract is: ZERO booking.approval_required
-  // outbox rows after a gate-tripping plan. When sub-step H lifts the
-  // gate, this test should evolve into "N events emitted with correct
-  // per-chain payloads" — N = occurrences whose plans flip rows 2/7/8
-  // (allow → require_approval or chain_config_changed). Mirror shape
-  // for edit_booking.spec.ts Scenario 7's outbox assertion.
-  it('B.4.A.5 — gate raise leaves outbox empty of booking.approval_required (per-occurrence emit covered by tx rollback)', async () => {
-    const base = await seedBaseFixture(pool, `scope-emit-gate-${Date.now()}`);
+  // ── Scenario 18 (B.4.A.5 sub-step H): per-occurrence outbox emit count ──
+  // Sub-step H (00399) lifted the gate. The per-occurrence emit block
+  // gated on v_emit_approval_required now fires once per occurrence
+  // whose plan flips rows 2/7/8 (allow → require_approval or
+  // chain_config_changed). Two flipped occurrences in this fixture → two
+  // booking.approval_required emits, each with the correct chain_id and
+  // approver array payload. Mirror shape for edit_booking.spec.ts
+  // Scenario 7's outbox assertion.
+  it('B.4.A.5 — flipped occurrences emit one booking.approval_required per occurrence', async () => {
+    const base = await seedBaseFixture(pool, `scope-emit-${Date.now()}`);
     const fixture = await seedRecurrenceSeries(pool, base, 3);
     const targetSpaceId = await seedTargetMeetingRoom(pool, base);
 
-    // Flip occurrences 0 + 2 (two of three) into the gate-tripping shape:
-    // allow → require_approval with chain_config_changed. The shared
-    // v_emit_approval_required predicate fires on the first one and
-    // raises — but the structural intent is that, once sub-step H lifts
-    // the gate, the per-occurrence emit block fires N times for the N
-    // occurrences whose plans flipped (here: 2 emits).
+    await seedAuthUser(pool, base.tenantId, base.approverPersonId);
+    const flippingBookingIds = new Set([
+      fixture.occurrences[0].bookingId,
+      fixture.occurrences[2].bookingId,
+    ]);
+
+    // Flip occurrences 0 + 2 — allow → require_approval with
+    // chain_config_changed. Occurrence 1 stays allow → allow.
     const plans = await buildPlansForFixture(
       pool,
       fixture,
@@ -1512,36 +1607,42 @@ describe('edit_booking_scope RPC — concurrency + state-machine probes', () => 
             })
           : buildApprovalBlock({}),
     );
-    const idempotencyKey = scopeIdempotencyKey(`emit-gate-${Date.now()}`);
+    const idempotencyKey = scopeIdempotencyKey(`emit-${Date.now()}`);
 
-    const result = await runRpcCapture(pool, 'public.edit_booking_scope', [
+    const result = await runRpcCapture<CommitResult>(pool, 'public.edit_booking_scope', [
       JSON.stringify(plans),
       base.tenantId,
       null,
       idempotencyKey,
       false,
     ]);
-    expect(result.kind).toBe('error');
-    if (result.kind !== 'error') return;
-    expect(result.error.message).toContain('booking.edit_requires_notification_dispatch');
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.committed).toBe(3);
 
-    // ZERO booking.approval_required outbox rows — gate suppresses + tx
-    // rollback covers anything that would slip through.
-    const approvalEmits = await pool.query<{ n: number }>(
-      `select count(*)::int as n from outbox.events
-        where tenant_id = $1 and event_type = 'booking.approval_required'`,
+    // Exactly 2 booking.approval_required outbox rows — one per flipped
+    // occurrence. Each carries a distinct chain_id and aggregate_id
+    // matching the flipping booking.
+    const approvalEmits = await pool.query<{
+      aggregate_id: string;
+      payload: Record<string, unknown>;
+    }>(
+      `select aggregate_id, payload
+         from outbox.events
+        where tenant_id = $1 and event_type = 'booking.approval_required'
+        order by aggregate_id asc`,
       [base.tenantId],
     );
-    expect(approvalEmits.rows[0].n).toBe(0);
-
-    // Cross-check the existing scenario's invariant — total outbox empty
-    // for this tenant (sanity that we didn't accidentally smuggle a
-    // location_changed / cost_changed through). All emits live in the
-    // same per-occurrence block.
-    const totalEmits = await pool.query<{ n: number }>(
-      `select count(*)::int as n from outbox.events where tenant_id = $1`,
-      [base.tenantId],
-    );
-    expect(totalEmits.rows[0].n).toBe(0);
+    expect(approvalEmits.rows).toHaveLength(2);
+    for (const row of approvalEmits.rows) {
+      expect(flippingBookingIds.has(row.aggregate_id)).toBe(true);
+      expect(row.payload.booking_id).toBe(row.aggregate_id);
+      expect(row.payload.approver_person_ids).toEqual([base.approverPersonId]);
+      expect(row.payload.approver_team_ids).toEqual([]);
+      expect(typeof row.payload.chain_id).toBe('string');
+    }
+    // Distinct chain_ids per occurrence — each flip gets its own chain.
+    const chainIds = new Set(approvalEmits.rows.map((r) => r.payload.chain_id as string));
+    expect(chainIds.size).toBe(2);
   });
 });

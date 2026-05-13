@@ -876,9 +876,12 @@ export class ReservationService {
     // error codes than the RPC's defense-in-depth raises.
     //
     // Citation discipline: mirrors editSlot's full RPC call sequence
-    // below — DI guard → assembler call (kind='one') → B.4.A.5 gate →
-    // idempotency-key build → edit_booking RPC → 23P01 GiST mapping →
-    // visitor cascade emit. Codex NIT-1 (2026-05-12): line-numbered
+    // below — DI guard → assembler call (kind='one') → idempotency-key
+    // build → edit_booking RPC → 23P01 GiST mapping → visitor cascade
+    // emit. (The B.4.A.5 pre-flight gate that used to sit between the
+    // assembler call and the idempotency-key build was lifted in sub-
+    // step H once notification dispatch shipped.) Codex NIT-1 (2026-05-12):
+    // line-numbered
     // citations were drifting per commit; generalised to symbol/section
     // references so future edits don't silently break the citation
     // contract. Symbols + section names below are stable; line numbers
@@ -988,26 +991,14 @@ export class ReservationService {
       },
     });
 
-    // B.4.A.5 sequencing gate. Mirrors editSlot's gate below — same
-    // predicate, same 422 + booking.edit_requires_notification_dispatch
-    // code. This is the 4th producer-side emit site documented at
-    // docs/follow-ups/b4-followups.md (alongside create / multi-room /
-    // editSlot). Lift mechanism when B.4.A.5 ships notification
-    // dispatch: delete the gate predicate + optionally retire the
-    // error code (or leave registered for defense-in-depth across all
-    // four sites). Codex NIT-1 (2026-05-12): line-number citation
-    // generalised — predicate symbol `wouldEmitApprovalRequired` is
-    // stable, line numbers drift.
-    const wouldEmitApprovalRequired =
-      plan.approval.new_outcome === 'require_approval' &&
-      (plan.approval.old_outcome !== 'require_approval' ||
-        plan.approval.chain_config_changed === true);
-    if (wouldEmitApprovalRequired) {
-      throw new AppError('booking.edit_requires_notification_dispatch', 422, {
-        detail:
-          "This edit would change approval requirements. Ask the rooms admin to remove approval from this room, or pick a different room.",
-      });
-    }
+    // B.4.A.5 sub-step H (2026-05-13) lifted the controller-vs-notification
+    // gate here: notification dispatch is shipped (atomic inbox INSERT in
+    // 00393/00394 + outbox handler + inbox surface + admin overrides), so
+    // approval-flipping edits no longer need pre-flight refusal. The error
+    // code `booking.edit_requires_notification_dispatch` is intentionally
+    // retained in the registry for defense-in-depth — any future regression
+    // that re-introduces the gate must reuse it. Sibling lifts: editSlot
+    // below + editScope in assemble-edit-plan.service.ts.
 
     // B.4 Step 2F.3 — op discriminator. The 3rd arg ('one') namespaces
     // the idempotency key so a frontend that buggily reuses a
@@ -1324,60 +1315,12 @@ export class ReservationService {
       },
     });
 
-    // B.4.A.5 sequencing gate. Surface 422 BEFORE the RPC call to:
-    //   (a) avoid producing the very `booking.approval_required` event
-    //       this gate is trying to suppress (the RPC commits chain rows +
-    //       emits in one tx — even if we drop the result, the row + emit
-    //       stand);
-    //   (b) save a DB round-trip on the failure path;
-    //   (c) keep `command_operations` clean of probably-doomed attempts.
-    // The gate fires when the plan would route through §3.6.5 row 2/7/8:
-    //   row 2: allow → require_approval                            (any chain)
-    //   row 7: require_approval → require_approval, diff config    (pending)
-    //   row 8: require_approval → require_approval, diff config    (terminal_approved — DANGEROUS GAP)
-    // Combined predicate: new_outcome=require_approval AND
-    //   (old_outcome ≠ require_approval OR chain_config_changed).
-    // Same-config preservations (row 6) and allow→allow / approve→allow
-    // pass through unaffected.
-    //
-    // self-review I-CODE-1 (2026-05-12): the gate has 4 emit sites in
-    // the §3.6.5 decision table. Three are covered above:
-    //   row 2: allow → require_approval                   (any chain)
-    //   row 7: require_approval → require_approval, diff config (pending)
-    //   row 8: require_approval → require_approval, diff config (terminal_approved)
-    // The 4th — the defensive fall-through at 00364:551 — fires when
-    //   v_old_outcome=require_approval AND v_new_outcome=require_approval
-    //   AND v_approval_state='none' (treated as Row 2 insert).
-    // For the TS gate to MISS that 4th site requires the resolver chain
-    // already exists in the DB (loadCurrentApprovalChain returns non-
-    // null → old_outcome='require_approval') AND the existing chain
-    // config equals the new resolver chain (chain_config_changed=false)
-    // AND the approval row is in state='none'. That's a stale chain
-    // row in 'none' with matching config — an inconsistency
-    // create_booking_with_attach_plan SHOULDN'T produce (chains are
-    // inserted with state='pending'), but the RPC defends against it.
-    // The unreachable-in-practice argument is sound; documentation is
-    // the right level of fix here. Don't extend the predicate — the
-    // false-negative gap requires the DB to already be inconsistent,
-    // and the RPC catches the resulting emit anyway. If the inconsistent
-    // state ever shows up in production, lift this comment + extend the
-    // predicate to read approvals.state and treat 'none' like absent.
-    const wouldEmitApprovalRequired =
-      plan.approval.new_outcome === 'require_approval' &&
-      (plan.approval.old_outcome !== 'require_approval' ||
-        plan.approval.chain_config_changed === true);
-    if (wouldEmitApprovalRequired) {
-      // self-review I1: 422 (not 503). This is a platform-state
-      // limitation, not a server outage. 503 routed to class 'server'
-      // with a retry-loop-bait toast; 422 routes to class 'validation'
-      // with the right inline-error UX. STATUS_BY_CODE[
-      //   'booking.edit_requires_notification_dispatch'] mirrors this
-      // for any future RPC-side raise of the same code.
-      throw new AppError('booking.edit_requires_notification_dispatch', 422, {
-        detail:
-          "This edit would change approval requirements. Ask the rooms admin to remove approval from this room, or pick a different room.",
-      });
-    }
+    // B.4.A.5 sub-step H (2026-05-13) lifted the controller-vs-notification
+    // gate here. Same lift as editOne above — the notification pipeline
+    // (RPC inbox INSERT + outbox handler + inbox UI + admin overrides) is
+    // shipped, so approval-flipping edits flow through to the RPC. The
+    // error code `booking.edit_requires_notification_dispatch` stays
+    // registered for defense-in-depth.
 
     // B.4 Step 2F.3 — op discriminator (see editOne above; same rationale).
     const idempotencyKey = buildEditBookingIdempotencyKey(bookingId, clientRequestId, 'slot');
