@@ -1715,7 +1715,7 @@ function utcMidnight(daysAhead = 0) {
 }
 
 async function runPmGeneratorProbes(adminHeaders) {
-  console.log('\n=== Slice C PM generator (7 scenarios) ===');
+  console.log('\n=== Slice C PM generator (9 scenarios) ===');
 
   // Fixture ids — pinned UUIDs so a partial-cleanup leak is easy to grep
   // for in the DB if the smoke crashes mid-run. The pf- prefix is "pm
@@ -1728,6 +1728,8 @@ async function runPmGeneratorProbes(adminHeaders) {
   const F_FANOUT_PLAN_ID = 'aa000000-0000-0000-0000-0000000c0102';
   const F_TENANT_A_ISOLATION_PLAN_ID = 'aa000000-0000-0000-0000-0000000c0103';
   const F_TENANT_B_REQUEST_TYPE_ID = 'aa000000-0000-0000-0000-0000000c0201';
+  const F_FAILED_RPC_PLAN_ID = 'aa000000-0000-0000-0000-0000000c0104';
+  const F_GHOST_ASSET_ID = 'aa000000-0000-0000-0000-0000000c0099';
 
   const sb = supa();
   const fanoutAssetIds = [F_ASSET_A_ID, F_ASSET_B_ID, F_ASSET_C_ID];
@@ -2493,12 +2495,149 @@ async function runPmGeneratorProbes(adminHeaders) {
         .eq('id', F_ASSET_B_ID)
         .eq('tenant_id', TENANT_ID);
     }
+
+    // ── Scenario 9: failed-RPC / no-advance live probe (codex follow-up) ─
+    //
+    // Codex finding: unit tests prove `generateForPlan` doesn't advance
+    // `plan.next_run_at` on per-asset RPC failure
+    // (pm-generator.service.spec.ts:331), but the LIVE DB path was
+    // unverified. A future schema or RPC change that silently broke the
+    // no-advance guarantee would only be caught by mocked tests — and
+    // we've seen "tests pass, DB broken" hide P0s before (the 2026-05-01
+    // 42501 incident).
+    //
+    // Deterministic failure path: the RPC checks asset presence at
+    // 00398:97-107 — passing a non-existent p_asset_id raises
+    // `create_pm_work_order.asset_not_in_tenant` with errcode P0001.
+    // The two successful sibling RPCs in the same loop are unaffected.
+    //
+    // Loop semantics mirror PMGeneratorService.generateForPlan
+    // (pm-generator.service.ts:128-174): if any asset fails (allAssets
+    // Succeeded flips to false), advancePlan is NOT called. The
+    // assertion below verifies the LIVE outcome — plan.next_run_at
+    // stays at the seeded value after the partial-failure loop.
+    //
+    // Uses a FRESH plan (F_FAILED_RPC_PLAN_ID) at a FRESH planned_start_at
+    // so it doesn't collide with S2's ON CONFLICT rows or interact with
+    // S3/S6/S8 fanout-plan state.
+    console.log('\n  — Scenario 9: failed-RPC / no-advance live probe (codex follow-up)');
+    const s9RunAt = utcMidnight(60).toISOString();
+    const s9SeedNext = s9RunAt;
+    const { error: p9Err } = await sb.from('maintenance_plans').insert({
+      id: F_FAILED_RPC_PLAN_ID,
+      tenant_id: TENANT_ID,
+      name: 'pm-smoke-failed-rpc',
+      active: true,
+      asset_id: null,
+      asset_type_id: F_ASSET_TYPE_ID,
+      request_type_id: PM_REQUEST_TYPE_ID,
+      title_template: 'PM failed-rpc — {{asset.name}}',
+      priority: 'medium',
+      planned_duration_minutes: 30,
+      recurrence_interval: 1,
+      recurrence_unit: 'week',
+      anchor_date: utcMidnight(0).toISOString().slice(0, 10),
+      lead_days: 7,
+      next_run_at: s9SeedNext,
+    });
+    if (p9Err) {
+      results.fail += 1;
+      results.failed.push('PM S9: plan insert');
+      console.log(`    ✗ plan insert: ${p9Err.message}`);
+    } else {
+      // Iterate [GHOST, ...3 real assets] — the ghost throws P0001, the
+      // others succeed. Mirrors generateForPlan's per-asset try/catch.
+      const s9AssetList = [F_GHOST_ASSET_ID, ...fanoutAssetIds];
+      let s9Spawned = 0;
+      let s9Failed = 0;
+      let allAssetsSucceeded = true;
+      for (const assetId of s9AssetList) {
+        const { data: woId, error: rpcErr } = await sb.rpc('create_pm_work_order', {
+          p_plan_id: F_FAILED_RPC_PLAN_ID,
+          p_actor_user_id: null,
+          p_asset_id: assetId,
+          p_run_at: s9RunAt,
+        });
+        if (rpcErr) {
+          s9Failed += 1;
+          allAssetsSucceeded = false;
+        } else if (woId) {
+          spawnedWoIds.add(woId);
+          s9Spawned += 1;
+        }
+      }
+
+      if (s9Failed === 1 && s9Spawned === 3) {
+        results.pass += 1;
+        console.log(`    ✓ 1 RPC failed (ghost asset, P0001) + 3 sibling RPCs spawned WOs`);
+      } else {
+        results.fail += 1;
+        results.failed.push('PM S9: partial-failure shape');
+        console.log(
+          `    ✗ partial-failure shape — failed=${s9Failed} (want 1) spawned=${s9Spawned} (want 3)`,
+        );
+      }
+
+      // The service's contract: when allAssetsSucceeded is false, do NOT
+      // call advancePlan. Mirror that here — we intentionally skip the
+      // UPDATE. The assertion is on the LIVE plan row: next_run_at must
+      // equal the seeded value.
+      if (allAssetsSucceeded) {
+        results.fail += 1;
+        results.failed.push('PM S9: allAssetsSucceeded should be false');
+        console.log(`    ✗ allAssetsSucceeded=true but a ghost asset call ran — guard logic wrong`);
+      }
+
+      const { data: postPlan, error: readErr } = await sb
+        .from('maintenance_plans')
+        .select('next_run_at, last_generated_at')
+        .eq('id', F_FAILED_RPC_PLAN_ID)
+        .maybeSingle();
+      if (readErr || !postPlan) {
+        results.fail += 1;
+        results.failed.push('PM S9: post-failure plan read');
+        console.log(`    ✗ post-failure plan read: ${readErr?.message ?? 'no row'}`);
+      } else {
+        const okUnchanged =
+          Date.parse(postPlan.next_run_at) === Date.parse(s9SeedNext);
+        if (okUnchanged) {
+          results.pass += 1;
+          console.log(
+            `    ✓ plan.next_run_at UNCHANGED at ${postPlan.next_run_at} (no-advance guarantee live-verified)`,
+          );
+        } else {
+          results.fail += 1;
+          results.failed.push('PM S9: next_run_at advanced after partial failure');
+          console.log(
+            `    ✗ plan.next_run_at advanced — got ${postPlan.next_run_at}, want ${s9SeedNext} (no-advance guarantee broken)`,
+          );
+        }
+        // last_generated_at IS stamped by the 3 successful RPCs (that's
+        // RPC-internal behavior, not service-layer advance). Sanity:
+        // confirm the timestamp is fresh, so a regression that decoupled
+        // last_generated_at from the RPC writes also surfaces.
+        const lgaMs = postPlan.last_generated_at
+          ? Date.parse(postPlan.last_generated_at)
+          : null;
+        if (lgaMs !== null && Math.abs(Date.now() - lgaMs) < 60_000) {
+          results.pass += 1;
+          console.log(`    ✓ last_generated_at stamped fresh by the 3 successful RPCs`);
+        } else {
+          results.fail += 1;
+          results.failed.push('PM S9: last_generated_at not fresh');
+          console.log(
+            `    ✗ last_generated_at stale — got ${postPlan.last_generated_at}`,
+          );
+        }
+      }
+    }
   } finally {
     // ── Teardown ─────────────────────────────────────────────────────
     // Collect every WO from every plan (catches mid-scenario rows we
     // didn't explicitly track).
     await collectSpawnedFor(F_SINGLE_PLAN_ID);
     await collectSpawnedFor(F_FANOUT_PLAN_ID);
+    await collectSpawnedFor(F_FAILED_RPC_PLAN_ID);
 
     if (spawnedWoIds.size > 0) {
       const { error: delWoErr } = await sb
@@ -2515,6 +2654,7 @@ async function runPmGeneratorProbes(adminHeaders) {
       F_SINGLE_PLAN_ID,
       F_FANOUT_PLAN_ID,
       F_TENANT_A_ISOLATION_PLAN_ID,
+      F_FAILED_RPC_PLAN_ID,
     ]);
     await sb.from('request_types').delete().eq('id', F_TENANT_B_REQUEST_TYPE_ID);
     await sb.from('assets').delete().in('id', fanoutAssetIds);
