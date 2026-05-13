@@ -21,6 +21,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import { CheckIcon } from 'lucide-react';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
 import {
   SettingsPageHeader,
@@ -426,8 +434,9 @@ function TemplateGroup({ plan, save }: { plan: MaintenancePlan; save: SaveFn }) 
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="low">Low</SelectItem>
-            <SelectItem value="normal">Normal</SelectItem>
+            <SelectItem value="medium">Medium</SelectItem>
             <SelectItem value="high">High</SelectItem>
+            <SelectItem value="urgent">Urgent</SelectItem>
             <SelectItem value="critical">Critical</SelectItem>
           </SelectContent>
         </Select>
@@ -595,12 +604,72 @@ interface AssetPickerProps {
   onSave: (next: string | null) => void;
 }
 
+interface PickerListProps {
+  items: ReadonlyArray<{ id: string; label: string; sublabel?: string }>;
+  isLoading: boolean;
+  value: string;
+  onChange: (next: string) => void;
+  noun: string;
+}
+
+function PickerCommandList({ items, isLoading, value, onChange, noun }: PickerListProps) {
+  return (
+    <Command shouldFilter={true} className="rounded-md border">
+      <CommandInput
+        placeholder={isLoading ? 'Loading…' : `Search ${noun}…`}
+        disabled={isLoading}
+      />
+      <CommandList className="max-h-[320px]">
+        <CommandEmpty>No {noun} found.</CommandEmpty>
+        {items.map((item) => {
+          const isSelected = item.id === value;
+          return (
+            <CommandItem
+              key={item.id}
+              value={`${item.label} ${item.sublabel ?? ''}`}
+              onSelect={() => onChange(item.id)}
+              className="py-2"
+            >
+              <div className="flex flex-1 items-center justify-between gap-2 min-w-0">
+                <div className="min-w-0">
+                  <div className="truncate text-sm">{item.label}</div>
+                  {item.sublabel ? (
+                    <div className="truncate text-xs text-muted-foreground">
+                      {item.sublabel}
+                    </div>
+                  ) : null}
+                </div>
+                {isSelected ? (
+                  <CheckIcon className="h-4 w-4 text-foreground shrink-0" />
+                ) : null}
+              </div>
+            </CommandItem>
+          );
+        })}
+      </CommandList>
+    </Command>
+  );
+}
+
 function AssetPickerDialog({ open, onOpenChange, value, onSave }: AssetPickerProps) {
   const { data: assets, isLoading } = useAssets();
   const [current, setCurrent] = useState<string>(value ?? '');
   useEffect(() => {
     if (open) setCurrent(value ?? '');
   }, [open, value]);
+
+  const items = useMemo(
+    () =>
+      (assets ?? [])
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((a) => ({
+          id: a.id,
+          label: a.name,
+          sublabel: a.asset_type?.name ?? undefined,
+        })),
+    [assets],
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -614,18 +683,13 @@ function AssetPickerDialog({ open, onOpenChange, value, onSave }: AssetPickerPro
         <FieldGroup>
           <Field>
             <FieldLabel htmlFor="mp-asset-pick">Asset</FieldLabel>
-            <Select value={current} onValueChange={(v) => setCurrent(v ?? '')} disabled={isLoading}>
-              <SelectTrigger id="mp-asset-pick">
-                <SelectValue placeholder={isLoading ? 'Loading…' : 'Pick an asset…'} />
-              </SelectTrigger>
-              <SelectContent>
-                {(assets ?? []).map((a) => (
-                  <SelectItem key={a.id} value={a.id}>
-                    {a.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <PickerCommandList
+              items={items}
+              isLoading={isLoading}
+              value={current}
+              onChange={setCurrent}
+              noun="asset"
+            />
             <FieldDescription>
               Only one WO per cycle will be generated.
             </FieldDescription>
@@ -663,6 +727,19 @@ function AssetTypePickerDialog({
     if (open) setCurrent(value ?? '');
   }, [open, value]);
 
+  const items = useMemo(
+    () =>
+      (assetTypes ?? [])
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((t) => ({
+          id: t.id,
+          label: t.name,
+          sublabel: t.domain ?? undefined,
+        })),
+    [assetTypes],
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[520px]">
@@ -676,18 +753,13 @@ function AssetTypePickerDialog({
         <FieldGroup>
           <Field>
             <FieldLabel htmlFor="mp-type-pick">Asset type</FieldLabel>
-            <Select value={current} onValueChange={(v) => setCurrent(v ?? '')} disabled={isLoading}>
-              <SelectTrigger id="mp-type-pick">
-                <SelectValue placeholder={isLoading ? 'Loading…' : 'Pick a type…'} />
-              </SelectTrigger>
-              <SelectContent>
-                {(assetTypes ?? []).map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <PickerCommandList
+              items={items}
+              isLoading={isLoading}
+              value={current}
+              onChange={setCurrent}
+              noun="asset type"
+            />
           </Field>
         </FieldGroup>
         <DialogFooter>
@@ -722,11 +794,16 @@ function RequestTypePickerDialog({
     if (open) setCurrent(value ?? '');
   }, [open, value]);
 
-  const sorted = useMemo(
+  const items = useMemo(
     () =>
       (requestTypes ?? [])
         .slice()
-        .sort((a, b) => a.name.localeCompare(b.name)),
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((rt) => ({
+          id: rt.id,
+          label: rt.name,
+          sublabel: rt.domain ?? undefined,
+        })),
     [requestTypes],
   );
 
@@ -742,18 +819,13 @@ function RequestTypePickerDialog({
         <FieldGroup>
           <Field>
             <FieldLabel htmlFor="mp-rt-pick">Request type</FieldLabel>
-            <Select value={current} onValueChange={(v) => setCurrent(v ?? '')} disabled={isLoading}>
-              <SelectTrigger id="mp-rt-pick">
-                <SelectValue placeholder={isLoading ? 'Loading…' : 'Pick a request type…'} />
-              </SelectTrigger>
-              <SelectContent>
-                {sorted.map((rt) => (
-                  <SelectItem key={rt.id} value={rt.id}>
-                    {rt.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <PickerCommandList
+              items={items}
+              isLoading={isLoading}
+              value={current}
+              onChange={setCurrent}
+              noun="request type"
+            />
           </Field>
         </FieldGroup>
         <DialogFooter>

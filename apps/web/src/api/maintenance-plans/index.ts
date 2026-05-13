@@ -17,7 +17,12 @@ import { withErrorHandling } from '@/lib/errors';
  */
 
 export type RecurrenceUnit = 'day' | 'week' | 'month' | 'year';
-export type MaintenancePlanPriority = 'low' | 'normal' | 'high' | 'critical';
+export type MaintenancePlanPriority =
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'critical'
+  | 'urgent';
 
 export interface MaintenancePlan {
   id: string;

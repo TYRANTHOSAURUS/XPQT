@@ -52,7 +52,7 @@ const SAMPLE_PLAN = {
   location_id: null,
   title_template: '{{asset.name}} filter swap',
   description_template: null,
-  priority: 'normal' as const,
+  priority: 'medium' as const,
   planned_duration_minutes: 60,
   recurrence_interval: 1,
   recurrence_unit: 'month' as const,
