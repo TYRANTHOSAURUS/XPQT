@@ -31,7 +31,8 @@ type RpcResult = { data: unknown; error: unknown };
 interface Fake {
   tenants: Array<{ id: string; status: string }>;
   duePlansByTenant: Record<string, DuePlanRow[]>;
-  assetsByType: Record<string, Array<{ id: string }>>;
+  assetsByType: Record<string, Array<{ id: string; lifecycle_state?: string }>>;
+  assetsById: Record<string, { id: string; tenant_id: string; lifecycle_state: string }>;
   rpcResultsForPlan: Record<string, Array<{ data: unknown; error: unknown }>>;
   rpcCalls: Array<{ p_plan_id: string; p_asset_id: string; p_run_at: string }>;
   updatedNextRunAtByPlan: Record<string, string>;
@@ -129,34 +130,69 @@ function plansChain(fake: Fake) {
 
 function assetsChain(fake: Fake) {
   const filters: Record<string, unknown> = {};
+  const inFilters: Record<string, ReadonlyArray<unknown>> = {};
   const chain: Record<string, unknown> = {};
   chain.select = () => chain;
   chain.eq = (col: string, val: unknown) => {
     filters[col] = val;
     return chain;
   };
+  chain.in = (col: string, vals: ReadonlyArray<unknown>) => {
+    inFilters[col] = vals;
+    return chain;
+  };
+  chain.maybeSingle = () => {
+    const id = filters.id as string | undefined;
+    const tenantId = filters.tenant_id as string | undefined;
+    if (!id || !tenantId) {
+      return Promise.resolve({ data: null, error: null });
+    }
+    const single = fake.assetsById[id];
+    if (!single || single.tenant_id !== tenantId) {
+      return Promise.resolve({ data: null, error: null });
+    }
+    return Promise.resolve({
+      data: { id: single.id, lifecycle_state: single.lifecycle_state },
+      error: null,
+    });
+  };
   chain.order = () => {
     const typeId = filters.asset_type_id as string | undefined;
-    const list = (typeId && fake.assetsByType[typeId]) || [];
+    const allowed = inFilters.lifecycle_state as ReadonlyArray<string> | undefined;
+    let list = (typeId && fake.assetsByType[typeId]) || [];
+    if (allowed && allowed.length > 0) {
+      list = list.filter((row) => {
+        const lifecycle = (row as { lifecycle_state?: string }).lifecycle_state;
+        if (lifecycle === undefined) return true;
+        return allowed.includes(lifecycle);
+      });
+    }
     return Promise.resolve({ data: list, error: null });
   };
   return chain;
 }
 
 function makeFake(overrides: Partial<Fake> = {}): Fake {
-  return {
+  const base: Fake = {
     tenants: [
       { id: TENANT_A, status: 'active' },
       { id: TENANT_B, status: 'active' },
     ],
     duePlansByTenant: {},
     assetsByType: {},
+    assetsById: {
+      [ASSET_ID]: { id: ASSET_ID, tenant_id: TENANT_A, lifecycle_state: 'active' },
+    },
     rpcResultsForPlan: {},
     rpcCalls: [],
     updatedNextRunAtByPlan: {},
     failPlanIds: new Set(),
-    ...overrides,
   };
+  const merged: Fake = { ...base, ...overrides };
+  if (overrides.assetsById) {
+    merged.assetsById = { ...base.assetsById, ...overrides.assetsById };
+  }
+  return merged;
 }
 
 describe('PMGeneratorService', () => {
@@ -188,6 +224,43 @@ describe('PMGeneratorService', () => {
         makePlan({ asset_id: null, asset_type_id: ASSET_TYPE_ID }),
       );
       expect(targets).toEqual([]);
+    });
+
+    it('skips a single-asset plan whose asset is retired (full-review I3)', async () => {
+      const fake = makeFake({
+        assetsById: {
+          [ASSET_ID]: { id: ASSET_ID, tenant_id: TENANT_A, lifecycle_state: 'retired' },
+        },
+      });
+      const svc = makeService(fake);
+      const targets = await svc.resolveTargets(makePlan());
+      expect(targets).toEqual([]);
+    });
+
+    it('skips a single-asset plan whose asset is disposed (full-review I3)', async () => {
+      const fake = makeFake({
+        assetsById: {
+          [ASSET_ID]: { id: ASSET_ID, tenant_id: TENANT_A, lifecycle_state: 'disposed' },
+        },
+      });
+      const svc = makeService(fake);
+      const targets = await svc.resolveTargets(makePlan());
+      expect(targets).toEqual([]);
+    });
+
+    it('allows lifecycle_state=maintenance for single-asset plans (in-service)', async () => {
+      const fake = makeFake({
+        assetsById: {
+          [ASSET_ID]: {
+            id: ASSET_ID,
+            tenant_id: TENANT_A,
+            lifecycle_state: 'maintenance',
+          },
+        },
+      });
+      const svc = makeService(fake);
+      const targets = await svc.resolveTargets(makePlan());
+      expect(targets).toEqual([ASSET_ID]);
     });
 
     it('throws when a row has neither asset_id nor asset_type_id (mutex defense-in-depth)', async () => {

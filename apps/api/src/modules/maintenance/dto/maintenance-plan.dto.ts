@@ -22,7 +22,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const ANCHOR_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const RECURRENCE_UNIT = z.enum(['day', 'week', 'month', 'year']);
-const PRIORITY = z.enum(['low', 'normal', 'high', 'critical']);
+const PRIORITY = z.enum(['low', 'medium', 'high', 'critical', 'urgent']);
 const UUID = z.string().regex(UUID_RE, { message: 'must be a uuid' });
 const ANCHOR_DATE = z.string().regex(ANCHOR_DATE_RE, {
   message: 'must be a YYYY-MM-DD date',

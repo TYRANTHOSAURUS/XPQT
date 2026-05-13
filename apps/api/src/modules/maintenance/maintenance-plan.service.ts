@@ -31,7 +31,7 @@ export interface MaintenancePlanRow {
   location_id: string | null;
   title_template: string;
   description_template: string | null;
-  priority: 'low' | 'normal' | 'high' | 'critical';
+  priority: 'low' | 'medium' | 'high' | 'critical' | 'urgent';
   planned_duration_minutes: number | null;
   recurrence_interval: number;
   recurrence_unit: RecurrenceUnit;
@@ -156,7 +156,7 @@ export class MaintenancePlanService {
       location_id: dto.location_id ?? null,
       title_template: dto.title_template,
       description_template: dto.description_template ?? null,
-      priority: dto.priority ?? 'normal',
+      priority: dto.priority ?? 'medium',
       planned_duration_minutes: dto.planned_duration_minutes ?? 60,
       recurrence_interval: dto.recurrence_interval,
       recurrence_unit: dto.recurrence_unit,

@@ -146,24 +146,50 @@ export class PMGeneratorService {
   /**
    * Resolve a plan's target asset_id list.
    *
-   * - Single-asset plan: returns [plan.asset_id].
-   * - Asset-type plan: returns every public.assets row in the tenant
-   *   matching asset_type_id (active filter applied if the column exists;
-   *   defensive fall-through to no-active-filter if not — keeps the
-   *   probe schema-agnostic across asset-table migrations).
+   * - Single-asset plan: returns [plan.asset_id] only when the asset is
+   *   currently in service (lifecycle_state in 'active' or
+   *   'maintenance'). A retired/disposed/procured asset returns []
+   *   silently — the plan stays scheduled, the cycle skips it, the
+   *   next sweep re-evaluates.
+   * - Asset-type plan: returns every in-service asset of that type in
+   *   the tenant. Retired/disposed/procured assets are filtered out so
+   *   fan-out doesn't spawn WOs on assets that aren't PM targets.
    *
-   * The mutex on the plan row (00386 CHECK constraint) guarantees
-   * exactly one of the two columns is non-null; the defense-in-depth
-   * throw protects against rows hand-edited past the CHECK.
+   * Lifecycle values from 00005:33 — 'procured' / 'active' /
+   * 'maintenance' / 'retired' / 'disposed'. 'active' + 'maintenance'
+   * are the in-service states; 'procured' isn't deployed yet,
+   * 'retired'/'disposed' are gone. The RPC enforces the same gate as a
+   * race-condition backstop (00397).
    */
+  private static readonly IN_SERVICE_LIFECYCLE = ['active', 'maintenance'];
+
   async resolveTargets(plan: DuePlanRow): Promise<string[]> {
-    if (plan.asset_id) return [plan.asset_id];
+    if (plan.asset_id) {
+      const { data, error } = await this.supabase.admin
+        .from('assets')
+        .select('id, lifecycle_state')
+        .eq('tenant_id', plan.tenant_id)
+        .eq('id', plan.asset_id)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return [];
+      if (!PMGeneratorService.IN_SERVICE_LIFECYCLE.includes(
+        (data as { lifecycle_state: string }).lifecycle_state,
+      )) {
+        this.log.warn(
+          `pm-generator.asset_not_in_service plan=${plan.id} asset=${plan.asset_id} lifecycle=${(data as { lifecycle_state: string }).lifecycle_state}`,
+        );
+        return [];
+      }
+      return [plan.asset_id];
+    }
     if (plan.asset_type_id) {
       const { data, error } = await this.supabase.admin
         .from('assets')
         .select('id')
         .eq('tenant_id', plan.tenant_id)
         .eq('asset_type_id', plan.asset_type_id)
+        .in('lifecycle_state', PMGeneratorService.IN_SERVICE_LIFECYCLE)
         .order('id', { ascending: true });
       if (error) throw error;
       return ((data ?? []) as Array<{ id: string }>).map((r) => r.id);

@@ -26,7 +26,7 @@ function makeRow(overrides: Partial<MaintenancePlanRow> = {}): MaintenancePlanRo
     location_id: null,
     title_template: 'PM check for {{asset.name}}',
     description_template: null,
-    priority: 'normal',
+    priority: 'medium',
     planned_duration_minutes: 60,
     recurrence_interval: 1,
     recurrence_unit: 'month',
@@ -286,7 +286,7 @@ describe('MaintenancePlanService', () => {
       expect(captured.updated_by).toBe(USER_ID);
       expect(captured.next_run_at).toBe('2026-06-01T09:00:00.000Z');
       expect(captured.lead_days).toBe(7);
-      expect(captured.priority).toBe('normal');
+      expect(captured.priority).toBe('medium');
       expect(captured.planned_duration_minutes).toBe(60);
     });
 
