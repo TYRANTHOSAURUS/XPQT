@@ -1868,12 +1868,13 @@ async function runPmGeneratorProbes(adminHeaders) {
           }
         }
 
-        // ── full-review C2: WO has full side-effect parity ────────────────
-        // After v2 (00397), a PM WO must have non-null module_number,
-        // non-null workflow_id + sla_id (inherited from request_type), a
-        // routing_decisions row with entity_kind='work_order' and
-        // chosen_by='unassigned', and sla_timers rows (response +
-        // resolution per the SLA policy).
+        // ── codex remediation: WO side-effect parity (v3 / 00398) ─────────
+        // After v3 (00398), a PM WO must have non-null module_number,
+        // non-null sla_id (inherited from request_type), and
+        // workflow_id MUST BE NULL (WorkflowStartHandler reads
+        // tickets.workflow_id only — stamping work_orders.workflow_id
+        // silently no-ops the workflow in v1). Phase 2 polymorphic
+        // handlers will revisit.
         const { data: sideRow, error: sideErr } = await sb
           .from('work_orders')
           .select('id, module_number, workflow_id, sla_id, sla_response_due_at, sla_resolution_due_at')
@@ -1885,18 +1886,18 @@ async function runPmGeneratorProbes(adminHeaders) {
           console.log(`    ✗ C2 side-effect WO read: ${sideErr?.message ?? 'no row'}`);
         } else {
           const okMod = typeof sideRow.module_number === 'number' && sideRow.module_number > 0;
-          const okWf = sideRow.workflow_id !== null;
+          const okWfNull = sideRow.workflow_id === null;
           const okSla = sideRow.sla_id !== null;
-          if (okMod && okWf && okSla) {
+          if (okMod && okWfNull && okSla) {
             results.pass += 1;
             console.log(
-              `    ✓ C2 — module_number=${sideRow.module_number}, workflow_id+sla_id inherited from request_type`,
+              `    ✓ codex — module_number=${sideRow.module_number}, workflow_id=NULL (honest), sla_id inherited from request_type`,
             );
           } else {
             results.fail += 1;
-            results.failed.push('PM S1 C2: workflow/sla/module_number missing');
+            results.failed.push('PM S1 codex: workflow_id should be NULL, sla_id+module_number set');
             console.log(
-              `    ✗ C2 shape — module=${sideRow.module_number} wf=${sideRow.workflow_id} sla=${sideRow.sla_id}`,
+              `    ✗ codex shape — module=${sideRow.module_number} wf=${sideRow.workflow_id} (want NULL) sla=${sideRow.sla_id}`,
             );
           }
         }
@@ -1951,17 +1952,18 @@ async function runPmGeneratorProbes(adminHeaders) {
           const allWorkOrder = timerRows.every(
             (t) => t.entity_kind === 'work_order' && t.work_order_id === s1Wo,
           );
+          const allRecomputePending = timerRows.every((t) => t.recompute_pending === true);
           const allPolymorphic =
             allWorkOrder && timerRows.every((t) => t.due_at !== null && t.paused === false);
-          if (allPolymorphic) {
+          if (allPolymorphic && allRecomputePending) {
             results.pass += 1;
             console.log(
-              `    ✓ C2 — ${timerRows.length} sla_timers (${timerRows.map((t) => t.timer_type).join('+')}, all entity_kind=work_order)`,
+              `    ✓ codex — ${timerRows.length} sla_timers (${timerRows.map((t) => t.timer_type).join('+')}, entity_kind=work_order, recompute_pending=true for forward-compat)`,
             );
           } else {
             results.fail += 1;
-            results.failed.push('PM S1 C2: sla_timers shape');
-            console.log(`    ✗ C2 sla_timers shape — ${JSON.stringify(timerRows)}`);
+            results.failed.push('PM S1 codex: sla_timers shape');
+            console.log(`    ✗ codex sla_timers shape — ${JSON.stringify(timerRows)}`);
           }
         }
       }
