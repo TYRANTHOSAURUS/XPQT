@@ -5,7 +5,7 @@ import {
   UPDATE_TICKET_ALLOWED_FIELD_SET,
   type KnownErrorCode,
 } from '@prequest/shared';
-import { AppError, mapRpcErrorToAppError } from '../../common/errors';
+import { AppError, AppErrors, mapRpcErrorToAppError } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { assertTenantOwned } from '../../common/tenant-validation';
@@ -156,6 +156,69 @@ export class WorkflowEngineService {
    */
   private projectLegacyEntityType(kind: WorkflowEntityKind): string {
     return kind === 'case' ? 'ticket' : kind;
+  }
+
+  /**
+   * Phase 1.5 sub-step 6.A — read the polymorphic (entity_kind, entityId) pair
+   * off a `workflow_instances` row. Used by the `approval` executor to write
+   * the right (target_entity_type, target_entity_id) pair on each
+   * `approvals` row instance, replacing the legacy `entityKind='case'` +
+   * `ticketId` hardcode.
+   *
+   * `case_id` is preferred over `ticket_id` when entity_kind='case' —
+   * `case_id` is the post-00238 contract column; `ticket_id` is the legacy
+   * NULL-able column kept for backward compat (workflow_instances rows from
+   * before 00369 may still carry the value there).
+   *
+   * Tenant-filtered via the ambient `TenantContext` — same guard shape as
+   * every other admin read in this service. Throws
+   * `workflow.advance_failed` if the row is missing OR the polymorphic
+   * entityId is null on a row we found (shouldn't happen given the
+   * validate_workflow_instance_polymorphism trigger at 00369:399-418, but
+   * defensive — booking_id is ON DELETE SET NULL so a booking row deleted
+   * out from under an active workflow_instance is reachable).
+   *
+   * Spec: docs/superpowers/specs/phase-1.5-visual-approval-workflow-plan.md §2.4 + §3.3.
+   */
+  async getEntityKindForInstance(
+    instanceId: string,
+  ): Promise<{ kind: WorkflowEntityKind; entityId: string }> {
+    const tenant = TenantContext.current();
+    const { data } = await this.supabase.admin
+      .from('workflow_instances')
+      .select('entity_kind, case_id, work_order_id, booking_id, ticket_id')
+      .eq('id', instanceId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (!data) {
+      throw AppErrors.server('workflow.advance_failed', {
+        detail: `workflow_instance ${instanceId} not found in tenant ${tenant.id}`,
+      });
+    }
+    const row = data as {
+      entity_kind: WorkflowEntityKind | null;
+      case_id: string | null;
+      work_order_id: string | null;
+      booking_id: string | null;
+      ticket_id: string | null;
+    };
+    const kind: WorkflowEntityKind = row.entity_kind ?? 'case';
+    let entityId: string | null;
+    if (kind === 'case') {
+      // Prefer case_id (post-00238 contract); fall back to ticket_id for
+      // legacy rows that pre-date 00369.
+      entityId = row.case_id ?? row.ticket_id;
+    } else if (kind === 'work_order') {
+      entityId = row.work_order_id;
+    } else {
+      entityId = row.booking_id;
+    }
+    if (!entityId) {
+      throw AppErrors.server('workflow.advance_failed', {
+        detail: `missing polymorphic entityId for instance ${instanceId} (kind=${kind})`,
+      });
+    }
+    return { kind, entityId };
   }
 
   /**
