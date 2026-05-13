@@ -155,6 +155,15 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't send the notification",
     detail: 'The notification template could not be resolved. Try again later.',
   },
+  // B.4.A.5 sub-step E — inbox surface (POST /me/inbox/:id/read 404 + JWT bridge 401).
+  'inbox_notification.not_found': {
+    title: 'Notification not found',
+    detail: "It may have been removed. Refresh and try again.",
+  },
+  'inbox.not_resolvable': {
+    title: 'Sign in again',
+    detail: "We couldn't resolve your account in this workspace.",
+  },
 
   // ─── render / unknown ────────────────────────────────────────────────────
   'render.failed': {

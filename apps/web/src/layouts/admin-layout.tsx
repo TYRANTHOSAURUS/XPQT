@@ -30,6 +30,8 @@ import { ArrowLeft } from 'lucide-react';
 import { adminNavGroups } from '@/lib/admin-nav';
 import { ShellSwitcher } from '@/components/shell-switcher';
 import { SearchTrigger } from '@/components/command-palette/search-trigger';
+import { InboxBell } from '@/components/app-shell/inbox-bell';
+import { useInboxSubscription } from '@/lib/realtime/inbox-subscription';
 
 const pageTitles: Record<string, string> = Object.fromEntries(
   adminNavGroups.flatMap((group) => group.items.map((item) => [item.path, item.title])),
@@ -39,7 +41,9 @@ pageTitles['/admin/request-types'] = 'Request Types';
 export function AdminLayout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { hasRole } = useAuth();
+  const { hasRole, appUser } = useAuth();
+  // Inbox Realtime — see desk-layout for the rationale.
+  useInboxSubscription({ tenantId: appUser?.tenant_id, userId: appUser?.id });
   const pageTitle = Object.entries(pageTitles).find(([path]) =>
     location.pathname.startsWith(path)
   )?.[1] ?? 'Admin';
@@ -118,6 +122,7 @@ export function AdminLayout() {
           </Breadcrumb>
           <div className="ml-auto flex items-center gap-3">
             <SearchTrigger variant="bar" className="w-[260px]" />
+            <InboxBell />
             <ShellSwitcher />
           </div>
         </header>

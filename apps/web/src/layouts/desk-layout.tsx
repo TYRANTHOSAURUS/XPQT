@@ -16,9 +16,12 @@ import {
 import { DeskSidebar } from '@/components/desk/desk-sidebar';
 import { ShellSwitcher } from '@/components/shell-switcher';
 import { SearchTrigger } from '@/components/command-palette/search-trigger';
+import { InboxBell } from '@/components/app-shell/inbox-bell';
 import { useTicketDetail } from '@/api/tickets';
 import { formatTicketRef } from '@/lib/format-ref';
 import { ReceptionBuildingProvider } from '@/components/desk/desk-building-context';
+import { useAuth } from '@/providers/auth-provider';
+import { useInboxSubscription } from '@/lib/realtime/inbox-subscription';
 
 const pageTitles: Record<string, string> = {
   '/desk/inbox': 'Inbox',
@@ -31,6 +34,10 @@ const pageTitles: Record<string, string> = {
 export function DeskLayout() {
   const location = useLocation();
   const ticketDetailMatch = useMatch('/desk/tickets/:id');
+  const { appUser } = useAuth();
+  // Inbox Realtime — mounts once per shell. Channel name is
+  // inbox:tenant_<id>:user_<id>. RLS already gates on the server (00391).
+  useInboxSubscription({ tenantId: appUser?.tenant_id, userId: appUser?.id });
   const pageTitle =
     pageTitles[location.pathname] ??
     (location.pathname.startsWith('/desk/reports') ? 'Reports' : 'Service Desk');
@@ -76,6 +83,7 @@ export function DeskLayout() {
           </Breadcrumb>
           <div className="ml-auto flex items-center gap-3">
             <SearchTrigger variant="bar" className="w-[260px]" />
+            <InboxBell />
             <ShellSwitcher />
           </div>
         </header>

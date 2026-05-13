@@ -6,6 +6,7 @@ import { PortalBrandMark } from './portal-brand-mark';
 import { PORTAL_NAV } from './portal-nav';
 import { ShellSwitcher } from '@/components/shell-switcher';
 import { SearchTrigger } from '@/components/command-palette/search-trigger';
+import { InboxBell } from '@/components/app-shell/inbox-bell';
 import { useBranding } from '@/hooks/use-branding';
 import { usePortal } from '@/providers/portal-provider';
 
@@ -66,6 +67,7 @@ export function PortalTopBar() {
           <SearchTrigger variant="bar" className="w-[220px] xl:w-[260px]" />
           <PortalLocationPicker />
           <div className="h-5 w-px bg-border/70" aria-hidden />
+          <InboxBell />
           <ShellSwitcher />
           <PortalAccountMenu />
         </div>
@@ -93,6 +95,7 @@ export function PortalTopBar() {
         </Link>
         <SearchTrigger variant="icon" />
         <PortalLocationPicker compact />
+        <InboxBell />
         <PortalAccountMenu />
       </div>
     </header>

@@ -36,6 +36,9 @@ const lazyNamed = <K extends string>(
 const LoginPage = lazyNamed(() => import('@/pages/auth/login'), 'LoginPage');
 const SignUpPage = lazyNamed(() => import('@/pages/auth/signup'), 'SignUpPage');
 
+// Cross-shell — per-user inbox (B.4.A.5 sub-step F)
+const InboxFullPage = lazyNamed(() => import('@/pages/me/inbox'), 'InboxFullPage');
+
 // Portal
 const PortalHome = lazyNamed(() => import('@/pages/portal/home'), 'PortalHome');
 const MyRequestsPage = lazyNamed(() => import('@/pages/portal/my-requests'), 'MyRequestsPage');
@@ -204,6 +207,11 @@ export function App() {
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/signup" element={<SignUpPage />} />
 
+                {/* Bare /me/inbox shortcut — the inbox bell in every shell
+                    points here. Always lives inside the portal layout (the
+                    most general "my" surface), so route to its full path. */}
+                <Route path="/me/inbox" element={<Navigate to="/portal/me/inbox" replace />} />
+
                 {/* Public visitor cancel landing — anonymous, token in path.
                     NO ProtectedRoute: visitor isn't logged in. The backend
                     GET /visitors/cancel/:token/preview + POST /visitors/cancel/:token
@@ -256,6 +264,10 @@ export function App() {
                   {/* Calendar sync (Outlook) */}
                   <Route path="me/calendar-sync" element={<PortalCalendarSyncPage />} />
                   <Route path="calendar-sync/callback" element={<PortalCalendarSyncCallbackPage />} />
+                  {/* Per-user inbox (B.4.A.5 sub-step F) — cross-shell
+                      surface accessible from desk/admin bell as well via the
+                      `/me/inbox` short-link redirect below. */}
+                  <Route path="me/inbox" element={<RouteErrorBoundary><InboxFullPage /></RouteErrorBoundary>} />
                 </Route>
 
                 {/* The legacy /reception/* workspace was removed in the

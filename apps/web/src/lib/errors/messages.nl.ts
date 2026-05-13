@@ -134,6 +134,15 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
     title: 'Kon de notificatie niet verzenden',
     detail: 'De notificatie-template kon niet worden geladen. Probeer het later opnieuw.',
   },
+  // B.4.A.5 sub-step E — inbox surface (POST /me/inbox/:id/read 404 + JWT bridge 401).
+  'inbox_notification.not_found': {
+    title: 'Melding niet gevonden',
+    detail: 'Mogelijk al verwijderd. Vernieuw en probeer opnieuw.',
+  },
+  'inbox.not_resolvable': {
+    title: 'Log opnieuw in',
+    detail: 'We konden je account in deze werkruimte niet vinden.',
+  },
 
   // ─── render / unknown ────────────────────────────────────────────────────
   'render.failed': {

@@ -24,6 +24,14 @@ export type RoleType = 'admin' | 'agent' | 'employee';
 interface AppUser {
   id: string;
   person_id: string;
+  /**
+   * Tenant the user is a member of. Read from `users.tenant_id` (returned
+   * by GET /users/me as part of `select *`). Surfaced here so the
+   * Realtime layer (e.g. the inbox `inbox:tenant_<id>:user_<id>` channel
+   * routing key) and any tenant-scoped client routing have a stable place
+   * to read it without re-fetching.
+   */
+  tenant_id: string;
   roles: { name: string; type: RoleType }[];
 }
 
@@ -62,6 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       type MeResponse = {
         id: string;
         person_id: string;
+        tenant_id: string;
         person: Person | null;
         role_assignments?: { role?: { name?: string; type?: string } | null }[];
       } | null;
@@ -76,6 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAppUser({
         id: me.id,
         person_id: me.person_id,
+        tenant_id: me.tenant_id,
         roles: (me.role_assignments ?? [])
           .map((ra) => ra.role)
           .filter((r): r is { name: string; type: string } => Boolean(r?.name))
