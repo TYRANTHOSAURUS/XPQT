@@ -546,10 +546,13 @@ begin
   end if;
 
   -- 2. Compute next_version under the row lock — race-free.
-  select coalesce(max(version), 0) + 1
+  -- NOTE: qualify `version` as `wd.version` because the RETURNS TABLE
+  -- declares an output column also named `version`; PL/pgSQL otherwise
+  -- raises 'column reference "version" is ambiguous' at runtime.
+  select coalesce(max(wd.version), 0) + 1
     into v_next_version
-    from public.workflow_definitions
-   where source_rule_id = p_rule_id;
+    from public.workflow_definitions wd
+   where wd.source_rule_id = p_rule_id;
 
   -- 3. Insert the new definition row.
   insert into public.workflow_definitions (
@@ -956,17 +959,47 @@ end $$;
 --    parallel_group IS NULL AND group_cardinality = 1 → 'all' (any-of-1 ≡ all-of-1).
 --    parallel_group IS NOT NULL → 'all' (today's encoding).
 --    Emits NOTICE per chain for audit.
+--
+-- NOTE on the not-yet-migrated marker: block A defines `chain_threshold text
+-- NOT NULL DEFAULT 'all'`, so the literal `WHERE chain_threshold IS NULL`
+-- gate in earlier drafts of this block can never match. The actual migration
+-- uses a TWO-STEP shape:
+--   Step 1 — fill missing approval_chain_id values via gen_random_uuid()
+--     grouped by (tenant_id, target_entity_id, parallel_group).
+--   Step 2 — group by the now-populated chain_id and, for chains where
+--     parallel_group IS NULL AND group_cardinality > 1, UPDATE chain_threshold
+--     to 'any'. Idempotency comes from `WHERE chain_threshold='all'` on the
+--     UPDATE (already-flipped chains are skipped on re-run).
+-- See `supabase/migrations/00400_room_booking_rules_workflow_definition_fk.sql`
+-- block G for the canonical implementation.
 do $$
 declare
   cg record;
   v_derived text;
 begin
+  -- Step 1 — assign approval_chain_id to any row that's missing one.
   for cg in
     select tenant_id, target_entity_id, parallel_group,
-           coalesce(approval_chain_id, gen_random_uuid()) as chain_id,
+           gen_random_uuid() as new_chain_id,
            count(*) as group_cardinality
       from public.approvals
-     where chain_threshold is null  -- only rows not yet migrated
+     where approval_chain_id is null
+     group by tenant_id, target_entity_id, parallel_group
+  loop
+    update public.approvals
+       set approval_chain_id = cg.new_chain_id
+     where tenant_id        = cg.tenant_id
+       and target_entity_id = cg.target_entity_id
+       and parallel_group is not distinct from cg.parallel_group
+       and approval_chain_id is null;
+  end loop;
+
+  -- Step 2 — DERIVE chain_threshold per chain group.
+  for cg in
+    select tenant_id, target_entity_id, parallel_group,
+           approval_chain_id as chain_id,
+           count(*) as group_cardinality
+      from public.approvals
      group by tenant_id, target_entity_id, parallel_group, approval_chain_id
   loop
     v_derived := case
@@ -974,16 +1007,16 @@ begin
       when cg.parallel_group is null and cg.group_cardinality = 1 then 'all'
       else 'all'
     end;
-    raise notice 'phase 1.5 chain %: parallel_group=%, group_cardinality=%, derived chain_threshold=%',
-      cg.chain_id, cg.parallel_group, cg.group_cardinality, v_derived;
+    if v_derived = 'any' then
+      raise notice 'phase 1.5 chain %: parallel_group=%, group_cardinality=%, derived chain_threshold=%',
+        cg.chain_id, cg.parallel_group, cg.group_cardinality, v_derived;
 
-    update public.approvals a
-       set approval_chain_id = cg.chain_id,
-           chain_threshold   = v_derived
-     where a.tenant_id        = cg.tenant_id
-       and a.target_entity_id = cg.target_entity_id
-       and a.parallel_group is not distinct from cg.parallel_group
-       and (a.approval_chain_id is null or a.chain_threshold is null);
+      update public.approvals
+         set chain_threshold = 'any'
+       where approval_chain_id = cg.chain_id
+         and chain_threshold   = 'all';  -- idempotency: skip rows already flipped
+    end if;
+    -- v_derived = 'all' is a no-op (matches the NOT NULL DEFAULT).
   end loop;
 end $$;
 

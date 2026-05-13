@@ -348,14 +348,21 @@ begin
   --    (00026); column is workflow_instance_id (verified against remote
   --    2026-05-13). event_type CHECK admits 'instance_cancelled' per 00376
   --    widening (Phase 1.B closure).
+  -- IMPORTANT 2 from code-quality review: workflow_instances has a
+  -- polymorphic CHECK admitting (entity_kind IS NULL AND case_id IS NULL
+  -- AND work_order_id IS NULL AND booking_id IS NULL) for legacy
+  -- un-attached rows. The coalesce above evaluates to NULL in that case;
+  -- the payload must still encode "unknown attachment" rather than NULL so
+  -- downstream consumers (audit feed, alerts) can rely on the field being
+  -- present.
   insert into public.workflow_instance_events (
     tenant_id, workflow_instance_id, event_type, payload, created_at
   ) values (
     p_tenant_id, p_instance_id, 'instance_cancelled',
     jsonb_build_object(
       'reason',                p_reason,
-      'entity_kind',           v_entity_kind,
-      'entity_id',             v_entity_id,
+      'entity_kind',           coalesce(v_entity_kind, 'unknown'),
+      'entity_id',             coalesce(v_entity_id,   'unknown'),
       'approvals_expired_ct',  v_expired_ct
     ),
     now()
@@ -510,18 +517,32 @@ begin
   -- Step 1: assign approval_chain_id to any row that's missing one. Group by
   -- (tenant_id, target_entity_id, parallel_group) — these are the same
   -- "chain" semantically in the pre-Phase-1.5 schema.
+  --
+  -- IMPORTANT 1 from code-quality review: if a (tenant, target, parallel_group)
+  -- group has some rows with chain_id=NULL and some with chain_id=Y (data
+  -- drift from partial pre-migration), naively minting a fresh UUID for the
+  -- NULL rows would split a single semantic chain into two — losing the
+  -- implicit-'any' encoding when >1 siblings share the target. Defensive
+  -- shape: prefer an EXISTING chain_id from the same group; only mint a new
+  -- UUID if none exists. The `coalesce(max(approval_chain_id), gen_random_uuid())`
+  -- evaluates per-group, so the chain stays coherent.
   for cg in
     select tenant_id,
            target_entity_id,
            parallel_group,
-           gen_random_uuid() as new_chain_id,
+           -- Postgres has no max(uuid). Pick any existing non-null chain_id
+           -- from the group via array_agg + [1]; if none exists, mint one.
+           coalesce(
+             (array_agg(approval_chain_id) filter (where approval_chain_id is not null))[1],
+             gen_random_uuid()
+           ) as chain_id,
            count(*) as group_cardinality
       from public.approvals
-     where approval_chain_id is null
      group by tenant_id, target_entity_id, parallel_group
+    having count(*) filter (where approval_chain_id is null) > 0
   loop
     update public.approvals
-       set approval_chain_id = cg.new_chain_id
+       set approval_chain_id = cg.chain_id
      where tenant_id        = cg.tenant_id
        and target_entity_id = cg.target_entity_id
        and parallel_group is not distinct from cg.parallel_group
