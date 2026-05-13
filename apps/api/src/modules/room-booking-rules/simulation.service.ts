@@ -58,6 +58,10 @@ export class SimulationService {
         priority: d.priority ?? 100,
         active: true,
         template_id: d.template_id ?? null,
+        // Phase 1.5 sub-step 6.E — draft rules in a simulation have no
+        // auto-recompiled workflow_definition_id; simulation doesn't start
+        // workflows so the FK is shape-conformance only.
+        workflow_definition_id: null,
       }));
       const outcome = await this.resolver.evaluateAdHoc(
         [...saved, ...drafts],

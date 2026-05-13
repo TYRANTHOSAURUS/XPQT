@@ -5,7 +5,8 @@
 //   - CalendarSyncModule for RoomMailboxService.registerIntercept hook (Phase J)
 //   - NotificationModule for BookingNotificationsService
 
-import { ConflictException, ForbiddenException, Logger, Module, OnModuleInit } from '@nestjs/common';
+import { ConflictException, ForbiddenException, forwardRef, Logger, Module, OnModuleInit } from '@nestjs/common';
+import { WorkflowModule } from '../workflow/workflow.module';
 import { AppError } from '../../common/errors';
 import { ReservationController } from './reservation.controller';
 import { ReservationService } from './reservation.service';
@@ -45,6 +46,13 @@ import type { ActorContext, CreateReservationInput } from './dto/types';
     NotificationModule,
     BookingBundlesModule,
     OrdersModule,
+    // Phase 1.5 sub-step 6.E: WorkflowService is invoked when a matched
+    // rule carries a populated workflow_definition_id. forwardRef because
+    // WorkflowModule's outbox handlers reach back through ReservationsModule
+    // for booking-lifecycle event types (see booking-flow.service.ts emit
+    // path); the cycle is benign at runtime since the providers don't read
+    // each other at construction time.
+    forwardRef(() => WorkflowModule),
   ],
   providers: [
     ReservationService,

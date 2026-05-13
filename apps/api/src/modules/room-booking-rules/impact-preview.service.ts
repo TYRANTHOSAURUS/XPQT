@@ -95,6 +95,10 @@ export class ImpactPreviewService {
       priority: dto.priority ?? 100,
       active: true,
       template_id: null,
+      // Phase 1.5 sub-step 6.E — draft rules have no workflow_definition_id
+      // yet (no auto-recompile has fired). The impact preview path doesn't
+      // start workflows; the FK is shape-conformance only.
+      workflow_definition_id: null,
     };
     return this.previewRule(draft);
   }

@@ -4,7 +4,9 @@ import { TenantContext } from '../../common/tenant-context';
 import { AppErrors } from '../../common/errors';
 import { PredicateEngineService } from './predicate-engine.service';
 import { getTemplate } from './rule-templates';
+import { ApprovalConfigCompilerService } from '../approval/approval-config-compiler.service';
 import type {
+  ApprovalConfig,
   ChangeType,
   CreateRuleDto,
   FromTemplateDto,
@@ -62,7 +64,70 @@ export class RoomBookingRulesService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly engine: PredicateEngineService,
+    // Phase 1.5 sub-step 6.E: pure-TS compiler from 6.A.X used to mint a
+    // workflow_definition for every rule with non-null approval_config.
+    // Persistence is the `ensure_room_booking_rule_workflow_definition`
+    // RPC's job (BLOCKER 1 closure — atomic version bump + INSERT +
+    // archive + FK flip under one row lock). Compiler is pure compile-only.
+    private readonly approvalCompiler: ApprovalConfigCompilerService,
   ) {}
+
+  /**
+   * Phase 1.5 sub-step 6.E — auto-recompile a workflow_definition for
+   * a rule whose approval_config is non-null. Idempotent + atomic via the
+   * `ensure_room_booking_rule_workflow_definition` PL/pgSQL RPC (migration
+   * 00400 §2.6.7) which row-locks the rule, computes the next version
+   * under the lock, INSERTs the new definition row, archives prior
+   * versions safe to archive, and flips the rule's FK — all in one tx.
+   *
+   * Called from `.create()` and `.update()` on every save that has
+   * non-null `approval_config`. When `approval_config IS NULL` (the
+   * "rule doesn't require approval" case) this is a no-op; the rule's
+   * `workflow_definition_id` stays NULL and runtime falls back to the
+   * legacy createApprovalRows path (which itself no-ops when
+   * approvalConfig is null).
+   *
+   * Failure mode: throws the compiler's
+   * `workflow_definition.compilation_failed` (422) on a malformed
+   * approval_config, OR the RPC's `P0002` (rule not found in tenant) /
+   * other PL/pgSQL errors. Caller propagates — the rule INSERT/UPDATE
+   * has already committed by then, so a subsequent retry can re-run
+   * recompile via re-saving the rule. This is acceptable because the
+   * RPC body is idempotent (the unique index on (tenant_id,
+   * source_rule_id, version) + the per-rule FOR UPDATE lock prevent
+   * duplicate version numbers).
+   */
+  private async recompileApprovalWorkflow(
+    ruleId: string,
+    tenantId: string,
+    ruleName: string,
+    approvalConfig: ApprovalConfig | null,
+  ): Promise<void> {
+    if (!approvalConfig) {
+      // No approval_config → no workflow. Leave workflow_definition_id NULL;
+      // legacy runtime falls back to createApprovalRows which itself
+      // skips when there's nothing to approve.
+      return;
+    }
+    const compiled = this.approvalCompiler.compile(approvalConfig, {
+      ruleName,
+      ruleType: 'room_booking',
+    });
+    const { error } = await this.supabase.admin.rpc(
+      'ensure_room_booking_rule_workflow_definition',
+      {
+        p_rule_id: ruleId,
+        p_tenant_id: tenantId,
+        p_graph_definition: compiled.graphDefinition,
+        p_rule_name: ruleName,
+      },
+    );
+    if (error) {
+      throw AppErrors.server('workflow.advance_failed', {
+        detail: `ensure_room_booking_rule_workflow_definition RPC failed: ${error.message}`,
+      });
+    }
+  }
 
   async list(filters: RuleListFilters = {}) {
     const tenant = TenantContext.current();
@@ -133,6 +198,14 @@ export class RoomBookingRulesService {
       effect: data.effect,
       target_scope: data.target_scope,
     });
+    // Phase 1.5 sub-step 6.E: auto-mint workflow_definition + flip the
+    // rule's workflow_definition_id FK iff approval_config is non-null.
+    await this.recompileApprovalWorkflow(
+      data.id,
+      tenant.id,
+      data.name,
+      data.approval_config as ApprovalConfig | null,
+    );
     return data;
   }
 
@@ -186,6 +259,20 @@ export class RoomBookingRulesService {
       name: data.name,
       effect: data.effect,
     });
+    // Phase 1.5 sub-step 6.E: recompile iff approval_config was in the
+    // patch OR the rule's name changed (rule name is the workflow_
+    // definitions.name suffix). When approval_config is unchanged AND
+    // name is unchanged, skip the RPC call to avoid minting a no-op
+    // version row. Note: changing effect or applies_when does NOT
+    // recompile — the graph shape is derived solely from approval_config.
+    if (patch.approval_config !== undefined || patch.name !== undefined) {
+      await this.recompileApprovalWorkflow(
+        id,
+        tenant.id,
+        data.name,
+        data.approval_config as ApprovalConfig | null,
+      );
+    }
     return data;
   }
 

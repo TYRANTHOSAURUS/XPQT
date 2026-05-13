@@ -5,6 +5,7 @@ import { RuleResolverService } from './rule-resolver.service';
 import { RoomBookingRulesService } from './room-booking-rules.service';
 import { SimulationService } from './simulation.service';
 import { ImpactPreviewService } from './impact-preview.service';
+import { ApprovalConfigCompilerService } from '../approval/approval-config-compiler.service';
 import {
   RoomBookingRulesController,
   RoomBookingScenariosController,
@@ -30,6 +31,13 @@ import {
     RoomBookingRulesService,
     SimulationService,
     ImpactPreviewService,
+    // Phase 1.5 sub-step 6.E: compiler injected here (sibling provider —
+    // pure-TS, no DB, no cross-module dependency). ApprovalModule also
+    // declares it as a provider; both modules can hold sibling instances
+    // since the service is stateless. Avoids the forwardRef loop that
+    // would result from importing ApprovalModule (which already imports
+    // ReservationsModule + BookingBundlesModule).
+    ApprovalConfigCompilerService,
   ],
   controllers: [RoomBookingRulesController, RoomBookingScenariosController],
   exports: [

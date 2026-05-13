@@ -1,5 +1,6 @@
-import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { AppErrors } from '../../common/errors';
+import { WorkflowService } from '../workflow/workflow.service';
 import { randomUUID } from 'node:crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -86,6 +87,17 @@ export class BookingFlowService {
      */
     @Optional() @Inject(BOOKING_TX_BOUNDARY) private readonly txBoundary?: BookingTransactionBoundary,
     @Optional() private readonly compensation?: BookingCompensationService,
+    /**
+     * Phase 1.5 sub-step 6.E — when a matched rule carries a populated
+     * `workflow_definition_id`, start a workflow_instance via
+     * `WorkflowService.start({entityKind: 'booking'})` INSTEAD of the
+     * legacy `createApprovalRows` path. Optional + forwardRef to keep the
+     * existing booking-flow specs constructible without wiring the full
+     * workflow stack; the cutover at line ~360 checks for presence before
+     * attempting the workflow path.
+     */
+    @Optional() @Inject(forwardRef(() => WorkflowService))
+    private readonly workflowService?: WorkflowService,
   ) {
     // Reference unused fields so the strict `noUnusedLocals` check passes.
     // These are kept on the class for the reasons documented above.
@@ -356,8 +368,31 @@ export class BookingFlowService {
     // 8. Fan out side effects (best-effort)
     // - Approval row creation (when require_approval).
     //   target_entity_type changed from 'reservation' → 'booking' (00278:172).
+    //
+    // Phase 1.5 sub-step 6.E — visual-workflow cutover:
+    //   When the matched rule has been auto-recompiled to a workflow_
+    //   definition (workflowService present + approvalWorkflowDefinitionId
+    //   non-null), START a workflow_instance via WorkflowService.start({
+    //   entityKind: 'booking'}). The workflow's approval node inserts the
+    //   approval rows (with workflow_instance_id + chain_threshold +
+    //   workflow_node_id populated). Skip createApprovalRows on this path
+    //   — the workflow owns it.
+    //
+    //   Otherwise (legacy fall-through): rules with non-null approval_config
+    //   but NULL workflow_definition_id keep running through
+    //   createApprovalRows verbatim. Pre-Phase-1.5 paths continue to work
+    //   while the migration window completes.
     if (status === 'pending_approval' && ruleOutcome.approvalConfig) {
-      await this.createApprovalRows(bookingId, ruleOutcome.approvalConfig, tenantId);
+      if (this.workflowService && ruleOutcome.approvalWorkflowDefinitionId) {
+        await this.workflowService.start({
+          definitionId: ruleOutcome.approvalWorkflowDefinitionId,
+          entityKind: 'booking',
+          entityId: bookingId,
+          tenantId,
+        });
+      } else {
+        await this.createApprovalRows(bookingId, ruleOutcome.approvalConfig, tenantId);
+      }
     }
 
     // Build a transitional `Reservation`-shaped envelope for downstream

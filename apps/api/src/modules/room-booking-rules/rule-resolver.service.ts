@@ -53,6 +53,18 @@ export interface RuleRow {
   priority: number;
   active: boolean;
   template_id: string | null;
+  /**
+   * Phase 1.5 sub-step 6.E — FK to the rule's compiled
+   * `workflow_definitions` row. NULL until the rule has been saved with a
+   * non-null `approval_config` (auto-recompile at .create / .update in
+   * RoomBookingRulesService). When NULL, BookingFlowService falls through
+   * to the legacy createApprovalRows path. When non-null, it starts a
+   * workflow_instance via WorkflowService.start({entityKind: 'booking'}).
+   *
+   * Read at resolver query time; threaded onto MatchedRule so the booking-
+   * flow consumer doesn't need a second roundtrip.
+   */
+  workflow_definition_id: string | null;
 }
 
 export interface MatchedRule extends RuleRow {
@@ -69,6 +81,15 @@ export interface ResolveOutcome {
   overridable: boolean;
   /** require_approval config of the highest-priority approval rule, if any. */
   approvalConfig: ApprovalConfig | null;
+  /**
+   * Phase 1.5 sub-step 6.E — `workflow_definition_id` from the SAME
+   * highest-priority approval rule that contributed `approvalConfig`. NULL
+   * when no approval rule matched OR when the matched rule hasn't been
+   * auto-recompiled yet (legacy rules pre-Phase-1.5, or compile-time
+   * failures). BookingFlowService gates the workflow-start path on this
+   * being non-null; falls through to legacy createApprovalRows when NULL.
+   */
+  approvalWorkflowDefinitionId: string | null;
   /** Convenience aggregate: 'allow' | 'deny' | 'require_approval'. */
   final: 'allow' | 'deny' | 'require_approval';
 }
@@ -412,6 +433,7 @@ export class RuleResolverService {
       denialMessages: [],
       overridable: false,
       approvalConfig: null,
+      approvalWorkflowDefinitionId: null,
       final: 'allow',
     };
   }
@@ -499,6 +521,7 @@ export function aggregateOutcome(matched: MatchedRule[], _spaceId: string): Reso
   const warnings: string[] = [];
   let overridable = false;
   let approvalConfig: ApprovalConfig | null = null;
+  let approvalWorkflowDefinitionId: string | null = null;
   let approvalSpecificity = Infinity;
   let approvalPriority = -Infinity;
 
@@ -521,6 +544,11 @@ export function aggregateOutcome(matched: MatchedRule[], _spaceId: string): Reso
           approvalSpecificity = r.specificity;
           approvalPriority = r.priority;
           approvalConfig = r.approval_config ?? null;
+          // Phase 1.5 sub-step 6.E — take workflow_definition_id from the
+          // SAME rule that contributed approval_config. Both fields stay
+          // in sync this way; the consumer can rely on the pair being
+          // sourced from one rule row.
+          approvalWorkflowDefinitionId = r.workflow_definition_id ?? null;
         }
         break;
       case 'warn':
@@ -546,6 +574,7 @@ export function aggregateOutcome(matched: MatchedRule[], _spaceId: string): Reso
     denialMessages: denials,
     overridable,
     approvalConfig,
+    approvalWorkflowDefinitionId,
     final,
   };
 }
