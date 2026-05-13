@@ -2313,4 +2313,114 @@ describe('edit_booking RPC v1 — concurrency + state-machine probes', () => {
     expect(outboxRows.rows[0].payload.approver_person_ids).toEqual([]);
     expect(outboxRows.rows[0].payload.approver_team_ids).toEqual([base.teamId]);
   });
+
+  // ── Scenario 30 (B.4.A.5 Plan C1 + C2): inbox triggers (00402) ─────
+  //
+  // C1: a direct INSERT into public.approvals (bypassing RPCs — the
+  //   Phase 1.5 workflow engine path) MUST yield inbox rows via the
+  //   trg_inbox_notify_on_approval_insert trigger.
+  // C2: adding a team_members row AFTER the approval was raised MUST
+  //   backfill an inbox row for that user; removing a team_members
+  //   row MUST remove their UNREAD inbox row but preserve READ ones.
+  it('B.4.A.5 — engine-path approval INSERT + team churn triggers (00402)', async () => {
+    const base = await seedBaseFixture(pool, `inbox-triggers-${Date.now()}`);
+    const booking = await seedConfirmedBooking(pool, base);
+
+    // Seed 2 members on base.teamId; the trigger should fan out to both.
+    const member1 = await seedAuthUser(pool, base.tenantId, base.personId);
+    const member2 = await seedAuthUser(pool, base.tenantId, base.approverPersonId);
+    for (const m of [member1, member2]) {
+      await pool.query(
+        `insert into public.team_members (id, tenant_id, team_id, user_id)
+         values ($1, $2, $3, $4)`,
+        [randomUUID(), base.tenantId, base.teamId, m.userId],
+      );
+    }
+
+    // Direct INSERT into public.approvals — mirrors the engine path
+    // (Phase 1.5 writes approval rows directly, NOT through 00394/00395).
+    // No idempotency machinery, no RPC — pure trigger exercise.
+    const chainId = randomUUID();
+    await pool.query(
+      `insert into public.approvals
+         (id, tenant_id, target_entity_type, target_entity_id,
+          approval_chain_id, parallel_group,
+          approver_person_id, approver_team_id, status)
+       values
+         ($1, $2, 'booking', $3, $4, 'g1', null, $5, 'pending')`,
+      [randomUUID(), base.tenantId, booking.bookingId, chainId, base.teamId],
+    );
+
+    // Trigger should have minted 2 inbox rows (one per member).
+    const initialInbox = await pool.query<{ user_id: string; payload: Record<string, unknown> }>(
+      `select user_id, payload from public.inbox_notifications
+        where tenant_id = $1 and payload->>'chain_id' = $2
+        order by user_id`,
+      [base.tenantId, chainId],
+    );
+    expect(initialInbox.rows).toHaveLength(2);
+    const initialIds = initialInbox.rows.map((r) => r.user_id).sort();
+    expect(initialIds).toEqual([member1.userId, member2.userId].sort());
+    for (const row of initialInbox.rows) {
+      expect(row.payload.chain_id).toBe(chainId);
+      expect(row.payload.approver_team_id).toBe(base.teamId);
+      expect(row.payload.booking_id).toBe(booking.bookingId);
+    }
+
+    // ── Plan C2 backfill: add a 3rd member → trigger backfills 1 row.
+    const thirdPersonId = randomUUID();
+    await pool.query(
+      `insert into public.persons (id, tenant_id, type, first_name, last_name, email)
+       values ($1, $2, 'employee', 'Late', 'Joiner', $3)`,
+      [thirdPersonId, base.tenantId, `late-${thirdPersonId.slice(0, 8)}@concurrency.test`],
+    );
+    registerCleanup(async () => {
+      await pool.query('delete from public.persons where id = $1', [thirdPersonId]);
+    });
+    const member3 = await seedAuthUser(pool, base.tenantId, thirdPersonId);
+    await pool.query(
+      `insert into public.team_members (id, tenant_id, team_id, user_id)
+       values ($1, $2, $3, $4)`,
+      [randomUUID(), base.tenantId, base.teamId, member3.userId],
+    );
+
+    const afterJoinInbox = await pool.query<{ user_id: string }>(
+      `select user_id from public.inbox_notifications
+        where tenant_id = $1 and payload->>'chain_id' = $2
+        order by user_id`,
+      [base.tenantId, chainId],
+    );
+    expect(afterJoinInbox.rows).toHaveLength(3);
+    expect(afterJoinInbox.rows.map((r) => r.user_id).sort()).toEqual(
+      [member1.userId, member2.userId, member3.userId].sort(),
+    );
+
+    // ── Plan C2 cleanup: mark member1's row READ, then remove both
+    // member1 and member3 from the team. member1's READ row must
+    // survive (auditability); member3's UNREAD row must be removed.
+    await pool.query(
+      `update public.inbox_notifications set read_at = now()
+        where tenant_id = $1 and user_id = $2 and payload->>'chain_id' = $3`,
+      [base.tenantId, member1.userId, chainId],
+    );
+    await pool.query(
+      `delete from public.team_members where tenant_id = $1 and team_id = $2 and user_id in ($3, $4)`,
+      [base.tenantId, base.teamId, member1.userId, member3.userId],
+    );
+
+    const afterLeaveInbox = await pool.query<{ user_id: string; read_at: string | null }>(
+      `select user_id, read_at from public.inbox_notifications
+        where tenant_id = $1 and payload->>'chain_id' = $2
+        order by user_id`,
+      [base.tenantId, chainId],
+    );
+    // Expected survivors: member1 (read row preserved) + member2 (still on team).
+    expect(afterLeaveInbox.rows).toHaveLength(2);
+    const survivorIds = afterLeaveInbox.rows.map((r) => r.user_id).sort();
+    expect(survivorIds).toEqual([member1.userId, member2.userId].sort());
+    // member1's row stayed because it was READ; member2's stayed because
+    // they're still on the team.
+    const m1Row = afterLeaveInbox.rows.find((r) => r.user_id === member1.userId);
+    expect(m1Row?.read_at).not.toBeNull();
+  });
 });

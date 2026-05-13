@@ -156,3 +156,57 @@ overrides map instead of loading from the DB.
 The editor was shipped at `width="xwide"` with the right side empty
 so swapping in the preview doesn't require a layout change.
 
+## Shipped 2026-05-13 — Plan CRITICAL × 2 from /full-review
+
+### C1 — inbox INSERT decoupled from producer (trigger-based)
+
+**Shipped:** migration 00402, trigger `trg_inbox_notify_on_approval_insert`
+on `public.approvals` AFTER INSERT.
+
+**The gap.** Previously the inbox INSERT for approval notifications was
+co-located with the manual `approvals` row INSERT inside the RPC bodies
+(`00394_edit_booking_rpc_v5.sql:822-851` and the parallel block in
+`00395_edit_booking_scope_rpc_v3.sql`). Phase 1.5 (visual workflow,
+shipped on 00400) moves approval-row creation INTO the workflow engine
+for workflow-driven rules. The engine doesn't write inbox rows, so
+engine-driven approvals notified nobody.
+
+**The fix.** A trigger on `public.approvals` fires on every row insert
+and mirrors the RPCs' fan-out logic byte-for-byte (person path: JOIN
+`public.users` on `person_id`; team path: JOIN `team_members` + `users`).
+Uses `ON CONFLICT DO NOTHING` against `uq_inbox_notifications_chain`
+(00391) so the existing inline INSERT in 00394/00395 stays in place as
+a harmless no-op when the trigger has already written the row, and a
+backup if the trigger ever doesn't fire. v1 scope:
+`target_entity_type = 'booking'` only — other entity types don't have
+notification substrate yet.
+
+### C2 — team-membership churn handled
+
+**Shipped:** migration 00402, triggers
+`trg_inbox_backfill_on_team_member_insert` (AFTER INSERT) and
+`trg_inbox_cleanup_on_team_member_delete` (AFTER DELETE) on
+`public.team_members`.
+
+**The gap.** When the approver is a TEAM, the RPCs fan out N inbox rows
+for N team members at write time. Members joining the team afterwards
+got no inbox row; members leaving kept stale rows.
+
+**The fix.**
+- Join trigger: on a new `team_members` row, find every pending booking
+  approval where this team is the approver and INSERT one inbox row for
+  the joining user. Same `ON CONFLICT` dedup as C1.
+- Leave trigger: on a removed `team_members` row, DELETE the joining
+  user's UNREAD inbox rows for any still-pending booking approvals where
+  this team was the approver. Read rows stay for auditability; status-
+  still-pending check prevents removing legitimate rows for an approval
+  that's already been actioned on a sibling row.
+
+**Verification.** New jest scenario in
+`apps/api/test/concurrency/edit_booking.spec.ts` ("engine-path approval
+INSERT + team churn triggers") exercises the no-RPC path: direct INSERT
+into `approvals` → 2 inbox rows fan out; add 3rd member → +1 inbox row;
+mark member1's row read + remove member1 + member3 → only member3's
+unread row is removed (member1's read row + member2's unread row both
+survive). All triggers verified on remote via `information_schema.triggers`.
+
