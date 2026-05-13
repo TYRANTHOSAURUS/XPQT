@@ -25,10 +25,14 @@
  *     deletes inbox rows in v1; future retention prune will. Cheap to
  *     handle now.
  *
- *   - **Filter.** PostgREST-style `tenant_id=eq.<id>,user_id=eq.<id>` so
- *     the server sends only matching rows over the WS. Even though RLS
- *     would already filter, an explicit channel filter cuts the number of
- *     payloads that even reach this client. Defense in depth.
+ *   - **Filter.** Supabase Realtime accepts a comma-separated list of
+ *     equality predicates that act as a logical AND, so we scope by BOTH
+ *     `tenant_id=eq.<id>` AND `user_id=eq.<id>` at the broadcast layer.
+ *     Without the `user_id` predicate every tenant member's WS would
+ *     receive every other member's inbox payload (`booking_id`,
+ *     `chain_id`, `approver_person_id`) — a tenant-internal user-data
+ *     leak. RLS still gates row visibility on the server; the explicit
+ *     filter is the narrow-broadcast layer of the same fence.
  *
  *   - **Disabled when ids missing.** Pre-login (auth context still
  *     resolving) the hook no-ops. Re-mounts when tenantId / userId become
@@ -126,13 +130,13 @@ export function useInboxSubscription({ tenantId, userId }: InboxSubscriptionArgs
           event: '*',
           schema: 'public',
           table: 'inbox_notifications',
-          filter: `tenant_id=eq.${tenantId}`,
+          filter: `tenant_id=eq.${tenantId},user_id=eq.${userId}`,
         },
         (payload: RealtimePayload & { new?: { user_id?: string } }) => {
-          // Defensive: the channel filter above already constrains tenant_id;
-          // we additionally filter on user_id client-side because the
-          // PostgREST filter syntax doesn't support AND across two columns
-          // in a single .on() call.
+          // Filter scopes BOTH by tenant_id AND user_id to prevent
+          // cross-user leakage at the broadcast layer; the post-receive
+          // user_id check below is defense-in-depth in case Realtime ever
+          // changes its filter semantics.
           const row = payload.new ?? payload.old ?? {};
           const rowUserId = (row as { user_id?: string }).user_id;
           if (rowUserId && rowUserId !== userId) return;
