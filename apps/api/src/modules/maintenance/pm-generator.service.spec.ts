@@ -328,8 +328,72 @@ describe('PMGeneratorService', () => {
       expect(fake.rpcCalls).toHaveLength(3);
     });
 
-    it('advances next_run_at by one recurrence step regardless of per-asset failures', async () => {
+    it('DOES NOT advance next_run_at when any per-asset failure occurs (codex remediation)', async () => {
+      const plan = makePlan({
+        asset_id: null,
+        asset_type_id: ASSET_TYPE_ID,
+        next_run_at: '2026-06-13T09:00:00.000Z',
+      });
+      const fake = makeFake({
+        assetsByType: {
+          [ASSET_TYPE_ID]: ASSET_IDS_FOR_TYPE.map((id) => ({ id })),
+        },
+        rpcResultsForPlan: {
+          [PLAN_ID]: [
+            { data: 'wo-1', error: null },
+            { data: null, error: { message: 'transient_failure' } },
+            { data: 'wo-3', error: null },
+          ],
+        },
+      });
+      const svc = makeService(fake);
+      const result = await svc.generateForPlan(plan, new Date('2026-06-13T03:00:00.000Z'));
+      expect(result.failed).toBe(1);
+      expect(result.spawned).toBe(2);
+      expect(fake.updatedNextRunAtByPlan[PLAN_ID]).toBeUndefined();
+    });
+
+    it('advances next_run_at when all assets succeed', async () => {
       const plan = makePlan({ next_run_at: '2026-06-13T09:00:00.000Z' });
+      const fake = makeFake();
+      const svc = makeService(fake);
+      await svc.generateForPlan(plan, new Date('2026-06-13T03:00:00.000Z'));
+      expect(fake.updatedNextRunAtByPlan[PLAN_ID]).toBe(
+        '2026-07-13T09:00:00.000Z',
+      );
+    });
+
+    it('advances next_run_at when all RPCs return null (ON CONFLICT idempotent replay)', async () => {
+      const plan = makePlan({
+        asset_id: null,
+        asset_type_id: ASSET_TYPE_ID,
+        next_run_at: '2026-06-13T09:00:00.000Z',
+      });
+      const fake = makeFake({
+        assetsByType: {
+          [ASSET_TYPE_ID]: ASSET_IDS_FOR_TYPE.map((id) => ({ id })),
+        },
+        rpcResultsForPlan: {
+          [PLAN_ID]: [
+            { data: null, error: null },
+            { data: null, error: null },
+            { data: null, error: null },
+          ],
+        },
+      });
+      const svc = makeService(fake);
+      await svc.generateForPlan(plan, new Date('2026-06-13T03:00:00.000Z'));
+      expect(fake.updatedNextRunAtByPlan[PLAN_ID]).toBe(
+        '2026-07-13T09:00:00.000Z',
+      );
+    });
+
+    it('advances next_run_at when zero assets are targeted (asset_type with no in-service assets)', async () => {
+      const plan = makePlan({
+        asset_id: null,
+        asset_type_id: ASSET_TYPE_ID,
+        next_run_at: '2026-06-13T09:00:00.000Z',
+      });
       const fake = makeFake();
       const svc = makeService(fake);
       await svc.generateForPlan(plan, new Date('2026-06-13T03:00:00.000Z'));

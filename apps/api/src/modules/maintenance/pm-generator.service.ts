@@ -104,6 +104,27 @@ export class PMGeneratorService {
     return { spawned, failed, plans };
   }
 
+  /**
+   * Per-asset failure now BLOCKS plan advance (codex remediation).
+   *
+   * Old behavior: any per-asset RPC throw was logged + failed++; plan
+   * advanced regardless. That permanently skipped the failed asset's
+   * occurrence — next cron tick re-selected the plan at its new
+   * next_run_at and never retried the failed cycle.
+   *
+   * New behavior: track `allAssetsSucceeded`. Throw or anything other
+   * than null/uuid from the RPC flips the flag. Null returns (ON
+   * CONFLICT DO NOTHING) are NOT failures — they mean "already done".
+   * Only advance + log progress when every asset either spawned or
+   * idempotently no-op'd. On any failure, the plan's next_run_at stays
+   * UNCHANGED; the next cron tick re-selects and re-attempts. Successes
+   * from this run hit ON CONFLICT on retry; failures get a fresh try.
+   *
+   * v1 limitation: a permanent failure (e.g., asset deleted out from
+   * under the plan, persistent FK error) blocks the plan forever. The
+   * admin notices via cron logs + missing WO. v1.5 will add a
+   * max-retries quarantine mechanism. Acceptable cost for honesty.
+   */
   async generateForPlan(
     plan: DuePlanRow,
     runAt: Date,
@@ -111,6 +132,7 @@ export class PMGeneratorService {
     const targets = await this.resolveTargets(plan);
     let spawned = 0;
     let failed = 0;
+    let allAssetsSucceeded = true;
 
     for (const assetId of targets) {
       try {
@@ -122,6 +144,7 @@ export class PMGeneratorService {
           `pm-generator.asset_failed tenant=${plan.tenant_id} plan=${plan.id} asset=${assetId}: ${message}`,
         );
         failed++;
+        allAssetsSucceeded = false;
       }
     }
 
@@ -130,6 +153,13 @@ export class PMGeneratorService {
         `pm-generator.invalid_recurrence_unit plan=${plan.id} unit=${plan.recurrence_unit}`,
       );
       return { spawned, failed: failed + 1 };
+    }
+
+    if (!allAssetsSucceeded) {
+      this.log.warn(
+        `pm-generator.plan_advance_skipped tenant=${plan.tenant_id} plan=${plan.id} failed=${failed} spawned=${spawned} — next_run_at unchanged; cron will retry next tick`,
+      );
+      return { spawned, failed };
     }
 
     await this.advancePlan(
