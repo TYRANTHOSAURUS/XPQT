@@ -1352,6 +1352,19 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon de workflow niet uitvoeren',
     detail: 'De workflow-engine liep tegen een probleem aan. Probeer het zo opnieuw.',
   },
+  // Phase 1.5 sub-step 6.C — WorkflowApprovalGrantedHandler / RPC defenses.
+  'workflow.approval_instance_not_found': {
+    title: 'Kon de goedkeurings-workflow niet hervatten',
+    detail: 'De workflow waarbij deze goedkeuring hoort is niet gevonden.',
+  },
+  'workflow.tenant_mismatch_approval': {
+    title: 'Kon de goedkeurings-workflow niet hervatten',
+    detail: 'Deze goedkeuring hoort bij een andere organisatie.',
+  },
+  'chain.threshold_invalid': {
+    title: 'Kon die goedkeuring niet verlenen',
+    detail: 'De configuratie van de goedkeuringsketen is ongeldig. Neem contact op met support.',
+  },
 
   // ─── service-routing (Phase 7.B-1.service-routing) ───────────────────────
   service_routing_not_found: { title: 'Kon die routingregel niet vinden' },

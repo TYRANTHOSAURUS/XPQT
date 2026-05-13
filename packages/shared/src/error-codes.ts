@@ -479,6 +479,24 @@ export type KnownErrorCode =
   // phase-1.5-visual-approval-workflow-plan.md §2.4 + §3.3.
   | 'workflow.advance_failed'
 
+  // ─── Phase 1.5 sub-step 6.C — approval-grant signal failure modes ────────
+  // 404: WorkflowApprovalGrantedHandler couldn't find the workflow_instance
+  // referenced by an approval row. Indicates a deleted parent or a
+  // cross-tenant link that the schema's tenant trigger should have rejected
+  // (the handler is the second layer of defense).
+  | 'workflow.approval_instance_not_found'
+
+  // 403: tenant mismatch between the outbox event and the approval row's
+  // workflow_instance. DeadLetterError-class — the handler refuses to
+  // resume a workflow it doesn't own.
+  | 'workflow.tenant_mismatch_approval'
+
+  // 422: defensive raise from migration 00403 if an approval row's
+  // chain_threshold is somehow outside the ('all','any') CHECK set. Should
+  // never fire — the CHECK at 00400 block A enforces. Schema-corruption
+  // canary.
+  | 'chain.threshold_invalid'
+
   // ─── service-routing migration (Phase 7.B-1.service-routing) ─────────────
   | 'service_routing_not_found'
   | 'service_routing_duplicate'
@@ -1367,6 +1385,11 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'workflow.definition_not_published',
   'workflow.cancel_with_approvals_failed',
   'workflow.advance_failed',
+  // Phase 1.5 sub-step 6.C — approval-grant signal failure modes used by
+  // WorkflowApprovalGrantedHandler + migration 00403's defensive raise.
+  'workflow.approval_instance_not_found',
+  'workflow.tenant_mismatch_approval',
+  'chain.threshold_invalid',
   'service_routing_not_found',
   'service_routing_duplicate',
   'service_routing_immutable_key',

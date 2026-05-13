@@ -1362,6 +1362,19 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't run the workflow",
     detail: 'The workflow engine ran into a problem. Try again in a moment.',
   },
+  // Phase 1.5 sub-step 6.C — WorkflowApprovalGrantedHandler / RPC defenses.
+  'workflow.approval_instance_not_found': {
+    title: "Couldn't resume the approval workflow",
+    detail: 'The workflow this approval belongs to could not be found.',
+  },
+  'workflow.tenant_mismatch_approval': {
+    title: "Couldn't resume the approval workflow",
+    detail: 'The approval belongs to a different organisation.',
+  },
+  'chain.threshold_invalid': {
+    title: "Couldn't grant that approval",
+    detail: 'The approval chain configuration is invalid. Contact support.',
+  },
 
   // ─── service-routing (Phase 7.B-1.service-routing) ───────────────────────
   service_routing_not_found: { title: "Couldn't find that routing rule" },
