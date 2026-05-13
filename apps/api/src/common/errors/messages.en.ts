@@ -1342,6 +1342,22 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
       'The approval configuration is invalid. Add at least one approver and pick a threshold of either all or any.',
   },
 
+  // ─── Phase 1.5 visual approval workflow (sub-step 6.A) ───────────────────
+  // 422: tried to start a workflow whose definition exists but isn't in
+  // `status='published'` (draft or archived). Operator's fix is to publish
+  // the definition (or pick a different one).
+  'workflow.definition_not_published': {
+    title: "Couldn't start workflow",
+    detail: 'The workflow definition is not published. Publish the workflow before using it.',
+  },
+  // 500: workflow cancel cascade failed because the
+  // `cancel_workflow_instance_with_approvals` RPC raised. Server-class —
+  // retry-loop with traceId.
+  'workflow.cancel_with_approvals_failed': {
+    title: "Couldn't cancel that workflow",
+    detail: 'A server problem stopped the cancellation. Try again in a moment.',
+  },
+
   // ─── service-routing (Phase 7.B-1.service-routing) ───────────────────────
   service_routing_not_found: { title: "Couldn't find that routing rule" },
   service_routing_duplicate: {
@@ -1895,6 +1911,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'floor_plan.draft.invalid_polygons': {
     title: 'Invalid polygon data',
     detail: 'One or more polygons reference spaces that are not part of this floor.',
+  },
+  'floor_plan.draft.point_out_of_bounds': {
+    title: 'Polygon points out of bounds',
+    detail: 'One or more polygon points fall outside the floor image. Drag them inside the canvas and try again.',
   },
   'floor_plan.publish.image_required': {
     title: "Can't publish without a floor image",

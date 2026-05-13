@@ -1339,6 +1339,16 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
       'De goedkeuringsconfiguratie is ongeldig. Voeg minstens één goedkeurder toe en kies een drempel van alle of een van.',
   },
 
+  // ─── Phase 1.5 visual approval workflow (sub-step 6.A) ───────────────────
+  'workflow.definition_not_published': {
+    title: 'Kon de workflow niet starten',
+    detail: 'De workflow-definitie is niet gepubliceerd. Publiceer de workflow voordat je hem gebruikt.',
+  },
+  'workflow.cancel_with_approvals_failed': {
+    title: 'Kon die workflow niet annuleren',
+    detail: 'Een serverprobleem heeft de annulering tegengehouden. Probeer het zo opnieuw.',
+  },
+
   // ─── service-routing (Phase 7.B-1.service-routing) ───────────────────────
   service_routing_not_found: { title: 'Kon die routingregel niet vinden' },
   service_routing_duplicate: {
@@ -1856,6 +1866,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'floor_plan.draft.invalid_polygons': {
     title: 'Ongeldige polygoongegevens',
     detail: 'Een of meer polygonen verwijzen naar ruimten die geen deel uitmaken van deze verdieping.',
+  },
+  'floor_plan.draft.point_out_of_bounds': {
+    title: 'Polygoonpunten buiten de plattegrond',
+    detail: 'Een of meer polygoonpunten vallen buiten de plattegrondafbeelding. Sleep ze binnen het canvas en probeer het opnieuw.',
   },
   'floor_plan.publish.image_required': {
     title: 'Publiceren niet mogelijk zonder plattegrondafbeelding',

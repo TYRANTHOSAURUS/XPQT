@@ -459,6 +459,20 @@ export type KnownErrorCode =
   // Spec: docs/superpowers/specs/phase-1.5-visual-approval-workflow-plan.md §3.3 + §6.C.
   | 'workflow_definition.compilation_failed'
 
+  // ─── Phase 1.5 visual approval workflow (sub-step 6.A) ───────────────────
+  // 422: `startForTicket` refuses to start an instance for a workflow_definition
+  // that exists but is not in `status='published'` (draft or archived).
+  // Distinct code from `workflow.not_found` so the operator can disambiguate
+  // "wrong id" vs. "right id, wrong lifecycle". IMPORTANT 7 closure of the
+  // Phase 1.5 plan. Spec: phase-1.5-visual-approval-workflow-plan.md §6.A.
+  | 'workflow.definition_not_published'
+
+  // 500: `cancelInstanceById` failed to call the
+  // `cancel_workflow_instance_with_approvals` RPC (migration 00400). Server-
+  // class — the cancel cascade can't continue without an atomic instance flip
+  // + approvals expiry. Surfaces a `traceId` to the operator.
+  | 'workflow.cancel_with_approvals_failed'
+
   // ─── service-routing migration (Phase 7.B-1.service-routing) ─────────────
   | 'service_routing_not_found'
   | 'service_routing_duplicate'
@@ -875,6 +889,7 @@ export type KnownErrorCode =
   | 'floor_plan.draft.discard_failed'
   | 'floor_plan.draft.stale_update'
   | 'floor_plan.draft.invalid_polygons'
+  | 'floor_plan.draft.point_out_of_bounds'
   | 'floor_plan.publish.image_required'
   | 'floor_plan.publish.unlinked_polygons'
   | 'floor_plan.publish.invalid_polygons'
@@ -1340,6 +1355,10 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   // Phase 1.5 visual approval workflow (sub-step 6.A.X) — see KnownErrorCode
   // union for per-code rationale.
   'workflow_definition.compilation_failed',
+  // Phase 1.5 visual approval workflow (sub-step 6.A) — startForTicket gate
+  // + cancelInstanceById RPC delegation. See KnownErrorCode union for rationale.
+  'workflow.definition_not_published',
+  'workflow.cancel_with_approvals_failed',
   'service_routing_not_found',
   'service_routing_duplicate',
   'service_routing_immutable_key',
