@@ -545,9 +545,44 @@ export class WorkflowSpawnWakeOnBookingCreatedHandler
 export class WorkflowSpawnWakeOnBookingCancelledHandler
   implements OutboxEventHandler<BookingLifecyclePayload>
 {
-  constructor(private readonly core: WorkflowSpawnWakeCore) {}
+  constructor(
+    private readonly core: WorkflowSpawnWakeCore,
+    @Inject(forwardRef(() => WorkflowEngineService))
+    private readonly workflowEngine: WorkflowEngineService,
+  ) {}
 
   async handle(event: OutboxEvent<BookingLifecyclePayload>): Promise<void> {
+    // Phase 1.5 sub-step 6.A, Change 6: cancel the DRIVING workflow
+    // instance for this booking (if any) BEFORE the wake processing. The
+    // wake half (`core.runWake`) handles parent workflows that were
+    // WAITING for this booking event — but a workflow whose entity_kind=
+    // 'booking' and whose booking_id IS this booking is DRIVING the
+    // booking's lifecycle, and its approvals must expire when the booking
+    // dies. `cancelInstance('booking', bookingId, …)` is idempotent: if
+    // no driving instance exists (legacy bookings, non-workflow approval
+    // flow), it no-ops via the entity-FK lookup at workflow-engine.
+    // service.ts:297-309 returning null.
+    //
+    // Order matters: cancel the driving instance FIRST so its `instance_
+    // cancelled` audit event sequences before any wait-link resume events
+    // — the audit timeline reads "booking cancelled → driving workflow
+    // cancelled → waiting parent workflows wake on the cancelled branch".
+    //
+    // Errors here are propagated (not swallowed) — this handler is
+    // outbox-driven so a transient failure means the event re-runs after
+    // outbox retry, and the cancelInstance call is idempotent.
+    const payload = event.payload;
+    if (payload && payload.tenant_id === event.tenant_id) {
+      const bookingId = payload.booking_id;
+      if (typeof bookingId === 'string') {
+        await this.workflowEngine.cancelInstance(
+          'booking',
+          bookingId,
+          event.tenant_id,
+          'booking_cancelled',
+        );
+      }
+    }
     return this.core.runWake(event, BookingLifecycleEventType.Cancelled);
   }
 }

@@ -413,6 +413,12 @@ function makeWorkflowEngine(opts: FakeEngineOpts = {}): WorkflowEngineService {
       }
       return undefined;
     }),
+    // Phase 1.5 sub-step 6.A, Change 6: the booking.cancelled handler now
+    // also calls cancelInstance('booking', bookingId, …) BEFORE the wake
+    // processing to cancel the DRIVING workflow instance. Mock as a no-op
+    // for these tests — wake-specific assertions don't probe the cancel
+    // side; dedicated cancelInstance tests live in workflow-engine.service.spec.ts.
+    cancelInstance: jest.fn(async () => undefined),
   } as unknown as WorkflowEngineService;
 }
 
@@ -480,7 +486,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       const supabase = makeSupabase({});
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
       const event = makeEvent(
         BookingLifecycleEventType.Cancelled,
         {},
@@ -506,7 +512,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       const supabase = makeSupabase({ links: [] });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
       await handler.handle(makeEvent(BookingLifecycleEventType.Cancelled));
       expect(supabase.captured.selectFilters).toHaveLength(1);
       const f = supabase.captured.selectFilters[0];
@@ -532,7 +538,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
       await expect(handler.handle(makeEvent(BookingLifecycleEventType.Cancelled)))
         .resolves.toBeUndefined();
       expect(engine.resume).toHaveBeenCalledTimes(1);
@@ -583,7 +589,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
       await expect(handler.handle(makeEvent(BookingLifecycleEventType.Cancelled)))
         .resolves.toBeUndefined();
       expect(engine.resume).not.toHaveBeenCalled();
@@ -639,7 +645,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
       await handler.handle(makeEvent(BookingLifecycleEventType.Cancelled));
       expect(engine.resume).not.toHaveBeenCalled();
       expect(supabase.linkStore[0].resolved_at).toBeNull();
@@ -653,7 +659,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
       await handler.handle(makeEvent(BookingLifecycleEventType.Cancelled));
       expect(engine.resume).not.toHaveBeenCalled();
       // Row stays unclaimed for the Tier 1 sweeper.
@@ -668,7 +674,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
       await handler.handle(makeEvent(BookingLifecycleEventType.Cancelled));
       expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'condition_met');
       expect(supabase.linkStore[0].resolved_at).not.toBeNull();
@@ -685,7 +691,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
       await handler.handle(makeEvent(BookingLifecycleEventType.Cancelled));
       expect(engine.resume).not.toHaveBeenCalled();
       expect(supabase.linkStore[0].resolved_at).toBeNull();
@@ -703,7 +709,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
       await handler.handle(makeEvent(BookingLifecycleEventType.Cancelled));
       expect(engine.resume).toHaveBeenCalledTimes(1);
       expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'condition_met');
@@ -718,8 +724,8 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handlerA = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
-      const handlerB = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handlerA = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
+      const handlerB = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
 
       await handlerA.handle(makeEvent(BookingLifecycleEventType.Cancelled));
       expect(engine.resume).toHaveBeenCalledTimes(1);
@@ -765,8 +771,8 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handlerA = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
-      const handlerB = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handlerA = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
+      const handlerB = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
 
       // Kick both invocations off; neither awaited yet — they will pause
       // at the gate.
@@ -808,7 +814,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
       await handler.handle(makeEvent(BookingLifecycleEventType.Cancelled));
       expect(engine.resume).toHaveBeenCalledTimes(2);
       expect(engine.resume).toHaveBeenCalledWith(PARENT_INSTANCE_ID, TENANT_ID, 'condition_met');
@@ -828,7 +834,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
       await expect(handler.handle(makeEvent(BookingLifecycleEventType.Cancelled)))
         .rejects.toBeInstanceOf(DeadLetterError);
       expect(engine.resume).not.toHaveBeenCalled();
@@ -841,7 +847,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
       await expect(handler.handle(makeEvent(BookingLifecycleEventType.Cancelled)))
         .resolves.toBeUndefined();
       expect(engine.resume).not.toHaveBeenCalled();
@@ -859,7 +865,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
         resumeErrorOnInstanceId: PARENT_INSTANCE_ID,
       });
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
 
       let captured: unknown = null;
       try {
@@ -893,7 +899,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
         resumeErrorOnInstanceId: PARENT_INSTANCE_ID,
       });
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
 
       let captured: unknown = null;
       try {
@@ -932,7 +938,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
         resumeErrorOnInstanceId: PARENT_INSTANCE_ID,
       });
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
 
       let captured: unknown = null;
       try {
@@ -977,7 +983,7 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       });
       const engine = makeWorkflowEngine();
       const core = new WorkflowSpawnWakeCore(supabase.service, engine);
-      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
       let captured: unknown = null;
       try {
         await handler.handle(makeEvent(BookingLifecycleEventType.Cancelled));

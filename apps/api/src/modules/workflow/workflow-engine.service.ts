@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import {
   buildWorkflowAssignmentIdempotencyKey,
@@ -365,79 +366,56 @@ export class WorkflowEngineService {
     }
     visited.add(instanceId);
 
-    let entityKind: WorkflowEntityKind;
-    let entityId: string | null;
-
-    if (entityHint) {
-      entityKind = entityHint.entityKind;
-      entityId = entityHint.entityId;
-    } else {
-      // Cascade path: no hint. Read the entity descriptor from the
-      // instance row so the audit payload references the right entity
-      // even when the entity row was already deleted (booking_id SET
-      // NULL — read returns the now-NULL value but `entity_kind`
-      // survives the FK detach).
-      const { data: instanceRow } = await this.supabase.admin
-        .from('workflow_instances')
-        .select('entity_kind, case_id, work_order_id, booking_id')
-        .eq('id', instanceId)
-        .eq('tenant_id', tenantId)
-        .maybeSingle();
-      if (!instanceRow) {
-        // Missing or cross-tenant — no-op.
-        return;
-      }
-      const row = instanceRow as {
-        entity_kind: WorkflowEntityKind;
-        case_id: string | null;
-        work_order_id: string | null;
-        booking_id: string | null;
-      };
-      entityKind = row.entity_kind;
-      entityId =
-        entityKind === 'case'
-          ? row.case_id
-          : entityKind === 'work_order'
-            ? row.work_order_id
-            : row.booking_id;
+    // Phase 1.5 sub-step 6.A, Change 4 (CRITICAL 4 closure):
+    // Atomic claim + approvals expiry + audit emit via the
+    // `cancel_workflow_instance_with_approvals` RPC (migration 00400).
+    //
+    // Before Phase 1.5 this was a TS-side UPDATE + emit pair preceded by
+    // an entity-descriptor lookup so the audit payload could carry
+    // entity_kind + entity_id. With the RPC owning the atomic claim it
+    // also owns the audit emit AND the entity_kind/entity_id lookup
+    // (CTE RETURNING + coalesce), so the TS-side resolution is now dead.
+    // The `entityHint` parameter is no longer load-bearing; the upstream
+    // caller (cancelInstance) still passes it for backward compat but the
+    // RPC ignores it.
+    //
+    // cascadeContext (triggered_by_link_id + parent_instance_id) is NOT
+    // threaded into the RPC payload. The link audit chain at
+    // `resolveLinkRow` (line ~660 below) still emits `link_resolved` /
+    // `link_pending_entity_cancel` events that name the link id, so the
+    // cascade chain is reconstructible without duplicating it on the
+    // cancel event. Acceptable tradeoff for atomicity.
+    //
+    // The link cascade enumeration at line ~480 STAYS TS-side — it's
+    // idempotent + has per-link error boundaries that don't need atomicity.
+    const { data: rpcRows, error: rpcErr } = await this.supabase.admin.rpc(
+      'cancel_workflow_instance_with_approvals',
+      {
+        p_instance_id: instanceId,
+        p_tenant_id: tenantId,
+        p_reason: reason,
+      },
+    );
+    if (rpcErr) {
+      throw AppErrors.server('workflow.cancel_with_approvals_failed', {
+        detail: `RPC failed: ${rpcErr.message}`,
+      });
     }
-
-    // Atomic claim. UPDATE with the same status filter as the
-    // SELECT — exactly one caller flips the row; concurrent callers
-    // observe data=null and no-op (idempotent — same shape as resume()
-    // at line ~907 below).
-    const claim = await this.supabase.admin
-      .from('workflow_instances')
-      .update({
-        status: 'cancelled',
-        cancelled_at: new Date().toISOString(),
-        cancelled_reason: reason,
-      })
-      .eq('id', instanceId)
-      .eq('tenant_id', tenantId)
-      .in('status', ['active', 'waiting'])
-      .select('id')
-      .maybeSingle();
-
-    if (!claim.data) {
-      // Lost the race — another worker cancelled between our SELECT and
-      // UPDATE. They emit the audit event; we no-op.
+    const rpcRow = (rpcRows ?? [])[0] as
+      | { claimed: boolean; approvals_expired_ct: number }
+      | undefined;
+    if (!rpcRow?.claimed) {
+      // Lost the race — another worker cancelled. RPC's atomic claim returned
+      // 0 rows. They emit the audit event; we no-op.
       return;
     }
 
-    // Step 3: emit instance_cancelled. Carries triggered_by_link_id +
-    // parent_instance_id when this cancel was driven by a parent cascade
-    // (so the audit trail visualises the chain).
-    const cancelPayload: Record<string, unknown> = {
-      reason,
-      entity_kind: entityKind,
-      entity_id: entityId,
-    };
-    if (cascadeContext) {
-      cancelPayload.triggered_by_link_id = cascadeContext.triggeredByLinkId;
-      cancelPayload.parent_instance_id = cascadeContext.parentInstanceId;
-    }
-    await this.emit(instanceId, 'instance_cancelled', { payload: cancelPayload });
+    // entityHint is unused now that the RPC owns the entity resolution.
+    // Keeping the parameter on the signature for backward compat with the
+    // `cancelInstance` caller path that already computes + passes it; the
+    // refactor to remove it from the signature is a follow-up.
+    void entityHint;
+    void cascadeContext;
 
     // Step 4: cascade through workflow_instance_links. Tenant-filtered
     // (admin client bypasses RLS). Process every link individually with
@@ -948,14 +926,39 @@ export class WorkflowEngineService {
     // type pointing across tenants) would be returned blind and used to
     // start an instance — branching on a foreign workflow's nodes/edges.
     // Filter by tenant.
+    //
+    // Phase 1.5 sub-step 6.A, Change 5 (IMPORTANT 7 closure): also filter
+    // by status='published'. Migration 00400 introduced the 'archived'
+    // status for workflow_definitions superseded by a newer version on the
+    // same rule. The start path MUST refuse archived definitions —
+    // otherwise a delayed handler or race could spawn a new instance on an
+    // archived graph, breaking the "in-flight instances stay on their
+    // published version" invariant. resume() stays status-agnostic.
     const { data: definition } = await this.supabase.admin
       .from('workflow_definitions')
       .select('*')
       .eq('id', workflowDefinitionId)
       .eq('tenant_id', tenant.id)
+      .eq('status', 'published')
       .maybeSingle();
 
-    if (!definition) return null;
+    if (!definition) {
+      // Differentiate "not published" vs "not found" so admins debugging a
+      // failed start know to look at the workflow_definitions.status. The
+      // extra read costs one round-trip on the failure path only.
+      const { data: archivedOrDraft } = await this.supabase.admin
+        .from('workflow_definitions')
+        .select('status')
+        .eq('id', workflowDefinitionId)
+        .eq('tenant_id', tenant.id)
+        .maybeSingle();
+      if (archivedOrDraft) {
+        throw new AppError('workflow.definition_not_published', 422, {
+          detail: `workflow_definition ${workflowDefinitionId} has status='${(archivedOrDraft as { status: string }).status}', not 'published'`,
+        });
+      }
+      return null;
+    }
 
     const graph = definition.graph_definition as unknown as WorkflowGraph;
     if (!graph?.nodes?.length) return null;
@@ -1350,54 +1353,119 @@ export class WorkflowEngineService {
           return;
         }
         if (tenant) {
-          // Plan A.4 / Commit 3 (C2) — workflow approval-node tenant validation.
-          // node.config.approver_person_id + approver_team_id come from
-          // user-authored workflow JSONB (workflow-engine.service.ts:284-292).
-          // The approvals table FK on approver_person_id → persons(id) and
-          // approver_team_id → teams(id) only proves global existence;
-          // supabase.admin bypasses RLS. A forged / imported definition
-          // could carry a foreign-tenant uuid that would land in the
-          // approvals row blind, granting visibility + a pending approval
-          // routed to the wrong tenant. Validate before insert.
-          // null/undefined values are valid (some approver fields are
-          // unset by design — e.g. team-only or person-only approval
-          // shapes).
-          const approverPersonId = node.config.approver_person_id as string | undefined;
-          const approverTeamId = node.config.approver_team_id as string | undefined;
-          if (approverPersonId) {
-            await assertTenantOwned(
-              this.supabase,
-              'persons',
-              approverPersonId,
-              tenant.id,
-              { entityName: 'approver person' },
-            );
+          // Phase 1.5 sub-step 6.A, Change 2: shape-aware approval executor.
+          //
+          // Two graph shapes coexist in production:
+          //
+          //  (LEGACY) Pre-Phase-1.5: scalar `approver_person_id` /
+          //    `approver_team_id` on `node.config`. Hardcoded `entityKind=
+          //    'case'`. Single-row insert. Kept unchanged so old workflows
+          //    keep working.
+          //
+          //  (PHASE 1.5) New compiled graphs: `required_approvers` array on
+          //    `node.config` + `threshold` ∈ ('all','any'). entity_kind read
+          //    off the live workflow_instance via getEntityKindForInstance().
+          //    N-row insert with shared approval_chain_id, threshold-driven
+          //    parallel_group, chain_threshold per row, workflow_instance_id
+          //    + workflow_node_id stamped on each.
+          //
+          // Discrimination is by shape: presence of an array
+          // `required_approvers` toggles the new path. The two paths share
+          // the tenant-validation block (assertTenantOwned).
+          const requiredApproversRaw = node.config.required_approvers as
+            | Array<{ type: 'person' | 'team'; id: string }>
+            | undefined;
+          const isPhase15Shape =
+            Array.isArray(requiredApproversRaw) && requiredApproversRaw.length > 0;
+
+          if (isPhase15Shape) {
+            const polymorphic = await this.getEntityKindForInstance(instanceId);
+            const targetEntityType = this.projectLegacyEntityType(polymorphic.kind);
+            const targetEntityId = polymorphic.entityId;
+
+            const thresholdRaw = node.config.threshold as 'all' | 'any' | undefined;
+            const chainThreshold: 'all' | 'any' = thresholdRaw ?? 'all';
+            const approvalChainId = randomUUID();
+            // For threshold='all' use a per-execution parallel_group key so
+            // legacy 00310 grant logic counts siblings correctly; for 'any'
+            // parallel_group stays NULL (chain_threshold is the canonical
+            // signal post-00401).
+            const parallelGroup =
+              chainThreshold === 'all' ? `wf-${node.id}-${instanceId}` : null;
+
+            for (const approver of requiredApproversRaw!) {
+              const approverPersonId = approver.type === 'person' ? approver.id : undefined;
+              const approverTeamId = approver.type === 'team' ? approver.id : undefined;
+              if (approverPersonId) {
+                await assertTenantOwned(
+                  this.supabase,
+                  'persons',
+                  approverPersonId,
+                  tenant.id,
+                  { entityName: 'approver person' },
+                );
+              }
+              if (approverTeamId) {
+                await assertTenantOwned(
+                  this.supabase,
+                  'teams',
+                  approverTeamId,
+                  tenant.id,
+                  { entityName: 'approver team' },
+                );
+              }
+              await this.supabase.admin.from('approvals').insert({
+                tenant_id: tenant.id,
+                target_entity_type: targetEntityType,
+                target_entity_id: targetEntityId,
+                approver_person_id: approverPersonId,
+                approver_team_id: approverTeamId,
+                approval_chain_id: approvalChainId,
+                parallel_group: parallelGroup,
+                chain_threshold: chainThreshold,
+                workflow_instance_id: instanceId,
+                workflow_node_id: node.id,
+                status: 'pending',
+              });
+            }
+          } else {
+            // Pre-Phase-1.5 legacy single-approver shape. Unchanged from the
+            // pre-Phase-1.5 code path: hardcoded entityKind='case', single
+            // insert. Tenant validation runs identically.
+            //
+            // Note for new workflow authors: prefer the Phase 1.5 shape
+            // (required_approvers array). The compiler service that ships
+            // in 6.A.X always emits the array shape.
+            const approverPersonId = node.config.approver_person_id as string | undefined;
+            const approverTeamId = node.config.approver_team_id as string | undefined;
+            if (approverPersonId) {
+              await assertTenantOwned(
+                this.supabase,
+                'persons',
+                approverPersonId,
+                tenant.id,
+                { entityName: 'approver person' },
+              );
+            }
+            if (approverTeamId) {
+              await assertTenantOwned(
+                this.supabase,
+                'teams',
+                approverTeamId,
+                tenant.id,
+                { entityName: 'approver team' },
+              );
+            }
+            const entityKind: WorkflowEntityKind = 'case';
+            await this.supabase.admin.from('approvals').insert({
+              tenant_id: tenant.id,
+              target_entity_type: this.projectLegacyEntityType(entityKind),
+              target_entity_id: ticketId,
+              approver_person_id: approverPersonId,
+              approver_team_id: approverTeamId,
+              status: 'pending',
+            });
           }
-          if (approverTeamId) {
-            await assertTenantOwned(
-              this.supabase,
-              'teams',
-              approverTeamId,
-              tenant.id,
-              { entityName: 'approver team' },
-            );
-          }
-          // Phase 1.B polymorphization (spec §3.6). target_entity_type
-          // routes through projectLegacyEntityType. Case-kind workflows
-          // emit `'ticket'` so ApprovalService.respond keeps routing to
-          // the §3.5 grant_ticket_approval RPC; booking / work_order
-          // emit their kind literal (no consumer regression — those
-          // paths are new in Phase 1.A/1.B). Kind hardcoded 'case'
-          // until executeNode threads polymorphism through.
-          const entityKind: WorkflowEntityKind = 'case';
-          await this.supabase.admin.from('approvals').insert({
-            tenant_id: tenant.id,
-            target_entity_type: this.projectLegacyEntityType(entityKind),
-            target_entity_id: ticketId,
-            approver_person_id: approverPersonId,
-            approver_team_id: approverTeamId,
-            status: 'pending',
-          });
         }
         // Cross-tenant write fix (codex post-fix review 2026-05-08): the
         // approval/wait/timer/end branches all mutated workflow_instances by
@@ -1720,13 +1788,20 @@ export class WorkflowEngineService {
     // is atomic, so exactly one caller observes data!=null. The losers
     // observe data=null and no-op (idempotent — covers the cancelled /
     // completed transitions as well as another worker beating us).
+    // Phase 1.5 sub-step 6.A, Change 3 — polymorphize the claim's
+    // RETURNING to include entity_kind + all polymorphic id columns. The
+    // `advance()` signature still threads `ticketId: string` (the full
+    // rename is the deferred Phase 1.B.x slice) — for Phase 1.5 we just
+    // resolve the polymorphic id and pass it as the legacy parameter.
     const claimRes = await this.supabase.admin
       .from('workflow_instances')
       .update({ status: 'active', waiting_for: null })
       .eq('id', instanceId)
       .eq('tenant_id', tenantId)
       .eq('status', 'waiting')
-      .select('id, workflow_definition_id, current_node_id, ticket_id')
+      .select(
+        'id, workflow_definition_id, current_node_id, entity_kind, case_id, work_order_id, booking_id, ticket_id',
+      )
       .maybeSingle();
 
     if (!claimRes.data) {
@@ -1740,8 +1815,30 @@ export class WorkflowEngineService {
       id: string;
       workflow_definition_id: string;
       current_node_id: string;
-      ticket_id: string;
+      entity_kind: WorkflowEntityKind | null;
+      case_id: string | null;
+      work_order_id: string | null;
+      booking_id: string | null;
+      ticket_id: string | null;
     };
+
+    // Polymorphic entityId resolution — pick the right column off the row
+    // based on entity_kind. legacy default is ticket_id (pre-00369 rows).
+    // For 'case' kind, prefer case_id (post-00238 contract) over ticket_id.
+    const resumedEntityKind: WorkflowEntityKind = instance.entity_kind ?? 'case';
+    const resumedEntityId: string | null =
+      resumedEntityKind === 'case'
+        ? (instance.case_id ?? instance.ticket_id)
+        : resumedEntityKind === 'work_order'
+          ? instance.work_order_id
+          : resumedEntityKind === 'booking'
+            ? instance.booking_id
+            : instance.ticket_id;
+    if (!resumedEntityId) {
+      throw AppErrors.server('workflow.advance_failed', {
+        detail: `missing polymorphic entityId for instance ${instanceId} (kind=${resumedEntityKind})`,
+      });
+    }
 
     // Two-step read for the definition: the PostgREST embed
     // `definition:workflow_definitions(*)` on workflow_instances would
@@ -1777,7 +1874,7 @@ export class WorkflowEngineService {
 
     await TenantContext.run(tenantInfo, async () => {
       await this.emit(instanceId, 'instance_resumed', { payload: { edge_condition: edgeCondition ?? null } });
-      await this.advance(instanceId, graph, instance.current_node_id, instance.ticket_id, edgeCondition);
+      await this.advance(instanceId, graph, instance.current_node_id, resumedEntityId, edgeCondition);
     });
   }
 
