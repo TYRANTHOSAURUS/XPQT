@@ -23,12 +23,14 @@ describe('AdminGuard', () => {
         from: () => ({
           select: () => ({
             eq: () => ({
-              eq: async () => ({
-                data:
-                  roles === null
-                    ? null
-                    : roles.map((r) => ({ role: { type: r.type } })),
-                error,
+              eq: () => ({
+                eq: async () => ({
+                  data:
+                    roles === null
+                      ? null
+                      : roles.map((r) => ({ role: { type: r.type } })),
+                  error,
+                }),
               }),
             }),
           }),

@@ -25,11 +25,16 @@ export class AdminGuard implements CanActivate {
 
     const tenant = TenantContext.current();
 
+    // Filter on active=true (00003_people_users_roles.sql:86). An admin
+    // role assignment that has been deactivated must NOT grant admin
+    // access. Pre-existing gap in the old query — closed here while
+    // the schema is in view.
     const { data, error } = await this.supabase.admin
       .from('user_role_assignments')
       .select('role:roles(type)')
       .eq('user_id', platformUserId)
-      .eq('tenant_id', tenant.id);
+      .eq('tenant_id', tenant.id)
+      .eq('active', true);
 
     if (error) {
       throw AppErrors.server('auth.role_lookup_failed', {
