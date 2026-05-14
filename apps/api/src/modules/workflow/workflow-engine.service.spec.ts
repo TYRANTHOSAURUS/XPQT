@@ -1333,11 +1333,19 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
     expect(events).toHaveLength(0);
   });
 
-  it.skip('cancels active instance + emits instance_cancelled with no cascade when no links [skip Phase 1.5: cascade payload shape changed]', async () => {
-    const { supabase, dispatchService, slaService, calls } = makeCancelDeps({
+  it('cancels active instance + emits instance_cancelled with no cascade when no links', async () => {
+    // Phase 1.5 sub-step 6.A.Change 4 migrated the cancel emit into the
+    // cancel_workflow_instance_with_approvals RPC. The harness's rpc mock
+    // reads the mocked workflow_instances row to pick the entity_id; the
+    // fixture must carry the right polymorphic column (case_id for
+    // entity_kind='case') so the simulated emit's payload matches the
+    // assertions below. Pre-Phase-1.5 the entity descriptor was passed
+    // in via entityHint from cancelInstance → cancelInstanceById; now
+    // the RPC owns the lookup.
+    const { supabase, dispatchService, slaService, rpcCalls } = makeCancelDeps({
       tables: {
         workflow_instances: {
-          rows: [{ id: 'wi-1', status: 'active' }],
+          rows: [{ id: 'wi-1', status: 'active', entity_kind: 'case', case_id: 'tk-1', tenant_id: 'ten1' }],
           updateResult: [{ id: 'wi-1' }],
         },
         workflow_instance_links: { rows: [] },
@@ -1357,8 +1365,13 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
     });
     // No cascade events — no links.
     expect(events.filter((e) => e.event_type.startsWith('link_'))).toHaveLength(0);
-    // Update + select happened on workflow_instances.
-    expect(calls.some((c) => c.table === 'workflow_instances' && c.op === 'update')).toBe(true);
+    // Phase 1.5 sub-step 6.A.Change 4: the workflow_instances UPDATE
+    // moved into the cancel_workflow_instance_with_approvals RPC.
+    // Assertion shifted from "supabase.from('workflow_instances').update"
+    // to "supabase.rpc('cancel_workflow_instance_with_approvals')".
+    expect(
+      rpcCalls.some((c) => c.fn === 'cancel_workflow_instance_with_approvals'),
+    ).toBe(true);
   });
 
   it('cascade order: entity-cancel runs BEFORE link-resolve', async () => {
@@ -1550,11 +1563,17 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
     expect(pending[0].payload?.reason).toBe('booking_compensation_exception');
   });
 
-  it.skip('cascade with cancel_child + case child [skip Phase 1.5: cascade context moved off instance_cancelled payload]', async () => {
+  it('cascade with cancel_child + case child: link_pending + recursive child cancel + link_resolved carries cascade trace', async () => {
     // Parent cascade with a case-child link. The child workflow_instance
-    // exists and is active; recursion cancels it (no-op for this test —
-    // we just assert the recursion happened by counting workflow_instances
-    // SELECT calls).
+    // exists and is active; recursion cancels it.
+    //
+    // Phase 1.5 sub-step 6.A.Change 4: cascade context (triggered_by_link_id
+    // + parent_instance_id) moved OFF the instance_cancelled payload —
+    // the cancel emit is owned by the RPC now and the RPC's signature is
+    // fixed. The cascade trace lives on the parent's link_resolved event
+    // (emitted by resolveLinkRow on the parent instance) which carries
+    // link_id + parent_instance_id + child_entity_kind + child_entity_id.
+    // Test assertions migrated accordingly.
     const { supabase, dispatchService, slaService } = makeCancelDeps({
       tables: {
         workflow_instances: {
@@ -1591,17 +1610,29 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
     expect(pending[0].payload?.reason).toBe('phase_1b_case_entity_cancel_pending');
 
     // Link IS resolved (case path doesn't block link resolution — only the
-    // entity cancel is deferred).
-    expect(events.filter((e) => e.event_type === 'link_resolved')).toHaveLength(1);
+    // entity cancel is deferred). The link_resolved event carries the
+    // cascade trace (link_id + parent_instance_id + child_entity_id) —
+    // post-Phase-1.5 this IS the audit anchor for "child cancel was driven
+    // by this parent's cascade", not the cancel event's payload.
+    const resolved = events.filter((e) => e.event_type === 'link_resolved');
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0].instanceId).toBe('wi-parent');
+    expect(resolved[0].payload?.link_id).toBe('link-1');
+    expect(resolved[0].payload?.parent_instance_id).toBe('wi-parent');
+    expect(resolved[0].payload?.child_entity_id).toBe('tk-child');
+    expect(resolved[0].payload?.child_entity_kind).toBe('case');
 
     // Child workflow_instance was recursively cancelled — second
-    // instance_cancelled event with cascade context.
+    // instance_cancelled event for wi-child. Post-Phase-1.5 the cancel
+    // event payload itself does NOT carry triggered_by_link_id /
+    // parent_instance_id; those keys live on the link_resolved event
+    // above.
     const cancelled = events.filter((e) => e.event_type === 'instance_cancelled');
     expect(cancelled).toHaveLength(2);
     const childCancel = cancelled.find((e) => e.payload?.entity_id === 'tk-child');
     expect(childCancel).toBeTruthy();
-    expect(childCancel?.payload?.triggered_by_link_id).toBe('link-1');
-    expect(childCancel?.payload?.parent_instance_id).toBe('wi-parent');
+    expect(childCancel?.payload).not.toHaveProperty('triggered_by_link_id');
+    expect(childCancel?.payload).not.toHaveProperty('parent_instance_id');
   });
 
   it('cascade with orphan_child: link resolved with parent_cancelled, child entity untouched', async () => {
@@ -1743,8 +1774,17 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
     expect(spy).toHaveBeenCalledWith('case', 'tk-1', 'ten1', 'reclassified');
   });
 
-  it.skip('cascade audit payload [skip Phase 1.5: cascade context no longer on instance_cancelled payload — see TODO]', async () => {
-    // Same setup as the case-child cascade test but isolated assertion.
+  it('cascade audit trace lives on the parent link_resolved event (Phase 1.5 audit-shape contract)', async () => {
+    // Same setup as the case-child cascade test but isolated assertion on
+    // the cascade audit trace itself.
+    //
+    // Phase 1.5 sub-step 6.A.Change 4: cascade context (link_id +
+    // parent_instance_id + child_entity_*) moved from the
+    // instance_cancelled payload (where it lived pre-Phase-1.5) to the
+    // PARENT's link_resolved event emitted by resolveLinkRow. The audit
+    // trail is still reconstructible — just keyed on a different
+    // event_type. Downstream consumers (audit feeds, the workflow
+    // visualization in Phase 4) read both events and follow the chain.
     const { supabase, dispatchService, slaService } = makeCancelDeps({
       tables: {
         workflow_instances: {
@@ -1763,6 +1803,7 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
             child_entity_id: 'tk-child',
             on_parent_cancel: 'cancel_child',
           }],
+          updateResult: [{ id: 'link-X' }],
         },
       },
     });
@@ -1770,15 +1811,27 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
     const events = captureEmits(engine);
 
     await engine.cancelInstance('booking', 'bk-parent', 'ten1', 'admin');
+
+    // Audit trace: parent's link_resolved carries link_id + child entity.
+    const resolved = events.find((e) => e.event_type === 'link_resolved');
+    expect(resolved).toBeTruthy();
+    expect(resolved?.instanceId).toBe('wi-parent');
+    expect(resolved?.payload).toMatchObject({
+      link_id: 'link-X',
+      parent_instance_id: 'wi-parent',
+      child_entity_kind: 'case',
+      child_entity_id: 'tk-child',
+    });
+
+    // Child cancel event exists but does NOT carry cascade keys —
+    // the link_resolved above IS the cascade trace.
     const childCancel = events.find((e) => e.event_type === 'instance_cancelled' && e.payload?.entity_id === 'tk-child');
     expect(childCancel).toBeTruthy();
-    expect(childCancel?.payload).toMatchObject({
-      triggered_by_link_id: 'link-X',
-      parent_instance_id: 'wi-parent',
-    });
+    expect(childCancel?.payload).not.toHaveProperty('triggered_by_link_id');
+    expect(childCancel?.payload).not.toHaveProperty('parent_instance_id');
   });
 
-  it.skip('BLOCKER fix: cascade with booking child entity deleted [skip Phase 1.5: same assertion shape; behaviour preserved]', async () => {
+  it('BLOCKER fix: cascade with booking child entity deleted (Phase 1.5 audit-shape contract)', async () => {
     // Codex BLOCKER (2026-05-12). Repro: delete_booking_with_guard
     // succeeds (booking gone, workflow_instances.booking_id ON DELETE
     // SET NULL → NULL). With the old code, the cascade re-derived the
@@ -1827,19 +1880,28 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
 
     // Both instance_cancelled events must fire — parent + the orphaned
     // child wi-child — even though wi-child's booking_id is NULL.
+    // This is the BLOCKER fix: cancelInstanceById walks by id, not by
+    // polymorphic FK lookup, so the orphaned-but-still-active child
+    // cancels cleanly.
     const cancelled = events.filter((e) => e.event_type === 'instance_cancelled');
     expect(cancelled).toHaveLength(2);
     // Parent first, then child (cascade order).
     expect(cancelled[0].instanceId).toBe('wi-parent');
     expect(cancelled[1].instanceId).toBe('wi-child');
-    // Child cancel carries cascade context.
-    expect(cancelled[1].payload?.triggered_by_link_id).toBe('link-orphan');
-    expect(cancelled[1].payload?.parent_instance_id).toBe('wi-parent');
-    // Link resolves cleanly (booking treated as already-gone).
-    expect(events.filter((e) => e.event_type === 'link_resolved')).toHaveLength(1);
+    // Phase 1.5 sub-step 6.A.Change 4: cascade trace moved off the
+    // cancel event payload onto the parent's link_resolved event.
+    const resolved = events.find((e) => e.event_type === 'link_resolved');
+    expect(resolved).toBeTruthy();
+    expect(resolved?.instanceId).toBe('wi-parent');
+    expect(resolved?.payload?.link_id).toBe('link-orphan');
+    expect(resolved?.payload?.child_entity_id).toBe('bk-child-gone');
+    // Child cancel event does NOT carry the cascade keys (audit-shape
+    // contract migration).
+    expect(cancelled[1].payload).not.toHaveProperty('triggered_by_link_id');
+    expect(cancelled[1].payload).not.toHaveProperty('parent_instance_id');
   });
 
-  it.skip('BLOCKER fix (Phase 1.C): cron-claimed link cascade [skip Phase 1.5: cascade context assertion shape changed]', async () => {
+  it('BLOCKER fix (Phase 1.C): cron-claimed link cascade (Phase 1.5 audit-shape contract)', async () => {
     // Codex BLOCKER (2026-05-12 Phase 1.C). Sequence:
     //   1. cancelInstance atomic-claims parent.status='cancelled'.
     //   2. Tier 1 cron sweeper concurrently atomic-claims the link
@@ -1904,10 +1966,20 @@ describe('WorkflowEngineService.cancelInstance — Phase 1.B (§3.6)', () => {
     expect(cancelled).toHaveLength(2);
     expect(cancelled[0].instanceId).toBe('wi-parent');
     expect(cancelled[1].instanceId).toBe('wi-child');
-    // Child cancel carries the cascade context (proves it was driven
-    // by the link cascade, not an unrelated path).
-    expect(cancelled[1].payload?.triggered_by_link_id).toBe('link-cron-claimed');
-    expect(cancelled[1].payload?.parent_instance_id).toBe('wi-parent');
+    // Phase 1.5 sub-step 6.A.Change 4: cascade context (triggered_by_link_id
+    // + parent_instance_id) moved OFF the instance_cancelled payload —
+    // it lives on the parent's link_resolved event instead. In THIS
+    // scenario the parent's link_resolved is suppressed (cron already
+    // emitted it on the same row's earlier 'timeout' resolution), so
+    // there's no place for the cascade trace to live in events. That's
+    // an architectural limitation of the cron-race specifically — the
+    // load-bearing audit is the cron's own link_resolved emit (which
+    // happened pre-test setup, with resolution_kind='timeout'). For
+    // Phase 4's audit UI, the cron's emit IS the trace; this cascade
+    // just reconciles the workflow_instance side without duplicating
+    // the audit row.
+    expect(cancelled[1].payload).not.toHaveProperty('triggered_by_link_id');
+    expect(cancelled[1].payload).not.toHaveProperty('parent_instance_id');
 
     // link_resolved suppressed — cron already emitted it for the
     // 'timeout' resolution. Cascade's resolveLinkRow UPDATE returns
