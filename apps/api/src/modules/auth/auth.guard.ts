@@ -1,6 +1,7 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { TenantContext } from '../../common/tenant-context';
 import { IS_PUBLIC_KEY } from './public.decorator';
 import { AppErrors } from '../../common/errors';
 
@@ -32,7 +33,35 @@ export class AuthGuard implements CanActivate {
       throw AppErrors.unauthorized('Invalid token');
     }
 
-    request.user = data.user;
+    // Global tenant binding (docs/follow-ups/audits/04-rls-security.md
+    // Slice 1, P0). Bridge auth_uid → public.users(id) for the resolved
+    // tenant. If the JWT-holder has no users row in the current tenant,
+    // the request is a cross-tenant header-flip — reject with the same
+    // 403 AdminGuard already uses (admin.guard.ts:29). Attaches the
+    // resolved platform user id to request.user so downstream guards
+    // (AdminGuard, PermissionGuard) don't repeat the lookup.
+    const tenant = TenantContext.current();
+    const userLookup = await this.supabase.admin
+      .from('users')
+      .select('id')
+      .eq('tenant_id', tenant.id)
+      .eq('auth_uid', data.user.id)
+      .maybeSingle();
+    if (userLookup.error) {
+      throw AppErrors.server('auth.role_lookup_failed', {
+        detail: 'User lookup failed',
+        cause: userLookup.error,
+      });
+    }
+    const platformUserId = (userLookup.data as { id: string } | null)?.id;
+    if (!platformUserId) {
+      throw AppErrors.forbidden(
+        'auth.user_not_in_tenant',
+        'User not found in tenant',
+      );
+    }
+
+    request.user = Object.assign(data.user, { platformUserId });
     return true;
   }
 }

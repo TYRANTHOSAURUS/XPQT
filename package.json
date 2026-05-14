@@ -21,6 +21,7 @@
     "smoke:edit-booking-scope": "pnpm --filter @prequest/api run smoke:edit-booking-scope",
     "smoke:edit-booking": "pnpm --filter @prequest/api run smoke:edit-booking",
     "smoke:visual-approval": "pnpm --filter @prequest/api run smoke:visual-approval",
+    "smoke:cross-tenant": "pnpm --filter @prequest/api run smoke:cross-tenant",
     "test:concurrency": "pnpm --filter @prequest/api run test:concurrency",
     "design:check": "bash scripts/check-design.sh",
     "b2:check-config-reads": "bash scripts/check-b2-config-reads.sh",
