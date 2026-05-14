@@ -8,8 +8,10 @@ import { ServiceCatalogController } from './service-catalog.controller';
 import { ConfigEntityController } from './config-entity.controller';
 import { CriteriaSetController } from './criteria-set.controller';
 import { PermissionGuard } from '../../common/permission-guard';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
+  imports: [AuthModule],
   providers: [
     ConfigEngineService,
     RequestTypeService,

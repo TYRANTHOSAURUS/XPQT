@@ -1,7 +1,9 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { WebhookAdminService, WebhookUpsertDto } from './webhook-admin.service';
 import type { WebhookEventRow } from './webhook-event.service';
+import { AdminGuard } from '../auth/admin.guard';
 
+@UseGuards(AdminGuard)
 @Controller('workflow-webhooks')
 export class WebhookAdminController {
   constructor(private readonly svc: WebhookAdminService) {}

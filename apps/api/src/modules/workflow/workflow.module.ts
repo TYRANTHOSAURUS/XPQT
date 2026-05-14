@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 import { TenantModule } from '../tenant/tenant.module';
 import { TicketModule } from '../ticket/ticket.module';
 import { SlaModule } from '../sla/sla.module';
+import { AuthModule } from '../auth/auth.module';
 import { WorkflowService } from './workflow.service';
 import { WorkflowEngineService } from './workflow-engine.service';
 import { WorkflowValidatorService } from './workflow-validator.service';
@@ -14,7 +15,7 @@ import { WorkflowController } from './workflow.controller';
   // B.2.A.Step9 — SlaModule injected so the `update_ticket` node's sla
   // branch can pre-compute timer due_at values via
   // SlaService.buildTimersForRpc (same shape as WorkOrderService).
-  imports: [TenantModule, forwardRef(() => TicketModule), forwardRef(() => SlaModule)],
+  imports: [TenantModule, forwardRef(() => TicketModule), forwardRef(() => SlaModule), AuthModule],
   providers: [
     WorkflowService,
     WorkflowEngineService,

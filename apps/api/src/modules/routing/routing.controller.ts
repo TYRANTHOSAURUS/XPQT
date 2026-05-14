@@ -1,9 +1,11 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AdminGuard } from '../auth/admin.guard';
 import { RoutingRuleCreateSchema, RoutingRuleUpdateSchema } from './routing-rule-validators';
 
+@UseGuards(AdminGuard)
 @Controller('routing-rules')
 export class RoutingRuleController {
   constructor(private readonly supabase: SupabaseService) {}

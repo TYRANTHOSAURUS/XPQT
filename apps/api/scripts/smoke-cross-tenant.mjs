@@ -265,6 +265,36 @@ async function probe(name, options) {
     expect: 'forbidden',
   });
 
+  console.log('\n─── Cross-tenant WRITE attempts (Slice 1 + Slice 2 belt+suspenders)');
+  // After Slice 1 (AuthGuard global tenant binding) these were already
+  // safe to assert against the live API — the bridge rejects the
+  // cross-tenant header before the controller / RPC sees any body, so
+  // no attacker row can land in Tenant B. Slice 2 (AdminGuard on the
+  // admin controllers) is the second layer: even if Slice 1 regressed,
+  // AdminGuard would still reject because the cross-tenant admin has
+  // no role_assignment in Tenant B.
+  await probe('POST /workflows  (cross-tenant write)', {
+    url: `${API_BASE}/api/workflows`,
+    method: 'POST',
+    headers: tenantBHeader,
+    body: { name: 'xtenant-attack', graph_definition: {} },
+    expect: 'forbidden',
+  });
+  await probe('POST /routing-rules  (cross-tenant write)', {
+    url: `${API_BASE}/api/routing-rules`,
+    method: 'POST',
+    headers: tenantBHeader,
+    body: { name: 'xtenant-attack', applies_when: {} },
+    expect: 'forbidden',
+  });
+  await probe('POST /sla-policies  (cross-tenant write)', {
+    url: `${API_BASE}/api/sla-policies`,
+    method: 'POST',
+    headers: tenantBHeader,
+    body: { name: 'xtenant-attack' },
+    expect: 'forbidden',
+  });
+
   console.log('');
   console.log(
     `Result: ${results.pass} pass, ${results.fail} fail${

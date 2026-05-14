@@ -21,8 +21,10 @@ import { SplitOrchestrationService } from './split-orchestration.service';
 import { ChildExecutionResolverService } from './child-execution-resolver.service';
 import { ScopeOverrideResolverService } from './scope-override-resolver.service';
 import { PermissionGuard } from '../../common/permission-guard';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
+  imports: [AuthModule],
   providers: [
     PermissionGuard,
     RoutingService,

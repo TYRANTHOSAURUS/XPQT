@@ -6,9 +6,11 @@ import {
   Param,
   Patch,
   Post,
-  Query} from '@nestjs/common';
+  Query,
+  UseGuards} from '@nestjs/common';
 import { TenantContext } from '../../common/tenant-context';
 import { AppErrors } from '../../common/errors';
+import { AdminGuard } from '../auth/admin.guard';
 import { DomainRegistryService } from './domain-registry.service';
 
 /**
@@ -19,6 +21,7 @@ import { DomainRegistryService } from './domain-registry.service';
  * Routing Studio's domain-registry editor. During dual-run both endpoints
  * coexist; Artifact D step 9 retires the legacy one.
  */
+@UseGuards(AdminGuard)
 @Controller('admin/routing/domains')
 export class RoutingDomainsController {
   constructor(private readonly registry: DomainRegistryService) {}

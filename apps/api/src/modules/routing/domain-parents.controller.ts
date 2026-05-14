@@ -4,16 +4,19 @@ import {
   Delete,
   Get,
   Param,
-  Post} from '@nestjs/common';
+  Post,
+  UseGuards} from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
+import { AdminGuard } from '../auth/admin.guard';
 
 interface CreateDomainParentDto {
   domain: string;
   parent_domain: string;
 }
 
+@UseGuards(AdminGuard)
 @Controller('domain-parents')
 export class DomainParentsController {
   constructor(private readonly supabase: SupabaseService) {}
