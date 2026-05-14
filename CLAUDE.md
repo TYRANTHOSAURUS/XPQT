@@ -28,7 +28,7 @@ XPQT/
 - `pnpm db:start` — start local Supabase
 - `pnpm db:reset` — reset database and re-run migrations **(local only!)**
 - `pnpm db:push` — push migrations to the **remote** Supabase project
-- `pnpm smoke:work-orders` / `pnpm smoke:edit-booking-scope` / `pnpm smoke:edit-booking` / `pnpm smoke:floor-plans` / `pnpm smoke:visual-approval` — live-API smoke probes (see Smoke gates below)
+- `pnpm smoke:work-orders` / `pnpm smoke:edit-booking-scope` / `pnpm smoke:edit-booking` / `pnpm smoke:floor-plans` / `pnpm smoke:visual-approval` / `pnpm smoke:cross-tenant` — live-API smoke probes (see Smoke gates below)
 
 ## Smoke gates (mandatory before claiming ship)
 
@@ -42,6 +42,7 @@ Run the gate before claiming complete:
 - `ReservationService.editOne` / `editSlot` / `edit_booking` RPC (00364) → `pnpm smoke:edit-booking`
 - `FloorPlanService` / `publish_floor_plan_draft` RPC / floor-plan editor → `pnpm smoke:floor-plans`
 - `BookingFlowService` consumer cutover / `ApprovalConfigCompilerService` / `grant_booking_approval` v2 / `ensure_room_booking_rule_workflow_definition` / `cancel_workflow_instance_with_approvals` (Phase 1.5 visual approval workflow) → `pnpm smoke:visual-approval`
+- `AuthGuard` / `AdminGuard` / `PermissionGuard` / global tenant binding / any admin/config controller using `TenantContext.current()` → `pnpm smoke:cross-tenant`
 
 Exit 0 = green; exit 1 = at least one regression.
 
