@@ -7,6 +7,7 @@ import { Plus } from 'lucide-react';
 import { toastSuccess } from '@/lib/toast';
 import { handleMutationError } from '@/lib/errors';
 import { cn } from '@/lib/utils';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 
 const PLATFORM_DEFAULTS: { token: string; className: string; label: string }[] = [
   { token: 'platform:cover-1', className: 'bg-gradient-to-br from-blue-500/70 to-indigo-700', label: 'Blue' },
@@ -35,7 +36,7 @@ export function CoverPreview({
   if (platform) {
     return <div className={cn(platform.className, className)} />;
   }
-  return <img src={url} alt="" className={cn('object-cover', className)} />;
+  return <img src={rewriteSupabaseUrl(url)} alt="" className={cn('object-cover', className)} />;
 }
 
 interface Props {

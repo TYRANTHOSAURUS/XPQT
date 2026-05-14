@@ -3,6 +3,7 @@ import { PolygonShape } from './polygon-shape';
 import { polygonCentroid } from './lib/polygon-geometry';
 import type { PublishedFloorPlan } from '../../api/floor-plans/types';
 import type { AvailabilityState } from './lib/availability-state';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 
 type SpaceState = { spaceId: string; state: AvailabilityState; freeAt?: string | null };
 
@@ -48,7 +49,7 @@ export function FloorPlanCanvas({ plan, states, selectedSpaceId, onSpaceClick, i
           <line x1="0" y1="0" x2="0" y2="8" stroke="#fca5a5" strokeWidth="3.5" />
         </pattern>
       </defs>
-      <image href={plan.floor.image_url} x="0" y="0" width={plan.floor.width_px} height={plan.floor.height_px} />
+      <image href={rewriteSupabaseUrl(plan.floor.image_url)} x="0" y="0" width={plan.floor.width_px} height={plan.floor.height_px} />
       {sortedSpaces.map((s) => {
         const entry = stateMap.get(s.id);
         return (

@@ -2,6 +2,7 @@ import { ArrowRight, Users as UsersIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 import type { RankedRoom } from '@/api/room-booking';
 import { MiniTimelineStrip } from './mini-timeline-strip';
 import { RoomTypeIcon } from './room-type-icon';
@@ -76,7 +77,7 @@ export function BookingResultRow({
       >
         {room.image_url ? (
           <img
-            src={room.image_url}
+            src={rewriteSupabaseUrl(room.image_url)}
             alt=""
             loading="lazy"
             decoding="async"

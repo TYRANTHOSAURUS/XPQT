@@ -6,6 +6,7 @@ import { timeOfDayGreeting } from '@/lib/portal-greeting';
 import { useCommandPalette } from '@/components/command-palette/command-palette';
 import { PortalLocationSwitcher } from './portal-location-picker';
 import { GlassButtonPill, GlassLinkPill } from './portal-glass';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 
 const HERO_IMAGE_WIDTH = 1600;
 const HERO_IMAGE_HEIGHT = 480;
@@ -81,7 +82,7 @@ export function PortalHomeHero() {
         {hasImage ? (
           <>
             <img
-              src={heroUrl!}
+              src={rewriteSupabaseUrl(heroUrl)}
               alt=""
               width={HERO_IMAGE_WIDTH}
               height={HERO_IMAGE_HEIGHT}

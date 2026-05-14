@@ -31,6 +31,7 @@ import { usePortal, type AuthorizedLocation } from '@/providers/portal-provider'
 import { useTheme } from '@/providers/theme-provider';
 import { useDebouncedSave } from '@/hooks/use-debounced-save';
 import { cn } from '@/lib/utils';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 
 const PERSON_TYPE_LABEL: Record<string, string> = {
   employee: 'Employee',
@@ -178,7 +179,7 @@ function ProfileHero({
     <div className="flex flex-col items-center gap-4 pt-2">
       <div className="relative">
         <Avatar className="size-24 ring-1 ring-border">
-          {avatarUrl && <AvatarImage src={avatarUrl} alt={fullName} loading="eager" />}
+          {avatarUrl && <AvatarImage src={rewriteSupabaseUrl(avatarUrl)} alt={fullName} loading="eager" />}
           <AvatarFallback className="text-2xl bg-gradient-to-br from-indigo-500 to-pink-500 text-white font-semibold">
             {initials}
           </AvatarFallback>

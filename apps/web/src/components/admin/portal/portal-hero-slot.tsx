@@ -5,6 +5,7 @@ import { PortalHeroUploadDialog } from './portal-hero-upload-dialog';
 import { useRemovePortalHero } from '@/api/portal-appearance';
 import { toastRemoved } from '@/lib/toast';
 import { handleMutationError } from '@/lib/errors';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 
 interface Props {
   locationId: string;
@@ -37,7 +38,7 @@ export function PortalHeroSlot({ locationId, locationName, currentUrl }: Props) 
       >
         <div className="flex items-center gap-3">
           {currentUrl ? (
-            <img src={currentUrl} alt="" className="h-10 w-20 rounded border object-cover" />
+            <img src={rewriteSupabaseUrl(currentUrl)} alt="" className="h-10 w-20 rounded border object-cover" />
           ) : (
             <div className="h-10 w-20 rounded border border-dashed bg-muted" aria-hidden />
           )}

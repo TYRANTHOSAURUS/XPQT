@@ -14,7 +14,15 @@
  * the browser still benefits from `loading="lazy"` + explicit width/height
  * on the `<img>` tag, but we don't manufacture transform params they
  * wouldn't understand.
+ *
+ * Proxy-mode awareness: this is one of the documented choke points for the
+ * proxy-bypass workaround (see `docs/vpn-supabase-proxy-bypass.md`). The
+ * final output URL is run through `rewriteSupabaseUrl` so every space-image
+ * caller picks up the proxy host automatically when `VITE_SUPABASE_URL`
+ * is swapped. No caller of these helpers should also call
+ * `rewriteSupabaseUrl` — it's idempotent but redundant.
  */
+import { rewriteSupabaseUrl } from './rewrite-supabase-url';
 
 const PUBLIC_OBJECT_PREFIX = '/storage/v1/object/public/';
 const RENDER_IMAGE_PREFIX = '/storage/v1/render/image/public/';
@@ -45,12 +53,13 @@ export function spaceImageThumbnail(url: string | null, size: number): string | 
   if (!isSupabasePublic(url)) return url;
   const transformed = url.replace(PUBLIC_OBJECT_PREFIX, RENDER_IMAGE_PREFIX);
   const target = Math.round(size * 2);
-  return withParams(transformed, {
+  const out = withParams(transformed, {
     width: target,
     height: target,
     resize: 'cover',
     quality: 75,
   });
+  return rewriteSupabaseUrl(out) ?? out;
 }
 
 /**
@@ -61,9 +70,10 @@ export function spaceImagePreview(url: string | null, maxWidth: number): string 
   if (!url) return null;
   if (!isSupabasePublic(url)) return url;
   const transformed = url.replace(PUBLIC_OBJECT_PREFIX, RENDER_IMAGE_PREFIX);
-  return withParams(transformed, {
+  const out = withParams(transformed, {
     width: maxWidth,
     resize: 'contain',
     quality: 85,
   });
+  return rewriteSupabaseUrl(out) ?? out;
 }

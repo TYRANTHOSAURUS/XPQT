@@ -3,6 +3,7 @@ import { useAuth } from '@/providers/auth-provider';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { DropdownMenu, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { UserMenuContent } from '@/components/user-menu-content';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 
 export function PortalAccountMenu() {
   const { user, person } = useAuth();
@@ -27,7 +28,7 @@ export function PortalAccountMenu() {
         }
       >
         <Avatar className="size-8">
-          {avatarUrl && <AvatarImage src={avatarUrl} alt="" loading="lazy" />}
+          {avatarUrl && <AvatarImage src={rewriteSupabaseUrl(avatarUrl)} alt="" loading="lazy" />}
           <AvatarFallback className="bg-gradient-to-br from-indigo-500 via-fuchsia-500 to-pink-500 text-white text-xs font-semibold">
             {initials}
           </AvatarFallback>

@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { resolvePortalIcon } from '@/lib/portal-icons';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 
 interface Props {
   id: string;
@@ -50,7 +51,7 @@ export function PortalCategoryCard({ id, name, description, icon, cover_source, 
           <div className={cn(platformClass, 'h-full w-full')} aria-hidden />
         ) : cover_source === 'image' && cover_image_url ? (
           <img
-            src={cover_image_url}
+            src={rewriteSupabaseUrl(cover_image_url)}
             alt=""
             loading="lazy"
             width={COVER_WIDTH}
