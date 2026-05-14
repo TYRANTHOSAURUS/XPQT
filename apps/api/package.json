@@ -17,7 +17,8 @@
     "smoke:outbox": "node scripts/smoke-outbox-roundtrip.mjs",
     "smoke:floor-plans": "node scripts/smoke-floor-plans.mjs",
     "smoke:edit-booking-scope": "node scripts/smoke-edit-booking-scope.mjs",
-    "smoke:edit-booking": "node scripts/smoke-edit-booking.mjs"
+    "smoke:edit-booking": "node scripts/smoke-edit-booking.mjs",
+    "smoke:visual-approval": "node scripts/smoke-visual-approval.mjs"
   },
   "dependencies": {
     "@azure/msal-node": "^5.1.4",

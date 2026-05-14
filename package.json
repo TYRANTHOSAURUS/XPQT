@@ -20,6 +20,7 @@
     "smoke:floor-plans": "pnpm --filter @prequest/api run smoke:floor-plans",
     "smoke:edit-booking-scope": "pnpm --filter @prequest/api run smoke:edit-booking-scope",
     "smoke:edit-booking": "pnpm --filter @prequest/api run smoke:edit-booking",
+    "smoke:visual-approval": "pnpm --filter @prequest/api run smoke:visual-approval",
     "test:concurrency": "pnpm --filter @prequest/api run test:concurrency",
     "design:check": "bash scripts/check-design.sh",
     "b2:check-config-reads": "bash scripts/check-b2-config-reads.sh",

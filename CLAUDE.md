@@ -28,387 +28,176 @@ XPQT/
 - `pnpm db:start` — start local Supabase
 - `pnpm db:reset` — reset database and re-run migrations **(local only!)**
 - `pnpm db:push` — push migrations to the **remote** Supabase project
-- `pnpm smoke:work-orders` — live-API smoke test for the work-order + case command surface (see "Smoke gate" below)
-- `pnpm smoke:edit-booking-scope` — live-API smoke test for the recurrence-scope booking edit pipeline (see "Smoke gate" below)
-- `pnpm smoke:edit-booking` — live-API smoke test for the single-occurrence editOne + editSlot booking edit pipelines (see "Smoke gate" below)
+- `pnpm smoke:work-orders` / `pnpm smoke:edit-booking-scope` / `pnpm smoke:edit-booking` / `pnpm smoke:floor-plans` / `pnpm smoke:visual-approval` — live-API smoke probes (see Smoke gates below)
 
-## Smoke gate (mandatory before claiming WO/case-surface work shipped)
+## Smoke gates (mandatory before claiming ship)
 
-**Run `pnpm smoke:work-orders` (with the dev server running) before
-claiming any work touching `WorkOrderService` / `TicketService.update`
-/ the desk-detail sidebar is complete.** This script lives at
-`apps/api/scripts/smoke-work-orders.mjs`. It mints a real Admin JWT
-and runs the full mutation matrix against the live API (status,
-priority, assignment, plan, sla, title, tags, cost-fractional,
-dispatch — plus 7 validation probes for ghost uuids, malformed uuids,
-oversized arrays, ghost assignees, empty title). Uses the
-current-row-XOR-sentinel pattern so every mutation actually exercises
-the write path (no phantom-success on a no-op fast path).
+Live-API integration probes that mint a real Admin JWT and exercise the running dev server. They exist because mocked-Supabase jest tests pass even when the real DB write fails (2026-05-01 P0) and no-op fast paths silently break on NUMERIC round-trip (Slice 3.1). Code review + jest specs are **necessary but not sufficient** — they don't talk to a real database.
 
-**Run `pnpm --filter @prequest/api smoke:edit-booking-scope` (with the
-dev server running) before claiming any work touching
-`ReservationService.editScope` / `assembleScopeEditPlan` /
-`edit_booking_scope` RPC is complete.** This script lives at
-`apps/api/scripts/smoke-edit-booking-scope.mjs`. It seeds a
-recurrence_series + 5 occurrences directly via psql (bypassing the
-create-flow's rule resolver + conflict guard, which are out of scope
-for an edit-pipeline probe), mints a real Admin JWT, and exercises
-the `POST /reservations/:id/edit-scope` HTTP surface across the
-spec'd scenarios: scope='series' dry-run + commit + idempotent
-replay + payload-mismatch (409); scope='this_and_following' dry-run
-(splitSeries suppressed) + commit (splitSeries fires, new series
-minted, forward bookings move); validation gates (scope='this' →
-`wrong_endpoint`, `start_at` → `edit_booking_scope.time_shift_not_
-supported` (422), invalid scope + non-boolean dry_run →
-`edit_booking_scope.invalid_plans` (400), missing X-Client-Request-
-Id → guard fires). Fixture is dropped in `finally` so a failed run
-doesn't leave orphans.
+**Full reference:** [`docs/smoke-gates.md`](docs/smoke-gates.md) — probe matrices, fixture details, validation gates.
 
-**Run `pnpm --filter @prequest/api smoke:edit-booking` (with the
-dev server running) before claiming any work touching
-`ReservationService.editOne` / `ReservationService.editSlot` /
-`assembleEditPlan` (kinds `'one'` + `'slot'`) / the `edit_booking`
-RPC (00364) is complete.** This script lives at
-`apps/api/scripts/smoke-edit-booking.mjs`. It seeds two fixtures
-directly via psql (Fixture A: single booking + 1 slot, +130d on
-ROOM_HUDDLE; Fixture B: single booking + 2 slots, +131d, primary
-on ROOM_HUDDLE + non-primary on ROOM_BOARD — `display_order` 0/1
-seeded explicitly), mints a real Admin JWT, and exercises both
-`PATCH /reservations/:id` (editOne) and `PATCH /reservations/
-:bookingId/slots/:slotId` (editSlot) across 20 scenarios: editOne
-mutation matrix (space_id move, geometry shift, idempotency replay,
-payload-mismatch, invalid_window for start>=end + parse-failure,
-invalid_space_id empty string, reference.not_in_tenant ghost-uuid,
-booking_not_found ghost-booking, missing X-Client-Request-Id);
-editSlot mutation matrix (non-primary slot space_id move, URL
-mismatch via Fixture A's slotId + Fixture B's bookingId, MIN(slots)
-rollup on start_at shift, idempotency replay, payload-mismatch,
-invalid_space_id, missing X-Client-Request-Id); op-discrimination
-(editOne + editSlot sharing one crid mint 2 distinct
-command_operations rows — Step 2F.3 contract). Fixtures are dropped
-in `finally` so a failed run doesn't leave orphans.
+Run the gate before claiming complete:
+- `WorkOrderService` / `TicketService.update` / desk-detail sidebar → `pnpm smoke:work-orders`
+- `ReservationService.editScope` / `edit_booking_scope` RPC → `pnpm smoke:edit-booking-scope`
+- `ReservationService.editOne` / `editSlot` / `edit_booking` RPC (00364) → `pnpm smoke:edit-booking`
+- `FloorPlanService` / `publish_floor_plan_draft` RPC / floor-plan editor → `pnpm smoke:floor-plans`
+- `BookingFlowService` consumer cutover / `ApprovalConfigCompilerService` / `grant_booking_approval` v2 / `ensure_room_booking_rule_workflow_definition` / `cancel_workflow_instance_with_approvals` (Phase 1.5 visual approval workflow) → `pnpm smoke:visual-approval`
 
-This gate is the structural defense against the recurring failure
-mode that produced the 2026-05-01 P0 (mocked-Supabase tests pass +
-real DB writes 42501) and the Slice 3.1 cost-float bug (no-op fast
-path silently broken on NUMERIC round-trip). Code review + jest
-specs are necessary but **not sufficient** — they don't talk to a
-real database.
-
-Exit 0 = all probes pass. Exit 1 = at least one regression.
-
-## Smoke gate (mandatory before claiming floor-plan work shipped)
-
-**Run `pnpm smoke:floor-plans` (with the dev server running) before
-claiming any work touching `FloorPlanService` / `FloorPlanDraftService`
-/ `publish_floor_plan_draft` RPC / the floor-plan editor is complete.**
-This script lives at `apps/api/scripts/smoke-floor-plans.mjs`. It mints
-a real Admin JWT, fabricates a disposable floor + child room via the
-Supabase admin client, then runs 20 probes against the live API: happy-path
-CRUD (GET draft, PATCH, publish, GET published, history), validation
-rejections (1-point polygon, unlinked polygon, cross-tenant space_id,
-space not a child of floor, duplicate space_id, publish with no image),
-cross-tenant RLS isolation (tenant B cannot see tenant A draft), atomic
-CAS / optimistic locking (If-Match stale → 409), parallel publish race
-(exactly one success), signed-URL freshness, and the direct Supabase REST
-block (RLS rejects direct INSERT into floor_plan_publish_history).
-Skips: non-admin JWT probe (P10, requires seeded non-admin user) and
-bounds-check probe (P17, DTO does not yet enforce pixel clamping).
-All fabricated test data is cleaned up on exit.
-
-Exit 0 = all probes pass. Exit 1 = at least one regression.
+Exit 0 = green; exit 1 = at least one regression.
 
 ## Supabase: remote vs local — READ BEFORE WRITING MIGRATIONS
 
-**This project's dev environment connects to the REMOTE Supabase project**, not the local stack. `.env` points `SUPABASE_URL` at `https://iwbqnyrvycqgnatratrk.supabase.co`. The API, web, and browser all talk to the remote DB in day-to-day dev.
+**Dev connects to the REMOTE Supabase project**, not the local stack. `.env` points `SUPABASE_URL` at `https://iwbqnyrvycqgnatratrk.supabase.co`. The API, web, and browser all talk to remote in day-to-day dev.
 
-**Consequences you must respect every time you write a migration or seed:**
-1. `pnpm db:reset` ONLY touches local Supabase (127.0.0.1:54321). It does **not** affect the remote DB the app actually uses. A migration that applies cleanly locally is still invisible to the running app until it's pushed.
-2. To make migrations take effect for the running dev app, you MUST push them to the remote. Two paths:
-   - **Preferred:** `pnpm db:push` (wraps `supabase db push`) — requires the project linked via `supabase link --project-ref iwbqnyrvycqgnatratrk` with the DB password. This has failed in practice because the CLI auth lacks project privileges on this workspace, so fall back to the next option.
-   - **Fallback (works today):** apply migration files directly with psql against the remote connection string: `PGPASSWORD='<db_password>' psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -v ON_ERROR_STOP=1 -f supabase/migrations/<file>.sql`. Follow with `NOTIFY pgrst, 'reload schema';` so the remote PostgREST picks up new tables/functions.
-3. **Always confirm with the user before running `pnpm db:push` or `supabase db push`.** It writes to a shared/production Supabase project — treat it like a deploy.
-4. If you see `PGRST205` errors ("Could not find the table X in the schema cache") or 500s from new endpoints immediately after adding a migration: the most likely cause is that the migration exists locally but hasn't been pushed to remote. Check `.env` SUPABASE_URL, then confirm whether the migration needs `pnpm db:push`.
-5. `supabase db reset` is destructive for whichever DB it targets — never run it against remote. It's safe locally, dangerous remotely. Local reset is the default behavior; remote reset requires extra flags, which we don't use.
-6. Seed migrations (`*_seed_*.sql`) that use fixed UUIDs are safe to re-apply with `on conflict do nothing`, but still need to be pushed to remote to appear in the app.
+- `pnpm db:reset` ONLY touches local Supabase. A migration that applies locally is invisible to the running app until pushed.
+- To make a migration take effect: `pnpm db:push` (preferred) — but the CLI has failed auth here, so the working fallback is `PGPASSWORD='<db_pass>' psql "postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres" -v ON_ERROR_STOP=1 -f supabase/migrations/<file>.sql`, then `NOTIFY pgrst, 'reload schema';`. DB password is in `.env` as `SUPABASE_DB_PASS` (also mirrored in `.claude/CLAUDE.md`).
+- **Always confirm before pushing.** It writes to a shared/production project — treat it like a deploy.
+- `PGRST205` or 500s from new endpoints after a migration = unpushed migration. Check `SUPABASE_URL` first.
+- `supabase db reset` is destructive — never run against remote.
 
-**Checklist before reporting a migration/seed task as "done":**
-- [ ] Migration file is in `supabase/migrations/` with the next numeric prefix
-- [ ] `pnpm db:reset` applies it cleanly (validates SQL)
-- [ ] User has been asked whether to push to remote, and `pnpm db:push` has been run with their go-ahead
-- [ ] A smoke query (via the running API, not just psql against local) confirms the data is visible
+**Done checklist:** migration in `supabase/migrations/` with next prefix · `pnpm db:reset` validates SQL · user authorized push · smoke query via running API confirms data visible.
 
 ## Architecture
-- **Tenant isolation:** Supabase RLS (row-level security). Every table has tenant_id.
-- **Tenant resolution:** AsyncLocalStorage middleware resolves tenant from subdomain or X-Tenant-Id header.
-- **Auth:** Supabase Auth (JWT). Backend validates tokens via AuthGuard.
+- **Tenant isolation:** Supabase RLS. Every table has `tenant_id`.
+- **Tenant resolution:** AsyncLocalStorage middleware resolves tenant from subdomain or `X-Tenant-Id` header.
+- **Auth:** Supabase Auth (JWT). Backend validates via `AuthGuard`.
 - **Module boundaries:** NestJS modules with explicit service exports. No module touches another module's tables directly.
-- **Multi-step writes are PL/pgSQL RPCs, not TS pipelines.** If a feature has to write to ≥2 tables and any partial-write state is corrupting (cross-table invariants, FK chains, audit-trail integrity, outbox emit + domain mutation), the writes go inside one PL/pgSQL function called from TypeScript — NOT a sequence of supabase-js HTTP calls in TS. The `BookingTransactionBoundary` + in-process compensation pattern is legacy and being retired (Phase 6 hardening backlog). Pattern reference: combined RPCs in spec [`docs/superpowers/specs/2026-05-04-domain-outbox-design.md`](docs/superpowers/specs/2026-05-04-domain-outbox-design.md) §1 + §3.1; canonical implementations are `create_booking_with_attach_plan` (00309), `grant_booking_approval` (00310), `approve_booking_setup_trigger` (00311), `create_setup_work_order_from_event` (00312). TS preflight + plan assembly is fine; the writes themselves are atomic at the Postgres layer. Best-effort post-commit emissions still go through `OutboxService.emit()` (fire-and-forget) — but anything where partial-write loses correctness is one RPC.
-- **Org structure (requester side):** `org_nodes` is the per-tenant requester hierarchy (self-referential tree). Persons attach via `person_org_memberships` (one primary today, multi-membership ready). Location grants attached to a node via `org_node_location_grants` cascade to all members and descendants — see the third `org_grant` source in `portal_authorized_root_matches` (migration 00080). Reference: [`docs/superpowers/specs/2026-04-22-organisations-and-admin-template-design.md`](docs/superpowers/specs/2026-04-22-organisations-and-admin-template-design.md).
-- **Settings-page template:** new admin pages should be built with `SettingsPageShell` / `SettingsPageHeader` / `SettingsSection` / `SettingsFooterActions` from `apps/web/src/components/ui/settings-page.tsx` (centered 640px column, optional back-button navigation). Reference implementations live under `/admin/organisations`.
+- **Multi-step writes are PL/pgSQL RPCs, not TS pipelines.** If a feature writes to ≥2 tables and any partial-write state is corrupting (cross-table invariants, FK chains, audit-trail integrity, outbox emit + domain mutation), the writes go inside one PL/pgSQL function called from TS — NOT a sequence of supabase-js calls. The `BookingTransactionBoundary` + in-process compensation pattern is legacy (Phase 6 hardening backlog). Reference: [`docs/superpowers/specs/2026-05-04-domain-outbox-design.md`](docs/superpowers/specs/2026-05-04-domain-outbox-design.md) §1 + §3.1. Canonical RPCs: `create_booking_with_attach_plan` (00309), `grant_booking_approval` (00310), `approve_booking_setup_trigger` (00311), `create_setup_work_order_from_event` (00312). TS preflight + plan assembly is fine; the writes are atomic in Postgres. Best-effort post-commit emissions go through `OutboxService.emit()`.
+- **Org structure (requester side):** `org_nodes` is the per-tenant requester hierarchy. Persons attach via `person_org_memberships`. Location grants via `org_node_location_grants` cascade to members + descendants. See `portal_authorized_root_matches` (00080) and [`docs/superpowers/specs/2026-04-22-organisations-and-admin-template-design.md`](docs/superpowers/specs/2026-04-22-organisations-and-admin-template-design.md).
 
 ## Assignments, Routing & Fulfillment
 
-**Full reference:** [`docs/assignments-routing-fulfillment.md`](docs/assignments-routing-fulfillment.md). Read it before changing any routing, dispatch, SLA, or case/work-order behavior.
+**Full reference:** [`docs/assignments-routing-fulfillment.md`](docs/assignments-routing-fulfillment.md). Read before changing routing, dispatch, SLA, or case/work-order behavior.
 
-Quick mental model — four orthogonal axes, keep them separate:
+Four orthogonal axes — keep them separate:
 1. **Routing** (scope + request type) — `ResolverService` + `routing_rules`.
 2. **Ownership** — parent case's `assigned_team_id` (the service desk).
 3. **Execution** — child work orders' assignees (user or vendor). Created via `DispatchService` / `POST /tickets/:id/dispatch`.
-4. **Visibility** — query-layer filters (not yet implemented; planned separately).
+4. **Visibility** — query-layer filters (separate doc below).
 
-Resolver order (first match wins): routing rules → asset branch → location branch (with space-group + domain-parent fallback) → request-type default → unassigned. Every decision is persisted to `routing_decisions` with a full trace. Vendors are first-class assignees alongside teams and users.
+Resolver order (first match wins): routing rules → asset branch → location branch (with space-group + domain-parent fallback) → request-type default → unassigned. Every decision is persisted to `routing_decisions`. Vendors are first-class assignees alongside teams and users.
 
 ### MANDATORY: keep the reference doc in sync
 
-**If a change touches any of the files or tables below, update `docs/assignments-routing-fulfillment.md` in the SAME commit/PR.** The doc is the operational contract for this subsystem — silent drift is how routing bugs hide.
+**Touching any of these = update `docs/assignments-routing-fulfillment.md` in the same PR.** Silent drift is how routing bugs hide.
 
-Trigger files:
-- `apps/api/src/modules/routing/**`
-- `apps/api/src/modules/ticket/dispatch.service.ts`
-- `apps/api/src/modules/ticket/ticket.service.ts` (`runPostCreateAutomation`, create/list DTOs, `getChildTasks`, reassignment)
-- `apps/api/src/modules/ticket/ticket.controller.ts` (routing-adjacent endpoints)
-- `apps/api/src/modules/sla/**`
-- `apps/api/src/modules/approval/**` (anything affecting `pending_approval` semantics)
-- `apps/api/src/modules/workflow/workflow-engine.service.ts` (especially `create_child_tasks`)
+Trigger files: `apps/api/src/modules/routing/**` · `ticket/dispatch.service.ts` · `ticket/ticket.service.ts` (post-create automation, create/list DTOs, `getChildTasks`, reassignment) · `ticket/ticket.controller.ts` (routing endpoints) · `sla/**` · `approval/**` (anything touching `pending_approval`) · `workflow/workflow-engine.service.ts` (especially `create_child_tasks`).
 
 Trigger migrations — any add/alter of: `tickets`, `request_types`, `routing_rules`, `routing_decisions`, `location_teams`, `space_groups`, `space_group_members`, `domain_parents`, `sla_policies`, `sla_timers`, `teams`, `vendors`, `assets`, `asset_types`.
 
-When the doc and code disagree, fix the doc first, then align the code to the corrected doc.
+Fix the doc first, then align code to the corrected doc.
 
 ## Ticket Visibility
 
-**Full reference:** [`docs/visibility.md`](docs/visibility.md). Read it before changing any read/write path on tickets.
+**Full reference:** [`docs/visibility.md`](docs/visibility.md). Read before changing any read/write path on tickets.
 
-Three-tier model: **Participants** (requester · assignee · watcher · vendor) · **Operators** (team member · role domain + location scope) · **Overrides** (`tickets:read_all` / `tickets:write_all` permissions on `roles.permissions`). Enforced at the API layer via `TicketVisibilityService` (`loadContext` + `getVisibleIds` + `assertVisible`). The canonical SQL predicate is `public.ticket_visibility_ids(user_id, tenant_id)`.
+Three-tier model: **Participants** (requester · assignee · watcher · vendor) · **Operators** (team member · role domain + location scope) · **Overrides** (`tickets:read_all` / `tickets:write_all` on `roles.permissions`). Enforced via `TicketVisibilityService` (`loadContext` + `getVisibleIds` + `assertVisible`). Canonical SQL predicate: `public.ticket_visibility_ids(user_id, tenant_id)`.
 
-### MANDATORY: keep the reference doc in sync
-
-Same rule as the assignments/routing doc — **touch visibility code or its dependent tables, update `docs/visibility.md` in the same PR.** Trigger files:
-
-- `apps/api/src/modules/ticket/ticket-visibility.service.ts`
-- `apps/api/src/modules/ticket/ticket.service.ts` (read/write method signatures or gates)
-- `apps/api/src/modules/ticket/ticket.controller.ts` (req.user.id routing)
-- Any migration altering `ticket_visibility_ids`, `expand_space_closure`, `user_has_permission`, or the tickets columns they reference (`requester_person_id`, `assigned_user_id`, `assigned_team_id`, `assigned_vendor_id`, `watchers`, `location_id`).
-- Any migration changing `users`, `user_role_assignments`, `team_members`, `roles.permissions`, or `spaces.parent_id`.
+**Same sync-the-doc rule.** Trigger files: `ticket/ticket-visibility.service.ts` · `ticket/ticket.service.ts` (read/write signatures or gates) · `ticket/ticket.controller.ts` (req.user.id routing) · any migration altering `ticket_visibility_ids`, `expand_space_closure`, `user_has_permission`, the tickets columns they reference (`requester_person_id`, `assigned_user_id`, `assigned_team_id`, `assigned_vendor_id`, `watchers`, `location_id`) · any migration changing `users`, `user_role_assignments`, `team_members`, `roles.permissions`, `spaces.parent_id`.
 
 ## Frontend Rules
-- **Server state = React Query.** New data-fetching code must use TanStack Query following [`docs/react-query-guidelines.md`](docs/react-query-guidelines.md) — one key factory per module under `apps/web/src/api/<module>/`, `queryOptions` helpers, hierarchical keys (`all` → `lists`/`list` → `details`/`detail` → sub-resources), optimistic updates via `onMutate` + rollback. The legacy `useApi` hook (`apps/web/src/hooks/use-api.ts`) is being migrated out — do not add new callers. When touching a file that still uses `useApi`, consider migrating it (see §9–§10 of the guidelines).
-- **Always use shadcn/ui components first.** Before creating any UI element, check if shadcn has a component for it. Use `context7` to look up the latest shadcn docs. Only use raw HTML elements if no shadcn component exists for the use case.
-- **Install shadcn components before using them:** `npx shadcn@latest add <component-name>`
-- **Design reference:** Linear app — clean, spacious, minimal borders, subtle color usage, properties sidebar on the right.
-- Installed components are in `apps/web/src/components/ui/`. Check there before installing duplicates.
-- **Make components reusable/generic by default.** Before writing an inline block of JSX or a page-local helper component, ask: will this pattern be used in more than one place? If yes (or plausibly yes), extract it into `apps/web/src/components/` as a prop-driven, domain-parameterized component — not a one-off. If you spot duplicated JSX across two or more files, stop and consolidate into a shared component instead of copying it a third time. Exceptions only for truly page-specific, non-reusable markup.
+
+- **Server state = React Query.** Follow [`docs/react-query-guidelines.md`](docs/react-query-guidelines.md) — one key factory per module under `apps/web/src/api/<module>/`, `queryOptions` helpers, hierarchical keys (`all` → `lists`/`list` → `details`/`detail` → sub-resources), optimistic updates via `onMutate` + rollback. The legacy `useApi` hook is being migrated out — no new callers. When touching a `useApi` file, consider migrating.
+- **shadcn/ui first.** Check shadcn before any UI element. Use `context7` for latest shadcn docs. Raw HTML only when no shadcn component fits. Install with `npx shadcn@latest add <name>`. Installed components live in `apps/web/src/components/ui/`.
+- **Design reference:** Linear — clean, spacious, minimal borders, subtle color, properties sidebar on the right.
+- **Make components reusable by default.** Inline JSX or page-local helper? Ask: will this pattern be used in more than one place? If yes (or plausibly yes), extract into `apps/web/src/components/` as prop-driven. Spot duplicated JSX across 2+ files → consolidate before copying a third time.
 
 ### Form composition (mandatory)
 
-Every form — dialog, sheet, drawer, page-level, inspector panel — must be built from the shadcn Field primitives in `apps/web/src/components/ui/field.tsx`. Never hand-roll form layout with `<div className="grid gap-1.5">` + `<Label>` + `<Input>`. That pattern looks almost right in isolation but breaks consistency across the app (mismatched gaps, SelectTrigger `w-fit` collapsing to content width, ad-hoc helper text sizes, sections separated by raw `border-t`).
+Every form — dialog, sheet, drawer, page-level, inspector panel — is built from the shadcn Field primitives in `apps/web/src/components/ui/field.tsx`. Never hand-roll with `<div className="grid gap-1.5">` + `<Label>` + `<Input>`.
 
-**The rules:**
-- Wrap the whole form body in `<FieldGroup>`. Nothing else sets the vertical rhythm between fields — not `grid gap-3`, not `space-y-4`.
-- Each label + control pair is a `<Field>` with `<FieldLabel htmlFor="…">`. The `id`/`htmlFor` pair is required, not optional.
-- Helper text under a control is `<FieldDescription>`, never a bespoke `<p className="text-xs text-muted-foreground">`.
-- Inline validation errors use `<FieldError>` — do not replace with toasts for field-level problems.
-- Group related fields with `<FieldSet>` + `<FieldLegend>` (+ optional `<FieldDescription>` under the legend). Separate sections with `<FieldSeparator>`. Do not use `border-t pt-4` + a bare `<h3>` as a fake section header.
-- Checkbox and radio rows use `<Field orientation="horizontal">` with the control as the first child and `<FieldLabel className="font-normal" htmlFor="…">` as the second. Do not wrap a `<Checkbox>` inside a raw `<label>`.
-- Never pass `className="w-full"` to a `SelectTrigger` to force its width. The Field vertical variant already stretches children via `*:w-full`; if a Select is too narrow, the fix is to wrap it in `<Field>`, not to patch the trigger.
-- Reference the canonical shape in the shadcn Field docs (query via `context7` for "shadcn field") and the existing migrated examples in `apps/web/src/components/desk/create-ticket-dialog.tsx` and `apps/web/src/components/admin/request-type-dialog.tsx`.
+- Wrap the form body in `<FieldGroup>`. Nothing else sets vertical rhythm.
+- Each label + control = `<Field>` with `<FieldLabel htmlFor="…">`. The `id`/`htmlFor` pair is required.
+- Helper text: `<FieldDescription>`. Inline errors: `<FieldError>` (not toasts).
+- Group related fields: `<FieldSet>` + `<FieldLegend>`. Separate sections: `<FieldSeparator>` (not `border-t pt-4` + bare `<h3>`).
+- Checkbox/radio rows: `<Field orientation="horizontal">` with the control first and `<FieldLabel className="font-normal" htmlFor="…">` second.
+- Never `className="w-full"` on a `SelectTrigger`. The vertical Field already stretches via `*:w-full`.
 
-Before writing any new form or touching an existing one, confirm it follows the above. If you find a form that doesn't, migrate it rather than copying its pattern.
+Canonical examples: `apps/web/src/components/desk/create-ticket-dialog.tsx`, `apps/web/src/components/admin/request-type-dialog.tsx`. Query `context7` for "shadcn field" for the source shape. If you find a non-conforming form, migrate it — don't copy its pattern.
 
-### Toasts / notifications (mandatory)
+### Toasts (mandatory)
 
-Every toast goes through the helpers in `apps/web/src/lib/toast.ts` — never import from `'sonner'` directly in feature code. The wrapper enforces voice (`Couldn't <verb> <thing>` for errors, `<Thing> <past-verb>` for success), retry on errors, View on creates, and Undo on reversible removes.
+Every toast goes through `apps/web/src/lib/toast.ts` — never import from `'sonner'` directly in feature code. The wrapper enforces voice (`Couldn't <verb> <thing>` for errors, `<Thing> <past-verb>` for success), retry on errors, View on creates, Undo on reversible removes.
 
-Quick reference:
-- `toastCreated(entity, { onView })` — new entity; wire `onView` to the detail route.
+- `toastCreated(entity, { onView })` — new entity; wire `onView` to detail route.
 - `toastSaved(entity, { silent })` — auto-save flows pass `silent: true`.
 - `toastUpdated(entity)` — committed state change.
-- `toastRemoved(entity, { verb, onUndo })` — pick the closest verb (`removed | deleted | detached | revoked | archived | deactivated | unpublished | cancelled`); wire `onUndo` unless the op is genuinely irreversible.
-- `toastError(title, { error, retry })` — title vs description split is automatic; pass `retry` for any re-runnable mutation.
-- `toastSuccess(title, …)` — generic success that doesn't fit an entity (`Reply sent`, `API key copied`).
-- `toast` (re-exported) — only for `toast.message` / `toast.warning` one-offs.
+- `toastRemoved(entity, { verb, onUndo })` — pick closest verb (`removed | deleted | detached | revoked | archived | deactivated | unpublished | cancelled`); wire `onUndo` unless genuinely irreversible.
+- `toastError(title, { error, retry })` — title/description split is automatic; pass `retry` for re-runnable mutations.
+- `toastSuccess(title, …)` — generic success not tied to an entity.
 
-**Form validation is NOT a toast** — disable the submit button or use `<FieldError>` near the offender. See [`docs/toast-conventions.md`](docs/toast-conventions.md) for the full rules, anti-patterns, and recipes. Read it before adding any new toast.
+**Form validation is NOT a toast** — disable the submit button or use `<FieldError>`. Full rules: [`docs/toast-conventions.md`](docs/toast-conventions.md).
 
 ### Error handling (mandatory)
 
-Every feature that throws, fetches, mutates, or renders must follow [`docs/superpowers/specs/2026-05-02-error-handling-system-design.md`](docs/superpowers/specs/2026-05-02-error-handling-system-design.md). The spec is the contract — there is no "feature-local error handling," only the system. Read the spec before shipping any feature; touch the spec in the same PR when the feature reveals a gap.
+Every feature follows [`docs/superpowers/specs/2026-05-02-error-handling-system-design.md`](docs/superpowers/specs/2026-05-02-error-handling-system-design.md). The spec is the contract. Touch the spec in the same PR when a feature reveals a gap.
 
-**The non-negotiables for every new or touched code path:**
+**Non-negotiables:**
 
-- **Server: throw `AppError`, never `new Error('...')`.** Use the factories in `apps/api/src/common/errors/app-error.ts` (`AppErrors.notFound`, `AppErrors.permissionDenied`, `AppErrors.validation`, `AppErrors.validationFailed`, `AppErrors.conflict`, `AppErrors.rateLimited`, `AppErrors.server`, `AppErrors.unauthorized`, `AppErrors.badRequest`, `AppErrors.forbidden`, `AppErrors.notFoundWithCode`). New error scenarios add a code to `packages/shared/src/error-codes.ts` (re-exported from `@prequest/shared`) + an English message in `messages.en.ts` (Dutch follows). `AppError.code` is typed against `KnownErrorCode` — typos are compile errors. **Migrated modules** (Phase 7.A.2 — ticket / sla / booking-bundles / reservations / approval) are gated by `pnpm errors:check-app-errors`: raw `throw new <Nest>Exception(...)` in those directories fails CI. `apps/api/src/common/tenant-validation.ts` is **not** yet migrated; controllers calling its helpers may still see `BadRequestException(string)` propagate, normalised by the filter to `generic.bad_request`.
-- **Server: never embed user-facing prose in error messages, never leak vendor names, never let SQL or stack frames out.** The renderer fails closed on unregistered codes; if a code isn't in the registry, the user sees `unknown.server_error`, not your string. Vendor errors (Resend, Supabase, Stripe, Postgres) map to neutral codes (`email.dispatch_failed`, `realtime.unavailable`, `db.constraint`).
-- **Server: validation goes through `throwZodError`** (the helper that converts a Zod `safeParse` failure into an `AppError` with structured `fields[]`). Don't go back to `formatZodError` returning a comma-joined string.
-- **Client: use the error helpers, not hand-rolled `onError`.** Either spread `withErrorHandling({ actionTitle: "Couldn't <verb> <thing>" })` into `useMutation` options, or call `handleMutationError(error, { actionTitle, retry, setFormError })` from inside your own `onError` (when you also need rollback / cache invalidation). For queries, `handleQueryError` for the rare toast-fallback case; otherwise route page-class errors via the route `RouteErrorBoundary`.
-- **Client: never call `toastError` directly with the raw error message.** The renderer does the lookup; your job is to pass an `actionTitle` written in the existing voice (`"Couldn't save webhook"`, not `"Save webhook"`). Field-level validation errors must paint inline via RHF `setFormError` — never as a toast.
-- **Client: page-level errors replace the page** via `RouteErrorBoundary` + `throwToBoundary()`. Toasting "Not found" while leaving a broken detail page on screen is the failure mode this rule exists to prevent. **Every new top-level `<Route element={…}>` declaration in `App.tsx` (or any nested route file) MUST wrap the element in `<RouteErrorBoundary>`** — the codemod-style wrapping done in Wave 2 is mandatory for all subsequent routes. Adding a route without the boundary is a regression caught by the route-tree lint check.
-- **Client: page primary queries use `usePageQuery`, not `useQuery`.** The `usePageQuery` helper auto-throws page-class errors (`not_found`/`permission`/`server`) to `RouteErrorBoundary` so the page replaces instead of toasting over stale content. Sidebar / autocomplete / prefetch queries use `useQuery` + `handleQueryError(error, { callSite: 'mutation' })` from a `useEffect`. The distinction is made at the call site.
-- **Every error response carries a `traceId`.** Surface it on `server`-class toasts (small monospace, copy-on-click) and pre-fill it into the contact-support recovery. Do not invent a new trace mechanism — `apiFetch` already stamps it onto `ApiError`.
-- **Bulk operations use the wire shape's `results[]` + `partialSuccess`.** Surface partial-success as `"7 of 10 deleted — 3 failed [Show me]"`, never as a single binary toast.
-- **Never invent a new error class or surface.** The 11 classes (`transport · auth · permission · not_found · validation · conflict · rate_limit · server · realtime · render · unknown`) in §3.3 of the spec are exhaustive; the surface is decided by `(class, callSite)` per §3.4. If the situation doesn't fit, the fix is to update the spec — don't ship a one-off.
-- **Realtime status UI is the inline page-header dot, not the avatar corner.** The `RealtimeStatusStore` + `useRealtimeStatus()` hook drive a 6×6 colored dot adjacent to the page title on realtime-aware pages (desk scheduler, booking lists, reception today, etc.). Hidden in `'open'` state for the first 30s, amber on `'reconnecting'`, red + writes-disabled on `'broken'`. Never put the dot in `app shell`/avatar corner — the operator's eye is on the page content, not the chrome.
+- **Server: throw `AppError`, never `new Error('...')`.** Use factories in `apps/api/src/common/errors/app-error.ts`. New scenarios add a code to `packages/shared/src/error-codes.ts` + an English message in `messages.en.ts`. Migrated modules (ticket / sla / booking-bundles / reservations / approval) are gated by `pnpm errors:check-app-errors`. Server validation goes through `throwZodError`.
+- **Server: no user-facing prose in error messages.** Vendor errors (Resend, Supabase, Stripe, Postgres) map to neutral codes. Unregistered codes render as `unknown.server_error`.
+- **Client: use the error helpers, not hand-rolled `onError`.** Spread `withErrorHandling({ actionTitle: "Couldn't <verb> <thing>" })` into `useMutation`, OR call `handleMutationError(error, { actionTitle, retry, setFormError })` inside your own `onError` (when you need rollback / cache invalidation). Page queries use `usePageQuery` (auto-throws page-class errors to `RouteErrorBoundary`); sidebar/autocomplete use `useQuery` + `handleQueryError`.
+- **Client: every new top-level `<Route element={…}>` MUST wrap in `<RouteErrorBoundary>`.** Caught by the route-tree lint check.
+- **Bulk ops use `results[]` + `partialSuccess`** — surface as `"7 of 10 deleted — 3 failed [Show me]"`, never a binary toast.
+- **Never invent a new error class or surface.** The 11 classes in §3.3 are exhaustive; the surface comes from `(class, callSite)` per §3.4. If it doesn't fit, update the spec.
+- **Realtime status UI is the inline page-header dot**, not the avatar corner. Driven by `RealtimeStatusStore` + `useRealtimeStatus()`. Hidden on `'open'` for first 30s · amber on `'reconnecting'` · red + writes-disabled on `'broken'`.
 
-When the spec is silent on something you need: read the spec first to confirm it's actually silent (vs. you skimmed), then propose an addition in the same PR. Don't bypass.
+### Admin / settings pages
 
-Every admin / settings-style page is built with `SettingsPageShell` + `SettingsPageHeader` + `SettingsSection` + `SettingsFooterActions` from `apps/web/src/components/ui/settings-page.tsx`. Widths are a fixed enum — do not invent new ones.
+**Full reference:** [`docs/admin-page-conventions.md`](docs/admin-page-conventions.md) — width enum, index+detail shape, save modes (auto / batch / per-section), `SettingsRow` vs `FieldGroup`, danger zone, primitives.
 
-**Pick the smallest width that works:**
+Quick mental model:
+- Build with `SettingsPageShell` / `SettingsPageHeader` / `SettingsSection` / `SettingsFooterActions`.
+- Pick width from the fixed enum: `narrow | default | wide | xwide | ultra | full`. Don't invent `max-w-[1180px]`.
+- Index page: list with name linking to detail, no action column. Detail page: stack of `SettingsGroup` blocks (Identity → Primary config → Operations → Auth/limits → Danger zone).
+- Use `SettingsRow` for independent decisions (Linear's "list of decisions"), `FieldGroup` for grouped forms.
+- Default to **auto-save**. Use **batch-save** only when the edit is one atomic consequential decision (role permissions, workflow defs).
+- Canonical exemplars to copy from: `/admin/webhooks/:id`, `/admin/criteria-sets/:id`, `/admin/users/roles/:id`, `/admin/users/:id`.
 
-| Width | Max | When to use |
-|---|---|---|
-| `narrow` | 480px | Single short form with one decision. Rename a team, confirm a destructive op. |
-| `default` | 640px | The Linear-style column. Most settings pages — person detail, team settings, tenant branding. |
-| `wide` | 960px | Rule builders, dense tables, side-by-side content that feels cramped in 640. |
-| `xwide` | 1152px | Two-column editors (picker + live preview), multi-column admin tables, effective-permissions debuggers. The default maximum for typical admin pages. |
-| `ultra` | 1600px | Complex overview dashboards, operational consoles, analytics screens where admins genuinely need the horizontal canvas to read the data. Still centered with padding. Rare — most pages that feel cramped at `xwide` should split into a detail + child page flow instead. |
-| `full` | — | Edge-to-edge, no max-width. **Only** for true full-screen tools: workflow editor (React Flow), routing studio canvas, giant data grids with 20+ columns or virtualised rows. Padding is reduced because the content *is* the page. If you're reaching for `full` on a settings page, you almost certainly want `ultra` instead. |
-
-Extremes are intentional. Don't smuggle a dashboard into `xwide` by padding it with whitespace, and don't turn a normal settings page into `full` because "more room looks better". The enum exists to keep pages visually coherent across the app.
-
-**Exceptions — don't use the shell at all:**
-
-A very small class of pages is a true "app within the admin" that needs to claim the viewport with zero shell chrome. These do NOT wrap in `SettingsPageShell`:
-
-- **React Flow / Reactflow canvases** that mount their own toolbar, palette, and inspector panels (`/admin/workflow-editor`, `/admin/workflow-instance`). They already have custom top-bars and use `h-[calc(100vh-…)]` to fill the viewport. Shell padding fights the canvas's pixel-hungry layout.
-- **Live runtime viewers** with a split-pane chrome they manage themselves.
-
-Every other admin page — including dashboards, data grids, and complex consoles — **should** use `SettingsPageShell width="full"`. The padding difference is small (`px-4 py-6`) and the consistent `SettingsPageHeader` makes title + description + back navigation uniform across the product. `full` is an opt-in full-bleed shell, not an escape hatch.
-
-When skipping the shell, render a minimal custom top-bar that still includes the feature title and, where relevant, a "Back to …" link so the user isn't stranded.
-
-**Compose the page from grouped blocks.** Each feature on a settings page is a `<SettingsSection title="…" [description] [density] [bordered]>`. Within a section, the block shape is chosen for the *specific* element being configured — a form uses `FieldGroup` + `Field`, a table uses `Table`, a dense picker uses the two-column preview pattern. Don't force a generic card template when the data deserves bespoke UX.
-
-**Go deeper or go modal — don't bloat a section.**
-- If a block needs substantial configuration (its own preview, multi-step flow, dependent data), navigate to a dedicated child page (e.g. `/admin/users/roles/:id`) rather than expanding the parent section. Reach back to the parent via the `backTo` prop on `SettingsPageHeader`.
-- If a block only needs a small focused input (rename, confirm, invite, add-by-id), use a `Dialog` — keep the user on the parent page.
-
-Reference implementations: `/admin/organisations/*`, `/admin/users/roles/:id` (xwide two-column), `/admin/users/:id` (xwide with effective-permissions panel). Before adding a new setting, scan these for a block pattern you can lift or extend.
-
-### Index + detail shape (mandatory for all admin config)
-
-**Canonical exemplars:** `/admin/webhooks` (list) + `/admin/webhooks/:id` (detail), `/admin/criteria-sets` + `/admin/criteria-sets/:id`. Read both before adding a new settings feature. Every new admin page MUST follow this shape unless there's a concrete reason it can't — and in that case, document the reason inline.
-
-**Index page (`/admin/<feature>`):**
-- `SettingsPageShell` (pick width from `narrow|default|wide|xwide|ultra|full` per §Settings page layout).
-- `SettingsPageHeader` — title, one-sentence description of what the feature is for, `actions={<primary "New X" button>}`.
-- Loading state: `<div className="text-sm text-muted-foreground">Loading…</div>`.
-- Populated state: `Table` with name linking to `/admin/<feature>/:id` (hover underline), 2–4 meaningful columns (status, last updated, rule summary, etc.). **No action column.** Actions live on the detail page.
-- Empty state: centred `flex-col items-center gap-3 py-16`, icon + title + one paragraph + primary CTA.
-- Creation: either a lightweight `Dialog` (name + description → `POST` → navigate to `/admin/<feature>/:id`) OR a dedicated `/admin/<feature>/new` page. Dialog is the default.
-
-**Detail page (`/admin/<feature>/:id`):**
-- `SettingsPageShell` with `backTo="/admin/<feature>"`.
-- `SettingsPageHeader` — title is the entity name (not the feature name), description is "what this specific entity does", `actions` holds a compact status badge (`active` / `draft` / etc.) — not more buttons.
-- Loading state: the shell + header + "Loading…" title. No spinner overlay.
-- Not-found state: the shell + header with `"Not found"` + a one-line explanation.
-- Body is a stack of `SettingsGroup` blocks, each a thematic bucket of related decisions. Typical groups in order:
-  1. **Identity** — name, description, active toggle.
-  2. **Primary config** — the thing this feature exists for (rules, expression, mapping).
-  3. **Operations** — testing, recent events, observability (if applicable).
-  4. **Auth / limits** — keys, rate limits, allowlists (if applicable).
-  5. **Danger zone** — delete, archive, reset. Always last.
-- Save model is chosen per page — see **Save modes** below. Auto-save is the default; batch-save is the right call for consequential atomic edits.
-
-**Within a group — use `SettingsRow`, not form fields:**
-Each configurable thing on a detail page is one `SettingsRow label="…" description="…"` with the control on the right. Rows are divided by a single hairline inside one bordered `SettingsGroup` card. This is Linear's "list of decisions" pattern — **do not replace it with a `FieldGroup`**. Field primitives are for grouped forms submitted together; `SettingsRow` is for independent, individually-saved decisions.
-
-**Three control placements, pick the right one:**
-1. **Inline control** — short primitives only: `Input` (width-capped), `Switch`, small `Select`. Saves on change.
-2. **Clickable row → sub-dialog** — anything complex: picker over a large list, rules builder, key-value map, multi-row editor. `onClick` on the row opens the dialog; `SettingsRowValue` on the right shows a summary ("`3 rules`", "`8 fields`", the selected name). The dialog owns draft state + a single Save button.
-3. **Clickable row → child page** — only when the nested thing itself needs multiple groups, its own test/preview, or its own audit feed. Navigate via `<Link>`-wrapping the row. Use sparingly; most things fit in a dialog.
-
-**Save modes — pick the right one per page:**
-
-**1. Auto-save (default for most pages).** Each row/control is an independent decision; saving one doesn't imply saving the rest. Use for: Identity (name, description, active), Auth & limits (rate limit, allowlist), Operations. Examples: `/admin/webhooks/:id`, `/admin/criteria-sets/:id`.
-- Text inputs: wrap with `useDebouncedSave(value, (v) => save({ field: v }, { silent: true }))`. No toast on silent save.
-- Switches / selects that trigger immediately: `save({ field: next })` — toast on success is OK but optional.
-- Dialog-driven saves: call `save({ field: next })` inside `onSave`, then close the dialog. Toast is acceptable here since the user clicked Save.
-
-**2. Batch save (page-level Save button).** The edit is an atomic, consequential decision that admins expect to commit once. The audit log should treat it as one event, not N toggles. Use for: role permissions, workflow definitions, form schemas — anything where "I'm adjusting many fields at once, then committing" is the real workflow. Examples: `/admin/user-roles/:id`.
-- `SettingsFooterActions` at the bottom with primary Save + secondary Cancel.
-- **Always** show unsaved-changes state (sticky bar or enabled/disabled Save) and a **diff preview** (what's being added/removed since last save) before the user commits. Without that, batch-save becomes "fire and forget" — no worse than auto-save but with extra clicks.
-- Cancel confirms before discarding unsaved changes.
-- Route to detail page after create.
-
-**3. Per-section save (hybrid — when a page mixes both).** Some pages have auto-save primitives in most sections but one section that's a batch decision (e.g. a JSON policy editor, a permissions matrix, a CRON expression). Put the Save button **inside that section's container**, not at the page bottom. Keeps the rest of the page auto-saving; makes the batched block's atomicity obvious.
-
-**Validation errors:** server-side problems (e.g. 422 with a `validation.problems` payload) surface as a single warning card directly below the header — not as per-field errors — because SettingsRow has no error slot. For batch-save pages, the warning can also mention what will fail on submit.
-
-**Audit log coupling:** batch-save pages should emit **one** audit event per save with a before/after diff in the payload. Auto-save pages emit one event per field change. Don't mix — it muddies the audit timeline.
-
-**Danger group — always:**
-- Final group on every detail page. Title: `"Danger zone"`.
-- Destructive actions route through `ConfirmDialog` with `destructive` styling and a specific description that names the consequence ("The external system will receive 401 on any future request").
-- Key rotations / similar one-shots also go here (not in Identity).
-
-**Primitives to use — don't reinvent:**
-- `SettingsPageShell`, `SettingsPageHeader` — `apps/web/src/components/ui/settings-page.tsx`.
-- `SettingsGroup`, `SettingsRow`, `SettingsRowValue` — `apps/web/src/components/ui/settings-row.tsx`.
-- `ConfirmDialog` — `apps/web/src/components/confirm-dialog.tsx`.
-- `useDebouncedSave` — `apps/web/src/hooks/use-debounced-save.ts`.
-- `Dialog` + `FieldGroup`/`Field` — for sub-dialogs (still mandatory per §Form composition).
-
-**Before writing a new settings page, copy the skeleton of `/admin/webhooks/:id` and adapt.** If you're tempted to deviate (e.g. replace `SettingsRow` with a 2-column form, or add a page-level Save button), re-read this section first — the deviation is almost never justified.
+Skip the shell only for React Flow canvases (`/admin/workflow-editor`) and self-managed split-pane viewers.
 
 ## Spec Documents
-All in `docs/`:
-- `docs/spec.md` — main product specification (~3000 lines, comprehensive)
-- `docs/build-strategy.md` — build strategy (phase UI, not architecture)
-- `docs/phase-1.md` through `docs/phase-4.md` — phase plans with detailed scope per phase
 
-## Design polish rules (mandatory — baked into apps/web/src/index.css)
+In `docs/`:
+- `spec.md` — main product specification (~3000 lines)
+- `build-strategy.md` — build strategy (phase UI, not architecture)
+- `phase-1.md` through `phase-4.md` — phase plans
 
-These are established app-wide defaults. Don't override them per component unless the design genuinely calls for it. If you find yourself hand-rolling one, stop — use the token / helper instead.
+## Design polish rules (baked into `apps/web/src/index.css`)
 
-### Typography
+App-wide defaults. Don't override per component unless the design genuinely calls for it.
 
-- **Fonts.** Geist Sans + Geist Mono are loaded globally. Never add another typeface without discussing it — Geist everywhere is a deliberate cohesive choice matching Linear / Vercel / shadcn.
-- **Antialiasing.** `body` is `antialiased` with `-webkit-font-smoothing: antialiased` + `-moz-osx-font-smoothing: grayscale`. Grayscale AA, not subpixel. Don't override.
-- **Heading wrap.** `h1/h2/h3/h4` use `text-wrap: balance` (no orphans). Paragraphs use `text-wrap: pretty`. Auto.
-- **Tabular numerals.** `table`, `time`, `.tabular-nums`, and `[data-tabular-nums]` elements get tabular-nums app-wide. Any counter / metric / digit that changes over time should be inside one of those — or add the class when you render a number that might change.
+**Typography**
+- Geist Sans + Geist Mono globally. Don't add another typeface without discussing.
+- `body` is `antialiased` with grayscale AA, not subpixel — don't override.
+- `h1–h4` use `text-wrap: balance`; paragraphs use `text-wrap: pretty`. Auto.
+- `table`, `time`, `.tabular-nums`, `[data-tabular-nums]` get tabular numerals — use them on any changing number.
 
-### Numbers + time — always via `@/lib/format`
+**Numbers + time — always via `@/lib/format`**
+- Never call `toLocaleString` / `Intl.NumberFormat` / `Intl.RelativeTimeFormat` in page code.
+- `formatCount(n)` — plain for < 1000, compact (`1.5K`, `23M`) above. Use on counters/badges.
+- `formatRelativeTime(input)` — `"2 minutes ago"` / `"in 3 days"`. Use as visible label.
+- `formatFullTimestamp(input)` — "Apr 24, 2026, 3:14 PM". Use as `title` tooltip on a `<time>` showing relative time.
 
-Never call `toLocaleString` / `Intl.NumberFormat` / `Intl.RelativeTimeFormat` directly in page code. The helpers in `apps/web/src/lib/format.ts` exist so every user-visible number / timestamp reads cohesively:
+**Motion**
+- Easing tokens on `:root`: `--ease-snap` (fast feedback), `--ease-smooth` (layout), `--ease-spring` (modals), `--ease-swift-out` (dismiss). Use `transition-timing-function: var(--ease-smooth)` — never hand-roll a `cubic-bezier(...)` in TSX.
+- Durations: hover/press 80–150ms snap · layout/dropdown 200–300ms smooth · modal/sheet 300–500ms spring · dismiss 150–220ms swift-out.
+- Reduced-motion is handled globally — don't wrap components.
+- Active press on buttons uses `translate-y-px`, not `scale` (scale blurs text mid-press). Non-button clickable rows have no press feedback — background hover is the affordance.
+- View transitions: a global 240ms crossfade is set; pass `unstable_viewTransition` on `<Link>` to trigger.
 
-- **`formatCount(n)`** — plain for < 1000, compact (`1.5K`, `23M`) above. Use on every counter/badge.
-- **`formatRelativeTime(input)`** — `"2 minutes ago"` / `"in 3 days"`. Use as the visible label on timestamps in lists, audit feeds, activity streams.
-- **`formatFullTimestamp(input)`** — "Apr 24, 2026, 3:14 PM". Use as `title` tooltip on a `<time>` that displays relative time, so power users can hover for the exact value.
+**Elevation + borders**
+- Shadows are last resort. Prefer `border border/50` + optional `ring-1 ring-black/5` over `shadow-*`. Exceptions: popover/dropdown/sheet overlays (already shipped), drag-overlays (`shadow-lg`).
+- Focus rings: `focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50` (the Button baseline). Never `:focus` on mouse click.
 
-### Motion
+**Copy chips**
+- Permission keys / JSONPath / any copy-token: wrap in `<code className="chip">…</code>` or add `data-chip`. Global `user-select: all` handles atomic triple-click.
+- `code` elements default to `user-select: text` — don't override.
 
-- **Easing tokens on `:root`.** `--ease-snap` (fast feedback), `--ease-smooth` (layout), `--ease-spring` (modals/celebratory), `--ease-swift-out` (dismiss). Use via `transition-timing-function: var(--ease-smooth)` — never hand-roll a `cubic-bezier(...)` in TSX files.
-- **Duration guidelines.** Hover/press: 80–150ms with snap. Layout/dropdown: 200–300ms with smooth. Modal/sheet: 300–500ms with spring. Dismiss: 150–220ms with swift-out.
-- **Reduced-motion.** Globally handled — `@media (prefers-reduced-motion: reduce)` clamps every animation/transition to 0.001ms. Don't wrap individual components — the global rule already covers them.
-- **Active press on buttons.** The shared `Button` uses `translate-y-px` on active — do NOT replace with `scale`, which blurs text mid-press. For non-button clickable rows (e.g. a `SettingsRow`), don't add any press feedback; the row background hover is the affordance.
-- **View transitions.** A global 240ms crossfade is set for same-document view transitions in browsers that support them. To actually trigger it on a route change, pass `unstable_viewTransition` to the React Router `<Link>` — one prop, per link as appropriate.
+**Widths**
+- Settings pages use the fixed `SettingsPageWidth` enum — never `max-w-[NNNpx]`.
+- Portal content is centred in `max-w-6xl` (1152px) by the portal layout — page components don't set their own.
 
-### Elevation + borders
-
-- **Shadows are last resort.** Prefer `border border/50` + optional `ring-1 ring-black/5` over `shadow-*`. Heavy drop shadows read "dated website", not "app". Exceptions: popover/dropdown/sheet overlays (already shipped), and drag-overlays for dnd (use `shadow-lg`).
-- **Focus rings.** Use `focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50` — the Button baseline. Matches across controls; never show focus on mouse click (don't use plain `:focus`).
-
-### Copy chips
-
-- **Permission keys / JSONPath / any token a user might copy:** wrap in `<code className="chip">…</code>` or add `data-chip` on a larger element so triple-click selects it atomically. The global `code.chip, [data-chip] { user-select: all }` handles the rest.
-- **Code elements default to `user-select: text`** (not the browser default `none` that some themes set) — don't override unless you need different behaviour.
-
-### Widths
-
-- **Settings pages use the fixed `SettingsPageWidth` enum (`narrow` / `default` / `wide` / `xwide` / `ultra` / `full`).** Never invent an arbitrary `max-w-[1180px]`. See §Settings page layout for which to pick.
-- **Portal content is centred in `max-w-6xl` (1152px)** — the portal layout handles it. Page-level components inside the portal should not set their own max-w.
-
-### Platform
-
-- **`<meta name="color-scheme" content="light dark" />`** is set in `index.html`. Don't remove it — it makes browser chrome (scrollbars, pre-paint inputs) match the theme.
-- **Focus management on dialogs.** The shadcn `Dialog` primitives handle trap + restore correctly. Don't hand-roll focus logic on top of them.
-
-### When you're tempted to deviate
-
-- Adding a font? → stop, use Geist.
-- Picking a cubic-bezier? → stop, use `--ease-*`.
-- Calling `.toLocaleString()` in page code? → stop, use `@/lib/format`.
-- Setting `max-w-[NNNpx]` on a settings page? → stop, use the enum.
-- Adding `shadow-lg` to a card? → stop, think about whether a border works.
-- Setting `transition duration-300 ease-in-out` on a text element? → `transition-all duration-200 ease-[var(--ease-smooth)]` or drop the transition.
+**Platform**
+- `<meta name="color-scheme" content="light dark" />` is in `index.html` — don't remove.
+- shadcn `Dialog` handles focus trap + restore — don't hand-roll on top.
