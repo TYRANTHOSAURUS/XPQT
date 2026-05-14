@@ -90,6 +90,57 @@ Internal service-to-service calls (workflow engine, approvals, resolver callback
 - **RLS defense-in-depth.** Possible Phase 2 addition. The tenant-isolation RLS stays; a per-user visibility RLS policy can be added later that calls `ticket_visibility_ids` from a `SECURITY DEFINER` function.
 - **Per-activity visibility.** `ticket_activities.visibility` (internal/external/system) is a separate concern and remains unchanged.
 
+## 8. Database role posture — RLS as perimeter, not policy
+
+Read this section before reasoning about what RLS is or isn't doing for any given query path. Several RLS policies in the schema *suggest* a defense-in-depth posture that the runtime does not actually enforce — this is intentional, but easy to misread.
+
+### 8.1 What the API actually connects as
+
+The API has two Postgres-facing paths and both bypass RLS:
+
+| Path | Role | Bypasses RLS? | Used by |
+|---|---|---|---|
+| `SupabaseService.admin` | Supabase service-role (via `SUPABASE_SECRET_KEY`) | Yes | Every controller / service that goes through `supabase.admin.from(...)` or `supabase.admin.rpc(...)`. Most code paths. |
+| `DbService` | `postgres` (superuser, raw `pg.Pool`) | Yes (superuser unconditionally bypasses) | Hot paths where Supabase REST overhead matters: scheduler-data, picker, search, large-list reads. |
+
+`current_tenant_id()` in `00002_rls_helpers.sql` reads JWT claims via `current_setting('request.jwt.claims', true)`. Neither of the two paths above carries a JWT into the SQL session. So even on a tenant-RLS-enabled table, `current_tenant_id()` evaluates to NULL for these paths and the policy `tenant_id = current_tenant_id()` resolves to `tenant_id = NULL` → would return no rows — but the superuser / service-role bypass means the policy is never consulted in the first place.
+
+**Practical consequence:** tenant isolation is enforced 100% in the application layer:
+
+1. **AuthGuard** (global) bridges `auth_uid → public.users(id) WHERE tenant_id AND status='active'` and rejects the cross-tenant header-flip with 403 `auth.user_not_in_tenant`. See `apps/api/src/modules/auth/auth.guard.ts`.
+2. **AdminGuard / PermissionGuard** layer admin and per-permission role gates on top, keyed off the `platformUserId` AuthGuard attaches.
+3. **Service-layer `.eq('tenant_id', TenantContext.current().id)` discipline** on every read/write. The RLS policy is a redundant statement of the same invariant — useful as schema-as-documentation, but not as runtime defense.
+
+### 8.2 Why we kept the superuser / service-role posture
+
+A dedicated non-superuser app role for `DbService` (RLS would then *actually* fire) was considered and deferred. The cost is non-trivial:
+
+- Every `DbService` call would need to set `request.jwt.claims` (or an equivalent session GUC) per query so `current_tenant_id()` resolves. That re-introduces the work AuthGuard already does.
+- `SupabaseService.admin` would still bypass RLS via the service-role key — most of the surface gets no benefit unless we also move it off the admin client.
+- The current model is honest and observable: tenant isolation is the application layer's job, and the `smoke:cross-tenant` gate proves it (`docs/smoke-gates.md` §`pnpm smoke:cross-tenant`).
+
+The cost is paid for in: every controller / service must respect `TenantContext.current()` (the closure ledger in `docs/follow-ups/audits/04-rls-security.md` Slice 1 + 2 enumerates the audited surfaces); cron / outbox / workflow paths bypass `AuthGuard` and rely on `TenantContext` being set from row data, which is safe by construction (no actor input).
+
+### 8.3 When the schema RLS policies do matter
+
+- **Direct PostgREST from a browser**, if we ever expose it. The schema RLS policies would gate that surface. (Today: not exposed.)
+- **Future migration to a non-superuser app role** — the policies would activate then without re-authoring.
+- **Audit reviewers reading the schema** — the policies document intent.
+
+They are not currently a runtime perimeter for any API path.
+
+### 8.4 If you want real RLS defense-in-depth
+
+This is a future-when-we-want-it option, tracked under "RLS defense-in-depth" in §7 above. Concrete steps:
+
+1. Provision a `prequest_app` Postgres role (non-superuser) with explicit `GRANT SELECT, INSERT, UPDATE, DELETE` on the tenant-scoped tables.
+2. Change `DbService.resolveConnectionString` to use `prequest_app` instead of `postgres`.
+3. At the start of every `DbService` query, `SET LOCAL request.jwt.claims = '{"tenant_id": "..."}'` so `current_tenant_id()` resolves.
+4. Either: also wrap `SupabaseService.admin` calls in a similar tenant-claim setter on a non-service-role client, or accept that `SupabaseService.admin` still bypasses (most of the codebase).
+5. Verify every smoke gate stays green — every existing query must still return rows under RLS.
+
+The effort is multi-day. The win is "RLS is a real second perimeter if the application layer regresses." Whether that's worth it depends on how confident we are in the application layer; today the application layer is the only perimeter and `smoke:cross-tenant` actively gates it.
+
 ## 9. Visitor visibility
 
 Visitor management ships its own three-tier predicate that mirrors the ticket model. Same shape, different population paths.
