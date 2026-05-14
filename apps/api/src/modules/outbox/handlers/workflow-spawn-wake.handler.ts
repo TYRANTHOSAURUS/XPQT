@@ -558,25 +558,40 @@ export class WorkflowSpawnWakeOnBookingCancelledHandler
     // WAITING for this booking event — but a workflow whose entity_kind=
     // 'booking' and whose booking_id IS this booking is DRIVING the
     // booking's lifecycle, and its approvals must expire when the booking
-    // dies. `cancelInstance('booking', bookingId, …)` is idempotent: if
-    // no driving instance exists (legacy bookings, non-workflow approval
-    // flow), it no-ops via the entity-FK lookup at workflow-engine.
-    // service.ts:297-309 returning null.
+    // dies.
     //
-    // Order matters: cancel the driving instance FIRST so its `instance_
-    // cancelled` audit event sequences before any wait-link resume events
-    // — the audit timeline reads "booking cancelled → driving workflow
-    // cancelled → waiting parent workflows wake on the cancelled branch".
+    // CRITICAL fix (2026-05-14 adversarial review #1): the v1 of this
+    // handler called `cancelInstance('booking', bookingId, …)`, which
+    // does an entity-FK lookup `WHERE entity_kind='booking' AND
+    // booking_id=$id`. But `workflow_instances.booking_id` is
+    // `ON DELETE SET NULL` (00369:231-233), and `delete_booking_with_guard`
+    // (00373) DELETES the booking row + enqueues `booking.cancelled` in
+    // the same transaction. By the time this handler runs, the
+    // booking_id column is NULL on every workflow_instance — the FK
+    // lookup returned zero rows and the driving instance was permanently
+    // stranded with pending approvals.
+    //
+    // Fix: route through `cancelInstanceForBooking` which discovers the
+    // driving instance via the SURVIVING `approvals.workflow_instance_id`
+    // column (the polymorphic approvals.target_entity_id text/uuid pair
+    // is NOT a FK to bookings, so the approvals survive the booking
+    // delete with their workflow_instance_id intact).
+    //
+    // Order matters: cancel the driving instance FIRST so its
+    // `instance_cancelled` audit event sequences before any wait-link
+    // resume events — the audit timeline reads "booking cancelled →
+    // driving workflow cancelled → waiting parent workflows wake on the
+    // cancelled branch".
     //
     // Errors here are propagated (not swallowed) — this handler is
     // outbox-driven so a transient failure means the event re-runs after
-    // outbox retry, and the cancelInstance call is idempotent.
+    // outbox retry; cancelInstanceForBooking is idempotent (per-instance
+    // atomic claim).
     const payload = event.payload;
     if (payload && payload.tenant_id === event.tenant_id) {
       const bookingId = payload.booking_id;
       if (typeof bookingId === 'string') {
-        await this.workflowEngine.cancelInstance(
-          'booking',
+        await this.workflowEngine.cancelInstanceForBooking(
           bookingId,
           event.tenant_id,
           'booking_cancelled',

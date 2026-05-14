@@ -109,6 +109,11 @@ export class RoomBookingRulesService {
       // skips when there's nothing to approve.
       return;
     }
+    // The compiler throws `workflow_definition.compilation_failed` (422)
+    // on a malformed approval_config; let it propagate verbatim — it's
+    // already the right error code for the caller. (Adversarial-review
+    // I2 fix 2026-05-14: previously the RPC error AND compile error both
+    // got wrapped in `workflow.advance_failed`, losing the cause.)
     const compiled = this.approvalCompiler.compile(approvalConfig, {
       ruleName,
       ruleType: 'room_booking',
@@ -123,7 +128,13 @@ export class RoomBookingRulesService {
       },
     );
     if (error) {
-      throw AppErrors.server('workflow.advance_failed', {
+      // RPC-layer failure (P0002 rule-not-found, DB wobble, FK violation).
+      // Caller (create/update) treats this as a corrupting partial-write
+      // and compensates by deleting/rolling-back the rule (see L203 +
+      // L290 catch-blocks). The error code is server-class so the FE
+      // shows a "couldn't save the rule" toast rather than a validation
+      // banner.
+      throw AppErrors.server('room_rule.workflow_recompile_failed', {
         detail: `ensure_room_booking_rule_workflow_definition RPC failed: ${error.message}`,
       });
     }
@@ -200,12 +211,46 @@ export class RoomBookingRulesService {
     });
     // Phase 1.5 sub-step 6.E: auto-mint workflow_definition + flip the
     // rule's workflow_definition_id FK iff approval_config is non-null.
-    await this.recompileApprovalWorkflow(
-      data.id,
-      tenant.id,
-      data.name,
-      data.approval_config as ApprovalConfig | null,
-    );
+    //
+    // Adversarial-review I1 fix (2026-05-14): the rule INSERT above is
+    // already committed by the time we call the recompile RPC. If the
+    // RPC fails (DB wobble, malformed config that slipped past the
+    // compiler's validation), the rule lives on with
+    // workflow_definition_id=NULL + a non-null approval_config — it
+    // would silently fall through the booking-flow cutover gate to the
+    // legacy createApprovalRows path. The fix here is a TS-side
+    // compensation: on recompile failure, DELETE the just-INSERTed rule
+    // so the admin sees a clean 500 + nothing in the table to retry
+    // against. The proper long-term fix is a
+    // `create_room_booking_rule_with_workflow` consolidating PL/pgSQL
+    // RPC per CLAUDE.md "multi-step writes are RPCs" — tracked as a
+    // follow-up; this compensation closes the partial-failure window.
+    try {
+      await this.recompileApprovalWorkflow(
+        data.id,
+        tenant.id,
+        data.name,
+        data.approval_config as ApprovalConfig | null,
+      );
+    } catch (err) {
+      // Best-effort rollback. If THIS delete fails we're in real
+      // trouble — log + throw the original error so the admin sees the
+      // root cause. The orphan rule survives in the table but at least
+      // the admin knows.
+      try {
+        await this.supabase.admin
+          .from('room_booking_rules')
+          .delete()
+          .eq('id', data.id)
+          .eq('tenant_id', tenant.id);
+      } catch (deleteErr) {
+        console.error(
+          '[room-booking-rules] orphan-rule compensation delete FAILED — manual cleanup required',
+          { ruleId: data.id, tenantId: tenant.id, recompileErr: err, deleteErr },
+        );
+      }
+      throw err;
+    }
     return data;
   }
 

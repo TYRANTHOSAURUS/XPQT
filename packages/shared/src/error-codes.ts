@@ -497,6 +497,16 @@ export type KnownErrorCode =
   // canary.
   | 'chain.threshold_invalid'
 
+  // 500: ensure_room_booking_rule_workflow_definition RPC failure on
+  // RoomBookingRulesService.create/update. Distinct from
+  // workflow.advance_failed (which is for engine resume/advance);
+  // distinct from workflow_definition.compilation_failed (which is the
+  // 422 from the TS compiler). This is the RPC-layer DB failure path
+  // (rule-not-found mid-tx, lock contention, DB wobble). Caller
+  // compensates by deleting the just-INSERTed rule so the partial-
+  // failure window doesn't leave orphan rules with NULL FK.
+  | 'room_rule.workflow_recompile_failed'
+
   // ─── service-routing migration (Phase 7.B-1.service-routing) ─────────────
   | 'service_routing_not_found'
   | 'service_routing_duplicate'
@@ -1390,6 +1400,12 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'workflow.approval_instance_not_found',
   'workflow.tenant_mismatch_approval',
   'chain.threshold_invalid',
+  // Phase 1.5 sub-step 6.E — adversarial-review I2 fix (2026-05-14):
+  // RoomBookingRulesService.recompileApprovalWorkflow wraps the
+  // ensure_room_booking_rule_workflow_definition RPC failure path with
+  // a distinct error code (was workflow.advance_failed which is reserved
+  // for engine resume/advance failures).
+  'room_rule.workflow_recompile_failed',
   'service_routing_not_found',
   'service_routing_duplicate',
   'service_routing_immutable_key',

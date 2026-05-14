@@ -1375,6 +1375,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't grant that approval",
     detail: 'The approval chain configuration is invalid. Contact support.',
   },
+  'room_rule.workflow_recompile_failed': {
+    title: "Couldn't save that approval rule",
+    detail: 'The approval workflow could not be compiled. Try again in a moment.',
+  },
 
   // ─── service-routing (Phase 7.B-1.service-routing) ───────────────────────
   service_routing_not_found: { title: "Couldn't find that routing rule" },

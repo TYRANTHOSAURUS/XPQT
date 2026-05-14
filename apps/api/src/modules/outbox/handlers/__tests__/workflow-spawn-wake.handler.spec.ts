@@ -413,12 +413,18 @@ function makeWorkflowEngine(opts: FakeEngineOpts = {}): WorkflowEngineService {
       }
       return undefined;
     }),
-    // Phase 1.5 sub-step 6.A, Change 6: the booking.cancelled handler now
-    // also calls cancelInstance('booking', bookingId, …) BEFORE the wake
-    // processing to cancel the DRIVING workflow instance. Mock as a no-op
-    // for these tests — wake-specific assertions don't probe the cancel
-    // side; dedicated cancelInstance tests live in workflow-engine.service.spec.ts.
+    // Phase 1.5 sub-step 6.A, Change 6: the booking.cancelled handler
+    // now calls cancelInstanceForBooking(bookingId, tenantId, reason)
+    // BEFORE the wake processing to cancel the DRIVING workflow
+    // instance. Stubbed no-op here — wake-specific assertions don't
+    // probe the cancel side; dedicated cancel tests live in
+    // workflow-engine.service.spec.ts.
+    //
+    // cancelInstance also stubbed for backward-compat with any callers
+    // that still reach for the polymorphic shim (e.g. parent-cancel
+    // cascade tests that exercise the wake's cancel side indirectly).
     cancelInstance: jest.fn(async () => undefined),
+    cancelInstanceForBooking: jest.fn(async () => undefined),
   } as unknown as WorkflowEngineService;
 }
 
@@ -522,6 +528,28 @@ describe('WorkflowSpawnWake* handlers (Universal Workflow Architecture Phase 1.A
       expect(f.resolved_at__is).toBeNull();
       expect(f.aggregation_group_id__is).toBeNull();
       expect(f.wait_for__in).toEqual(['entity_status', 'either']);
+    });
+
+    it('Phase 1.5 sub-step 6.A.Change 6: also calls cancelInstanceForBooking to cancel the DRIVING workflow before wake processing', async () => {
+      // Adversarial-review #3 fix (2026-05-14): without this assertion,
+      // someone removing the Change 6 call by accident would silently
+      // strand driving workflow_instances + their pending approvals on
+      // every booking.cancelled event. The wake-side test suite was
+      // green even when the cancel side was completely broken (the v1
+      // implementation called cancelInstance which hit the SET-NULL
+      // race; the CRITICAL fix rerouted through cancelInstanceForBooking
+      // which scans approvals.workflow_instance_id — see
+      // workflow-engine.service.ts cancelInstanceForBooking docstring).
+      const supabase = makeSupabase({ links: [] });
+      const engine = makeWorkflowEngine();
+      const core = new WorkflowSpawnWakeCore(supabase.service, engine);
+      const handler = new WorkflowSpawnWakeOnBookingCancelledHandler(core, engine);
+      await handler.handle(makeEvent(BookingLifecycleEventType.Cancelled));
+      expect(engine.cancelInstanceForBooking).toHaveBeenCalledWith(
+        BOOKING_ID,
+        TENANT_ID,
+        'booking_cancelled',
+      );
     });
   });
 

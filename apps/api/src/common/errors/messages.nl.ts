@@ -1365,6 +1365,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon die goedkeuring niet verlenen',
     detail: 'De configuratie van de goedkeuringsketen is ongeldig. Neem contact op met support.',
   },
+  'room_rule.workflow_recompile_failed': {
+    title: 'Kon die goedkeuringsregel niet opslaan',
+    detail: 'De goedkeurings-workflow kon niet gecompileerd worden. Probeer het zo opnieuw.',
+  },
 
   // ─── service-routing (Phase 7.B-1.service-routing) ───────────────────────
   service_routing_not_found: { title: 'Kon die routingregel niet vinden' },

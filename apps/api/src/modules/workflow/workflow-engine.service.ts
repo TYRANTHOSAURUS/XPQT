@@ -757,6 +757,98 @@ export class WorkflowEngineService {
   }
 
   /**
+   * Phase 1.5 sub-step 6.A.Change 6 — CRITICAL fix (2026-05-14 adversarial
+   * review).
+   *
+   * Cancel the DRIVING workflow_instance(s) for a booking that's about to
+   * be / just been deleted via `delete_booking_with_guard` (00373).
+   *
+   * The problem `cancelInstance('booking', bookingId, …)` cannot solve:
+   * `workflow_instances.booking_id` is `ON DELETE SET NULL` (00369:231-233).
+   * `delete_booking_with_guard` deletes the booking row + enqueues
+   * `booking.cancelled` in the SAME transaction. By the time the wake
+   * handler reads the event, every workflow_instance with
+   * `entity_kind='booking', booking_id=<id>` has `booking_id=NULL` — the
+   * entity-FK lookup at `cancelInstance` (line ~298) returns zero rows
+   * and the cancel no-ops. The driving instance stays active forever
+   * with pending approvals.
+   *
+   * Fix: route discovery through the `approvals` table instead.
+   * `approvals.workflow_instance_id` is also `ON DELETE SET NULL` (00400
+   * block A — `references workflow_instances(id) on delete set null`),
+   * BUT the booking DELETE doesn't cascade to approvals (approvals are
+   * polymorphic via target_entity_type+target_entity_id text/uuid pair,
+   * NOT a real FK to bookings). So approvals SURVIVE the booking delete,
+   * and their workflow_instance_id stays populated. Find each distinct
+   * `workflow_instance_id` for `target_entity_id=$bookingId` and call
+   * `cancelInstanceById` directly — bypassing the entity-FK trap.
+   *
+   * Concurrency: `cancelInstanceById`'s atomic claim handles dedup if the
+   * RPC fires twice for the same instance (e.g. a retry from the outbox
+   * after a transient failure). Multiple workflow_instances per booking
+   * are technically possible (admin-driven re-mint, version bump) but
+   * `idx_workflow_instances_active_booking_unique` (00345) caps at 1
+   * active instance per booking — so this loop typically runs 0 or 1
+   * iterations.
+   *
+   * Tenant safety: every read carries `eq('tenant_id', tenantId)`; the
+   * 00400 trigger on `approvals.workflow_instance_id` is the schema-layer
+   * second defense.
+   */
+  async cancelInstanceForBooking(
+    bookingId: string,
+    tenantId: string,
+    reason: string,
+  ): Promise<void> {
+    // Look up workflow_instance_ids via the surviving approvals table.
+    // Distinct because a chain can have N approvals all sharing the same
+    // workflow_instance_id.
+    const { data: rows, error } = await this.supabase.admin
+      .from('approvals')
+      .select('workflow_instance_id')
+      .eq('tenant_id', tenantId)
+      .eq('target_entity_type', 'booking')
+      .eq('target_entity_id', bookingId)
+      .not('workflow_instance_id', 'is', null);
+
+    if (error) {
+      throw AppErrors.server('workflow.cancel_with_approvals_failed', {
+        detail: `approvals lookup failed for booking=${bookingId}: ${error.message}`,
+      });
+    }
+
+    const instanceIds = Array.from(
+      new Set(
+        (rows ?? [])
+          .map((r) => (r as { workflow_instance_id: string | null }).workflow_instance_id)
+          .filter((id): id is string => id !== null),
+      ),
+    );
+
+    if (instanceIds.length === 0) {
+      // No workflow_instance associated with this booking — nothing to do.
+      // Pre-Phase-1.5 bookings (created via legacy createApprovalRows
+      // without workflow_instance_id) land here; that's the intended
+      // no-op for the legacy path.
+      return;
+    }
+
+    // Iterate. cancelInstanceById bypasses the entity-FK lookup so the
+    // SET-NULL race doesn't block us. Per-instance error boundary so
+    // one bad row doesn't strand the others.
+    for (const instanceId of instanceIds) {
+      try {
+        await this.cancelInstanceById(instanceId, tenantId, reason);
+      } catch (err) {
+        console.error(
+          '[workflow] cancelInstanceForBooking: per-instance cancel failed',
+          { bookingId, instanceId, tenantId, err },
+        );
+      }
+    }
+  }
+
+  /**
    * Walk the spawn-link chain from `parentInstanceId` upwards, checking
    * whether spawning a child of kind `childEntityKind` and id
    * `childEntityId` would (a) attach to a terminated parent, (b) push

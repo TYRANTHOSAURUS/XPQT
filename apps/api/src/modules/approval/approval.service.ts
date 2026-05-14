@@ -56,13 +56,31 @@ interface ApprovalRow {
 }
 
 /**
- * Possible outcomes of `grant_booking_approval` (00310 / spec §10.1).
- * Mirrors the jsonb `kind` field the RPC returns.
+ * Possible outcomes of `grant_booking_approval` (00310 / 00403 v2 / spec
+ * §10.1 + Phase 1.5 §6.C). Mirrors the jsonb `kind` field the RPC returns.
+ *
+ * `'already_resolved'` was added by migration 00403 (Phase 1.5 sub-step
+ * 6.C, BLOCKER 2 closure): on chain_threshold='any' chains, a concurrent
+ * approver whose grant arrives AFTER the chain has already resolved CASes
+ * its own row to 'approved' for audit + returns this kind without
+ * expiring siblings, transitioning the booking, or emitting
+ * approval.granted (the original winner did all of it). The TS consumer
+ * must accept the new kind explicitly — otherwise it would fall through
+ * the type guard and the `as unknown as RespondReturn` cast would smuggle
+ * an undocumented `kind` shape to the controller. See approval-grant
+ * adversarial review C1 (2026-05-14) for the contract-drift trace.
  */
 type GrantBookingApprovalResult =
   | { kind: 'non_booking_approved'; approval_id: string; target_entity_type: string }
   | { kind: 'already_responded'; approval_id: string; prior_status: string }
   | { kind: 'partial_approved'; approval_id: string; remaining: number }
+  | {
+      kind: 'already_resolved';
+      approval_id: string;
+      booking_id: string;
+      approval_chain_id: string | null;
+      approved_siblings_ct: number;
+    }
   | {
       kind: 'resolved';
       approval_id: string;
@@ -72,6 +90,7 @@ type GrantBookingApprovalResult =
       slots_transitioned: number;
       booking_transitioned: boolean;
       setup_emit: { emitted_count: number; skipped_cancelled?: number; skipped_no_args?: number; reason?: string };
+      workflow_emit?: boolean;
     };
 
 /**
@@ -790,6 +809,13 @@ export class ApprovalService {
    *     Return as-is to the controller (the frontend renders "thanks,
    *     waiting on others"; was the same pre-cutover via the
    *     handleBookingApprovalDecided early return).
+   *   - 'already_resolved' (Phase 1.5 / 00403 v2 BLOCKER 2) — a sibling
+   *     in the same chain_threshold='any' chain already resolved. This
+   *     caller's CAS committed self for audit, but the original winner
+   *     already expired siblings + transitioned the booking + emitted
+   *     approval.granted. Return as-is; the FE renders the same
+   *     "thanks, recorded" terminal state as 'resolved' without firing
+   *     a duplicate notification (that's what the no-op skip is FOR).
    *   - 'resolved' — final-decision committed; slots + bookings flipped.
    *
    * Post-RPC best-effort:
@@ -842,6 +868,16 @@ export class ApprovalService {
       throw AppErrors.validationFailed('approval.non_booking_approved', {
         detail: 'Cannot grant approval on non-booking target via this path.',
       });
+    }
+
+    // Phase 1.5 / 00403 v2 BLOCKER 2: 'already_resolved' is the loser-of-race
+    // path on chain_threshold='any' chains. The original winner expired
+    // siblings + transitioned the booking + emitted approval.granted. We
+    // intentionally do NOT fire the notification fan-out below (would
+    // duplicate the winner's onApprovalDecided email). Return the result
+    // shape so the controller can surface the terminal state to the FE.
+    if (result.kind === 'already_resolved') {
+      return result as unknown as RespondReturn;
     }
 
     // ── Post-RPC best-effort: notification fan-out ─────────────────────
