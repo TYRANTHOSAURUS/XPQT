@@ -4,6 +4,7 @@ import { ChevronLeft } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useBranding } from '@/hooks/use-branding';
 import { resolvePortalIcon } from '@/lib/portal-icons';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 
 const PLATFORM_COVERS: Record<string, string> = {
   'platform:cover-1': 'bg-gradient-to-br from-blue-500/70 to-indigo-700',
@@ -57,7 +58,7 @@ export function PortalCategoryBanner({ id, name, description, parentName, parent
         ) : useImage ? (
           <>
             <img
-              src={cover_image_url ?? undefined}
+              src={rewriteSupabaseUrl(cover_image_url)}
               alt=""
               data-portal-fade
               data-loaded="false"

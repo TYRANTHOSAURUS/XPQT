@@ -14,12 +14,13 @@
 import { Link } from 'react-router-dom';
 import { CalendarCheck, UserPlus, Settings } from 'lucide-react';
 import { readKioskSession } from '@/lib/kiosk-auth';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 
 export function KioskIdlePage() {
   const session = readKioskSession();
   const buildingName = session?.buildingName ?? 'our office';
   const tenantName = session?.branding?.tenant_name;
-  const logoUrl = session?.branding?.logo_light_url;
+  const logoUrl = rewriteSupabaseUrl(session?.branding?.logo_light_url);
 
   return (
     <div className="kiosk-idle relative flex flex-1 flex-col items-center justify-center gap-12 p-12">

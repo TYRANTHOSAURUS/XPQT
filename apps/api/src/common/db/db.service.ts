@@ -32,6 +32,20 @@ import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from 'pg
  *     statements (the only feature transaction-mode pooler doesn't
  *     allow).
  */
+/**
+ * Parse the hostname out of a SUPABASE_URL-shaped value. Uses the URL API
+ * (not regex) so it's robust to schemes, ports, paths, and query strings.
+ * Returns null when the value is empty or malformed.
+ */
+function parseSupabaseHostname(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 @Injectable()
 export class DbService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger(DbService.name);
@@ -97,26 +111,64 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
    * Precedence:
    *   1. `SUPABASE_DB_URL` if set — full override (lets ops point at a
    *      pooler, replica, or dev DB without code changes).
-   *   2. Otherwise build from `SUPABASE_URL` (project ref) + `SUPABASE_DB_PASS`.
+   *   2. `PG_HOST` set — explicit Postgres host (proxy mode: SUPABASE_URL
+   *      may be a non-Supabase host, so we don't try to derive from it).
+   *   3. Derive from `SUPABASE_URL` shaped as `<project-ref>.supabase.co`.
+   *
+   * Proxy-mode safety: if `SUPABASE_URL` doesn't have the exact
+   * `<project-ref>.supabase.co` shape (e.g. it's been swapped to a
+   * Cloudflare Worker proxy for VPN-bypass — see
+   * docs/vpn-supabase-proxy-bypass.md), the only safe path is via
+   * `PG_HOST` or `SUPABASE_DB_URL`. We refuse to derive a misleading
+   * `db.<first-label>.supabase.co` host that would fail at first query.
    */
   private resolveConnectionString(): string {
     const explicit = this.config.get<string>('SUPABASE_DB_URL');
     if (explicit) return explicit;
 
     const password = this.config.getOrThrow<string>('SUPABASE_DB_PASS');
-    const projectRef = this.extractProjectRef();
-    if (!projectRef) {
-      throw new Error('Cannot derive Postgres host: SUPABASE_URL is missing or malformed');
-    }
-    const host = this.config.get<string>('PG_HOST') ?? `db.${projectRef}.supabase.co`;
+    const pgHostOverride = this.config.get<string>('PG_HOST');
     const port = this.config.get<string | number>('PG_PORT') ?? 5432;
-    return `postgresql://postgres:${encodeURIComponent(password)}@${host}:${port}/postgres`;
-  }
 
-  private extractProjectRef(): string | null {
-    const url = this.config.get<string>('SUPABASE_URL') ?? '';
-    const match = url.match(/^https?:\/\/([^.]+)\./);
-    return match?.[1] ?? null;
+    if (pgHostOverride) {
+      return `postgresql://postgres:${encodeURIComponent(password)}@${pgHostOverride}:${port}/postgres`;
+    }
+
+    const supabaseUrl = this.config.get<string>('SUPABASE_URL') ?? '';
+    const supabaseHost = parseSupabaseHostname(supabaseUrl);
+    if (!supabaseHost) {
+      throw new Error(
+        'Cannot derive Postgres host: SUPABASE_URL is missing or malformed. ' +
+          'Either set SUPABASE_URL to https://<project-ref>.supabase.co, or set ' +
+          'PG_HOST=db.<project-ref>.supabase.co (proxy mode), or set ' +
+          'SUPABASE_DB_URL=postgresql://... directly.',
+      );
+    }
+    // Require exactly `<project-ref>.supabase.co` shape — three dot-separated
+    // labels, ending in `.supabase.co`. This rejects `api.supabase.co` (one
+    // label too few — Supabase status / docs hosts, not project hosts) and
+    // `a.b.supabase.co` (one label too many — would derive a bogus pg host
+    // from the first label).
+    const labels = supabaseHost.split('.');
+    const isProjectShape =
+      labels.length === 3 &&
+      labels[1] === 'supabase' &&
+      labels[2] === 'co' &&
+      /^[a-z0-9-]+$/.test(labels[0]!);
+    if (!isProjectShape) {
+      throw new Error(
+        `Cannot derive Postgres host: SUPABASE_URL host is "${supabaseHost}" — ` +
+          'not the expected <project-ref>.supabase.co shape. This usually means ' +
+          'SUPABASE_URL has been swapped to a proxy (e.g. Cloudflare Worker for ' +
+          'VPN bypass — see docs/vpn-supabase-proxy-bypass.md), or it points at ' +
+          'supabase.com / docs / api rather than a project. Set one of:\n' +
+          '  - PG_HOST=db.<your-real-project-ref>.supabase.co (proxy mode), or\n' +
+          '  - SUPABASE_DB_URL=postgresql://postgres:<pass>@<host>:5432/postgres (full override).',
+      );
+    }
+    const projectRef = labels[0];
+    const host = `db.${projectRef}.supabase.co`;
+    return `postgresql://postgres:${encodeURIComponent(password)}@${host}:${port}/postgres`;
   }
 
   /**

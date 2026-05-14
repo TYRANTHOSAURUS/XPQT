@@ -23,6 +23,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 import { Input } from '@/components/ui/input';
 import { toastSuccess } from '@/lib/toast';
 import { clearKioskSession, readKioskSession, writeKioskSession } from '@/lib/kiosk-auth';
@@ -46,8 +47,12 @@ export function KioskSetupPage() {
   const tenantId = params.get('tenant') ?? params.get('tenant_id');
   const tenantName = params.get('tenant_name') ?? null;
   const primaryColor = params.get('primary_color');
-  const logoLight = params.get('logo_light_url');
-  const logoDark = params.get('logo_dark_url');
+  // Normalise URLs supplied via query string — admin links built while a
+  // proxy bypass is configured (see docs/vpn-supabase-proxy-bypass.md) would
+  // otherwise persist the proxy host into kiosk localStorage. The helper is
+  // a no-op when not in proxy mode.
+  const logoLight = rewriteSupabaseUrl(params.get('logo_light_url')) ?? null;
+  const logoDark = rewriteSupabaseUrl(params.get('logo_dark_url')) ?? null;
   const showProvisioningMessage = params.get('msg') === 'needs-provisioning';
 
   // Auto-bind if we landed with a full setup URL.

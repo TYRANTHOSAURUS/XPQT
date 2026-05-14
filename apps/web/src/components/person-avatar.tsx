@@ -1,5 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { cn } from '@/lib/utils';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 
 interface PersonLike {
   first_name?: string | null;
@@ -36,7 +37,12 @@ export function PersonAvatar({ person, size = 'default', className, alt }: Perso
   return (
     <Avatar size={size} className={cn(className)}>
       {person?.avatar_url && (
-        <AvatarImage src={person.avatar_url} alt={displayAlt} loading="lazy" decoding="async" />
+        <AvatarImage
+          src={rewriteSupabaseUrl(person.avatar_url)}
+          alt={displayAlt}
+          loading="lazy"
+          decoding="async"
+        />
       )}
       <AvatarFallback>{getInitials(person)}</AvatarFallback>
     </Avatar>

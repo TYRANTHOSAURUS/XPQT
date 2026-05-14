@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { apiFetch } from '@/lib/api';
 import { supabase } from '@/lib/supabase';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 
 export interface Branding {
   name: string;
@@ -62,7 +63,36 @@ interface BrandingContextValue {
 
 const BrandingContext = createContext<BrandingContextValue | undefined>(undefined);
 
-const STORAGE_KEY = 'pq.branding';
+// Cache key includes the active Supabase host so flipping `VITE_SUPABASE_URL`
+// (e.g. entering or exiting proxy-bypass mode — see
+// docs/vpn-supabase-proxy-bypass.md) invalidates the cache automatically.
+// Otherwise a cached `sb-dev.tyranth.workers.dev/...` URL would survive the
+// env revert until the next successful refetch.
+const STORAGE_KEY = (() => {
+  const target = import.meta.env.VITE_SUPABASE_URL ?? '';
+  try {
+    return `pq.branding:${new URL(target).host}`;
+  } catch {
+    return 'pq.branding';
+  }
+})();
+
+/**
+ * Proxy-mode choke point: rewrite stored absolute Supabase URLs on every
+ * branding object before it enters component state. In normal mode this is
+ * a no-op; in proxy mode it routes logo/favicon URLs through the configured
+ * `VITE_SUPABASE_URL` host so they don't hit the blocked path.
+ *
+ * See `docs/vpn-supabase-proxy-bypass.md`.
+ */
+function normalizeBrandingUrls(b: Branding): Branding {
+  return {
+    ...b,
+    logo_light_url: rewriteSupabaseUrl(b.logo_light_url) ?? null,
+    logo_dark_url: rewriteSupabaseUrl(b.logo_dark_url) ?? null,
+    favicon_url: rewriteSupabaseUrl(b.favicon_url) ?? null,
+  };
+}
 
 function readCached(): Branding | null {
   try {
@@ -94,9 +124,10 @@ async function multipart(path: string, form: FormData): Promise<Response> {
 }
 
 export function BrandingProvider({ children }: { children: ReactNode }) {
-  const [branding, setBranding] = useState<Branding>(
-    () => readCached() ?? DEFAULT_BRANDING,
-  );
+  const [branding, setBranding] = useState<Branding>(() => {
+    const cached = readCached();
+    return cached ? normalizeBrandingUrls(cached) : DEFAULT_BRANDING;
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -104,7 +135,7 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiFetch<Branding>('/tenants/current/branding');
+      const data = normalizeBrandingUrls(await apiFetch<Branding>('/tenants/current/branding'));
       setBranding(data);
       writeCached(data);
     } catch (e) {
@@ -119,10 +150,12 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
   }, [refetch]);
 
   const updateBranding = useCallback(async (dto: UpdateBrandingDto) => {
-    const next = await apiFetch<Branding>('/tenants/branding', {
-      method: 'PUT',
-      body: JSON.stringify(dto),
-    });
+    const next = normalizeBrandingUrls(
+      await apiFetch<Branding>('/tenants/branding', {
+        method: 'PUT',
+        body: JSON.stringify(dto),
+      }),
+    );
     setBranding(next);
     writeCached(next);
   }, []);
@@ -137,7 +170,7 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
         const body = (await res.json().catch(() => ({}))) as { message?: string };
         throw new Error(body.message ?? `Upload failed (${res.status})`);
       }
-      const next = (await res.json()) as Branding;
+      const next = normalizeBrandingUrls((await res.json()) as Branding);
       setBranding(next);
       writeCached(next);
     },
@@ -145,9 +178,11 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
   );
 
   const removeLogo = useCallback(async (kind: 'light' | 'dark' | 'favicon') => {
-    const next = await apiFetch<Branding>(`/tenants/branding/logo/${kind}`, {
-      method: 'DELETE',
-    });
+    const next = normalizeBrandingUrls(
+      await apiFetch<Branding>(`/tenants/branding/logo/${kind}`, {
+        method: 'DELETE',
+      }),
+    );
     setBranding(next);
     writeCached(next);
   }, []);

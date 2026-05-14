@@ -1,5 +1,6 @@
 import { apiFetch } from '@/lib/api';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 import {
   personFullName,
   personKeys,
@@ -48,7 +49,7 @@ export const personEntityAdapter: EntityAdapter<Person> = {
     return (
       <div className="flex items-center gap-2 min-w-0">
         <Avatar className="size-6 shrink-0">
-          {p.avatar_url ? <AvatarImage src={p.avatar_url} alt="" /> : null}
+          {p.avatar_url ? <AvatarImage src={rewriteSupabaseUrl(p.avatar_url)} alt="" /> : null}
           <AvatarFallback className="text-[10px]">
             {initials(p)}
           </AvatarFallback>
@@ -67,7 +68,7 @@ export const personEntityAdapter: EntityAdapter<Person> = {
     return (
       <span className="flex items-center gap-2 min-w-0">
         <Avatar className="size-5 shrink-0">
-          {p.avatar_url ? <AvatarImage src={p.avatar_url} alt="" /> : null}
+          {p.avatar_url ? <AvatarImage src={rewriteSupabaseUrl(p.avatar_url)} alt="" /> : null}
           <AvatarFallback className="text-[9px]">
             {initials(p)}
           </AvatarFallback>

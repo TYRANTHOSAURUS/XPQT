@@ -13,6 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAvailableServiceItems } from '@/api/service-catalog';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 import type { AvailableServiceItem, ServiceType } from '@/api/service-catalog';
 import {
   useRecentMyBundles,
@@ -493,7 +494,7 @@ function CatalogPanel({
               {item.image_url && (
                 <div
                   className="size-16 shrink-0 rounded-md bg-muted bg-cover bg-center"
-                  style={{ backgroundImage: `url(${item.image_url})` }}
+                  style={{ backgroundImage: `url("${rewriteSupabaseUrl(item.image_url)}")` }}
                   aria-hidden
                 />
               )}

@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { formatRelativeTime, formatFullTimestamp } from '@/lib/format';
+import { rewriteSupabaseUrl } from '@/lib/rewrite-supabase-url';
 
 export interface ThreadEvent {
   id: string;
@@ -38,7 +39,7 @@ export function PortalRequestThread({ events }: ThreadProps) {
           {evt.kind === 'message' ? (
             <>
               <Avatar className="size-8 mt-0.5">
-                <AvatarImage src={evt.authorAvatarUrl ?? undefined} alt="" />
+                <AvatarImage src={rewriteSupabaseUrl(evt.authorAvatarUrl)} alt="" />
                 <AvatarFallback className="bg-gradient-to-br from-blue-500 to-violet-600 text-white text-[10px] font-semibold">
                   {(evt.authorName ?? '?').slice(0, 2).toUpperCase()}
                 </AvatarFallback>
