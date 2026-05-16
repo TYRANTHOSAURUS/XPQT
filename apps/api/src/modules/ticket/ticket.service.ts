@@ -1593,14 +1593,47 @@ export class TicketService {
     return (data ?? []).map((row) => ({ ...row, ticket_kind: 'work_order' as const }));
   }
 
+  /**
+   * Audit 02 / P0-1 + P2-5: bulk update is no longer a raw
+   * `.from('tickets').update(dto).in('id', ids)` back door. Every id is
+   * routed through the canonical single-path `update()`, which owns the
+   * full B.2.A guarantee set: per-action permission gates
+   * (`tickets.change_priority` / `tickets.assign`), watcher/assignee
+   * tenant validation, `sla_id` immutability, parent-close-while-children
+   * -open guard, cost float-normalisation, the `update_entity_combined`
+   * RPC with `command_operations` idempotency + audit/activity + domain
+   * event, and the satisfaction fold. There is no separate validation to
+   * keep in sync — bulk == N× the hardened path.
+   *
+   * Idempotency: a single `clientRequestId` is shared by the batch and
+   * `update()` derives a deterministic per-id key
+   * (`patch:case:<id>:<crid>` via buildPatchIdempotencyKey), so a network
+   * retry of the whole batch replays each id exactly once.
+   *
+   * Partial success: per the error-handling spec (CLAUDE.md "Bulk ops use
+   * results[] + partialSuccess"), one bad id never aborts the batch. The
+   * caller gets a per-id outcome; permission denials surface as an `error`
+   * row, not a silent drop.
+   */
   async bulkUpdate(
     ids: string[],
     dto: UpdateTicketDto,
     actorAuthUid: string = SYSTEM_ACTOR,
-  ) {
-    const tenant = TenantContext.current();
-
-    if (!Array.isArray(ids) || ids.length === 0) return [];
+    clientRequestId?: string,
+  ): Promise<{
+    results: Array<{
+      id: string;
+      status: 'ok' | 'error';
+      data?: unknown;
+      error?: { code: string; message: string };
+    }>;
+    okCount: number;
+    errorCount: number;
+    partialSuccess: boolean;
+  }> {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return { results: [], okCount: 0, errorCount: 0, partialSuccess: false };
+    }
     // Cap blast radius. The desk UI never selects more than a screenful at a
     // time; an unbounded list here is almost certainly an abuse signal.
     if (ids.length > 200) {
@@ -1608,43 +1641,41 @@ export class TicketService {
         detail: 'bulk update is capped at 200 ids per call',
       });
     }
+    // De-dupe: the same id twice in one batch maps to the same per-id
+    // idempotency key — the second would replay the first's cached result,
+    // but emitting two result rows for one id is confusing. Collapse first.
+    const uniqueIds = Array.from(new Set(ids));
 
-    // Visibility gate: only update tickets the actor can write. We narrow the
-    // id set to the visible (write-eligible) subset rather than rejecting the
-    // whole request — matches how the desk surfaces partial-permission cases.
-    if (actorAuthUid !== SYSTEM_ACTOR) {
-      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      if (!ctx.has_write_all) {
-        const allowedIds: string[] = [];
-        for (const id of ids) {
-          try {
-            await this.visibility.assertVisible(id, ctx, 'write');
-            allowedIds.push(id);
-          } catch {
-            // Skip silently — the desk lists the result and surfaces partial
-            // outcomes; throwing on the first denied id would surprise users
-            // who selected a mix.
-          }
-        }
-        if (allowedIds.length === 0) {
-          throw AppErrors.forbidden(
-            'ticket.no_writable_in_selection',
-            'No tickets in selection are writable for this user',
-          );
-        }
-        ids = allowedIds;
+    const results: Array<{
+      id: string;
+      status: 'ok' | 'error';
+      data?: unknown;
+      error?: { code: string; message: string };
+    }> = [];
+
+    for (const id of uniqueIds) {
+      try {
+        const data = await this.update(id, dto, actorAuthUid, clientRequestId);
+        results.push({ id, status: 'ok', data });
+      } catch (err) {
+        const code =
+          (err as { code?: string } | null)?.code ??
+          (err as { name?: string } | null)?.name ??
+          'unknown.server_error';
+        const message =
+          err instanceof Error ? err.message : String(err ?? 'bulk update failed');
+        results.push({ id, status: 'error', error: { code, message } });
       }
     }
 
-    const { data, error } = await this.supabase.admin
-      .from('tickets')
-      .update(dto as Record<string, unknown>)
-      .in('id', ids)
-      .eq('tenant_id', tenant.id)
-      .select();
-
-    if (error) throw error;
-    return data;
+    const okCount = results.filter((r) => r.status === 'ok').length;
+    const errorCount = results.length - okCount;
+    return {
+      results,
+      okCount,
+      errorCount,
+      partialSuccess: okCount > 0 && errorCount > 0,
+    };
   }
 
   private async logDomainEvent(entityId: string, eventType: string, payload: Record<string, unknown>) {
