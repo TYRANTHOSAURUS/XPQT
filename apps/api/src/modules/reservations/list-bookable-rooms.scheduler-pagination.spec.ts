@@ -71,6 +71,7 @@ describe('ListBookableRoomsService.loadSchedulerData — 00296 pagination meta',
 
   const actor: ActorContext = {
     user_id: 'U',
+    auth_uid: 'U',
     person_id: 'P',
     tenant_id: TENANT.id,
     is_service_desk: true,

@@ -206,6 +206,9 @@ export class ReservationsModule implements OnModuleInit {
     // guard run as for any portal booking.
     const actor: ActorContext = {
       user_id: `system:outlook:${draft.external_event_id}`,
+      // Synthetic — Outlook sync only calls bookingFlow.create, never the
+      // F-CRIT-1 edit RPCs. Mirror user_id so the required field is set.
+      auth_uid: `system:outlook:${draft.external_event_id}`,
       person_id: organizer.id,
       is_service_desk: false,
       has_override_rules: false,

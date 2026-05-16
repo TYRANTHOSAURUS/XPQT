@@ -1012,7 +1012,11 @@ export class ReservationService {
       p_booking_id: id,
       p_plan: plan as unknown as Record<string, unknown>,
       p_tenant_id: tenantId,
-      p_actor_user_id: actor.user_id,
+      // F-CRIT-1: the RPC resolves this via `where u.auth_uid = p_actor_
+      // user_id` (00364:357-371, unchanged in 00394 v5). Must be the JWT
+      // subject (auth_uid), NOT users.id, or every edit fails with
+      // edit_booking.actor_not_found.
+      p_actor_user_id: actor.auth_uid,
       p_idempotency_key: idempotencyKey,
     });
     if (rpcErr) {
@@ -1329,7 +1333,9 @@ export class ReservationService {
       p_booking_id: bookingId,
       p_plan: plan as unknown as Record<string, unknown>,
       p_tenant_id: tenantId,
-      p_actor_user_id: actor.user_id,
+      // F-CRIT-1: RPC resolves via `where u.auth_uid = p_actor_user_id`
+      // (00364:357-371). Must be the JWT subject, not users.id.
+      p_actor_user_id: actor.auth_uid,
       p_idempotency_key: idempotencyKey,
     });
     if (rpcErr) {
@@ -1816,7 +1822,10 @@ export class ReservationService {
       {
         p_plans: rpc_plans as unknown as Record<string, unknown>[],
         p_tenant_id: tenantId,
-        p_actor_user_id: actor.user_id,
+        // F-CRIT-1: RPC resolves via `where u.auth_uid = p_actor_user_id`
+        // (00371:227-238, mirrors 00364:357-371). Must be the JWT subject,
+        // not users.id, or every scope edit fails actor_not_found.
+        p_actor_user_id: actor.auth_uid,
         p_idempotency_key: idempotencyKey,
         p_dry_run: dryRun,
       },

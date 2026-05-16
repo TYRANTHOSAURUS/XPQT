@@ -93,6 +93,9 @@ export class RecurrenceService {
   // only ever land if the rules + conflict guard allow them.
   private static readonly SYSTEM_ACTOR: ActorContext = {
     user_id: 'system:recurrence',
+    // Synthetic — the materialiser only calls bookingFlow.create, never
+    // the F-CRIT-1 edit RPCs. Mirror user_id so the required field is set.
+    auth_uid: 'system:recurrence',
     person_id: null,
     is_service_desk: false,
     has_override_rules: false,

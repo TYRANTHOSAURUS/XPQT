@@ -82,6 +82,7 @@ describe('BookingFlowService.buildAttachPlan (B.0.C.4)', () => {
   function makeActor(overrides: Partial<ActorContext> = {}): ActorContext {
     return {
       user_id: 'user-1',
+      auth_uid: 'user-1',
       person_id: REQUESTER_PERSON,
       is_service_desk: false,
       has_override_rules: false,

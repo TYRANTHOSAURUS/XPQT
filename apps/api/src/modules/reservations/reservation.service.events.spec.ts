@@ -426,6 +426,10 @@ function makeService(opts: {
 
 const ACTOR = {
   user_id: USER_ID,
+  // F-CRIT-1: editOne forwards actor.auth_uid (the JWT subject) to the
+  // edit_booking RPC, not user_id. Mirror it so the edit succeeds and the
+  // visitor cascade under test actually fires.
+  auth_uid: USER_ID,
   person_id: PERSON_ID,
   is_service_desk: false,
   has_override_rules: false,

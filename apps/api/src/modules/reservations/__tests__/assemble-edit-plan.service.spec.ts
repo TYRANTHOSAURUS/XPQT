@@ -202,10 +202,46 @@ function makeSupabase(opts: {
       };
       return builder;
     }
+    const linked = linkedRowTableMock(table);
+    if (linked) return linked;
     throw new Error(`unexpected table: ${table}`);
   });
 
   return { admin: { from: fromMock } } as never;
+}
+
+/**
+ * Shared no-op mock for the P0-2 `buildLinkedRowPatches` linked-table
+ * reads (booking-audit remediation). Both `makeSupabase` factories
+ * delegate here. Pre-fix the assembler hard-coded asset_reservation_
+ * patches/order_patches/work_order_sla_patches to []; now it READS
+ * those tables. These fixtures carry no linked rows, so returning an
+ * empty data set keeps every pre-existing assertion green (the patch
+ * arrays are still []) while letting the new code path run.
+ *
+ * The booking_slots COUNT read (select('id',{count:'exact',head:true})
+ * .eq().eq(), awaited directly) is NOT handled here on purpose — the
+ * existing booking_slots handler's chain has no `.then`, so awaiting
+ * it resolves to the chain object and `.count` is undefined → the
+ * helper's `?? 0` yields slotCount=0 (single-slot path), which is the
+ * correct default for these single-slot fixtures.
+ *
+ * Query shape mirrored from assemble-edit-plan.service.ts:
+ *   select(cols).eq().eq().not(col,'in',list)  → awaited → { data }
+ */
+function linkedRowTableMock(table: string) {
+  if (
+    table !== 'asset_reservations' &&
+    table !== 'orders' &&
+    table !== 'work_orders'
+  ) {
+    return null;
+  }
+  const chain: Record<string, unknown> = {
+    eq: () => chain,
+    not: () => Promise.resolve({ data: [], error: null }),
+  };
+  return { select: () => chain } as unknown as { select: jest.Mock };
 }
 
 function makeBookingFlow(spaceOverrides: {
@@ -1355,6 +1391,8 @@ function makeScopeSupabase(fx: ScopeFixture) {
       return builder;
     }
 
+    const linked = linkedRowTableMock(table);
+    if (linked) return linked;
     throw new Error(`unexpected table: ${table}`);
   });
   return { admin: { from: fromMock } } as never;
