@@ -63,6 +63,22 @@ distinct bugs (spec §2):
 
 All 8 are closed by the shipped RPC family. Per-bug citation in §3.
 
+> **Narrowed 2026-05-16 (booking-audit Slice 1):** "All 8 closed by the
+> shipped RPC family" is accurate only for the booking + slot + approval
+> transaction. Until 2026-05-16, editOne/editSlot/editScope were in fact
+> returning 404 `actor_not_found` for every call — the service passed
+> `public.users.id` where `edit_booking` F-CRIT-1 (`00394:289-303`)
+> requires `auth_uid` (`docs/follow-ups/audits/03-booking-reservation.md`
+> D-1) — and Bug 1's linked-row patches (orders/asset_reservations/
+> work_orders time propagation) were never populated; the assembler
+> hard-coded `asset_reservation_patches=[]` / `order_patches=[]` /
+> `work_order_sla_patches=[]` (audit 03 P0-2). Both fixed 2026-05-16
+> (migration 00407 + `assemble-edit-plan.service.ts buildLinkedRowPatches`
+> + smoke-edit-booking.mjs Fixture D); multi-slot linked-row propagation
+> remains a deferred residual (loud `logger.warn` on skip). Cancel /
+> cascade / standalone / recurrence-split paths remain TS choreography
+> (audit 03 P0-1 / P1-2 / P1-3 / P1-4, open).
+
 ## 2. What shipped — sub-step inventory
 
 10 numbered sub-steps. ~36 commits. ~22,130 insertions / 1,711
@@ -504,6 +520,18 @@ cut over from legacy TS multi-step writes to unified `edit_booking`
 + `edit_booking_scope` PL/pgSQL RPCs; 8 migrations (00359-00364,
 00367, 00371), ~100 new test scenarios, 8 bugs closed, all CI
 gates 0-violation.
+
+> **Narrowed 2026-05-16 (booking-audit Slice 1):** "B.4 edit-paths
+> COMPLETE / 8 bugs closed" is accurate only for the booking + slot +
+> approval transaction. Until 2026-05-16, editOne/editSlot/editScope
+> were in fact returning 404 `actor_not_found` for every call (audit 03
+> D-1), and linked-row patches (orders/asset_reservations/work_orders
+> time propagation) were never populated (audit 03 P0-2). Both fixed
+> 2026-05-16; multi-slot linked-row propagation remains a deferred
+> residual. Cancel / cascade / standalone / recurrence-split paths
+> remain TS choreography (audit 03 P0-1 / P1-2 / P1-3 / P1-4, open).
+> See `docs/follow-ups/audits/03-booking-reservation.md` Closure Ledger
+> 2026-05-16.
 
 ---
 

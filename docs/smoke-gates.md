@@ -54,6 +54,8 @@ Exercises `POST /reservations/:id/edit-scope` across:
   - invalid scope + non-boolean `dry_run` → `edit_booking_scope.invalid_plans` (400)
   - missing `X-Client-Request-Id` → guard fires
 
+**Also required (added 2026-05-16, booking-audit Slice 1):** any migration that touches `edit_booking_scope` / `booking_edit_idempotency_payload_hash` / `booking_edit_strip_hash_server_fields`, or any change to `AssembleEditPlanService.buildLinkedRowPatches` or `ActorContext` actor threading (the `auth_uid` thread-through that previously made every editScope call 404 `actor_not_found` — see `docs/follow-ups/audits/03-booking-reservation.md` D-1). `edit_booking_scope` receives the D-2 idempotency-hash fix (migration 00407, verbatim from 00399 + one delta line). Note: editScope rejects `start_at`/`end_at` by design, so this gate has no linked-row time-shift fixture — the linked-row Fixture D lives in `smoke:edit-booking` (see below).
+
 ---
 
 ## `pnpm smoke:edit-booking`
@@ -89,6 +91,10 @@ Script: `apps/api/scripts/smoke-edit-booking.mjs`. Run via `pnpm --filter @prequ
 - missing `X-Client-Request-Id`
 
 **Op-discrimination (Step 2F.3 contract):** editOne + editSlot sharing one CRID mint 2 distinct `command_operations` rows.
+
+**Also required (added 2026-05-16, booking-audit Slice 1):** any migration that touches `edit_booking` / `booking_edit_idempotency_payload_hash` / `booking_edit_strip_hash_server_fields`, or any change to `AssembleEditPlanService.buildLinkedRowPatches` or `ActorContext` actor threading (the `auth_uid` thread-through that previously made every editOne/editSlot call 404 `actor_not_found` — see `docs/follow-ups/audits/03-booking-reservation.md` D-1).
+
+**Fixture D is mandatory (P0-2/P0-3 closure, 2026-05-16):** this gate MUST include the linked-row Fixture D — a single booking + 1 catering order + 1 OLI + a boundary-aligned `asset_reservation` + a custom-window `asset_reservation` + 1 setup `work_order`, asserting that the post-edit instants propagate to all linked rows (see `docs/follow-ups/audits/03-booking-reservation.md` P0-2 / P0-3). A fixture with NO linked rows is insufficient: the empty-patch-array bug (Agent 3 P0-2) was invisible precisely because the prior fixtures (A/B) intentionally seeded no services/orders/work_orders. The §10.c–§10.d RPC cascade branches must be exercised against real linked rows, not no-ops.
 
 ---
 

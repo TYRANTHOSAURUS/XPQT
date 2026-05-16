@@ -791,6 +791,11 @@ export class ReservationController {
 
     return {
       user_id: ctx.user_id,
+      // The JWT subject — the combined edit RPCs (edit_booking 00364/00394,
+      // edit_booking_scope 00371) resolve p_actor_user_id via
+      // `where u.auth_uid = p_actor_user_id` (F-CRIT-1). Passing user_id
+      // there fails every edit with edit_booking.actor_not_found.
+      auth_uid: authUid,
       person_id: ctx.person_id,
       is_service_desk: !!bookOnBehalfRes.data,
       has_override_rules: !!overrideRes.data,

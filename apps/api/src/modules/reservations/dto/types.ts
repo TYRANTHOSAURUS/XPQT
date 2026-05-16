@@ -341,6 +341,19 @@ export interface CreateReservationInput {
 
 export interface ActorContext {
   user_id: string;                          // app-side users.id
+  /**
+   * The JWT subject (Supabase `auth.uid()` / `users.auth_uid`), NOT
+   * `users.id`. Threaded from the controller's `getAuthUid(req)`.
+   *
+   * Required because the combined edit RPCs (`edit_booking` 00364/00394,
+   * `edit_booking_scope` 00371) resolve `p_actor_user_id` internally via
+   * `where u.auth_uid = p_actor_user_id` (the F-CRIT-1 auth_uid→users.id
+   * lookup). Passing `user_id` there silently fails every edit with
+   * `edit_booking.actor_not_found`. Synthetic/system actors (recurrence
+   * materialiser, Outlook sync) set this to the same synthetic string as
+   * `user_id` — they never reach the F-CRIT-1 RPCs.
+   */
+  auth_uid: string;
   person_id: string | null;
   is_service_desk: boolean;                 // gates book_on_behalf + override
   has_override_rules: boolean;              // rooms.override_rules permission

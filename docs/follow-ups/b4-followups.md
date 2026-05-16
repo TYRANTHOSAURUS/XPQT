@@ -9,6 +9,22 @@ re-discover them as bugs. Sibling to `docs/follow-ups/b2-followups.md`.
 B.4 is shipped to `origin/main` at HEAD `71618510`. Steps 1, 2A, 2B,
 2C, 2D, 2E, 2F.1, 2F.2, 2F.3, 2F.4 all live. All CI gates 0-violation.
 
+> **Narrowed 2026-05-16 (booking-audit Slice 1):** "B.4 COMPLETE" is
+> accurate only for the booking + slot + approval transaction. Until
+> 2026-05-16, editOne/editSlot/editScope were in fact returning 404
+> `actor_not_found` for every call — the service passed `public.users.id`
+> where `edit_booking` F-CRIT-1 (`00394:289-303`) requires `auth_uid`
+> (`docs/follow-ups/audits/03-booking-reservation.md` D-1) — and
+> linked-row patches (orders/asset_reservations/work_orders time
+> propagation) were never populated; the assembler hard-coded empty
+> `asset_reservation_patches` / `order_patches` / `work_order_sla_patches`
+> arrays (audit 03 P0-2). Both fixed 2026-05-16 (migration 00407 +
+> `assemble-edit-plan.service.ts buildLinkedRowPatches` +
+> smoke-edit-booking.mjs Fixture D); multi-slot linked-row propagation
+> remains a deferred residual. Cancel / cascade / standalone /
+> recurrence-split paths remain TS choreography (audit 03 P0-1 / P1-2 /
+> P1-3 / P1-4, open).
+
 **Closing retrospective:** `docs/follow-ups/b4-closing-retro-2026-05-12.md`.
 
 This file is now an **open-items index**. Each section below is either:
@@ -35,6 +51,22 @@ Closing-retro §10 item #10 (single-occurrence smoke probe for editOne + editSlo
 - **Op-discrimination probe** (1 scenario): fires `editOne(crid=X)` on Fixture A + `editSlot(crid=X)` on Fixture B non-primary slot — verifies both `command_operations` rows exist for crid=X with distinct prefixes (`booking:edit:one:` + `booking:edit:slot:`). Locks the Step 2F.3 cross-op key-namespacing contract from `packages/shared/src/idempotency.ts:374-382`.
 
 Citations baked into the script header: `apps/api/src/modules/reservations/reservation.controller.ts:301-380`, `apps/api/src/modules/reservations/reservation.service.ts:600-1450`, `packages/shared/src/idempotency.ts:331-382`, `supabase/migrations/00364_edit_booking_rpc_v4.sql`. Both fixtures intentionally have no linked services / orders / work_orders so the 00364 RPC's §10.c-§10.d cleanup branches are no-ops on these bookings — cascade behaviour is covered by the assembler unit tests + the scope smoke.
+
+> **Narrowed 2026-05-16 (booking-audit Slice 1):** the claim above —
+> "cascade behaviour is covered by the assembler unit tests + the scope
+> smoke" — was inaccurate. The assembler unit tests were mocked and the
+> assembler emitted empty patch arrays (`asset_reservation_patches=[]` /
+> `order_patches=[]` / `work_order_sla_patches=[]`), so neither the unit
+> tests nor the no-linked-row scope smoke ever exercised the cascade
+> (`docs/follow-ups/audits/03-booking-reservation.md` P0-2 / P0-3).
+> Closed 2026-05-16: `smoke-edit-booking.mjs` now ships **Fixture D**
+> (catering order + OLI + boundary-aligned `asset_reservation` +
+> custom-window `asset_reservation` + setup `work_order`) which asserts
+> the post-edit instants propagate to all linked rows; the assembler
+> populates patches via `buildLinkedRowPatches`; migration 00407 fixes
+> the idempotency-hash D-2 finding. `pnpm smoke:edit-booking` 78/78
+> exit 0. Multi-slot linked-row propagation remains a deferred residual
+> (loud `logger.warn` on skip — children key only on `booking_id`).
 
 CLAUDE.md "Smoke gate" section updated to mandate the probe before claiming any work touching `ReservationService.editOne` / `ReservationService.editSlot` / `assembleEditPlan` (kinds `'one'` + `'slot'`) / the `edit_booking` RPC is complete.
 

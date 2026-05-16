@@ -175,12 +175,13 @@ const NOOR_PERSON = '95000000-0000-0000-0000-000000000004';
 const NOOR_USER = '95100000-0000-0000-0000-000000000004';
 const LONG_BOOKING_RULE_ID = 'b0010002-0000-0000-0000-000000000001';
 
-// Fixture anchors. +130 / +131 / +132 days future clears the scope
-// smoke's +90→+118 day window so back-to-back probes don't collide on
-// the same rooms.
+// Fixture anchors. +130 / +131 / +132 / +133 days future clears the
+// scope smoke's +90→+118 day window so back-to-back probes don't
+// collide on the same rooms.
 const FIXTURE_A_DAYS_FROM_NOW = 130;
 const FIXTURE_B_DAYS_FROM_NOW = 131;
 const FIXTURE_C_DAYS_FROM_NOW = 132;
+const FIXTURE_D_DAYS_FROM_NOW = 133;
 
 // ─────────────────────────────────────────────────────────────────────
 // Idempotency-key shape — replicated from
@@ -417,6 +418,206 @@ function seedFixtureC() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Fixture D — single non-recurring booking + 1 slot on ROOM_HUDDLE,
+// PLUS the full linked-row graph: 1 order (+ 1 order_line_item), 2
+// asset_reservations (boundary-aligned + custom-window), 1 setup
+// work_order. +133 days future, 1 hour duration.
+//
+// Closes audit P0-2/P0-3: proves an editOne pure-move (+2h, duration
+// unchanged) cascades into the linked orders / asset_reservations /
+// setup work_orders via the `edit_booking` v5 RPC's §10.c/§10.d/§10.f
+// patch arrays. Before the AssembleEditPlanService.buildLinkedRowPatches
+// fix, the assembler emitted [] for all three arrays and these rows
+// stayed at the OLD time (caterer daglijst diverged).
+//
+// Single-room single-slot so the multi-slot attribution ambiguity does
+// NOT apply (linked rows key only off booking_id — see
+// supabase/migrations/00278_retarget_sibling_tables.sql:108-144; none of
+// orders / asset_reservations / work_orders carry a slot/space
+// attribution column beyond booking_id, so a multi-slot booking can't
+// attribute a booking-level child to one slot — the helper skips that
+// case; this fixture deliberately avoids it).
+//
+// Self-contained: seeds its own asset_type + asset + catalog_item with
+// fixture-generated UUIDs (same pattern as the booking/slot UUIDs) so
+// the fixture is hermetic and doesn't depend on queried-at-runtime seed
+// ids. asset_types/assets/catalog_items columns + nullability verified
+// against supabase/migrations/00005_assets.sql:3-37,17-37 +
+// 00013_orders_catalog.sql:3-30,44-59,73-88 + 00144_orders_bundle_
+// columns.sql:4-10. work_orders parent_kind/booking_id invariant per
+// 00213_step1c1_work_orders_new_table.sql:33-46 + 00278:86-95 (rename;
+// parent_kind label stays 'booking_bundle'). asset_reservations status
+// literals ('confirmed','cancelled','released') per 00142:14-15. orders
+// status literals ('draft','submitted','approved','confirmed',
+// 'fulfilled','cancelled') per 00013:55. work_orders.status_category
+// ('new','assigned','in_progress','waiting','resolved','closed') per
+// 00213:52-53. THOMAS_PERSON is the requester (00133:160).
+// ─────────────────────────────────────────────────────────────────────
+
+function seedFixtureD() {
+  const bookingId = crypto.randomUUID();
+  const slotId = crypto.randomUUID();
+  const assetTypeId = crypto.randomUUID();
+  // Two distinct assets — the asset_reservations GiST exclusion
+  // constraint (00142:27-30) rejects two 'confirmed' reservations on
+  // the SAME asset with overlapping windows, and the boundary +
+  // custom windows overlap by design. One shared asset_type is fine
+  // (asset_types has no exclusion constraint).
+  const assetBoundaryId = crypto.randomUUID();
+  const assetCustomId = crypto.randomUUID();
+  const catalogItemId = crypto.randomUUID();
+  const orderId = crypto.randomUUID();
+  const orderLineItemId = crypto.randomUUID();
+  const arBoundaryId = crypto.randomUUID();
+  const arCustomId = crypto.randomUUID();
+  const workOrderId = crypto.randomUUID();
+
+  const anchor = new Date(Date.now() + FIXTURE_D_DAYS_FROM_NOW * 86400_000);
+  anchor.setUTCMinutes(0, 0, 0);
+  anchor.setUTCHours(13);
+  const slotStartMs = anchor.getTime();
+  const slotEndMs = slotStartMs + 60 * 60_000; // 1h booking
+  const startAt = new Date(slotStartMs).toISOString();
+  const endAt = new Date(slotEndMs).toISOString();
+
+  // Custom-window asset_reservation: slot.start + 15min → +45min
+  // (30-min duration, NOT aligned to either booking boundary). Proves
+  // custom windows shift by startDelta only (duration preserved), not
+  // restretched to (newStart, newEnd).
+  const arCustomStart = new Date(slotStartMs + 15 * 60_000).toISOString();
+  const arCustomEnd = new Date(slotStartMs + 45 * 60_000).toISOString();
+
+  // Setup work_order: planned_start_at = slot.start − 30min (setup
+  // lead). SLA resolution due at slot end (arbitrary; only its +2h
+  // shift via needs_repoint is asserted, not its absolute value — the
+  // helper does NOT emit a raw sla_due_at shift).
+  const woPlannedStart = new Date(slotStartMs - 30 * 60_000).toISOString();
+  const woSlaDue = new Date(slotEndMs).toISOString();
+
+  // work_orders.module_number is NOT NULL with no column default — it's
+  // normally assigned by a trigger that `session_replication_role=
+  // 'replica'` disables during seeding. Pick a high, collision-safe
+  // value well above any real sequence (real rows are in the low
+  // thousands; 9e14 + random keeps the fixture hermetic and unique
+  // across concurrent runs). Cleaned up with the rest of Fixture D.
+  const woModuleNumber =
+    900_000_000_000_000 + Math.floor(Math.random() * 1_000_000_000);
+
+  const sql = `
+    set session_replication_role = 'replica';
+    insert into public.bookings
+      (id, tenant_id, title, requester_person_id, location_id,
+       start_at, end_at, timezone, status, source, calendar_etag,
+       cost_amount_snapshot, policy_snapshot, applied_rule_ids)
+    values
+      ('${bookingId}'::uuid, '${TENANT_ID}'::uuid, 'Smoke linked-row fixture D',
+       '${THOMAS_PERSON}'::uuid, '${ROOM_HUDDLE}'::uuid,
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz, 'UTC',
+       'confirmed', 'desk', 'smoke-etag-d-${bookingId.slice(0, 8)}',
+       100.00, '{}'::jsonb, '{}'::uuid[]);
+    insert into public.booking_slots
+      (id, tenant_id, booking_id, slot_type, space_id,
+       start_at, end_at, status, display_order)
+    values
+      ('${slotId}'::uuid, '${TENANT_ID}'::uuid, '${bookingId}'::uuid,
+       'room', '${ROOM_HUDDLE}'::uuid,
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz,
+       'confirmed', 0);
+
+    -- Self-contained asset_type + 2 pooled assets (00005:3-37,17-37).
+    -- Two assets so the boundary + custom asset_reservations don't
+    -- collide on the GiST overlap exclusion (00142:27-30).
+    insert into public.asset_types (id, tenant_id, name)
+    values ('${assetTypeId}'::uuid, '${TENANT_ID}'::uuid, 'Smoke D asset type');
+    insert into public.assets
+      (id, tenant_id, asset_type_id, asset_role, name, status)
+    values
+      ('${assetBoundaryId}'::uuid, '${TENANT_ID}'::uuid, '${assetTypeId}'::uuid,
+       'pooled', 'Smoke D projector (boundary)', 'available'),
+      ('${assetCustomId}'::uuid, '${TENANT_ID}'::uuid, '${assetTypeId}'::uuid,
+       'pooled', 'Smoke D projector (custom)', 'available');
+
+    -- Self-contained catalog_item (00013:3-30; category NOT NULL).
+    insert into public.catalog_items (id, tenant_id, name, category)
+    values ('${catalogItemId}'::uuid, '${TENANT_ID}'::uuid,
+            'Smoke D catalog item', 'equipment');
+
+    -- Order: window mirrors the slot; delivery_location = slot's space
+    -- (00013:44-59 + 00144:4-10 added requested_for_*; 00278:108-118
+    -- renamed booking_bundle_id → booking_id).
+    insert into public.orders
+      (id, tenant_id, requester_person_id, booking_id, status,
+       requested_for_start_at, requested_for_end_at, delivery_location_id)
+    values
+      ('${orderId}'::uuid, '${TENANT_ID}'::uuid, '${THOMAS_PERSON}'::uuid,
+       '${bookingId}'::uuid, 'confirmed',
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz,
+       '${ROOM_HUDDLE}'::uuid);
+    insert into public.order_line_items
+      (id, order_id, tenant_id, catalog_item_id, quantity)
+    values
+      ('${orderLineItemId}'::uuid, '${orderId}'::uuid, '${TENANT_ID}'::uuid,
+       '${catalogItemId}'::uuid, 1);
+
+    -- Asset reservation #1 — boundary-aligned (== slot start/end).
+    insert into public.asset_reservations
+      (id, tenant_id, asset_id, start_at, end_at, status,
+       requester_person_id, booking_id)
+    values
+      ('${arBoundaryId}'::uuid, '${TENANT_ID}'::uuid, '${assetBoundaryId}'::uuid,
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz, 'confirmed',
+       '${THOMAS_PERSON}'::uuid, '${bookingId}'::uuid);
+    -- Asset reservation #2 — custom-window (30-min, off-boundary).
+    insert into public.asset_reservations
+      (id, tenant_id, asset_id, start_at, end_at, status,
+       requester_person_id, booking_id)
+    values
+      ('${arCustomId}'::uuid, '${TENANT_ID}'::uuid, '${assetCustomId}'::uuid,
+       '${arCustomStart}'::timestamptz, '${arCustomEnd}'::timestamptz,
+       'confirmed', '${THOMAS_PERSON}'::uuid, '${bookingId}'::uuid);
+
+    -- Setup work_order. The parent-kind invariant was tightened post-
+    -- canonicalization: the live CHECK work_orders_kind_matches_fk now
+    -- requires parent_kind='booking' (renamed from the bridge label
+    -- 'booking_bundle') paired with booking_id NOT NULL + parent_ticket
+    -- _id NULL (verified via pg_get_constraintdef on remote). sla_id
+    -- reuses the seeded tenant-1 policy a3000000-..-01 (00008_sla_
+    -- policies.sql seed; cited as a stable literal — the helper carries
+    -- it through to the outbox payload's sla_policy_id).
+    insert into public.work_orders
+      (id, tenant_id, title, status_category, parent_kind, booking_id,
+       module_number, planned_start_at, sla_id, sla_resolution_due_at)
+    values
+      ('${workOrderId}'::uuid, '${TENANT_ID}'::uuid,
+       'Smoke D setup work order', 'assigned', 'booking',
+       '${bookingId}'::uuid, ${woModuleNumber},
+       '${woPlannedStart}'::timestamptz,
+       'a3000000-0000-0000-0000-000000000001'::uuid,
+       '${woSlaDue}'::timestamptz);
+    set session_replication_role = 'origin';
+  `;
+  runPsql(sql);
+  return {
+    bookingId,
+    slotId,
+    assetTypeId,
+    assetBoundaryId,
+    assetCustomId,
+    catalogItemId,
+    orderId,
+    orderLineItemId,
+    arBoundaryId,
+    arCustomId,
+    workOrderId,
+    startAt,
+    endAt,
+    arCustomStart,
+    arCustomEnd,
+    woPlannedStart,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Cleanup — LIFO sweep across audit_events, domain_events,
 // outbox.events, approvals, inbox_notifications, command_operations,
 // booking_slots, bookings. Best-effort: each delete batch wrapped in
@@ -447,6 +648,18 @@ async function deleteFixtures(bookingIds) {
     delete from outbox.events
       where tenant_id = '${TENANT_ID}'::uuid
         and aggregate_id in (${bookingIdList});
+    -- Fixture D's sla.timer_repointed_required events have
+    -- aggregate_id = work_order_id (00394:1016-1017), not booking_id —
+    -- sweep them via the WO ↔ booking_id link before the WOs are
+    -- deleted below.
+    delete from outbox.events
+      where tenant_id = '${TENANT_ID}'::uuid
+        and event_type = 'sla.timer_repointed_required'
+        and aggregate_id in (
+          select id from public.work_orders
+           where tenant_id = '${TENANT_ID}'::uuid
+             and booking_id in (${bookingIdList})
+        );
     delete from public.approvals
       where tenant_id = '${TENANT_ID}'::uuid
         and target_entity_type = 'booking'
@@ -464,6 +677,57 @@ async function deleteFixtures(bookingIds) {
         and (
           ${bookingIds.map((id) => `idempotency_key like 'booking:edit:%:${id}:%'`).join(' or ')}
         );
+    -- ── Fixture D linked-row graph cleanup ──────────────────────────
+    -- orders / asset_reservations / work_orders all carry booking_id
+    -- (00278:108-144 rename) so they sweep generically. Self-seeded
+    -- asset / asset_type / catalog_item are captured via their link
+    -- rows BEFORE those rows are deleted (temp tables hold the ids so
+    -- the FK-parent deletes can run after the children). Fixtures
+    -- A/B/C have no linked rows so these are no-ops for them.
+    create temp table _smoke_d_assets on commit drop as
+      select distinct ar.asset_id as id
+        from public.asset_reservations ar
+       where ar.tenant_id = '${TENANT_ID}'::uuid
+         and ar.booking_id in (${bookingIdList});
+    create temp table _smoke_d_catalog on commit drop as
+      select distinct oli.catalog_item_id as id
+        from public.order_line_items oli
+        join public.orders o on o.id = oli.order_id
+       where o.tenant_id = '${TENANT_ID}'::uuid
+         and o.booking_id in (${bookingIdList});
+    create temp table _smoke_d_asset_types on commit drop as
+      select distinct a.asset_type_id as id
+        from public.assets a
+       where a.tenant_id = '${TENANT_ID}'::uuid
+         and a.id in (select id from _smoke_d_assets);
+
+    delete from public.work_orders
+      where tenant_id = '${TENANT_ID}'::uuid
+        and booking_id in (${bookingIdList});
+    delete from public.asset_reservations
+      where tenant_id = '${TENANT_ID}'::uuid
+        and booking_id in (${bookingIdList});
+    delete from public.order_line_items
+      where tenant_id = '${TENANT_ID}'::uuid
+        and order_id in (
+          select id from public.orders
+           where tenant_id = '${TENANT_ID}'::uuid
+             and booking_id in (${bookingIdList})
+        );
+    delete from public.orders
+      where tenant_id = '${TENANT_ID}'::uuid
+        and booking_id in (${bookingIdList});
+    -- Self-seeded support rows last (now unreferenced).
+    delete from public.assets
+      where tenant_id = '${TENANT_ID}'::uuid
+        and id in (select id from _smoke_d_assets);
+    delete from public.catalog_items
+      where tenant_id = '${TENANT_ID}'::uuid
+        and id in (select id from _smoke_d_catalog);
+    delete from public.asset_types
+      where tenant_id = '${TENANT_ID}'::uuid
+        and id in (select id from _smoke_d_asset_types);
+
     delete from public.booking_slots
       where tenant_id = '${TENANT_ID}'::uuid
         and booking_id in (${bookingIdList});
@@ -607,14 +871,40 @@ async function countAuditEventsForBooking(bookingId) {
   return count ?? 0;
 }
 
-async function countCommandOpsForKey(key) {
-  const { count, error } = await supa()
-    .from('command_operations')
-    .select('id', { count: 'exact', head: true })
-    .eq('tenant_id', TENANT_ID)
-    .eq('idempotency_key', key);
-  if (error) throw error;
-  return count ?? 0;
+// A successful edit writes its `booking.edited` audit row inside the RPC
+// txn (synchronous), but the B.4.A.5 outbox→audit projection for the
+// same edit lands post-commit (async). When a "no new writes" baseline
+// is sampled immediately after a successful edit, that async row can
+// arrive between the pre-sample and the post-sample, faking a delta=1
+// on the NEXT (rejected) request — even though the rejected request
+// wrote nothing. Poll until the count is stable (two equal reads) so
+// the prior edit's async projection has fully landed before baselining.
+// Keeps the "no new writes" assertion strict (a real write still trips
+// it) while removing the sample-then-settle race.
+async function settledAuditCount(bookingId) {
+  let prev = await countAuditEventsForBooking(bookingId);
+  for (let i = 0; i < 12; i += 1) {
+    await new Promise((r) => setTimeout(r, 250));
+    const next = await countAuditEventsForBooking(bookingId);
+    if (next === prev) return next;
+    prev = next;
+  }
+  return prev;
+}
+
+// `command_operations` is an internal idempotency ledger and is NOT
+// exposed through PostgREST (the supabase-js client returns an opaque
+// `{ message: '' }` error on any select — verified 2026-05-16). Read it
+// the same way the seed/cleanup paths touch it: a tenant-gated psql
+// scalar. Mirrors the `public.command_operations` + tenant_id filter
+// used by the cleanup sweep (smoke-edit-booking.mjs:671-675).
+function countCommandOpsForKey(key) {
+  const out = runPsqlQuery(
+    `select count(*) from public.command_operations ` +
+      `where tenant_id = '${TENANT_ID}'::uuid ` +
+      `and idempotency_key = '${key}';`,
+  );
+  return Number.parseInt(out, 10) || 0;
 }
 
 function parseJsonSafe(s) {
@@ -764,24 +1054,28 @@ async function runEditOneProbes(probe, fixtureA, fixtureB) {
   if (editGeomResult.ok) {
     const slotsAfter = await readSlotsForBooking(fixtureA.bookingId);
     const bookingAfter = await readBookingById(fixtureA.bookingId);
+    // Postgres returns timestamptz as `…+00:00`; JS toISOString() emits
+    // `…Z`. Same instant, different string — compare by epoch, not bytes
+    // (sameInstant is the script's canonical tz-normalizing comparator,
+    // already used by the Fixture D probe).
     passAssertion(
       'Geometry edit: slot.start_at updated',
-      slotsAfter[0]?.start_at === newStart,
+      sameInstant(slotsAfter[0]?.start_at, newStart),
       `got=${slotsAfter[0]?.start_at}`,
     );
     passAssertion(
       'Geometry edit: slot.end_at updated',
-      slotsAfter[0]?.end_at === newEnd,
+      sameInstant(slotsAfter[0]?.end_at, newEnd),
       `got=${slotsAfter[0]?.end_at}`,
     );
     passAssertion(
       'Geometry edit: booking.start_at updated',
-      bookingAfter?.start_at === newStart,
+      sameInstant(bookingAfter?.start_at, newStart),
       `got=${bookingAfter?.start_at}`,
     );
     passAssertion(
       'Geometry edit: booking.end_at updated',
-      bookingAfter?.end_at === newEnd,
+      sameInstant(bookingAfter?.end_at, newEnd),
       `got=${bookingAfter?.end_at}`,
     );
   }
@@ -791,7 +1085,11 @@ async function runEditOneProbes(probe, fixtureA, fixtureB) {
   // - 400; code=booking.invalid_window; no writes.
   // Citation: reservation.service.ts:769-777.
   // ────────────────────────────────────────────────────────────────
-  const auditCountPreInvalidWindow = await countAuditEventsForBooking(fixtureA.bookingId);
+  // settledAuditCount (not the bare count) — Scenario 5 above was a
+  // SUCCESSFUL geometry edit; its async outbox→audit projection may
+  // still be in flight. Settle before baselining or that row lands
+  // mid-probe and fakes a delta on this rejected request.
+  const auditCountPreInvalidWindow = await settledAuditCount(fixtureA.bookingId);
   const invalidWindowResult = await probe('Invalid window (start >= end) → 400', {
     url: editOneUrl,
     body: { start_at: '2026-08-01T10:00:00Z', end_at: '2026-08-01T10:00:00Z' },
@@ -1050,9 +1348,11 @@ async function runEditSlotProbes(probe, fixtureA, fixtureB) {
   if (editStartResult.ok) {
     const slotsAfter = await readSlotsForBooking(fixtureB.bookingId);
     const nonPrimaryAfter = slotsAfter.find((s) => s.display_order === 1);
+    // tz-format normalization (Postgres `+00:00` vs JS `Z`) — compare
+    // by epoch via the canonical sameInstant comparator.
     passAssertion(
       'Geometry slot: non-primary slot.start_at updated',
-      nonPrimaryAfter?.start_at === earlierStart,
+      sameInstant(nonPrimaryAfter?.start_at, earlierStart),
       `got=${nonPrimaryAfter?.start_at}`,
     );
     const bookingAfter = await readBookingById(fixtureB.bookingId);
@@ -1072,12 +1372,23 @@ async function runEditSlotProbes(probe, fixtureA, fixtureB) {
   // ────────────────────────────────────────────────────────────────
   const replayCrid = crypto.randomUUID();
   const replayBody = { space_id: ROOM_HUDDLE };
-  const auditCountBeforeReplay = await countAuditEventsForBooking(fixtureB.bookingId);
   const firstReplay = await probe('Slot idempotency: first call (space_id=ROOM_HUDDLE)', {
     url: editNonPrimaryUrl,
     body: replayBody,
     clientRequestId: replayCrid,
   });
+  // booking-audit Slice 1: the FIRST call legitimately executes the RPC
+  // (space_id=ROOM_HUDDLE is a real change — the non-primary slot is on
+  // ROOM_TEAM from Scenario 12) and writes 1 audit event. The
+  // idempotency invariant is "the REPLAY writes nothing", so capture the
+  // baseline AFTER the executing first call and BEFORE the replay —
+  // exactly the structure Scenario 3 (editOne sibling) uses. Capturing
+  // it before the first call asserted a structurally-impossible "first
+  // call + replay combined write nothing", which only ever passed by
+  // accident because the broken idempotency hash made `secondReplay.ok`
+  // false and skipped this whole block. Fixing the hash exposed the
+  // latent probe-structure bug; this aligns it to its editOne sibling.
+  const auditCountPreReplay = await countAuditEventsForBooking(fixtureB.bookingId);
   const secondReplay = await probe('Slot idempotency: replay (cached)', {
     url: editNonPrimaryUrl,
     body: replayBody,
@@ -1105,8 +1416,8 @@ async function runEditSlotProbes(probe, fixtureA, fixtureB) {
     const auditCountAfterReplay = await countAuditEventsForBooking(fixtureB.bookingId);
     passAssertion(
       'Slot replay: no new audit events (RPC short-circuited on cached_result)',
-      auditCountAfterReplay === auditCountBeforeReplay,
-      `delta=${auditCountAfterReplay - auditCountBeforeReplay}`,
+      auditCountAfterReplay === auditCountPreReplay,
+      `delta=${auditCountAfterReplay - auditCountPreReplay}`,
     );
   }
 
@@ -1223,16 +1534,22 @@ async function readInboxRowsForBooking(bookingId) {
   return (data ?? []).filter((r) => r.payload?.booking_id === bookingId);
 }
 
-async function readOutboxRowsForBooking(bookingId) {
-  const { data, error } = await supa()
-    .schema('outbox')
-    .from('events')
-    .select('id, event_type, payload')
-    .eq('tenant_id', TENANT_ID)
-    .eq('event_type', 'booking.approval_required')
-    .eq('aggregate_id', bookingId);
-  if (error) throw error;
-  return data ?? [];
+// The `outbox` schema is NOT exposed through PostgREST (only `public`
+// + `graphql_public` are — supabase-js `.schema('outbox')` throws
+// PGRST106, verified 2026-05-16). Read it via a tenant-gated psql
+// scalar, mirroring how the cleanup sweep touches `outbox.events`
+// (smoke-edit-booking.mjs:648-650). json_agg keeps the caller's
+// `.find()`/`.length`/`.payload` shape intact.
+function readOutboxRowsForBooking(bookingId) {
+  const out = runPsqlQuery(
+    `select coalesce(json_agg(json_build_object(` +
+      `'id', id, 'event_type', event_type, 'payload', payload)), '[]'::json) ` +
+      `from outbox.events ` +
+      `where tenant_id = '${TENANT_ID}'::uuid ` +
+      `and event_type = 'booking.approval_required' ` +
+      `and aggregate_id = '${bookingId}'::uuid;`,
+  );
+  return JSON.parse(out || '[]');
 }
 
 async function runApprovalFlipProbe(probe, fixtureC) {
@@ -1297,6 +1614,216 @@ async function runApprovalFlipProbe(probe, fixtureC) {
     "Flip: 1 outbox.events row 'booking.approval_required' with matching chain_id",
     Boolean(outboxMatch),
     `outbox_count=${outboxRows.length} chainMatch=${outboxMatch ? 1 : 0}`,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Fixture D linked-row probe — closes audit P0-2/P0-3.
+//
+// editOne pure-move (+2h on BOTH start_at and end_at; duration
+// unchanged, so startDelta == endDelta == +2h). Asserts the booking +
+// slot move AND the linked orders / asset_reservations / setup
+// work_order all follow:
+//   - orders.requested_for_start_at / requested_for_end_at +2h.
+//   - boundary-aligned asset_reservation (== old slot window) → new =
+//     (newStart, newEnd) [+2h both endpoints].
+//   - custom-window asset_reservation (off-boundary 30-min) → both
+//     endpoints +startDelta, DURATION STILL 30min (not restretched).
+//   - work_orders.planned_start_at +2h (still 30min before new slot
+//     start — setup lead preserved).
+//   - an outbox.events row 'sla.timer_repointed_required' with
+//     aggregate_id = work_order_id (00394:1011-1031) — proves
+//     needs_repoint propagated and the producer set sla_policy_id.
+//
+// All reads tenant-scoped (#0 invariant).
+// ─────────────────────────────────────────────────────────────────────
+
+async function readOrderById(orderId) {
+  const { data, error } = await supa()
+    .from('orders')
+    .select('id, requested_for_start_at, requested_for_end_at, delivery_location_id')
+    .eq('tenant_id', TENANT_ID)
+    .eq('id', orderId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function readAssetReservationById(arId) {
+  const { data, error } = await supa()
+    .from('asset_reservations')
+    .select('id, start_at, end_at, status')
+    .eq('tenant_id', TENANT_ID)
+    .eq('id', arId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function readWorkOrderById(woId) {
+  const { data, error } = await supa()
+    .from('work_orders')
+    .select('id, planned_start_at, sla_resolution_due_at')
+    .eq('tenant_id', TENANT_ID)
+    .eq('id', woId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+// Same PGRST106 constraint as readOutboxRowsForBooking — the `outbox`
+// schema is not PostgREST-exposed. Tenant-gated psql scalar; json_agg
+// preserves the caller's `.find()`/`.length`/`.payload`/`.aggregate_id`
+// shape.
+function readSlaRepointOutboxForWorkOrder(woId) {
+  const out = runPsqlQuery(
+    `select coalesce(json_agg(json_build_object(` +
+      `'id', id, 'event_type', event_type, ` +
+      `'aggregate_id', aggregate_id, 'payload', payload)), '[]'::json) ` +
+      `from outbox.events ` +
+      `where tenant_id = '${TENANT_ID}'::uuid ` +
+      `and event_type = 'sla.timer_repointed_required' ` +
+      `and aggregate_id = '${woId}'::uuid;`,
+  );
+  return JSON.parse(out || '[]');
+}
+
+// Compare two ISO timestamps by epoch ms (tz-normalized — Postgres may
+// return +00 / Z / +00:00; Date.parse normalizes all three).
+function sameInstant(a, b) {
+  return new Date(a).getTime() === new Date(b).getTime();
+}
+
+async function runFixtureDProbe(probe, fixtureD) {
+  console.log('\n=== Fixture D linked-row probe (P0-2/P0-3) ===');
+
+  const TWO_H = 2 * 60 * 60_000;
+  const oldStartMs = new Date(fixtureD.startAt).getTime();
+  const oldEndMs = new Date(fixtureD.endAt).getTime();
+  const newStart = new Date(oldStartMs + TWO_H).toISOString();
+  const newEnd = new Date(oldEndMs + TWO_H).toISOString();
+
+  // Sanity — linked rows seeded at the OLD window.
+  const slotsBefore = await readSlotsForBooking(fixtureD.bookingId);
+  passAssertion(
+    'Fixture D setup: exactly 1 slot on ROOM_HUDDLE at old window',
+    slotsBefore.length === 1 &&
+      slotsBefore[0].space_id === ROOM_HUDDLE &&
+      sameInstant(slotsBefore[0].start_at, fixtureD.startAt),
+    `slots=${slotsBefore.length} space=${slotsBefore[0]?.space_id?.slice(0, 8)}`,
+  );
+
+  // editOne pure-move: shift start AND end by +2h. Duration unchanged
+  // (startDelta == endDelta == +2h) so this is a plain time move — no
+  // approval rule trips (the seeded rule b0010002 fires on duration >
+  // 240min; this booking stays 1h).
+  const moveCrid = crypto.randomUUID();
+  const moveResult = await probe('Fixture D: editOne pure-move +2h (duration unchanged) → 200', {
+    url: `${API_BASE}/api/reservations/${fixtureD.bookingId}`,
+    body: { start_at: newStart, end_at: newEnd },
+    clientRequestId: moveCrid,
+  });
+  if (!moveResult.ok) return;
+
+  // ── Booking + slot moved +2h.
+  const bookingAfter = await readBookingById(fixtureD.bookingId);
+  const slotsAfter = await readSlotsForBooking(fixtureD.bookingId);
+  passAssertion(
+    'Fixture D: booking start_at/end_at moved +2h',
+    bookingAfter &&
+      sameInstant(bookingAfter.start_at, newStart) &&
+      sameInstant(bookingAfter.end_at, newEnd),
+    `start=${bookingAfter?.start_at} end=${bookingAfter?.end_at}`,
+  );
+  passAssertion(
+    'Fixture D: slot start_at/end_at moved +2h',
+    slotsAfter.length === 1 &&
+      sameInstant(slotsAfter[0].start_at, newStart) &&
+      sameInstant(slotsAfter[0].end_at, newEnd),
+    `start=${slotsAfter[0]?.start_at} end=${slotsAfter[0]?.end_at}`,
+  );
+
+  // ── Order window moved +2h.
+  const orderAfter = await readOrderById(fixtureD.orderId);
+  passAssertion(
+    'Fixture D: order.requested_for_start_at moved +2h',
+    orderAfter && sameInstant(orderAfter.requested_for_start_at, newStart),
+    `got=${orderAfter?.requested_for_start_at} want=${newStart}`,
+  );
+  passAssertion(
+    'Fixture D: order.requested_for_end_at moved +2h',
+    orderAfter && sameInstant(orderAfter.requested_for_end_at, newEnd),
+    `got=${orderAfter?.requested_for_end_at} want=${newEnd}`,
+  );
+
+  // ── Boundary-aligned asset_reservation: both endpoints = new window.
+  const arBoundary = await readAssetReservationById(fixtureD.arBoundaryId);
+  passAssertion(
+    'Fixture D: boundary-aligned asset_reservation moved to (newStart, newEnd)',
+    arBoundary &&
+      sameInstant(arBoundary.start_at, newStart) &&
+      sameInstant(arBoundary.end_at, newEnd),
+    `start=${arBoundary?.start_at} end=${arBoundary?.end_at}`,
+  );
+
+  // ── Custom-window asset_reservation: both endpoints +startDelta,
+  // 30-min duration PRESERVED (proves it shifts by startDelta, not
+  // restretched to the new boundary window).
+  const arCustom = await readAssetReservationById(fixtureD.arCustomId);
+  const wantCustomStart = new Date(
+    new Date(fixtureD.arCustomStart).getTime() + TWO_H,
+  ).toISOString();
+  const wantCustomEnd = new Date(
+    new Date(fixtureD.arCustomEnd).getTime() + TWO_H,
+  ).toISOString();
+  const customDurMin =
+    arCustom &&
+    (new Date(arCustom.end_at).getTime() - new Date(arCustom.start_at).getTime()) /
+      60_000;
+  passAssertion(
+    'Fixture D: custom-window asset_reservation shifted +startDelta, duration still 30min',
+    arCustom &&
+      sameInstant(arCustom.start_at, wantCustomStart) &&
+      sameInstant(arCustom.end_at, wantCustomEnd) &&
+      customDurMin === 30,
+    `start=${arCustom?.start_at} end=${arCustom?.end_at} durMin=${customDurMin}`,
+  );
+
+  // ── Work order planned_start_at moved +2h (still 30min before the
+  // new slot start — setup lead preserved).
+  const woAfter = await readWorkOrderById(fixtureD.workOrderId);
+  const wantWoPlanned = new Date(
+    new Date(fixtureD.woPlannedStart).getTime() + TWO_H,
+  ).toISOString();
+  const leadMin =
+    woAfter &&
+    (new Date(newStart).getTime() - new Date(woAfter.planned_start_at).getTime()) /
+      60_000;
+  passAssertion(
+    'Fixture D: work_order.planned_start_at moved +2h (30min setup lead preserved)',
+    woAfter &&
+      sameInstant(woAfter.planned_start_at, wantWoPlanned) &&
+      leadMin === 30,
+    `got=${woAfter?.planned_start_at} want=${wantWoPlanned} leadMin=${leadMin}`,
+  );
+
+  // ── needs_repoint propagated: outbox.events 'sla.timer_repointed_
+  // required' with aggregate_id = work_order_id, sla_policy_id carried.
+  const slaOutbox = await readSlaRepointOutboxForWorkOrder(fixtureD.workOrderId);
+  const slaMatch = slaOutbox.find(
+    (r) =>
+      r.aggregate_id === fixtureD.workOrderId &&
+      r.payload?.work_order_id === fixtureD.workOrderId,
+  );
+  passAssertion(
+    "Fixture D: 1 outbox 'sla.timer_repointed_required' for the work_order",
+    Boolean(slaMatch),
+    `outbox_count=${slaOutbox.length} match=${slaMatch ? 1 : 0}`,
+  );
+  passAssertion(
+    'Fixture D: sla repoint event carries sla_policy_id from the WO row',
+    slaMatch?.payload?.sla_policy_id === 'a3000000-0000-0000-0000-000000000001',
+    `sla_policy_id=${slaMatch?.payload?.sla_policy_id}`,
   );
 }
 
@@ -1398,6 +1925,7 @@ async function main() {
   let fixtureA = null;
   let fixtureB = null;
   let fixtureC = null;
+  let fixtureD = null;
   try {
     console.log('Seeding fixture A (single booking + 1 slot, +130d)…');
     fixtureA = seedFixtureA();
@@ -1413,6 +1941,12 @@ async function main() {
     fixtureC = seedFixtureC();
     console.log(`  booking ${fixtureC.bookingId.slice(0, 8)}… / slot ${fixtureC.slotId.slice(0, 8)}…`);
 
+    console.log('Seeding fixture D (single booking + 1 slot + linked rows, +133d)…');
+    fixtureD = seedFixtureD();
+    console.log(
+      `  booking ${fixtureD.bookingId.slice(0, 8)}… / order ${fixtureD.orderId.slice(0, 8)}… / ar ${fixtureD.arBoundaryId.slice(0, 8)}…+${fixtureD.arCustomId.slice(0, 8)}… / wo ${fixtureD.workOrderId.slice(0, 8)}…`,
+    );
+
     const accessToken = await mintAdminToken();
     const headers = {
       Authorization: `Bearer ${accessToken}`,
@@ -1425,9 +1959,15 @@ async function main() {
     await runEditSlotProbes(probe, fixtureA, fixtureB);
     await runOpDiscriminationProbe(probe, fixtureA, fixtureB);
     await runApprovalFlipProbe(probe, fixtureC);
+    await runFixtureDProbe(probe, fixtureD);
   } finally {
     console.log('\nCleaning up fixtures…');
-    const idsToDelete = [fixtureA?.bookingId, fixtureB?.bookingId, fixtureC?.bookingId].filter(Boolean);
+    const idsToDelete = [
+      fixtureA?.bookingId,
+      fixtureB?.bookingId,
+      fixtureC?.bookingId,
+      fixtureD?.bookingId,
+    ].filter(Boolean);
     if (idsToDelete.length > 0) {
       await deleteFixtures(idsToDelete);
     }

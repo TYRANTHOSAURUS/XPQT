@@ -61,6 +61,7 @@ const NEW_SPACE_ID = 'ffffffff-1111-4111-8111-ffffffffffff';
 function makeActor(): ActorContext {
   return {
     user_id: 'U',
+    auth_uid: 'U',
     person_id: 'P',
     is_service_desk: false,
     has_override_rules: false,

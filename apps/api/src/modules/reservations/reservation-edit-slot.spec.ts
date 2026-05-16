@@ -114,6 +114,7 @@ describe('ReservationService.editSlot', () => {
   function makeActor(overrides: Partial<ActorContext> = {}): ActorContext {
     return {
       user_id: 'U',
+      auth_uid: 'U',
       person_id: 'P',
       is_service_desk: false,
       has_override_rules: false,
@@ -400,6 +401,9 @@ describe('ReservationService.editSlot', () => {
     const args = rpcCall!.args as Record<string, unknown>;
     expect(args.p_booking_id).toBe(BOOKING_ID);
     expect(args.p_tenant_id).toBe(TENANT.id);
+    // F-CRIT-1: the service forwards actor.auth_uid here (the JWT subject
+    // the RPC resolves via `where u.auth_uid = p_actor_user_id`), NOT
+    // actor.user_id. makeActor keeps both 'U' so this stays meaningful.
     expect(args.p_actor_user_id).toBe('U');
     // self-review N-CODE-4 (B.4 step 2D-D) — derive via the helper
     // instead of inlining the format. Couples the test to the public
@@ -782,6 +786,10 @@ describe('ReservationService.editOne — patch flows through edit_booking RPC (C
   function makeActor() {
     return {
       user_id: 'U',
+      // F-CRIT-1: editOne/editSlot now forward actor.auth_uid (not
+      // user_id) to the edit_booking RPC. Kept equal to user_id so the
+      // p_actor_user_id assertion below stays meaningful.
+      auth_uid: 'U',
       person_id: 'P',
       is_service_desk: false,
       has_override_rules: false,

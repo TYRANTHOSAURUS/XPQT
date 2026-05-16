@@ -214,6 +214,7 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
   function makeActor(overrides: Partial<ActorContext> = {}): ActorContext {
     return {
       user_id: 'U',
+      auth_uid: 'U',
       person_id: 'P',
       is_service_desk: false,
       has_override_rules: false,

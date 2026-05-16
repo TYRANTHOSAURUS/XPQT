@@ -26,6 +26,7 @@ const FOREIGN = '00000000-0000-4000-8000-0000000fffff';
 function makeActor(): ActorContext {
   return {
     user_id: 'U',
+    auth_uid: 'U',
     person_id: 'P',
     is_service_desk: false,
     has_override_rules: false,

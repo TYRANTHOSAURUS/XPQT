@@ -526,6 +526,10 @@ function buildHarness(opts: {
 
 const ACTOR = {
   user_id: USER,
+  // F-CRIT-1: editOne forwards actor.auth_uid (the JWT subject) to the
+  // edit_booking RPC, not user_id. Mirror it so the edit succeeds and the
+  // bundle cascade under test actually fires.
+  auth_uid: USER,
   person_id: PERSON,
   is_service_desk: false,
   has_override_rules: false,
