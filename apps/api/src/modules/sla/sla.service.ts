@@ -884,12 +884,31 @@ export class SlaService {
     );
     if (assignErr) throw mapRpcErrorToAppError(assignErr);
 
-    // ── 2. Watchers via update_entity_combined metadata (idempotent) ──
-    // Only call when the watchers set actually changed (a no-op call is
-    // wasteful and would still consume a command_operations row). The
-    // outgoing assignee is added by persons.id; if it was already a
-    // watcher or could not be resolved to a person, the set is unchanged
-    // and the second RPC is skipped.
+    // Observability: the previous assignee is dropped as a watcher when
+    // their users.id has no resolvable persons.id (no person link, or a
+    // cross-tenant collision filtered by resolveUserPersonId). The
+    // reassignment + its routing_decisions audit still committed above;
+    // only the courtesy watcher-copy is skipped — log it so it isn't
+    // silent (review I, ba1a4322).
+    if (ticket.assigned_user_id && !outgoingAssigneePersonId) {
+      console.warn(
+        `[sla] escalation reassign ${ticket.id}: previous assignee ${ticket.assigned_user_id} not added as watcher (no resolvable persons.id)`,
+      );
+    }
+
+    // ── 2. Watchers via update_entity_combined metadata — BEST-EFFORT ──
+    // The P0 (audit-02 P0-2) is the *assignment* being atomic + audited;
+    // step 1 (set_entity_assignment) delivers that in its own committed
+    // tx. The watcher courtesy-copy is a non-load-bearing side-effect in
+    // a SECOND tx. update_entity_combined v6 validates the WHOLE watchers
+    // array against `persons` and raises on any bad id — and `watchers`
+    // on legacy tickets may already contain a malformed users.id written
+    // by the very raw path this slice replaces. If we threw here, the
+    // assignment would already be committed, fireThreshold would abort
+    // before writing the crossing row, and the cron would re-fire and
+    // re-throw FOREVER (review C1, ba1a4322 — strictly worse than the P0).
+    // So: on failure, emit telemetry + continue. The assignment audit is
+    // intact; the watcher add degrades gracefully on legacy-dirty data.
     if (
       outgoingAssigneePersonId &&
       !(ticket.watchers ?? []).includes(outgoingAssigneePersonId)
@@ -911,7 +930,19 @@ export class SlaService {
           p_patches: { metadata: { watchers: newWatchers } },
         },
       );
-      if (watchErr) throw mapRpcErrorToAppError(watchErr);
+      if (watchErr) {
+        const mapped = mapRpcErrorToAppError(watchErr);
+        console.warn(
+          `[sla] escalation reassign ${ticket.id}: watcher add skipped (${mapped.code}) — assignment + audit committed; likely legacy-malformed watchers array`,
+        );
+        await this.emitEvent(
+          ticket.tenant_id,
+          ticket.id,
+          'sla_escalation_watcher_skipped',
+          { reason_code: mapped.code, idempotency_key: `${crossingIdemKey}:watchers` },
+        );
+        // intentionally NOT thrown — see block comment above.
+      }
     }
 
     return changed;
@@ -1038,12 +1069,19 @@ export class SlaService {
 
     let reassigned = false;
     if (threshold.action === 'escalate') {
-      // audit-02 P0-2: deterministic per-crossing idempotency anchor. A
-      // timer can cross 80% then 100%; `at_percent` makes each crossing
-      // its own idempotent event, and a re-fired cron tick for the SAME
-      // crossing replays the cached command_operations result instead of
-      // re-applying the assignment.
-      const crossingIdemKey = `sla:escalation:${timer.id}:${threshold.at_percent}`;
+      // audit-02 P0-2: deterministic per-crossing idempotency anchor.
+      // Components MUST match the established crossing identity
+      // `crossingKey` = sla_timer_id | at_percent | timer_type
+      // (sla-threshold.types.ts:33). Dropping timer_type (review I2,
+      // ba1a4322) would collide a `both`-scope threshold's legitimately
+      // distinct response- and resolution-timer crossings at the same
+      // at_percent onto one command_operations key — the second real
+      // escalation would be swallowed as a replay (or hard-error on
+      // payload_mismatch). `timer.timer_type` is the concrete resolved
+      // TimerType used for this crossing (same value writeCrossing /
+      // emitEvent record at lines below). A re-fired tick for the SAME
+      // crossing still replays the cached result.
+      const crossingIdemKey = `sla:escalation:${timer.id}:${threshold.at_percent}:${timer.timer_type}`;
       // Non-null reason → set_entity_assignment writes the
       // routing_decisions audit row + `reassigned` ticket_activities row
       // + `ticket_assigned` domain event (00327:258-410). No prose leak:
@@ -1061,9 +1099,9 @@ export class SlaService {
       // `set_entity_assignment` now writes the canonical `reassigned`
       // activity row for the SAME logical event (with the SLA-escalation
       // reason as its content) — keeping the old call would produce a
-      // duplicate timeline entry for one reassignment. `writeActivity`
-      // is retained as a method (no other caller today) but is not
-      // invoked on the escalate+reassigned path.
+      // duplicate timeline entry for one reassignment. The `writeActivity`
+      // method was DELETED (it had no other caller; structured at_percent/
+      // timer_type detail still lives on `sla_threshold_crossings`).
     }
 
     let firstNotificationId: string | null = null;
