@@ -179,6 +179,24 @@ describe('Slice 11.2b — @RequirePermission route → catalog-key mapping', () 
     },
   );
 
+  // A class-level @RequirePermission is only authoritative if no method
+  // silently carries its own (method metadata wins via getAllAndOverride
+  // [handler, class]). Pin RoleAssignments' methods to "no method-level
+  // key" so a future stray @RequirePermission on one of them — which
+  // would override the class gate for that route — fails here.
+  it.each([
+    [RoleAssignmentsController, 'assign'],
+    [RoleAssignmentsController, 'update'],
+    [RoleAssignmentsController, 'remove'],
+  ] as Array<[Ctor, string]>)(
+    'class-gated %p.%s carries NO conflicting method-level key',
+    (Ctrl, method) => {
+      const fn = (Ctrl.prototype as Record<string, unknown>)[method];
+      expect(typeof fn).toBe('function');
+      expect(readKey(fn)).toBeUndefined();
+    },
+  );
+
   it('every mapped key is a well-formed, known catalog permission', () => {
     for (const [, , key] of METHOD_MAP) {
       expect(validatePermission(key)).toEqual({ ok: true });
