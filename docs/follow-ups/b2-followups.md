@@ -566,13 +566,17 @@ Closed by routing the escalation-reassign path
 through the canonical RPCs:
 
 - **Assignment** → `set_entity_assignment` (00327 v2), idempotency key
-  `sla:escalation:<sla_timer_id>:<at_percent>` — deterministic per
-  *crossing*, so a re-fired tick for the same crossing replays the
-  cached result instead of re-applying. `reason` non-null ⇒ the RPC
-  writes the `routing_decisions` + `reassigned` activity +
-  `ticket_assigned` domain event atomically.
+  `sla:escalation:<sla_timer_id>:<at_percent>:<timer_type>` — the exact
+  `crossingKey` identity (`sla-threshold.types.ts:33`), deterministic per
+  *crossing*. `timer_type` is required: a `both`-scope threshold crosses
+  for the response and resolution timers at the same `at_percent`; without
+  it those two legitimate crossings collide on one `command_operations`
+  key. A re-fired tick for the same crossing replays the cached result
+  instead of re-applying. `reason` non-null ⇒ the RPC writes the
+  `routing_decisions` + `reassigned` activity + `ticket_assigned` domain
+  event atomically.
 - **Watchers** → `update_entity_combined` (00384 v6) metadata branch,
-  key `…:watchers`, called only when the watcher set changes. The
+  key `…:<timer_type>:watchers`, called only when the watcher set changes. The
   outgoing assignee's `users.id` is translated to its `persons.id`
   before being added — `tickets.watchers` is a persons.id[] column
   (00011:26) and v6 validates against `persons`; the legacy raw path
@@ -585,6 +589,15 @@ through the canonical RPCs:
   caller gone the method was dead code and was deleted (structural
   enforcement of the single-write-path contract — same precedent as
   the "Dead code removed" note at :172).
+- **Recurrence-safety (codex BLOCK fix).** Post-assignment side-effects
+  in `fireThreshold` — the watcher copy AND the notification — are
+  best-effort: on failure each emits telemetry
+  (`sla_escalation_watcher_skipped` / `sla_escalation_notify_failed`) and
+  flow continues to write the crossing row (the idempotency anchor that
+  suppresses re-fire). If either threw, the committed-assignment +
+  no-crossing state would make the cron re-fire forever (assignment
+  replays harmlessly; the failing side-effect re-throws every tick).
+  Only `writeCrossing` itself failing leaves a bounded retry window.
 
 No migration — `set_entity_assignment` (00327) and
 `update_entity_combined` (00384) already provide every guarantee. The

@@ -784,8 +784,11 @@ export class SlaService {
    * silently skipped.
    *
    * `crossingIdemKey` is the stable per-crossing anchor built by the
-   * caller from `sla:escalation:<timer_id>:<at_percent>` (a single timer
-   * can cross 80% then 100%; each crossing is its own canonical event).
+   * caller as `sla:escalation:<timer_id>:<at_percent>:<timer_type>` — the
+   * same identity as `crossingKey` (sla-threshold.types.ts:33). A single
+   * timer can cross 80% then 100% (at_percent), and a `both`-scope
+   * threshold crosses for the response AND resolution timers at the same
+   * at_percent (timer_type) — each is its own canonical idempotent event.
    */
   private async applyReassignment(
     ticket: {
@@ -1018,12 +1021,19 @@ export class SlaService {
    * anchor), sends notifications, and — for `escalate` — reassigns the ticket.
    * Swallows `23505` (unique_violation) so racing cron ticks are safe.
    *
-   * Not atomic. Write order: reassign → activity → notify → crossing → event.
-   * If the crossing insert fails after a notification has been sent, the next tick
-   * will retry the whole path and may duplicate the notification. `applyReassignment`
-   * is no-op on retry (already-matching state returns changed=false), so the activity
-   * entry is not re-written. The duplication window is rare and the alternative
-   * (distributed transactions across Supabase) is not justified at this scale.
+   * Not atomic, but recurrence-safe (audit-02 P0-2). Write order:
+   * reassign (set_entity_assignment — atomic + idempotent per crossing) →
+   * notify (BEST-EFFORT, caught) → crossing (the idempotency anchor) →
+   * event. The reassign and the watcher copy are idempotent RPCs; the
+   * notification is best-effort. Because notification failure no longer
+   * throws, flow always reaches `writeCrossing` once the assignment
+   * commits, so a broken notifier/watcher cannot cause the cron to
+   * re-fire the same escalation forever (the crossing anchor is recorded;
+   * `selectApplicableThresholds` filters it out next tick). Only the
+   * `writeCrossing` insert itself failing leaves a retry window — bounded,
+   * idempotent on the RPCs, and far rarer than a notifier outage. Failed
+   * side-effects surface as `sla_escalation_notify_failed` /
+   * `sla_escalation_watcher_skipped` telemetry, not silent.
    */
   private async fireThreshold(
     timer: SlaTimerRow,
@@ -1104,6 +1114,21 @@ export class SlaService {
       // timer_type detail still lives on `sla_threshold_crossings`).
     }
 
+    // ── Notification — BEST-EFFORT (audit-02 P0-2, codex BLOCK fix) ─────
+    // The escalation reassignment (set_entity_assignment) has committed in
+    // its own tx by this point. The crossing row written below is the
+    // idempotency anchor: `selectApplicableThresholds` filters out a
+    // crossing that already exists, so the cron does NOT re-fire it. If
+    // notification delivery were allowed to THROW here, fireThreshold
+    // would abort BEFORE writeCrossing → no anchor → next tick re-fires
+    // the same escalation → assignment RPC replays cached (fine) →
+    // notifier throws again → permanent per-ticket recurrence with a
+    // committed assignment. That is the SAME failure class the watchers
+    // best-effort fix closed; the notifier is just another reachable
+    // trigger. So notification failure is caught, surfaced as telemetry,
+    // and flow proceeds to the anchor. (Consistent with this method's
+    // documented "not atomic; side-effects after the load-bearing write
+    // are best-effort" contract.)
     let firstNotificationId: string | null = null;
     const notifyArgs = {
       notification_type: 'sla_threshold_crossed',
@@ -1112,12 +1137,32 @@ export class SlaService {
       subject,
       body,
     };
-    if (resolved.teamId) {
-      const sent = await this.notifications.sendToTeam(resolved.teamId, notifyArgs);
-      firstNotificationId = ((sent?.[0] as { id?: string } | undefined)?.id) ?? null;
-    } else if (resolved.personId) {
-      const sent = await this.notifications.send({ ...notifyArgs, recipient_person_id: resolved.personId });
-      firstNotificationId = ((sent?.[0] as { id?: string } | undefined)?.id) ?? null;
+    try {
+      if (resolved.teamId) {
+        const sent = await this.notifications.sendToTeam(resolved.teamId, notifyArgs);
+        firstNotificationId = ((sent?.[0] as { id?: string } | undefined)?.id) ?? null;
+      } else if (resolved.personId) {
+        const sent = await this.notifications.send({ ...notifyArgs, recipient_person_id: resolved.personId });
+        firstNotificationId = ((sent?.[0] as { id?: string } | undefined)?.id) ?? null;
+      }
+    } catch (notifyErr) {
+      const mapped = mapRpcErrorToAppError(
+        notifyErr instanceof Error ? notifyErr : new Error(String(notifyErr)),
+      );
+      console.warn(
+        `[sla] threshold ${ticket.id} @${threshold.at_percent}%/${timer.timer_type}: notification failed (${mapped.code}) — crossing still anchored; not re-fired`,
+      );
+      await this.emitEvent(
+        ticket.tenant_id,
+        ticket.id,
+        'sla_escalation_notify_failed',
+        {
+          reason_code: mapped.code,
+          at_percent: threshold.at_percent,
+          timer_type: timer.timer_type,
+          action: threshold.action,
+        },
+      );
     }
 
     await this.writeCrossing({
