@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
 import { AssetService } from './asset.service';
 import { AssetController, AssetTypeController } from './asset.controller';
-import { AuthModule } from '../auth/auth.module';
+import { PermissionGuard } from '../../common/permission-guard';
+import { PermissionMetadataGuard } from '../../common/require-permission.decorator';
 
 @Module({
-  imports: [AuthModule],
-  providers: [AssetService],
+  providers: [AssetService, PermissionGuard, PermissionMetadataGuard],
   controllers: [AssetController, AssetTypeController],
   exports: [AssetService],
 })

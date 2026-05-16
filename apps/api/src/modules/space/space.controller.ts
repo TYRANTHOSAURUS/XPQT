@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Param, Body, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Body, Query } from '@nestjs/common';
 import {
   SpaceService,
   CreateSpaceDto,
@@ -6,7 +6,7 @@ import {
   MoveSpaceDto,
   BulkUpdateDto,
 } from './space.service';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 
 // docs/follow-ups/audits/04-rls-security.md Slice 10 (2026-05-16).
 // Spaces are the tenant location hierarchy (buildings/floors/rooms)
@@ -42,7 +42,7 @@ export class SpaceController {
   }
 
   @Patch('bulk')
-  @UseGuards(AdminGuard)
+  @RequirePermission('spaces.update')
   async bulk(@Body() dto: BulkUpdateDto) {
     return this.spaceService.bulkUpdate(dto);
   }
@@ -58,19 +58,19 @@ export class SpaceController {
   }
 
   @Post()
-  @UseGuards(AdminGuard)
+  @RequirePermission('spaces.create')
   async create(@Body() dto: CreateSpaceDto) {
     return this.spaceService.create(dto);
   }
 
   @Patch(':id')
-  @UseGuards(AdminGuard)
+  @RequirePermission('spaces.update')
   async update(@Param('id') id: string, @Body() dto: UpdateSpaceDto) {
     return this.spaceService.update(id, dto);
   }
 
   @Post(':id/move')
-  @UseGuards(AdminGuard)
+  @RequirePermission('spaces.update')
   async move(@Param('id') id: string, @Body() dto: MoveSpaceDto) {
     return this.spaceService.move(id, dto);
   }

@@ -1,6 +1,6 @@
-import { Controller, Get, Post, Patch, Param, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Body } from '@nestjs/common';
 import { DelegationService, CreateDelegationDto } from './delegation.service';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 
 // docs/follow-ups/audits/04-rls-security.md Slice 10 (2026-05-16).
 // `create` takes no actor — without AdminGuard any active same-tenant
@@ -16,13 +16,13 @@ export class DelegationController {
   }
 
   @Post()
-  @UseGuards(AdminGuard)
+  @RequirePermission('delegations.create')
   async create(@Body() dto: CreateDelegationDto) {
     return this.service.create(dto);
   }
 
   @Patch(':id')
-  @UseGuards(AdminGuard)
+  @RequirePermission('delegations.update')
   async update(@Param('id') id: string, @Body() dto: Record<string, unknown>) {
     return this.service.update(id, dto);
   }

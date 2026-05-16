@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
 import { DelegationService } from './delegation.service';
 import { DelegationController } from './delegation.controller';
-import { AuthModule } from '../auth/auth.module';
+import { PermissionGuard } from '../../common/permission-guard';
+import { PermissionMetadataGuard } from '../../common/require-permission.decorator';
 
 @Module({
-  imports: [AuthModule],
-  providers: [DelegationService],
+  providers: [DelegationService, PermissionGuard, PermissionMetadataGuard],
   controllers: [DelegationController],
   exports: [DelegationService],
 })

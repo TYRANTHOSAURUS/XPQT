@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
 import { VendorService } from './vendor.service';
 import { VendorController } from './vendor.controller';
-import { AuthModule } from '../auth/auth.module';
+import { PermissionGuard } from '../../common/permission-guard';
+import { PermissionMetadataGuard } from '../../common/require-permission.decorator';
 
 @Module({
-  imports: [AuthModule],
-  providers: [VendorService],
+  providers: [VendorService, PermissionGuard, PermissionMetadataGuard],
   controllers: [VendorController],
   exports: [VendorService],
 })

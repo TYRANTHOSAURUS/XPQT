@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body, Query } from '@nestjs/common';
 import {
   CatalogMenuService,
   CreateMenuDto,
@@ -6,7 +6,7 @@ import {
   DuplicateMenuDto,
   ResolveOfferDto,
 } from './catalog-menu.service';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 
 // docs/follow-ups/audits/04-rls-security.md Slice 10 (2026-05-16).
 // Catalog menus + items are vendor/service config; mutations are
@@ -45,13 +45,13 @@ export class CatalogMenuController {
   }
 
   @Post('catalog-menus')
-  @UseGuards(AdminGuard)
+  @RequirePermission('catalog_menus.create')
   create(@Body() dto: CreateMenuDto) {
     return this.service.create(dto);
   }
 
   @Patch('catalog-menus/:id')
-  @UseGuards(AdminGuard)
+  @RequirePermission('catalog_menus.update')
   update(@Param('id') id: string, @Body() dto: Partial<CreateMenuDto>) {
     return this.service.update(id, dto);
   }
@@ -62,13 +62,13 @@ export class CatalogMenuController {
   }
 
   @Post('catalog-menus/:id/items')
-  @UseGuards(AdminGuard)
+  @RequirePermission('catalog_menus.update')
   addItem(@Param('id') id: string, @Body() dto: CreateMenuItemDto) {
     return this.service.addItem(id, dto);
   }
 
   @Patch('catalog-menus/:id/items/:itemId')
-  @UseGuards(AdminGuard)
+  @RequirePermission('catalog_menus.update')
   updateItem(
     @Param('id') id: string,
     @Param('itemId') itemId: string,
@@ -78,19 +78,19 @@ export class CatalogMenuController {
   }
 
   @Delete('catalog-menus/:id/items/:itemId')
-  @UseGuards(AdminGuard)
+  @RequirePermission('catalog_menus.delete')
   removeItem(@Param('id') id: string, @Param('itemId') itemId: string) {
     return this.service.removeItem(id, itemId);
   }
 
   @Post('catalog-menus/:id/duplicate')
-  @UseGuards(AdminGuard)
+  @RequirePermission('catalog_menus.create')
   duplicate(@Param('id') id: string, @Body() dto: DuplicateMenuDto) {
     return this.service.duplicate(id, dto);
   }
 
   @Post('catalog-menus/:id/items/bulk-update')
-  @UseGuards(AdminGuard)
+  @RequirePermission('catalog_menus.update')
   bulkUpdateItems(
     @Param('id') id: string,
     @Body() dto: {
@@ -107,7 +107,7 @@ export class CatalogMenuController {
   }
 
   @Post('catalog-menus/:id/items/bulk-delete')
-  @UseGuards(AdminGuard)
+  @RequirePermission('catalog_menus.delete')
   bulkDeleteItems(@Param('id') id: string, @Body() dto: { item_ids: string[] }) {
     return this.service.bulkDeleteItems(id, dto.item_ids);
   }

@@ -1,6 +1,6 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body } from '@nestjs/common';
 import { VendorService, CreateVendorDto, ServiceAreaDto } from './vendor.service';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 
 // docs/follow-ups/audits/04-rls-security.md Slice 10 (2026-05-16).
 // Vendors are tenant config; mutations are admin-only. GETs stay open
@@ -21,13 +21,13 @@ export class VendorController {
   }
 
   @Post()
-  @UseGuards(AdminGuard)
+  @RequirePermission('vendors.create')
   create(@Body() dto: CreateVendorDto) {
     return this.vendorService.create(dto);
   }
 
   @Patch(':id')
-  @UseGuards(AdminGuard)
+  @RequirePermission('vendors.update')
   update(@Param('id') id: string, @Body() dto: Partial<CreateVendorDto> & { active?: boolean }) {
     return this.vendorService.update(id, dto);
   }
@@ -38,13 +38,13 @@ export class VendorController {
   }
 
   @Post(':id/service-areas')
-  @UseGuards(AdminGuard)
+  @RequirePermission('vendors.update')
   addServiceArea(@Param('id') id: string, @Body() dto: ServiceAreaDto) {
     return this.vendorService.addServiceArea(id, dto);
   }
 
   @Delete(':id/service-areas/:serviceAreaId')
-  @UseGuards(AdminGuard)
+  @RequirePermission('vendors.update')
   removeServiceArea(@Param('id') id: string, @Param('serviceAreaId') serviceAreaId: string) {
     return this.vendorService.removeServiceArea(id, serviceAreaId);
   }

@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
 import { TeamService } from './team.service';
 import { TeamController } from './team.controller';
-import { AuthModule } from '../auth/auth.module';
+import { PermissionGuard } from '../../common/permission-guard';
+import { PermissionMetadataGuard } from '../../common/require-permission.decorator';
 
 @Module({
-  imports: [AuthModule],
-  providers: [TeamService],
+  providers: [TeamService, PermissionGuard, PermissionMetadataGuard],
   controllers: [TeamController],
   exports: [TeamService],
 })

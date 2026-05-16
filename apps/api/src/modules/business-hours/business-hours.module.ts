@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
 import { BusinessHoursService } from './business-hours.service';
 import { BusinessHoursController } from './business-hours.controller';
-import { AuthModule } from '../auth/auth.module';
+import { PermissionGuard } from '../../common/permission-guard';
+import { PermissionMetadataGuard } from '../../common/require-permission.decorator';
 
 @Module({
-  imports: [AuthModule],
-  providers: [BusinessHoursService],
+  providers: [BusinessHoursService, PermissionGuard, PermissionMetadataGuard],
   controllers: [BusinessHoursController],
   exports: [BusinessHoursService],
 })
