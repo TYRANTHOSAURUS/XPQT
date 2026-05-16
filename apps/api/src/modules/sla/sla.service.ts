@@ -922,32 +922,51 @@ export class SlaService {
           outgoingAssigneePersonId,
         ]),
       );
-      const { error: watchErr } = await this.supabase.admin.rpc(
-        'update_entity_combined',
-        {
-          p_entity_kind: ticket.entity_kind,
-          p_entity_id: ticket.id,
-          p_tenant_id: ticket.tenant_id,
-          p_actor_user_id: null,
-          p_idempotency_key: `${crossingIdemKey}:watchers`,
-          p_patches: { metadata: { watchers: newWatchers } },
-        },
-      );
-      if (watchErr) {
-        const mapped = mapRpcErrorToAppError(watchErr);
+      // The WHOLE call is wrapped (codex BLOCK #3): supabase-js `.rpc()`
+      // normally resolves `{ data, error }` (PostgREST errors land in
+      // `error`), but it can also REJECT the promise on transport/client
+      // failure (fetch throw, abort, DNS, 5xx before a body). This block
+      // runs AFTER set_entity_assignment committed and BEFORE the crossing
+      // anchor, so a rejected promise here — not just a returned `error` —
+      // would propagate out of applyReassignment, abort fireThreshold
+      // before writeCrossing, and reopen the permanent-recurrence class.
+      // Both failure shapes are therefore treated identically: telemetry +
+      // warn + continue, never throw. The watcher copy is best-effort by
+      // construction; the assignment + its routing_decisions audit (the
+      // actual P0) already committed.
+      let watchFailCode: string | null = null;
+      try {
+        const { error: watchErr } = await this.supabase.admin.rpc(
+          'update_entity_combined',
+          {
+            p_entity_kind: ticket.entity_kind,
+            p_entity_id: ticket.id,
+            p_tenant_id: ticket.tenant_id,
+            p_actor_user_id: null,
+            p_idempotency_key: `${crossingIdemKey}:watchers`,
+            p_patches: { metadata: { watchers: newWatchers } },
+          },
+        );
+        if (watchErr) watchFailCode = mapRpcErrorToAppError(watchErr).code;
+      } catch (rejected) {
+        watchFailCode = mapRpcErrorToAppError(
+          rejected instanceof Error ? rejected : new Error(String(rejected)),
+        ).code;
+      }
+      if (watchFailCode) {
         console.warn(
-          `[sla] escalation reassign ${ticket.id}: watcher add skipped (${mapped.code}) — assignment + audit committed; likely legacy-malformed watchers array`,
+          `[sla] escalation reassign ${ticket.id}: watcher add skipped (${watchFailCode}) — assignment + audit committed; likely legacy-malformed watchers array or transport failure`,
         );
         await this.emitTelemetryBestEffort(
           ticket.tenant_id,
           ticket.id,
           'sla_escalation_watcher_skipped',
-          { reason_code: mapped.code, idempotency_key: `${crossingIdemKey}:watchers` },
+          { reason_code: watchFailCode, idempotency_key: `${crossingIdemKey}:watchers` },
         );
-        // intentionally NOT thrown — see block comment above. The
-        // telemetry emit is itself best-effort (emitTelemetryBestEffort):
-        // this catch is BEFORE the crossing anchor, so a throwing
-        // observability insert here would reopen the recurrence class.
+        // intentionally NOT thrown — see block comment above. Every await
+        // in this block (the RPC itself + the best-effort telemetry) is
+        // non-throwing, so NOTHING between the committed assignment and
+        // the crossing anchor can cause re-fire.
       }
     }
 
