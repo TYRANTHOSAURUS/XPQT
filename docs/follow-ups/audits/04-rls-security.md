@@ -609,6 +609,28 @@ Verified:
 Remaining:
 - P4 escalation surface: **none** (not reachable). Avatar Storage P3 + ValidationPipe P3 → respective backlogs (not RLS-audit scope). GET info-disclosure P2 unchanged.
 
+#### Update — 2026-05-16 (Slice 11 — COMPLETE; audit closed to best-in-class)
+
+Original finding:
+- The `/full-review` CRITICAL ("Blanket `AdminGuard` is coarser than the codebase's CI-enforced permission model") and its full remediation arc (11.1 → 11.2 → 11.3 → 11.2b → /full-review+codex → 11.4 → P4 → parity-pin).
+- Location: this Closure-Updates section (all 2026-05-16 Slice-11 blocks above).
+
+Status:
+- **closed (best-in-class).** The completion bar is met: every admin/config controller mutation in the original audit scope is gated by `@RequirePermission('<catalog key>')` on the canonical `user_has_permission` path (NOT blanket AdminGuard); the one out-of-original-scope remaining AdminGuard caller (`visitors/admin`) is justified in writing AND pinned by a parity test so it cannot silently weaken; a non-admin role granted a key provably works (live smoke, two keys); `/full-review` + codex both clean on the core re-gate; the pre-existing portal P1 the review surfaced is fixed (not just preserved); the append-only ledger is current; P4 is investigated and logged.
+
+Final end state:
+- `@RequirePermission` re-gate shipped across the Slice-2 (routing×6 / workflow / sla-policy / webhook-admin / config-entity), Slice-9 (user-management ×4), Slice-10 (9 controllers, 11.2), and leftover (branding / portal-announcements / portal-appearance) surfaces. New catalog: `webhooks.*`, `workflows.execute`, `request_types.use`. New migration on remote: `00409` (request_types.use backfill). Modules: `AuthModule` dropped where AdminGuard became unused, `PermissionGuard`+`PermissionMetadataGuard` provided locally.
+- Security character (honest): NOT "identical semantics" — intentionally **broader on reads** (the CRITICAL fix: non-admin roles holding the key now pass) and **narrower for `type='admin'` roles lacking the key/`*.*`** (the least-privilege tightening). Default templates unaffected on needed paths; the portal/desk form-render path explicitly fixed via `request_types.use` (11.4).
+- Verification (final consolidated): `@prequest/shared` build clean; **126/126** unit across 7 suites (permission-catalog ×3 incl. parity + SQL-parity, require-permission.guard, require-permission-routes, admin.guard.spec, admin-guard-permission-parity); **zero tsc errors in any Slice-11 file** (branch-red is exclusively the parallel 03-booking workstream's uncommitted `outbox/*`+`reservations/*` — not this workstream, per the documented coordination rule); `smoke:cross-tenant` **25/25**; `smoke:work-orders` **109/109**.
+- Commits (branch `feature/booking-audit-remediation`): `5d6f1b6f` (11.3), `4edede82` (11.2b), `006b60a1` (/full-review synthesis), `4303a85b` (11.4 + P4), `467208c0` (parity-pin) — on top of the previously-shipped `988d6452` (11.1) + `b4577f20` (11.2).
+
+Explicitly deferred (in writing, with owners — NOT silent):
+- **`visitors/admin.controller.ts`** stays on hardened (fail-closed) `@UseGuards(AdminGuard)` → **owner: the visitors workstream** (`[[project_visitors_track_split_off]]` / `[[project_visitors_v1_shipped]]`); add a `visitors.configure` (or equivalent) catalog action + re-gate the ~18 routes. Pinned meanwhile by `admin-guard-permission-parity.spec.ts` so it cannot drift weaker than `user_has_permission`.
+- **GET info-disclosure (P2)** — Slice-2 read surface now `.read`-gated (closed); residual is the Slice-9 user-management operational GETs deliberately open for non-admin operator pickers → RLS-audit follow-up (scoped read-keys vs accept-with-reason).
+- **Avatar Storage cross-tenant READ (P3)** → GDPR/storage-hardening backlog (signed URLs / per-tenant prefixes+RLS). **Global `ValidationPipe` gap (P3)** → API input-hardening backlog. Neither is RLS-audit-remediation scope; both logged.
+
+Remaining: none for the RLS/security audit's actionable findings. The audit is closed; the three deferrals above are tracked with named owners and (for visitors/admin) a regression-preventing pin.
+
 ## Agent Handoff Prompt
 
 ```text
