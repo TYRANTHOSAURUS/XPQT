@@ -121,7 +121,7 @@ async function seedRuleWithWorkflow(
   // `select fn(...) as result` pg collapses it to a composite text
   // "(uuid,1,0)"; query `select * from fn(...)` to get named columns.
   const ensureRes = await pool.query<{ definition_id: string }>(
-    `select * from public.ensure_room_booking_rule_workflow_definition($1, $2, $3::jsonb, $4)`,
+    `select * from public.ensure_room_booking_rule_workflow_definition($1::uuid, $2::uuid, $3::jsonb, $4::text)`,
     [ruleId, base.tenantId, JSON.stringify(graph(approverPersonIds, threshold)), `concurrency-p15-${ruleId.slice(0, 8)}`],
   );
   const definitionId = ensureRes.rows[0]?.definition_id;
@@ -210,8 +210,35 @@ async function seedWorkflowInstanceWithApprovals(
 describe('Phase 1.5 visual-approval — §7.5 real-DB concurrency', () => {
   let pool: Pool;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     pool = getPool();
+    // Preflight (runnable guard): §7.5 needs the Phase 1.5 functions
+    // (00400 ensure_room_booking_rule_workflow_definition, 00407
+    // grant_booking_approval v3). The harness pool defaults to LOCAL
+    // Supabase (pool.ts: SUPABASE_DB_HOST ?? '127.0.0.1'), which is
+    // typically not migrated to 00400+. Fail fast with the exact fix
+    // instead of 5 cryptic "function does not exist" errors buried in
+    // fixture seeding.
+    const required = [
+      'ensure_room_booking_rule_workflow_definition',
+      'grant_booking_approval',
+    ];
+    const { rows } = await pool.query<{ proname: string }>(
+      `select proname from pg_proc where proname = any($1::text[])`,
+      [required],
+    );
+    const have = new Set(rows.map((r) => r.proname));
+    const missing = required.filter((p) => !have.has(p));
+    if (missing.length > 0) {
+      throw new Error(
+        `[§7.5 preflight] target DB is missing Phase 1.5 function(s): ${missing.join(', ')}.\n` +
+          `The concurrency pool defaults to LOCAL Supabase (127.0.0.1:54322), which is not\n` +
+          `migrated to 00400+. Phase 1.5 lives on REMOTE — re-run against remote:\n` +
+          `  SUPABASE_DB_HOST=db.iwbqnyrvycqgnatratrk.supabase.co SUPABASE_DB_PORT=5432 \\\n` +
+          `  SUPABASE_DB_USER=postgres SUPABASE_DB_PASSWORD="$SUPABASE_DB_PASS" \\\n` +
+          `  SUPABASE_DB_NAME=postgres pnpm --filter @prequest/api test:concurrency`,
+      );
+    }
   });
 
   afterAll(async () => {
@@ -504,7 +531,7 @@ describe('Phase 1.5 visual-approval — §7.5 real-DB concurrency', () => {
       const c = await pool.connect();
       try {
         await c.query(
-          `select * from public.ensure_room_booking_rule_workflow_definition($1, $2, $3::jsonb, $4)`,
+          `select * from public.ensure_room_booking_rule_workflow_definition($1::uuid, $2::uuid, $3::jsonb, $4::text)`,
           [ruleId, base.tenantId, g, `concurrency-p15-5-${ruleId.slice(0, 8)}-call${i}`],
         );
         return { ok: true as const };
