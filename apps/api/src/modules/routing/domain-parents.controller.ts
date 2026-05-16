@@ -4,24 +4,23 @@ import {
   Delete,
   Get,
   Param,
-  Post,
-  UseGuards} from '@nestjs/common';
+  Post} from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 
 interface CreateDomainParentDto {
   domain: string;
   parent_domain: string;
 }
 
-@UseGuards(AdminGuard)
 @Controller('domain-parents')
 export class DomainParentsController {
   constructor(private readonly supabase: SupabaseService) {}
 
   @Get()
+  @RequirePermission('routing.read')
   async list() {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
@@ -34,6 +33,7 @@ export class DomainParentsController {
   }
 
   @Post()
+  @RequirePermission('routing.create')
   async create(@Body() dto: CreateDomainParentDto) {
     const tenant = TenantContext.current();
     const domain = dto.domain?.trim();
@@ -55,6 +55,7 @@ export class DomainParentsController {
   }
 
   @Delete(':id')
+  @RequirePermission('routing.delete')
   async remove(@Param('id') id: string) {
     const tenant = TenantContext.current();
     const { error } = await this.supabase.admin

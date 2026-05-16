@@ -448,6 +448,62 @@ Remaining:
 - Then `/full-review` + codex on the whole Slice 11.
 - Unchanged opens: P4 browser-direct/Storage RLS investigation; global `ValidationPipe` gap (separate backlog); GET info-disclosure (sequenced behind 11.3).
 
+#### Update — 2026-05-16 (Slice 11.3 — Slice-2/9 + leftover AdminGuard re-gated; AdminGuard near-eliminated)
+
+Original finding:
+- The `/full-review` CRITICAL ("Blanket `AdminGuard` is coarser than the codebase's CI-enforced permission model"), continued from the Slice 11.1+11.2 block.
+- Location: `docs/follow-ups/audits/04-rls-security.md` ("Closure Updates" — the 2026-05-16 Slice 11.1+11.2 block).
+
+Status:
+- partial — CRITICAL now closed for the **entire** original audit admin surface (Slice-2 + Slice-9) plus the previously-out-of-scope leftover AdminGuard controllers; verified. `AdminGuard` reduced to a **single justified caller** (`visitors/admin.controller.ts`). 11.2b (proof probe + key-mapping unit test) + the whole-of-Slice-11 `/full-review`+codex remain.
+
+Changed (all `@UseGuards(AdminGuard)` → declarative `@RequirePermission('<catalog key>')`, same canonical `user_has_permission` path; module DI: `AuthModule` dropped where AdminGuard now unused, `PermissionGuard`+`PermissionMetadataGuard` provided locally — config-engine.module pattern):
+- **Catalog (11.3a)** `packages/shared/src/permissions.ts`: new `webhooks` domain (`read/create/update/rotate_key/test/delete`) + new `workflows.execute` action (manual instance start/resume — real side effects, distinct from the `workflows.test` dry-run). `packages/shared/src/role-defaults.ts`: +7 `EXPLICITLY_NO_DEFAULT_ROLE` entries with reasons (admin-tier posture, same precedent as the 11.1 `business_hours`/`catalog_menus`/`delegations` additions). No SQL migration — `user_has_permission` evaluates `roles.permissions` JSONB dynamically; catalog-parity spec stays green (mirrors the 11.1 close).
+- **Slice-2 (11.3b)** 6 routing controllers (`routing.controller`, `policies.controller`, `space-groups.controller`, `domains.controller`, `location-teams.controller`, `domain-parents.controller`) → `routing.*`; `workflow.controller` → `workflows.*` (+`workflows.execute` for start/resume); `sla-policy.controller` → `sla.*`; `webhook-admin.controller` → `webhooks.*`; `config-entity.controller` → `request_types.*`. Modules wired: `routing`, `workflow`, `sla`, `webhook`, `config-engine`.
+- **Slice-9 (11.3c)** `user-management.controller.ts` `Users`/`Roles`/`RoleAssignments`/`PersonsAdmin` mutations → `users.*`/`roles.*`/`roles.assign`/`people.*`; module wired. Open operational GETs (`/users`, `/users/:id`, `/users/:id/roles`, `/users/:id/audit`, `/roles`, `/persons-admin`, `/users/me`) **left open exactly as before** per the Slice-9 rationale (they back non-admin operator pickers; not an escalation vector — tracked as the standing P2 GET info-disclosure item).
+- **Leftover AdminGuard (11.3d)** `tenant/branding.controller.ts`, `portal-announcements/portal-announcements.controller.ts`, `portal-appearance/portal-appearance.controller.ts` → `settings.read`/`settings.update` (these were never in the original audit scope; re-gated for full consistency / best-in-class). `tenant`/`portal-announcements`/`portal-appearance` modules wired. `branding` public `GET /current/branding` left ungated (called pre-auth by the login page — unchanged). `floor-plan/floor-plan-admin.controller.ts` already used in-body `floor_plans.admin` (no AdminGuard) — no change.
+
+Key architectural decisions (grounded by reading source, not the handoff hint):
+- **Class-level-AdminGuard controllers gate every route, including GETs, with `<domain>.read` — NOT left open.** These controllers were admin-*closed* on reads; leaving GETs ungated when removing class-level AdminGuard would *widen* scope (new info-disclosure). Gating reads with `.read` preserves/correctly-refines the posture and matches the established codebase convention — sibling `config-engine/criteria-set.controller.ts` and `request-type.controller.ts` already gate GETs with `<domain>.read` ("GETs are admin-only except for…"). Distinct from the Slice-9/10 per-method-AdminGuard controllers whose GETs were *already open* (those stay open per the proven pattern).
+- **`config-entity.controller.ts` → `request_types.*`, not `routing.*`.** The handoff hint ("it's the routing policy store") was wrong: this is the generic versioned config-entity store that today exclusively backs request-type **form schemas** (`config_type:'form_schema'`; frontend `@/api/config-entities` callers under form-schema-detail / request-type-dialog). The routing policy store is the *separate* `RoutingPoliciesController` on `PolicyStoreService`. Gated to match the sibling `RequestTypeController` (`request_types.*`) in the same module.
+- **`workflows.execute` (new catalog action)** for `POST /workflows/:id/start/:ticketId` + `POST /workflows/instances/:id/resume`: no existing `workflows` action models manual instance control with real side effects (`workflows.test` is explicitly dry-run). Added the action rather than mis-mapping or keeping AdminGuard — the catalog model's whole point is that the grant is *possible*.
+- **`visitors/admin.controller.ts` — KEPT on `@UseGuards(AdminGuard)` with written rationale (justified remaining caller).** Genuine admin-only visitor-type / pass-pool / kiosk configuration; the `visitors` catalog domain models only `invite`/`reception`/`read_all` — no visitor-config action exists, and adding one is out of 04-rls scope and would collide with the parallel visitors workstream. It already does an in-body `visitors.read_all` check on `GET /all`. This is the *only* non-spec `@UseGuards(AdminGuard)` decorator left in `apps/api/src`; `AdminGuard` therefore stays as a primitive (still referenced + spec'd) — not deleted (handoff rule: don't delete unless truly unreferenced).
+
+Endpoint → permission-key mapping (the codex-risk-#2 record of truth; a unit test asserting these is 11.2b):
+
+| Controller | Route(s) | Key |
+|---|---|---|
+| RoutingRuleController | GET / · POST / · PATCH /:id | `routing.read` · `routing.create` · `routing.update` |
+| RoutingPoliciesController | GET schemas\|:type\|:type/:id · POST :type · POST :type/:id/versions · POST versions/:id/publish | `routing.read` · `routing.create` · `routing.update` · `routing.publish` |
+| SpaceGroupsController | GET / · POST / · PATCH /:id · DELETE /:id · POST /:id/members · DELETE /:id/members/:sid | `routing.read` · `routing.create` · `routing.update` · `routing.delete` · `routing.update` · `routing.update` |
+| RoutingDomainsController | GET (/ ·lookup ·:id) · POST / · PATCH /:id · DELETE /:id | `routing.read` · `routing.create` · `routing.update` · `routing.delete` |
+| LocationTeamsController | GET / · POST / · PATCH /:id · DELETE /:id | `routing.read` · `routing.create` · `routing.update` · `routing.delete` |
+| DomainParentsController | GET / · POST / · DELETE /:id | `routing.read` · `routing.create` · `routing.delete` |
+| WorkflowController | GET (list·:id·instances*) · POST / · PATCH /:id/graph · POST /:id/publish·unpublish · POST /:id/clone · POST /:id/simulate · POST /:id/start/:tid · POST /instances/:id/resume | `workflows.read` · `workflows.create` · `workflows.update` · `workflows.publish` · `workflows.duplicate` · `workflows.test` · `workflows.execute` · `workflows.execute` |
+| SlaPolicyController | GET / · POST / · PATCH /:id | `sla.read` · `sla.create` · `sla.update` |
+| WebhookAdminController | GET /·:id/events · POST / · PATCH /:id · DELETE /:id · POST /:id/api-key/rotate · POST /:id/test | `webhooks.read` · `webhooks.create` · `webhooks.update` · `webhooks.delete` · `webhooks.rotate_key` · `webhooks.test` |
+| ConfigEntityController | GET /·:id · POST / · POST/PATCH /:id/draft · POST /:id/publish · POST /:id/rollback/:vid | `request_types.read` · `request_types.create` · `request_types.update` · `request_types.publish` |
+| UsersController (mutations) | POST / · PATCH /:id · POST /:id/roles · DELETE /:id/roles/:rid | `users.create` · `users.update` · `roles.assign` · `roles.assign` |
+| RolesController (mutations) | POST / · PATCH /:id | `roles.create` · `roles.update` |
+| RoleAssignmentsController (class-level) | POST / · PATCH /:id · DELETE /:id | `roles.assign` |
+| PersonsAdminController (mutations) | POST / · PATCH /:id | `people.create` · `people.update` |
+| BrandingController (mutations) | PUT /branding · POST /branding/logo · DELETE /branding/logo/:kind | `settings.update` |
+| PortalAnnouncementsController | GET / · POST / · DELETE /:id | `settings.read` · `settings.update` |
+| PortalAppearanceController | GET /list·/ · PATCH / · POST /hero · DELETE /hero | `settings.read` · `settings.update` |
+
+Verified:
+- `pnpm --filter @prequest/shared run build` -> clean (PermissionKey includes `webhooks.*` + `workflows.execute`)
+- `pnpm --filter @prequest/api run test -- "require-permission.guard|admin.guard.spec|permission-catalog"` -> **27/27** (catalog-coverage + parity + SQL-parity green with the new domain/action)
+- `pnpm --filter @prequest/api run lint` (tsc) -> **zero errors in any Slice-11.3-touched file**. (The branch tsc is red on `outbox/*` + `reservations/*` from the in-flight **parallel 03-booking-reservation workstream** — `buildCancelBookingIdempotencyKey`/`bundleCascade`/`handleBundleCancelled`, migration 00408 + `smoke:cancel-booking`; per handoff execution rule #7 that is their state, not a Slice-11.3 regression.)
+- `pnpm smoke:cross-tenant` -> **22/22** (runtime DI intact across all 8 newly-wired modules — re-gated routes 403 not 500; cross-tenant header-flip still 403; non-admin same-tenant escalation still 403; operational GET pickers 200)
+- `pnpm smoke:work-orders` -> **109/109** (no operational regression)
+
+Remaining:
+- **11.2b**: seed a non-admin role holding exactly one key (e.g. `spaces.create`) + a TENANT_A user with it; assert `POST /spaces` is NOT 403 (proves the re-gate delivers what AdminGuard structurally could not — codex risk #2's "one live case"). Add a jest test asserting every `@RequirePermission` route resolves the key in the mapping table above.
+- Then `/full-review` + codex on the whole of Slice 11 (`988d6452..HEAD` minus parallel-workstream commits).
+- Unchanged opens: **P4** browser-direct PostgREST / Supabase Storage RLS investigation; global `ValidationPipe` gap (separate API-hardening backlog); GET info-disclosure — for the Slice-9 user-management open GETs (the Slice-2 surface is now `.read`-gated, no longer plain-readable, so that part of the P2 is closed by 11.3).
+- Commits: (pending this change).
+
 ## Agent Handoff Prompt
 
 ```text

@@ -5,12 +5,11 @@ import {
   Get,
   Param,
   Patch,
-  Post,
-  UseGuards} from '@nestjs/common';
+  Post} from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 
 interface CreateLocationTeamDto {
   space_id?: string | null;
@@ -42,12 +41,12 @@ function validateAssignee(team_id: string | null | undefined, vendor_id: string 
   }
 }
 
-@UseGuards(AdminGuard)
 @Controller('location-teams')
 export class LocationTeamsController {
   constructor(private readonly supabase: SupabaseService) {}
 
   @Get()
+  @RequirePermission('routing.read')
   async list() {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
@@ -66,6 +65,7 @@ export class LocationTeamsController {
   }
 
   @Post()
+  @RequirePermission('routing.create')
   async create(@Body() dto: CreateLocationTeamDto) {
     const tenant = TenantContext.current();
     if (!dto.domain?.trim()) throw AppErrors.validationFailed('routing.field_required', { detail: 'domain is required' });
@@ -88,6 +88,7 @@ export class LocationTeamsController {
   }
 
   @Patch(':id')
+  @RequirePermission('routing.update')
   async update(@Param('id') id: string, @Body() dto: UpdateLocationTeamDto) {
     const tenant = TenantContext.current();
     const patch: Record<string, unknown> = {};
@@ -122,6 +123,7 @@ export class LocationTeamsController {
   }
 
   @Delete(':id')
+  @RequirePermission('routing.delete')
   async remove(@Param('id') id: string) {
     const tenant = TenantContext.current();
     const { error } = await this.supabase.admin

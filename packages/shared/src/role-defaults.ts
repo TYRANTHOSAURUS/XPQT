@@ -237,6 +237,54 @@ export const EXPLICITLY_NO_DEFAULT_ROLE: ReadonlyArray<{
     reason:
       'Edits/revokes authority delegations — sensitive. Tenant Admin grants explicitly; no non-admin default role.',
   },
+  // RLS audit Slice 11.3 (2026-05-16): webhooks domain added so
+  // webhook-admin.controller can be gated via @RequirePermission instead
+  // of the coarser @UseGuards(AdminGuard). Outbound workflow webhooks +
+  // signing keys are admin-tier integration config — same posture as the
+  // 11.1 additions (gdpr.* / settings.billing): no non-admin default
+  // role; a Tenant Admin grants per custom role. The catalog model makes
+  // the grant POSSIBLE, which AdminGuard did not.
+  {
+    key: 'webhooks.read',
+    reason:
+      'Admin-tier integration config (outbound webhook endpoints + delivery log). Read kept with the mutation set; Tenant Admin grants explicitly. No non-admin default.',
+  },
+  {
+    key: 'webhooks.create',
+    reason:
+      'Admin-tier: creates outbound workflow webhook endpoints (external system integration). Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'webhooks.update',
+    reason:
+      'Admin-tier: edits webhook endpoints (URL/events/headers). Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'webhooks.rotate_key',
+    reason:
+      'Admin-tier security op: rotates the webhook signing key (invalidates the current one). Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'webhooks.test',
+    reason:
+      'Admin-tier: sends a test payload to a webhook endpoint. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'webhooks.delete',
+    reason:
+      'Admin-tier destructive config: deletes webhook endpoints. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  // RLS audit Slice 11.3: workflows.execute added so the manual
+  // instance-control routes (POST /workflows/:id/start/:ticketId,
+  // POST /workflows/instances/:id/resume) have a real catalog key
+  // distinct from workflows.test (dry-run). Real side effects on a
+  // ticket's workflow runtime — admin-tier operational intervention;
+  // no non-admin default (Tenant Admin grants explicitly per role).
+  {
+    key: 'workflows.execute',
+    reason:
+      'Manual workflow-runtime intervention (start on a ticket / resume a paused instance) — real side effects, distinct from the test dry-run. Admin-tier; Tenant Admin grants explicitly, no non-admin default role.',
+  },
 ];
 
 /**

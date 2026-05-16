@@ -1,14 +1,18 @@
 // apps/api/src/modules/portal-appearance/portal-appearance.module.ts
 import { Module } from '@nestjs/common';
 import { SupabaseModule } from '../../common/supabase/supabase.module';
-import { AuthModule } from '../auth/auth.module';
+import { PermissionGuard } from '../../common/permission-guard';
+import { PermissionMetadataGuard } from '../../common/require-permission.decorator';
 import { PortalAppearanceController } from './portal-appearance.controller';
 import { PortalAppearanceService } from './portal-appearance.service';
 
 @Module({
-  imports: [SupabaseModule, AuthModule],
+  // RLS audit Slice 11.3: re-gated AuthGuard+AdminGuard →
+  // @RequirePermission('settings.read'/'settings.update'); AuthModule
+  // dropped, permission guards provided locally (config-engine pattern).
+  imports: [SupabaseModule],
   controllers: [PortalAppearanceController],
-  providers: [PortalAppearanceService],
+  providers: [PortalAppearanceService, PermissionGuard, PermissionMetadataGuard],
   exports: [PortalAppearanceService],
 })
 export class PortalAppearanceModule {}
