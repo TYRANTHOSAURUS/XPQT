@@ -178,6 +178,65 @@ export const EXPLICITLY_NO_DEFAULT_ROLE: ReadonlyArray<{
     reason:
       'Bypass-scope visibility override for bookings/bundles, mirroring tickets.read_all. Tenant Admin holds via *.*; other roles must be granted explicitly. Same posture as the existing tickets/visitors read_all overrides.',
   },
+  // RLS audit Slice 11 (2026-05-16): three config domains added to
+  // PERMISSION_CATALOG so the controllers can be gated via
+  // @RequirePermission instead of the coarser @UseGuards(AdminGuard)
+  // (which hard-checks role.type==='admin' and wrongly blocks a
+  // non-admin role that holds the grant). These are admin-tier config
+  // — no non-admin DEFAULT role gets them out of the box (same posture
+  // as gdpr.* / settings.billing); a Tenant Admin grants them per
+  // custom role via the role editor. The point of the catalog model is
+  // that the grant is now POSSIBLE, not that it is default-on.
+  {
+    key: 'business_hours.read',
+    reason:
+      'Admin-tier config (SLA/booking operating calendars). Read kept admin-tier with create/update; Tenant Admin grants explicitly. No non-admin default.',
+  },
+  {
+    key: 'business_hours.create',
+    reason:
+      'Admin-tier config: defines tenant operating-hours calendars that drive SLA timers. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'business_hours.update',
+    reason:
+      'Admin-tier config: edits operating-hours calendars (SLA-affecting). Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'catalog_menus.read',
+    reason:
+      'Admin-tier config (vendor/service menus). Read kept with the mutation set; Tenant Admin grants explicitly. No non-admin default.',
+  },
+  {
+    key: 'catalog_menus.create',
+    reason:
+      'Admin-tier config: creates vendor/service offering menus + items. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'catalog_menus.update',
+    reason:
+      'Admin-tier config: edits vendor/service menus + items + bulk/duplicate. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'catalog_menus.delete',
+    reason:
+      'Admin-tier destructive config: deletes menus/items. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'delegations.read',
+    reason:
+      'Authority-delegation config. Read kept with the mutation set; Tenant Admin grants explicitly. No non-admin default.',
+  },
+  {
+    key: 'delegations.create',
+    reason:
+      'Authority delegation (acting on behalf of another person) — sensitive. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'delegations.update',
+    reason:
+      'Edits/revokes authority delegations — sensitive. Tenant Admin grants explicitly; no non-admin default role.',
+  },
 ];
 
 /**
