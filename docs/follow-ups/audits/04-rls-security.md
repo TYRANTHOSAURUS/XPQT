@@ -157,6 +157,231 @@ Maintainer rule: every agent that closes, partially closes, or deliberately defe
 | 2026-05-14 | Slice 2 — defense-in-depth `@UseGuards(AdminGuard)` on 10 admin controllers (P0 §un-bridged admin controllers) | **closed** | `@UseGuards(AdminGuard)` added at class level on `workflow.controller.ts`, `routing.controller.ts`, `routing/policies.controller.ts`, `routing/space-groups.controller.ts`, `routing/domains.controller.ts`, `routing/location-teams.controller.ts`, `routing/domain-parents.controller.ts`, `webhook/webhook-admin.controller.ts`, `config-engine/config-entity.controller.ts`, `sla/sla-policy.controller.ts`. `AuthModule` added to `imports[]` of `workflow.module.ts`, `routing.module.ts`, `sla.module.ts`, `webhook.module.ts`, `config-engine.module.ts` so AdminGuard can be DI-resolved. `smoke-cross-tenant.mjs` augmented with 3 cross-tenant POST probes (write side of the attack vector). | `pnpm smoke:cross-tenant` 12/12 pass (3 new POST probes 403'd). `pnpm smoke:work-orders` 109/109 pass. | Closes the audit's secondary P0 (`04-rls-security.md:23-40`). With Slice 1 in place, AdminGuard runs ONLY when AuthGuard already passed the bridge — so the failure mode of "admin in tenant A flips header to tenant B and is admin in tenant B too" is now blocked at AuthGuard (no users row in tenant B → 403) BEFORE AdminGuard. AdminGuard remains as belt+suspenders if Slice 1 regresses, AND as the gate for non-admin same-tenant users (slice 3 will add a same-tenant non-admin probe; that requires a second auth fixture which we don't seed yet). `buildings.controller.ts` was named by the audit but kept un-AdminGuarded — `GET /buildings/:id/floors` is legitimately operator-readable and Slice 1's tenant binding already blocks the audit's cross-tenant read scenario. |
 | 2026-05-14 | Slice 1 — `/full-review` follow-up (C1 + I1 + I3 + I4) | **closed** | Same files plus `apps/api/src/modules/auth/admin.guard.ts`, `apps/api/src/common/permission-guard.ts`, `apps/api/src/modules/auth/admin.guard.spec.ts`. C1: `.eq('status','active')` filter added to AuthGuard bridge — suspended/inactive users with a still-valid JWT can no longer pass any authenticated route. I3: AdminGuard + PermissionGuard refactored to consume `req.user.platformUserId` directly; the users-row lookup ran exactly once per request now (in AuthGuard) instead of three times on admin+permission paths. I4: defensive `TenantContext.current()` wrap — bypassed middleware now surfaces as 404 `tenant.unknown` instead of a 500 stack trace. | `admin.guard.spec` 4/4 pass; `smoke:cross-tenant` 9/9 pass; `smoke:work-orders` 109/109 pass. | **Why the users-table bridge over JWT `app_metadata.tenant_id` cross-check?** The audit names both options as viable closers. Bridge chosen because (a) `app_metadata` mint discipline is unverified in this codebase — the audit ledger calls it out; (b) `public.users WHERE auth_uid AND tenant_id AND status='active'` is the authoritative membership source and the existing-guard pattern (AdminGuard, PermissionGuard, `loadContext`); (c) the lookup is one Supabase REST call (~5-15ms p50 same-region) — measurable but acceptable. The latency is paid once per request and platformUserId is reused everywhere downstream. **Open caveats** (NOT closed by Slice 1): (1) a multi-tenant user with `public.users` rows in two tenants can still hit either via header flip — only Slice 2 (`@UseGuards(AdminGuard)` on the 9 admin controllers) closes that vector; (2) cron / outbox / workflow-engine paths bypass AuthGuard entirely and rely on `TenantContext` being set from row data (safe by construction — they trust no actor input — but documented here as the explicit non-HTTP security model). |
 
+## Closure Updates (templated)
+
+Append-only. Original findings above are unmodified. Terse Closure Ledger
+rows above are retained; these blocks are the structured record of truth
+per the maintainer template.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P0] \`X-Tenant-Id\` header is trusted with no JWT-claim cross-check`
+- Location: `docs/follow-ups/audits/04-rls-security.md:12`
+
+Status:
+- closed
+
+Changed:
+- `apps/api/src/modules/auth/auth.guard.ts` (global auth_uid→public.users bridge, status='active', 403 `auth.user_not_in_tenant`, attaches `platformUserId`)
+- `apps/api/src/modules/auth/admin.guard.ts`, `apps/api/src/common/permission-guard.ts` (consume `platformUserId`)
+- `apps/api/scripts/smoke-cross-tenant.mjs` (new live gate), `package.json` + `apps/api/package.json` (script)
+- `apps/api/src/modules/auth/admin.guard.spec.ts`
+
+Verified:
+- `pnpm smoke:cross-tenant` -> pass (9/9 at Slice 1; 16/16 after Slice 9)
+- `pnpm smoke:work-orders` -> pass 109/109
+- `pnpm --filter @prequest/api lint` -> pass
+
+Remaining:
+- None for this finding. Commits 562b1113, 9b42b1f3.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P0] Admin-domain controllers bypass tenant isolation via \`X-Tenant-Id\` flip`
+- Location: `docs/follow-ups/audits/04-rls-security.md:23`
+
+Status:
+- closed (defense-in-depth) — primary close is the Slice-1 bridge; this adds AdminGuard
+
+Changed:
+- `@UseGuards(AdminGuard)` on workflow / routing.controller / routing(policies,space-groups,domains,location-teams,domain-parents) / webhook-admin / config-entity / sla-policy controllers
+- `AuthModule` into workflow / routing / sla / webhook / config-engine modules
+- `apps/api/scripts/smoke-cross-tenant.mjs` (+3 cross-tenant POST probes)
+
+Verified:
+- `pnpm smoke:cross-tenant` -> pass 12/12
+- `pnpm smoke:work-orders` -> pass 109/109
+
+Remaining:
+- The audit named 9 controllers; this is NOT the full admin surface. See the NEW-FINDING blocks below (Slice 9 + Slice 10) — the original audit inventory was materially incomplete. Commits 8334d1d9, 6486186b.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P1] \`DbService\` runs as superuser — \`service_role\` would be sufficient`
+- Location: `docs/follow-ups/audits/04-rls-security.md:43`
+
+Status:
+- closed (documented posture; non-superuser role deferred as Slice 5.b)
+
+Changed:
+- `docs/visibility.md` §8 "Database role posture — RLS as perimeter, not policy"
+
+Verified:
+- Not run -> docs-only change; no behavior delta.
+
+Remaining:
+- Slice 5.b (provision `prequest_app` non-superuser role) deferred — multi-day, marginal real defense while `SupabaseService.admin` still bypasses. Rationale in §8.4. Commit 05e5d299.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P1] \`ticket_visibility_ids\` returns rows where \`location_id IS NULL\` to any role-assigned user`
+- Location: `docs/follow-ups/audits/04-rls-security.md:50`
+
+Status:
+- contested (deferred — analysis disputes the finding)
+
+Changed:
+- None (no code/migration change made).
+
+Verified:
+- Static analysis only. `00035_vendor_participant_dormant.sql:6-70` is the latest definition. The outer domain check at `:63` already gates the null-location branch at `:67`. The audit's proposed fix would break the "empty domain_scope = all domains" semantic documented at `docs/superpowers/specs/2026-04-20-visibility-scoping-design.md:50,103,277`.
+
+Remaining:
+- Reopen ONLY with a concrete failing visibility test (jest under `apps/api/src/modules/ticket/`). Do not migrate this hot function on prose alone. Commit 1f1fb58f.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P1] Tickets RLS policy is tenant-only (USING clause), no WITH CHECK, no permission gate`
+- Location: `docs/follow-ups/audits/04-rls-security.md:57`
+
+Status:
+- closed (accepted-by-design; the finding itself says "Acceptable IF the tenant-claim check (P0) is added")
+
+Changed:
+- `docs/visibility.md` §8 documents why per-table within-tenant RLS is intentionally NOT added (visibility lives in the service layer).
+
+Verified:
+- Not run -> design/doc decision; the P0 precondition the finding names is closed (Slice 1).
+
+Remaining:
+- None. Within-tenant visibility stays in `TicketVisibilityService` per `docs/visibility.md`. Commit 05e5d299.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P2] \`tenants\` table has no RLS, accessed via service role only — relies on app discipline`
+- Location: `docs/follow-ups/audits/04-rls-security.md:71`
+
+Status:
+- closed
+
+Changed:
+- `supabase/migrations/00405_tenants_deny_by_default_rls.sql`
+
+Verified:
+- Pushed via psql fallback. `pg_class.relrowsecurity=t / relforcerowsecurity=f`; `pg_policy` deny-all `polqual=false polwithcheck=false polcmd='*'`; service-role `select count(*) from public.tenants` -> 2 rows (bypass intact); `pnpm smoke:cross-tenant` -> pass 12/12 post-push.
+
+Remaining:
+- None. Note: pre-push `relrowsecurity` was already `t` — the 00001 comment was stale. Commits 4cedc705, 0ca848c9.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P2] \`service_rule_templates\` is globally readable to all authenticated users via \`USING (true)\`` and `### [P2] \`anon\` role can call \`validate_invitation_token\` and \`validate_kiosk_token\` and \`peek_invitation_token\``
+- Location: `docs/follow-ups/audits/04-rls-security.md:76` and `:81`
+
+Status:
+- closed (no action — the audit itself confirmed these safe; Slice 7 re-verified)
+
+Changed:
+- None.
+
+Verified:
+- Slice 7 parallel SECURITY DEFINER sweep re-confirmed the bearer-token trio (hash lookup, post-use tombstone, distinct error codes) and the seed-template read posture. Read-only.
+
+Remaining:
+- None known.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `## P3 findings` (SECURITY DEFINER long-tail + `user_has_permission` JSONB presence note)
+- Location: `docs/follow-ups/audits/04-rls-security.md:89`
+
+Status:
+- closed — no findings
+
+Changed:
+- None (read-only audit).
+
+Verified:
+- Two parallel Explore subagents audited every SECURITY DEFINER function split at migration 00299. All set `search_path`, validate `p_tenant_id` or are bearer-token-bound, and `revoke from public` + grant only `service_role`. No fix migrations needed.
+
+Remaining:
+- None. The `user_has_permission` JSONB-presence behavior is intentional per the audit's own P3 note. Commit 110d14a6.
+
+---
+
+### NEW FINDINGS — discovered during remediation (audit was incomplete)
+
+The original 8-auditor pass + `## Executive verdict` ("Best-in-class: **close** (after the P0 fix)") materially under-counted the admin-controller surface. The cross-tenant header-flip was real and is closed, but a **same-tenant privilege-escalation class** was missed entirely. These are appended as new findings (not retrofitted onto original headings — there is no original heading for them).
+
+#### NEW FINDING + Update — 2026-05-16
+
+Finding (not in original audit):
+- **[P0] user-management controllers allow same-tenant privilege escalation.** `apps/api/src/modules/user-management/user-management.controller.ts` exposed `UsersController` / `RolesController` / `RoleAssignmentsController` / `PersonsAdminController` behind only the global AuthGuard. Any active same-tenant non-admin could `POST /role-assignments {user_id: self, role_id: <Admin>}` (service `assignRole` used `actor` only for the audit trail — `user-management.service.ts:359-390`) then pass AdminGuard everywhere. Surfaced by an external reviewer 2026-05-16; the original audit named 9 controllers, none under `user-management/`.
+
+Status:
+- closed (escalation vector) + P2 GET info-disclosure follow-up open
+
+Changed:
+- `apps/api/src/modules/user-management/user-management.controller.ts` (`@UseGuards(AdminGuard)` per-mutation; class-level on `RoleAssignmentsController`)
+- `apps/api/src/modules/user-management/user-management.module.ts` (`AuthModule`)
+- `apps/api/src/modules/auth/admin.guard.ts` (F2: + `roles.active` + `starts_at`/`ends_at`, mirrors `user_has_permission` `00109:70-73`)
+- `apps/api/src/modules/auth/admin.guard.spec.ts`, `apps/api/scripts/smoke-cross-tenant.mjs`
+
+Verified:
+- `pnpm --filter @prequest/api run test -- admin.guard.spec.ts` -> pass 8/8 (added inactive-role / expired / not-yet-started)
+- `pnpm smoke:cross-tenant` -> pass 16/16 (non-admin self-grant Admin via `POST /role-assignments` -> 403)
+- `pnpm smoke:work-orders` -> pass 109/109; `tsc` -> pass
+
+Remaining:
+- **P2 (open):** GET info-disclosure — `GET /users`, `/users/:id`, `/users/:id/roles`, `/users/:id/audit`, `/roles`, `/persons-admin`, `/permissions/users/:id/effective` readable by any active same-tenant user. Deliberately not locked: `GET /users` / `GET /roles` back non-admin operator pickers (desk ticket-filter, user-picker, workflow assign-form). Needs per-endpoint operational analysis. Commit 50b6dc72.
+
+#### NEW FINDING + Update — 2026-05-16 (in progress)
+
+Finding (not in original audit):
+- **[P0-class] 9 further controllers allow same-tenant admin-config mutation with no admin/permission gate.** Post-Slice-9 codebase-wide sweep (Explore subagent, grep of controller + service layers) found: `asset`, `business-hours`, `catalog-menu`, `delegation`, `space`, `team`, `vendor`, `notification` (template routes), `config-engine/service-catalog`. Spot-verified: `delegation.create` takes no actor (any user mints a delegation between arbitrary users); `team` `POST/:id/members` is unguarded and `team_members` feeds `ticket_visibility_ids` (self-add = visibility escalation); `space`/`vendor`/`asset`/etc. mutate tenant config/hierarchy.
+
+Status:
+- partial (in progress — Slice 10)
+
+Changed:
+- (pending — this block will be updated with the per-controller guard diff + smoke probes on commit)
+
+Verified:
+- Sweep method: grep `@UseGuards`/`requirePermission` in both controller and service for each. Spot-verified delegation/space/team by direct read. Implementation verification pending.
+
+Remaining:
+- Slice 10 to apply `@UseGuards(AdminGuard)` per-mutation (operational GETs preserved per the Slice-9 pattern), wire `AuthModule` into 9 modules, extend `smoke:cross-tenant` non-admin probes on the escalation-class ones (team membership, delegation). Then `/full-review` + codex.
+
+#### Update — 2026-05-16 (Slice 10 shipped; pre-review)
+
+Original finding:
+- The NEW FINDING block immediately above ("[P0-class] 9 further controllers...").
+- Location: `docs/follow-ups/audits/04-rls-security.md` (this section).
+
+Status:
+- partial (shipped + smoke-verified; `/full-review` + codex pending per the review mandate)
+
+Changed:
+- `apps/api/src/modules/{asset,business-hours,catalog-menu,delegation,space,team,vendor,notification}.controller.ts` + `config-engine/service-catalog.controller.ts` (method-level `@UseGuards(AdminGuard)` on mutations; operational GETs + notification self-service + `catalog-menus/resolve` left open)
+- `apps/api/src/modules/{asset,business-hours,catalog-menu,delegation,space,team,vendor,notification}.module.ts` (`AuthModule` wired; config-engine already had it)
+- `apps/api/scripts/smoke-cross-tenant.mjs` (+6 Slice 10 probes + team_members defensive cleanup)
+
+Verified:
+- `pnpm --filter @prequest/api lint` -> pass (tsc clean)
+- `pnpm smoke:cross-tenant` -> pass 22/22 (operational GETs 200 for non-admin; team self-add / delegation mint / space create 403)
+- `pnpm smoke:work-orders` -> pass 109/109 (no operational regression)
+
+Remaining:
+- `/full-review` + codex on the Slice 9+10 step (big-step review mandate). A residual **P2 IDOR**: `notification` `POST /:id/read` takes a bare notification id with no ownership check (same-tenant mark-anyone's-read) — integrity-class, not escalation; deferred. **P2 GET info-disclosure** across all guarded controllers persists by design (operational pickers depend on the reads). Commit 552e2db2.
+
 ## Agent Handoff Prompt
 
 ```text
