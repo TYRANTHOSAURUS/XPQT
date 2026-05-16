@@ -155,14 +155,45 @@ export class TicketController {
     return this.ticketService.update(id, dto, actorAuthUid, clientRequestId);
   }
 
+  /**
+   * B.2.A I1 — producer route, requires X-Client-Request-Id (spec §3.9.1).
+   * Audit 02 / P0-1: bulk now routes every id through the hardened
+   * single-path `update()` (see TicketService.bulkUpdate); the guard +
+   * controller-boundary array narrowing match the single `@Patch(':id')`
+   * exactly so the bulk surface inherits every B.2.A guarantee.
+   */
   @Patch('bulk/update')
+  @UseGuards(RequireClientRequestIdGuard)
   async bulkUpdate(
     @Req() request: Request,
     @Body() body: { ids: string[]; updates: UpdateTicketDto },
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
-    return this.ticketService.bulkUpdate(body.ids, body.updates, actorAuthUid);
+    const updates = body?.updates ?? ({} as UpdateTicketDto);
+    if (
+      Object.prototype.hasOwnProperty.call(updates, 'tags') &&
+      updates.tags !== null &&
+      updates.tags !== undefined &&
+      (!Array.isArray(updates.tags) || !updates.tags.every((t) => typeof t === 'string'))
+    ) {
+      throw AppErrors.validationFailed('ticket.tags_invalid', {
+        detail: 'tags must be an array of strings or null',
+      });
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(updates, 'watchers') &&
+      updates.watchers !== null &&
+      updates.watchers !== undefined &&
+      (!Array.isArray(updates.watchers) ||
+        !updates.watchers.every((w) => typeof w === 'string'))
+    ) {
+      throw AppErrors.validationFailed('ticket.watchers_invalid', {
+        detail: 'watchers must be an array of strings (person UUIDs) or null',
+      });
+    }
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    return this.ticketService.bulkUpdate(body.ids, updates, actorAuthUid, clientRequestId);
   }
 
   /** B.2.A I1 — producer route, requires X-Client-Request-Id (spec §3.9.1). */

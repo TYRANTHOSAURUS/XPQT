@@ -84,7 +84,7 @@ Internal service-to-service calls (workflow engine, approvals, resolver callback
 ## 7. What's intentionally not solved yet
 
 - **Reporting service.** `reporting.service.ts` queries tenant-wide for dashboard counts. Admin-facing; not yet filtered.
-- **Bulk updates.** `PATCH /tickets/bulk/update` doesn't call `assertVisible`. Rare and typically admin — follow-up.
+- **Bulk updates.** *Closed 2026-05-16 (Audit 02 / P0-1).* `PATCH /tickets/bulk/update` no longer raw-writes. It now routes every id through the canonical single-path `TicketService.update()`, which performs `assertVisible(id, ctx, 'write')` + the per-action permission gates + `update_entity_combined` (idempotency + audit) per id. Visibility on bulk is therefore identical to the single PATCH, evaluated per row, with permission denials surfaced as per-id `error` rows in the partial-success result (not silently dropped). The earlier wording here ("doesn't call `assertVisible`") was inaccurate even before the fix — the old path *did* call `assertVisible` to narrow the id set; what it lacked was everything else.
 - **Search endpoint.** Not yet built; when added, use `getVisibleIds`.
 - **Vendor-participant path (Phase 4).** Currently returns no rows. The schema doesn't link a person to their specific vendor; Phase 4 will formalize. Users with `persons.external_source='vendor'` must rely on team membership or role scope for now.
 - **RLS defense-in-depth.** Possible Phase 2 addition. The tenant-isolation RLS stays; a per-user visibility RLS policy can be added later that calls `ticket_visibility_ids` from a `SECURITY DEFINER` function.

@@ -279,6 +279,7 @@ Maintainer rule: every agent that closes, partially closes, or deliberately defe
 | Date | Finding / Slice | Status | Evidence | Verification | Notes |
 |---|---|---|---|---|---|
 | 2026-05-13 | Handoff prompt added | tracking | `docs/follow-ups/audits/00-integrator-verdict.md` | Not run | All findings remain open unless a later row says otherwise. |
+| 2026-05-16 | Top-10 blocker #4 / Must-fix #4 — `PATCH /tickets/bulk/update` → orchestrator | **CLOSED (code; review+smoke pending)** | See `docs/follow-ups/audits/02-tickets-work-orders.md` Closure Ledger row P0-1+P2-5 (2026-05-16). Branch `feature/tickets-wo-audit-remediation`. | `pnpm -C apps/api lint` green; `/full-review`+codex+bulk-smoke in Slice 8 | TS-only fix — `set_entity_assignment`/`update_entity_combined` already atomic; audit's "new batch RPC" was optional. Looped the hardened single-path per id. Remaining audit-02 P0/P1 slices tracked on the same branch. |
 
 ## Agent Handoff Prompt
 
