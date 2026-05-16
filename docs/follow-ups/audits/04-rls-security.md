@@ -528,6 +528,33 @@ Remaining:
 - Unchanged opens: P4 browser-direct / Storage RLS; global `ValidationPipe` gap; Slice-9 open-GET info-disclosure (the Slice-2 read surface is now `.read`-gated by 11.3).
 - Commits: Slice 11.3 `5d6f1b6f`; this change (pending).
 
+#### Update — 2026-05-16 (Slice 11 — `/full-review` synthesis: code clean, 3 honesty/scope fixes, 1 NEW pre-existing P1)
+
+Original finding:
+- The Slice-11 re-gate (commits `988d6452` 11.1, `b4577f20` 11.2, `5d6f1b6f` 11.3, `4edede82` 11.2b).
+- Location: the three 2026-05-16 Slice-11 Update blocks above.
+
+Status:
+- partial — two fresh-context adversarial reviewers (plan + code, parallel) pressure-tested the whole slice. **Code review: no P0/P1 — DI complete, AuthModule drops safe (AuthGuard is `APP_GUARD` `app.module.ts:117`, covers the ex-explicit-AuthGuard branding/portal routes), class-level decorator resolves, catalog typechecks, 11.2b proof non-tautological, no silent widen/narrow vs. the prior class-level-AdminGuard.** Plan review surfaced 1 pre-existing P1 (NOT a Slice-11 regression) + honesty/scope corrections. Codex (mandated independent second reviewer) pending.
+
+Changed (fixes applied this block):
+- **Semantics honesty (was overstated as "identical"):** the AdminGuard→`@RequirePermission` swap is deliberately **NOT semantically identical**. It is (a) **broader on reads** — a `*.read` Auditor / `request_types.read` IT Agent / etc. now passes re-gated GETs that AdminGuard (`role.type==='admin'`) 403'd; this is *the intended CRITICAL fix*, not a leak; and (b) **narrower for `type='admin'` roles that lack the specific key and `*.*`** — such a custom role passed blanket AdminGuard but is now correctly scoped; this is the *intended least-privilege tightening*. Default templates are unaffected on the paths they need (Tenant Admin `*.*` passes everything; Auditor `*.read` passes every re-gated GET; agent templates hold their domain keys). Equivalence with the prior AdminGuard validity (active assignment + `roles.active` + `starts_at`/`ends_at` + tenant) holds because Slice-9 hardened `admin.guard.ts:30-67` to mirror `00109:70-73` exactly and `@RequirePermission` delegates to that same `user_has_permission` RPC. **Residual risk:** the mirror is two independent codepaths; a future edit to `user_has_permission` silently desyncs `admin.guard.ts` for the one remaining AdminGuard caller (visitors/admin) with no pinning test — tracked as a follow-up (a parity test asserting AdminGuard ⇔ `user_has_permission` validity).
+- **visitors/admin closure precision (was "CRITICAL closed for the entire admin surface" — overstated):** corrected — the CRITICAL is closed for the **entire original-audit admin surface (Slice-2 + Slice-9) and all leftover AdminGuard controllers EXCEPT `visitors/admin.controller.ts`**, which remains on `@UseGuards(AdminGuard)`. Strengthened rationale (security, not just process): it stays a **fail-closed, Slice-9-hardened admin-only gate — not an open hole and not a security regression** (the CRITICAL was about consistency/least-privilege, not an exploitable bypass); a correct re-gate needs a `visitors`-domain *config* action (the catalog models only `invite`/`reception`/`read_all`), and inventing one here would collide with the separately-tracked visitors workstream's own permission model (`project_visitors_track_split_off`, `project_visitors_v1_shipped`). Deferred **explicitly and in writing** (per the mission bar "AdminGuard removed OR every remaining caller justified in writing"), not silently. Follow-up owner: visitors workstream — add `visitors.configure` (or equivalent) + re-gate the ~18 routes.
+- **Test hardening (code-review nit):** `require-permission-routes.spec.ts` now also asserts `RoleAssignmentsController`'s 3 methods carry NO method-level `@RequirePermission` — so a future stray method-level key (which would override the class gate via `getAllAndOverride([handler,class])`) fails the spec.
+
+NEW FINDING (pre-existing latent defect, surfaced by the Slice-11 `/full-review` — the original audit + Slice 2 + the handoff all missed it; **NOT a Slice-11 regression**):
+- **[P1] Employee-portal request submission breaks for Requester-role users on any request type with a custom form schema.** `apps/web/src/pages/portal/submit-request.tsx:184` does `GET /config-entities/:id` to render a request type's form. `config-entity.controller.ts` was **class-level `@UseGuards(AdminGuard)` pre-11.3** → a Requester (template `type:'employee'`, `role-defaults.ts:105-115`) was already 403'd; 11.3 re-gated it `request_types.read`, which the Requester template also does not hold (it holds `tickets.create/read`, `service_catalog.read`, `people.read`, `visitors.invite`). Net: **403 → empty form → cannot submit** for any request type whose `form_schema_id` is non-null, for the most common portal role. The re-gate **preserved (slightly widened)** the broken admin-only posture — it did not cause the bug, but it would silently re-cement it. **Fix direction is a product/authz-model decision (no clean existing key — candidates: a portal-reachable `request_types.use`/`request_types.read_form`, gate on `tickets.create` since a form is a prerequisite to creating the ticket, or make the single-entity GET `@Public` + tenant-scoped) → routed to codex (direction-class), NOT silently folded into the re-gate.** Evidence: `submit-request.tsx:179-190`, `config-entity.controller.ts` (HEAD), `role-defaults.ts:105-115`.
+
+Verified:
+- `pnpm --filter @prequest/api run test -- require-permission-routes` -> (re-run after the hardening assertion — see commit) ; prior Slice-11 gates unchanged (smoke:cross-tenant 24/24, smoke:work-orders 109/109, permission-catalog suite green).
+- Reviewer agreement logged: code-reviewer found zero P0/P1; plan-reviewer's "CRITICAL" is the pre-existing P1 above (verified via `git show 5d6f1b6f^:…/config-entity.controller.ts` = class-level AdminGuard) — correctly reclassified as pre-existing, not a Slice-11 defect.
+
+Remaining:
+- codex independent review of the whole of Slice 11 + decide the config-entity-portal P1 fix direction (next).
+- Then: implement the codex-decided config-entity fix (likely a small follow-up slice 11.4), the AdminGuard⇔user_has_permission parity test, and hand the visitors/admin re-gate to the visitors workstream.
+- Unchanged opens: P4 browser-direct / Storage RLS; global `ValidationPipe` gap.
+- Commits: Slice 11.3 `5d6f1b6f`; 11.2b `4edede82`; this synthesis (pending).
+
 ## Agent Handoff Prompt
 
 ```text
