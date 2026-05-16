@@ -418,12 +418,9 @@ function makeWorkflowEngine(opts: FakeEngineOpts = {}): WorkflowEngineService {
     // BEFORE the wake processing to cancel the DRIVING workflow
     // instance. Stubbed no-op here — wake-specific assertions don't
     // probe the cancel side; dedicated cancel tests live in
-    // workflow-engine.service.spec.ts.
-    //
-    // cancelInstance also stubbed for backward-compat with any callers
-    // that still reach for the polymorphic shim (e.g. parent-cancel
-    // cascade tests that exercise the wake's cancel side indirectly).
-    cancelInstance: jest.fn(async () => undefined),
+    // workflow-engine.service.spec.ts. (The legacy `cancelInstance`
+    // stub was removed — the Cancelled handler no longer reaches the
+    // polymorphic shim, so a stub for it was dead.)
     cancelInstanceForBooking: jest.fn(async () => undefined),
   } as unknown as WorkflowEngineService;
 }
