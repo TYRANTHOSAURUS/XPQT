@@ -938,13 +938,16 @@ export class SlaService {
         console.warn(
           `[sla] escalation reassign ${ticket.id}: watcher add skipped (${mapped.code}) — assignment + audit committed; likely legacy-malformed watchers array`,
         );
-        await this.emitEvent(
+        await this.emitTelemetryBestEffort(
           ticket.tenant_id,
           ticket.id,
           'sla_escalation_watcher_skipped',
           { reason_code: mapped.code, idempotency_key: `${crossingIdemKey}:watchers` },
         );
-        // intentionally NOT thrown — see block comment above.
+        // intentionally NOT thrown — see block comment above. The
+        // telemetry emit is itself best-effort (emitTelemetryBestEffort):
+        // this catch is BEFORE the crossing anchor, so a throwing
+        // observability insert here would reopen the recurrence class.
       }
     }
 
@@ -1017,23 +1020,57 @@ export class SlaService {
   }
 
   /**
+   * Telemetry emit that NEVER throws (audit-02 P0-2, codex BLOCK fix).
+   *
+   * Used from the best-effort `catch` blocks in `applyReassignment`
+   * (watcher) and `fireThreshold` (notification). Those catches sit
+   * BETWEEN the committed `set_entity_assignment` and the crossing-row
+   * anchor. A bare `await this.emitEvent(...)` there is itself a
+   * `domain_events` INSERT that can reject — and if it threw, it would
+   * abort before the anchor and reopen the permanent-recurrence class
+   * (committed assignment, no crossing, re-fire every tick). So the
+   * telemetry insert is itself best-effort: a failed observability write
+   * must never be load-bearing.
+   */
+  private async emitTelemetryBestEffort(
+    tenantId: string,
+    ticketId: string,
+    eventType: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.emitEvent(tenantId, ticketId, eventType, payload);
+    } catch (err) {
+      console.warn(
+        `[sla] ${eventType} telemetry insert failed (non-fatal): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
    * Fire a single threshold for a single timer. Writes a crossing row (idempotency
    * anchor), sends notifications, and — for `escalate` — reassigns the ticket.
    * Swallows `23505` (unique_violation) so racing cron ticks are safe.
    *
-   * Not atomic, but recurrence-safe (audit-02 P0-2). Write order:
-   * reassign (set_entity_assignment — atomic + idempotent per crossing) →
-   * notify (BEST-EFFORT, caught) → crossing (the idempotency anchor) →
-   * event. The reassign and the watcher copy are idempotent RPCs; the
-   * notification is best-effort. Because notification failure no longer
-   * throws, flow always reaches `writeCrossing` once the assignment
-   * commits, so a broken notifier/watcher cannot cause the cron to
-   * re-fire the same escalation forever (the crossing anchor is recorded;
-   * `selectApplicableThresholds` filters it out next tick). Only the
-   * `writeCrossing` insert itself failing leaves a retry window — bounded,
-   * idempotent on the RPCs, and far rarer than a notifier outage. Failed
-   * side-effects surface as `sla_escalation_notify_failed` /
-   * `sla_escalation_watcher_skipped` telemetry, not silent.
+   * Not atomic, but recurrence-safe BY ORDERING (audit-02 P0-2). Write
+   * order: reassign (`set_entity_assignment` — atomic + idempotent per
+   * crossing; its watcher copy is best-effort) → **crossing (the
+   * idempotency anchor) FIRST** → notify (best-effort) → event. The
+   * crossing is written immediately after the load-bearing assignment
+   * commits and BEFORE every fallible side-effect, so once it exists
+   * nothing afterwards — a thrown notifier, a thrown telemetry insert,
+   * any future post-anchor await — can make the cron re-fire this
+   * escalation (`selectApplicableThresholds` filters the recorded
+   * crossing out next tick). This is a structural invariant, not a
+   * "remembered to catch every throw" property. The SOLE remaining
+   * bounded retry window is `writeCrossing` itself failing — rare, and
+   * the RPCs replay idempotently. Failed side-effects surface as
+   * `sla_escalation_notify_failed` / `sla_escalation_watcher_skipped`
+   * telemetry (itself best-effort via `emitTelemetryBestEffort`), not
+   * silent. Trade-off: `crossing.notification_id` is null (we anchor
+   * before sending) — soft trace-linkage given up for the invariant.
    */
   private async fireThreshold(
     timer: SlaTimerRow,
@@ -1114,22 +1151,45 @@ export class SlaService {
       // timer_type detail still lives on `sla_threshold_crossings`).
     }
 
-    // ── Notification — BEST-EFFORT (audit-02 P0-2, codex BLOCK fix) ─────
-    // The escalation reassignment (set_entity_assignment) has committed in
-    // its own tx by this point. The crossing row written below is the
-    // idempotency anchor: `selectApplicableThresholds` filters out a
-    // crossing that already exists, so the cron does NOT re-fire it. If
-    // notification delivery were allowed to THROW here, fireThreshold
-    // would abort BEFORE writeCrossing → no anchor → next tick re-fires
-    // the same escalation → assignment RPC replays cached (fine) →
-    // notifier throws again → permanent per-ticket recurrence with a
-    // committed assignment. That is the SAME failure class the watchers
-    // best-effort fix closed; the notifier is just another reachable
-    // trigger. So notification failure is caught, surfaced as telemetry,
-    // and flow proceeds to the anchor. (Consistent with this method's
-    // documented "not atomic; side-effects after the load-bearing write
-    // are best-effort" contract.)
-    let firstNotificationId: string | null = null;
+    // ── Crossing anchor FIRST (audit-02 P0-2 — codex BLOCK, structural) ─
+    // The load-bearing write has committed: for `escalate`,
+    // `set_entity_assignment` ran atomically in `applyReassignment` above
+    // (its own tx, idempotent on replay); notify-only has no mutation.
+    // Write the crossing row NOW. It is the idempotency anchor
+    // `selectApplicableThresholds` uses to suppress re-fire. Anchoring
+    // BEFORE the best-effort notification makes recurrence-safety a
+    // STRUCTURAL invariant rather than a property of "we remembered to
+    // make every post-commit await non-throwing": once the crossing
+    // exists, nothing after it — a thrown notifier, a thrown telemetry
+    // insert, any future post-anchor await — can make the cron re-fire
+    // this escalation. The earlier whack-a-mole (catch the notifier,
+    // then the watcher, then the in-catch telemetry…) is why this is now
+    // an ordering invariant. `writeCrossing` is the SOLE remaining
+    // bounded retry window (rare; RPCs replay idempotently; a racing
+    // tick's duplicate insert is swallowed as 23505). `notification_id`
+    // is null: we deliberately anchor before sending — a soft
+    // trace-linkage traded for bulletproof recurrence-safety; the
+    // structured at_percent / timer_type / target detail still lives on
+    // the crossing row, and the notification is observable via its own
+    // `sla_escalation_notify_failed` telemetry on failure.
+    await this.writeCrossing({
+      tenant_id: ticket.tenant_id,
+      sla_timer_id: timer.id,
+      ticket_id: ticket.id,
+      at_percent: threshold.at_percent,
+      timer_type: timer.timer_type,
+      action: threshold.action,
+      target_type: threshold.target_type,
+      target_id: resolved.personId ?? resolved.teamId ?? null,
+      notification_id: null,
+    });
+
+    // ── Notification — BEST-EFFORT, POST-anchor (cannot cause re-fire) ──
+    // The crossing is already written, so a thrown notifier (or a thrown
+    // telemetry insert in the catch) is harmless to recurrence. Still
+    // caught so a notifier outage doesn't abort the trailing event or
+    // noise the cron's batch catch; the in-catch telemetry is itself
+    // best-effort (emitTelemetryBestEffort).
     const notifyArgs = {
       notification_type: 'sla_threshold_crossed',
       related_entity_type: 'ticket',
@@ -1139,20 +1199,18 @@ export class SlaService {
     };
     try {
       if (resolved.teamId) {
-        const sent = await this.notifications.sendToTeam(resolved.teamId, notifyArgs);
-        firstNotificationId = ((sent?.[0] as { id?: string } | undefined)?.id) ?? null;
+        await this.notifications.sendToTeam(resolved.teamId, notifyArgs);
       } else if (resolved.personId) {
-        const sent = await this.notifications.send({ ...notifyArgs, recipient_person_id: resolved.personId });
-        firstNotificationId = ((sent?.[0] as { id?: string } | undefined)?.id) ?? null;
+        await this.notifications.send({ ...notifyArgs, recipient_person_id: resolved.personId });
       }
     } catch (notifyErr) {
       const mapped = mapRpcErrorToAppError(
         notifyErr instanceof Error ? notifyErr : new Error(String(notifyErr)),
       );
       console.warn(
-        `[sla] threshold ${ticket.id} @${threshold.at_percent}%/${timer.timer_type}: notification failed (${mapped.code}) — crossing still anchored; not re-fired`,
+        `[sla] threshold ${ticket.id} @${threshold.at_percent}%/${timer.timer_type}: notification failed (${mapped.code}) — crossing already anchored; not re-fired`,
       );
-      await this.emitEvent(
+      await this.emitTelemetryBestEffort(
         ticket.tenant_id,
         ticket.id,
         'sla_escalation_notify_failed',
@@ -1164,18 +1222,6 @@ export class SlaService {
         },
       );
     }
-
-    await this.writeCrossing({
-      tenant_id: ticket.tenant_id,
-      sla_timer_id: timer.id,
-      ticket_id: ticket.id,
-      at_percent: threshold.at_percent,
-      timer_type: timer.timer_type,
-      action: threshold.action,
-      target_type: threshold.target_type,
-      target_id: resolved.personId ?? resolved.teamId ?? null,
-      notification_id: firstNotificationId,
-    });
 
     await this.emitEvent(ticket.tenant_id, ticket.id, 'sla_threshold_crossed', {
       timer_type: timer.timer_type,

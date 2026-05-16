@@ -589,15 +589,18 @@ through the canonical RPCs:
   caller gone the method was dead code and was deleted (structural
   enforcement of the single-write-path contract — same precedent as
   the "Dead code removed" note at :172).
-- **Recurrence-safety (codex BLOCK fix).** Post-assignment side-effects
-  in `fireThreshold` — the watcher copy AND the notification — are
-  best-effort: on failure each emits telemetry
-  (`sla_escalation_watcher_skipped` / `sla_escalation_notify_failed`) and
-  flow continues to write the crossing row (the idempotency anchor that
-  suppresses re-fire). If either threw, the committed-assignment +
-  no-crossing state would make the cron re-fire forever (assignment
-  replays harmlessly; the failing side-effect re-throws every tick).
-  Only `writeCrossing` itself failing leaves a bounded retry window.
+- **Recurrence-safety (codex BLOCK fix) — anchor-first ordering.** The
+  crossing row is written immediately after the committed assignment and
+  BEFORE the best-effort side-effects (notification; watcher copy). Once
+  the anchor exists nothing afterwards — a thrown notifier, a thrown
+  telemetry insert, any future post-anchor await — can make the cron
+  re-fire the escalation (structural invariant, not "remembered to catch
+  every throw"). Pre-fix, side-effects ran before the crossing so a
+  throw between the committed assignment and the anchor caused permanent
+  per-tick re-fire. In-catch telemetry is itself best-effort
+  (`emitTelemetryBestEffort`). Only `writeCrossing` itself failing
+  leaves a bounded retry window (RPCs idempotent on replay). Trade-off:
+  `crossing.notification_id` is null (anchor precedes send).
 
 No migration — `set_entity_assignment` (00327) and
 `update_entity_combined` (00384) already provide every guarantee. The
