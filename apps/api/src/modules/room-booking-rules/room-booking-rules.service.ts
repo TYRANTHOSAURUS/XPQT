@@ -250,10 +250,40 @@ export class RoomBookingRulesService {
     // Recompile iff approval_config was in the patch OR the rule's name
     // changed (the rule name is the workflow_definitions.name suffix).
     // The RPC additionally no-ops the recompile when the rule has no
-    // approval_config — but compute the flag here to mirror prior
+    // effective approval_config — but compute the flag here to mirror prior
     // behaviour exactly (changing effect/applies_when does NOT recompile;
     // the graph shape derives solely from approval_config).
     const recompile = patch.approval_config !== undefined || patch.name !== undefined;
+
+    // codex IMPORTANT #2 — make update symmetric with create(). The update
+    // RPC NO LONGER re-derives the approval graph in SQL; instead it consumes
+    // the SAME TS-compiled graph create() uses. Pre-flight the compiler here
+    // so a malformed config (`{}`, `[]`, invalid approver entry, bad
+    // threshold) throws the 422 `workflow_definition.compilation_failed`
+    // BEFORE any DB write — closing the create/update validation drift
+    // (create rejected these, update silently persisted them + minted a bad
+    // workflow_definitions.graph_definition).
+    //
+    // The patch is sparse, so compute the EFFECTIVE post-patch values:
+    //   - approval_config: the patched value if present, else the current
+    //     row's value (`before.approval_config`). `null` ⇒ no workflow.
+    //   - rule name: the workflow_definitions.name suffix; patched if
+    //     present, else the current name. Mirrors how the SQL passed
+    //     `v_rule.name` (the post-UPDATE row).
+    // compileApprovalGraph returns null when the effective config is null;
+    // the RPC then no-ops the recompile (effective approval_config null).
+    // Byte-equality with create() holds by construction: identical compiler,
+    // identical {ruleName, ruleType:'room_booking'} options, identical
+    // approval_config input shape.
+    const effectiveApprovalConfig: ApprovalConfig | null =
+      patch.approval_config !== undefined
+        ? (patch.approval_config ?? null)
+        : ((before.approval_config ?? null) as ApprovalConfig | null);
+    const effectiveRuleName: string =
+      patch.name !== undefined ? patch.name.trim() : (before.name as string);
+    const graphDefinition = recompile
+      ? this.compileApprovalGraph(effectiveRuleName, effectiveApprovalConfig)
+      : null;
 
     const { data, error } = await this.supabase.admin.rpc(
       'update_room_booking_rule_with_workflow',
@@ -262,6 +292,7 @@ export class RoomBookingRulesService {
         p_rule_id: id,
         p_patch: rulePatch,
         p_recompile: recompile,
+        p_graph_definition: graphDefinition,
         p_actor_user_id: actorUserId,
       },
     );
