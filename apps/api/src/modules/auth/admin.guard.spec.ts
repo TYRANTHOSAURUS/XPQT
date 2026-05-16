@@ -10,12 +10,20 @@ describe('AdminGuard', () => {
       }),
     }) as any;
 
-  // After Slice 1 (docs/follow-ups/audits/04-rls-security.md), the
+  // After Slice 1 (docs/follow-ups/audits/04-rls-security.md) the
   // auth_uid → public.users bridge moved to the global AuthGuard.
-  // AdminGuard now only checks role_assignments, keyed off the
-  // resolved `req.user.platformUserId` AuthGuard attached.
+  // AdminGuard keys role_assignments off the resolved
+  // `req.user.platformUserId`. Slice 9 (2026-05-16) added validity
+  // parity with public.user_has_permission: role.active + the
+  // starts_at / ends_at time bounds (00109:70-73).
+  type Assignment = {
+    type: string;
+    roleActive?: boolean; // default true
+    starts_at?: string | null;
+    ends_at?: string | null;
+  };
   const makeSupabase = (
-    roles: { type: string }[] | null,
+    assignments: Assignment[] | null,
     error: unknown = null,
   ) =>
     ({
@@ -26,9 +34,16 @@ describe('AdminGuard', () => {
               eq: () => ({
                 eq: async () => ({
                   data:
-                    roles === null
+                    assignments === null
                       ? null
-                      : roles.map((r) => ({ role: { type: r.type } })),
+                      : assignments.map((a) => ({
+                          starts_at: a.starts_at ?? null,
+                          ends_at: a.ends_at ?? null,
+                          role: {
+                            type: a.type,
+                            active: a.roleActive ?? true,
+                          },
+                        })),
                   error,
                 }),
               }),
@@ -41,6 +56,15 @@ describe('AdminGuard', () => {
   const withTenant = <T>(fn: () => Promise<T>): Promise<T> =>
     TenantContext.run({ id: 'tenant-1', slug: 'acme', tier: 'standard' }, fn);
 
+  const callAs = (supabase: unknown) =>
+    withTenant(() =>
+      new AdminGuard(supabase as any).canActivate(
+        makeContext({ id: 'auth-uid-1', platformUserId: 'u-1' }),
+      ),
+    );
+
+  const ISO = (msFromNow: number) => new Date(Date.now() + msFromNow).toISOString();
+
   it('rejects requests with no platformUserId on the request', async () => {
     const guard = new AdminGuard(makeSupabase([]));
     const err = await withTenant(() =>
@@ -52,34 +76,55 @@ describe('AdminGuard', () => {
   });
 
   it('rejects users with no admin role', async () => {
-    const guard = new AdminGuard(
+    const err = await callAs(
       makeSupabase([{ type: 'employee' }, { type: 'agent' }]),
-    );
-    const err = await withTenant(() =>
-      guard.canActivate(makeContext({ id: 'auth-uid-1', platformUserId: 'u-1' })),
     ).catch((e) => e);
     expect(err).toBeInstanceOf(AppError);
     expect((err as AppError).status).toBe(403);
     expect((err as AppError).code).toBe('auth.admin_required');
   });
 
-  it('allows users with an admin role', async () => {
-    const guard = new AdminGuard(makeSupabase([{ type: 'admin' }]));
+  it('allows users with an active admin role and no time bounds', async () => {
+    await expect(callAs(makeSupabase([{ type: 'admin' }]))).resolves.toBe(true);
+  });
+
+  it('allows an admin assignment inside its time window', async () => {
     await expect(
-      withTenant(() =>
-        guard.canActivate(
-          makeContext({ id: 'auth-uid-1', platformUserId: 'u-1' }),
-        ),
+      callAs(
+        makeSupabase([
+          { type: 'admin', starts_at: ISO(-60_000), ends_at: ISO(60_000) },
+        ]),
       ),
     ).resolves.toBe(true);
   });
 
+  it('rejects when the admin role itself is inactive', async () => {
+    const err = await callAs(
+      makeSupabase([{ type: 'admin', roleActive: false }]),
+    ).catch((e) => e);
+    expect((err as AppError).status).toBe(403);
+    expect((err as AppError).code).toBe('auth.admin_required');
+  });
+
+  it('rejects an expired admin assignment (ends_at in the past)', async () => {
+    const err = await callAs(
+      makeSupabase([{ type: 'admin', ends_at: ISO(-1000) }]),
+    ).catch((e) => e);
+    expect((err as AppError).status).toBe(403);
+    expect((err as AppError).code).toBe('auth.admin_required');
+  });
+
+  it('rejects a not-yet-started admin assignment (starts_at in the future)', async () => {
+    const err = await callAs(
+      makeSupabase([{ type: 'admin', starts_at: ISO(60_000) }]),
+    ).catch((e) => e);
+    expect((err as AppError).status).toBe(403);
+    expect((err as AppError).code).toBe('auth.admin_required');
+  });
+
   it('throws 500 when the role lookup fails with a DB error', async () => {
-    const guard = new AdminGuard(
+    const err = await callAs(
       makeSupabase([], { message: 'connection lost' }),
-    );
-    const err = await withTenant(() =>
-      guard.canActivate(makeContext({ id: 'auth-uid-1', platformUserId: 'u-1' })),
     ).catch((e) => e);
     expect(err).toBeInstanceOf(AppError);
     expect((err as AppError).status).toBe(500);

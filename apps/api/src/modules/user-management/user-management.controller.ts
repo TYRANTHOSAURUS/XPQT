@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Delete, Param, Body, Query, Req,
+  Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import {
@@ -9,7 +9,22 @@ import {
   CreatePersonDto,
   CreateUserDto,
 } from './user-management.service';
+import { AdminGuard } from '../auth/admin.guard';
 import { AppErrors } from '../../common/errors';
+
+// docs/follow-ups/audits/04-rls-security.md Slice 9 (reviewer-surfaced
+// P0, 2026-05-16). These controllers were unguarded beyond the global
+// AuthGuard — any active same-tenant user could POST /role-assignments
+// to self-grant admin, then AdminGuard would accept the assignment.
+//
+// AdminGuard is applied per-MUTATION (not class-level) because the read
+// endpoints are operational: GET /users (`useUsers`) backs the desk
+// ticket-filter / ticket-detail / user-picker / workflow assign-form,
+// and GET /roles backs role pickers. Locking those to admin-only would
+// break non-admin operator UX. The escalation vector is the writes —
+// those are guarded. Remaining GET info-disclosure (full user/role
+// roster visible to any same-tenant user) is tracked as a P2 follow-up
+// in the closure ledger; it is not an escalation vector.
 
 @Controller('users')
 export class UsersController {
@@ -32,6 +47,7 @@ export class UsersController {
   }
 
   @Post()
+  @UseGuards(AdminGuard)
   async create(@Body() dto: CreateUserDto) {
     return this.service.createUser(dto);
   }
@@ -42,6 +58,7 @@ export class UsersController {
   }
 
   @Patch(':id')
+  @UseGuards(AdminGuard)
   async update(@Param('id') id: string, @Body() dto: Record<string, unknown>) {
     return this.service.updateUser(id, dto);
   }
@@ -52,6 +69,7 @@ export class UsersController {
   }
 
   @Post(':id/roles')
+  @UseGuards(AdminGuard)
   async addRole(
     @Req() request: Request,
     @Param('id') id: string,
@@ -68,6 +86,7 @@ export class UsersController {
   }
 
   @Delete(':id/roles/:roleId')
+  @UseGuards(AdminGuard)
   async removeRole(
     @Req() request: Request,
     @Param('id') id: string,
@@ -93,12 +112,14 @@ export class RolesController {
   }
 
   @Post()
+  @UseGuards(AdminGuard)
   async create(@Req() request: Request, @Body() dto: CreateRoleDto) {
     const actor = await this.service.actorFromRequest(request);
     return this.service.createRole(dto, actor);
   }
 
   @Patch(':id')
+  @UseGuards(AdminGuard)
   async update(
     @Req() request: Request,
     @Param('id') id: string,
@@ -114,6 +135,10 @@ export class RolesController {
   }
 }
 
+// Entire controller is mutations (POST/PATCH/DELETE — no operational
+// GET), and POST /role-assignments is the primary privilege-escalation
+// vector. Class-level AdminGuard is the correct posture here.
+@UseGuards(AdminGuard)
 @Controller('role-assignments')
 export class RoleAssignmentsController {
   constructor(private readonly service: UserManagementService) {}
@@ -157,11 +182,13 @@ export class PersonsAdminController {
   }
 
   @Post()
+  @UseGuards(AdminGuard)
   async create(@Body() dto: CreatePersonDto) {
     return this.service.createPerson(dto);
   }
 
   @Patch(':id')
+  @UseGuards(AdminGuard)
   async update(@Param('id') id: string, @Body() dto: Partial<CreatePersonDto>) {
     return this.service.updatePerson(id, dto);
   }

@@ -7,8 +7,10 @@ import {
   PersonsAdminController,
 } from './user-management.controller';
 import { PermissionsController } from './permissions.controller';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
+  imports: [AuthModule],
   providers: [UserManagementService],
   controllers: [
     UsersController,

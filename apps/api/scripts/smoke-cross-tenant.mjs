@@ -66,6 +66,17 @@ const API_BASE = process.env.API_BASE || 'http://localhost:3001';
 const TENANT_A_ID = '00000000-0000-0000-0000-000000000001';
 const ADMIN_AUTH_UID = '93d41232-35b5-424c-b215-bb5d55a2dfd9';
 
+// Slice 9 (docs/follow-ups/audits/04-rls-security.md, 2026-05-16).
+// Non-admin same-tenant fixture from the seed data:
+// employee.requester@prequest.nl has role type='employee' (no admin).
+// Used to prove (a) AdminGuard denies same-tenant non-admins on the
+// Slice-2 admin controllers, and (b) the user-management
+// privilege-escalation P0 is closed — a non-admin can no longer
+// POST /role-assignments to self-grant the Admin role.
+const NONADMIN_AUTH_UID = 'd572cfa5-b2b6-42b5-8853-5102621e3819';
+const NONADMIN_USER_ID = '95100000-0000-0000-0000-00000000000c';
+const ADMIN_ROLE_ID = '91000000-0000-0000-0000-000000000001';
+
 // Mirror smoke-tickets.mjs:86-87 — TENANT_B fixture seed shape.
 const TENANT_B_ID = '00000000-0000-0000-0000-0000000000b1';
 
@@ -121,10 +132,10 @@ function supa() {
   return SUPA;
 }
 
-async function mintAdminToken() {
+async function mintTokenFor(authUid) {
   const adm = supa();
-  const { data: u } = await adm.auth.admin.getUserById(ADMIN_AUTH_UID);
-  if (!u?.user) throw new Error(`admin auth uid ${ADMIN_AUTH_UID} not found`);
+  const { data: u } = await adm.auth.admin.getUserById(authUid);
+  if (!u?.user) throw new Error(`auth uid ${authUid} not found`);
 
   const { data: link, error: linkErr } = await adm.auth.admin.generateLink({
     type: 'magiclink',
@@ -142,6 +153,8 @@ async function mintAdminToken() {
   if (!m) throw new Error(`no access_token in verify redirect: ${loc}`);
   return m[1];
 }
+
+const mintAdminToken = () => mintTokenFor(ADMIN_AUTH_UID);
 
 // ─────────────────────────────────────────────────────────────────────
 // Probe runner — shared shape with smoke-tickets.mjs.
@@ -294,6 +307,78 @@ async function probe(name, options) {
     body: { name: 'xtenant-attack' },
     expect: 'forbidden',
   });
+
+  // ── Slice 9: same-tenant non-admin denial + privilege-escalation ──
+  // The cross-tenant probes above prove the Slice 1 bridge. They do
+  // NOT prove the Slice 2 AdminGuard layer, because AuthGuard rejects
+  // the header-flip before AdminGuard runs. These probes mint a
+  // SAME-tenant NON-admin JWT (employee.requester, role type=employee)
+  // so AuthGuard passes and AdminGuard is actually exercised.
+  console.log('\n─── Slice 9: same-tenant non-admin (AdminGuard layer + escalation P0)');
+  const naToken = await mintTokenFor(NONADMIN_AUTH_UID);
+  console.log(`non-admin JWT minted (tenant A): ${naToken.slice(0, 16)}…`);
+  const nonAdminA = {
+    Authorization: `Bearer ${naToken}`,
+    'X-Tenant-Id': TENANT_A_ID,
+  };
+
+  // Regression: bootstrap + operational reads stay open to non-admins.
+  // We deliberately did NOT lock these (GET /users backs the desk
+  // ticket-filter / user-picker; GET /users/me is session bootstrap).
+  await probe('GET /users/me  (non-admin, own tenant)', {
+    url: `${API_BASE}/api/users/me`,
+    headers: nonAdminA,
+    expect: 'success',
+  });
+  await probe('GET /users  (non-admin, operational picker)', {
+    url: `${API_BASE}/api/users`,
+    headers: nonAdminA,
+    expect: 'success',
+  });
+
+  // AdminGuard layer: same-tenant non-admin hitting a Slice-2 admin
+  // controller must 403 (auth.admin_required). This is the assertion
+  // the cross-tenant probes structurally cannot make.
+  await probe('GET /workflows  (non-admin → AdminGuard 403)', {
+    url: `${API_BASE}/api/workflows`,
+    headers: nonAdminA,
+    expect: 'forbidden',
+  });
+
+  // The P0 itself: a non-admin self-granting the Admin role via the
+  // previously-unguarded POST /role-assignments. Must 403 after
+  // Slice 9. The cleanup below defensively removes the assignment if
+  // a regression ever lets this through, so a red run can't leave the
+  // seed user permanently escalated.
+  await probe('POST /role-assignments  (non-admin self-grants Admin → P0)', {
+    url: `${API_BASE}/api/role-assignments`,
+    method: 'POST',
+    headers: nonAdminA,
+    body: { user_id: NONADMIN_USER_ID, role_id: ADMIN_ROLE_ID },
+    expect: 'forbidden',
+  });
+
+  // Defensive cleanup — only matters if the probe above regressed to
+  // 200 and actually wrote the escalation row. Idempotent.
+  try {
+    const dbPass = env.SUPABASE_DB_PASS;
+    const dbUrl =
+      env.SUPABASE_DB_URL ||
+      'postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres';
+    execFileSync(
+      'psql',
+      [
+        dbUrl,
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-c',
+        `delete from public.user_role_assignments where user_id = '${NONADMIN_USER_ID}' and role_id = '${ADMIN_ROLE_ID}';`,
+      ],
+      { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+  } catch (e) {
+    console.log(`  ! escalation-cleanup failed (non-fatal): ${e.message}`);
+  }
 
   console.log('');
   console.log(

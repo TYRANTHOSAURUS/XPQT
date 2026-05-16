@@ -25,13 +25,21 @@ export class AdminGuard implements CanActivate {
 
     const tenant = TenantContext.current();
 
-    // Filter on active=true (00003_people_users_roles.sql:86). An admin
-    // role assignment that has been deactivated must NOT grant admin
-    // access. Pre-existing gap in the old query — closed here while
-    // the schema is in view.
+    // Validity must mirror public.user_has_permission
+    // (00109_permissions_wildcards.sql:70-73) exactly, or AdminGuard is
+    // weaker than the permission RPC: a deactivated admin role, or an
+    // expired / not-yet-started admin assignment, would still authorize
+    // admin controllers. The four conditions:
+    //   - user_role_assignments.active = true   (00003:86)
+    //   - roles.active = true                   (the role itself)
+    //   - starts_at is null OR starts_at <= now (00109:23, :72)
+    //   - ends_at   is null OR ends_at   >  now (00109:24, :73)
+    // active flags are filtered in the query; the time bounds are
+    // filtered in TS because PostgREST can't express the OR-null pair
+    // cleanly in the builder.
     const { data, error } = await this.supabase.admin
       .from('user_role_assignments')
-      .select('role:roles(type)')
+      .select('starts_at, ends_at, role:roles(type, active)')
       .eq('user_id', platformUserId)
       .eq('tenant_id', tenant.id)
       .eq('active', true);
@@ -43,10 +51,19 @@ export class AdminGuard implements CanActivate {
       });
     }
 
+    const now = Date.now();
     const roleAssignments = (data ?? []) as {
-      role?: { type?: string } | null;
+      starts_at: string | null;
+      ends_at: string | null;
+      role?: { type?: string; active?: boolean } | null;
     }[];
-    const isAdmin = roleAssignments.some((ra) => ra.role?.type === 'admin');
+    const isAdmin = roleAssignments.some((ra) => {
+      if (ra.role?.type !== 'admin') return false;
+      if (ra.role?.active !== true) return false;
+      if (ra.starts_at && new Date(ra.starts_at).getTime() > now) return false;
+      if (ra.ends_at && new Date(ra.ends_at).getTime() <= now) return false;
+      return true;
+    });
     if (!isAdmin)
       throw AppErrors.forbidden('auth.admin_required', 'Admin role required');
 
