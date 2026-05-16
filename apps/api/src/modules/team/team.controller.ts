@@ -1,6 +1,6 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body } from '@nestjs/common';
 import { TeamService } from './team.service';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 
 // docs/follow-ups/audits/04-rls-security.md Slice 10 (2026-05-16).
 // ESCALATION-class: `team_members` is an Operator-tier entry in
@@ -22,7 +22,7 @@ export class TeamController {
   }
 
   @Post()
-  @UseGuards(AdminGuard)
+  @RequirePermission('teams.create')
   async create(@Body() dto: {
     name: string;
     domain_scope?: string;
@@ -33,7 +33,7 @@ export class TeamController {
   }
 
   @Patch(':id')
-  @UseGuards(AdminGuard)
+  @RequirePermission('teams.update')
   async update(@Param('id') id: string, @Body() dto: Record<string, unknown>) {
     return this.teamService.update(id, dto);
   }
@@ -44,13 +44,13 @@ export class TeamController {
   }
 
   @Post(':id/members')
-  @UseGuards(AdminGuard)
+  @RequirePermission('teams.manage_members')
   async addMember(@Param('id') id: string, @Body() dto: { user_id: string }) {
     return this.teamService.addMember(id, dto.user_id);
   }
 
   @Delete(':id/members/:userId')
-  @UseGuards(AdminGuard)
+  @RequirePermission('teams.manage_members')
   async removeMember(@Param('id') id: string, @Param('userId') userId: string) {
     return this.teamService.removeMember(id, userId);
   }

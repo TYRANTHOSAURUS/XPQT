@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
 import { CatalogMenuService } from './catalog-menu.service';
 import { CatalogMenuController } from './catalog-menu.controller';
-import { AuthModule } from '../auth/auth.module';
+import { PermissionGuard } from '../../common/permission-guard';
+import { PermissionMetadataGuard } from '../../common/require-permission.decorator';
 
 @Module({
-  imports: [AuthModule],
-  providers: [CatalogMenuService],
+  providers: [CatalogMenuService, PermissionGuard, PermissionMetadataGuard],
   controllers: [CatalogMenuController],
   exports: [CatalogMenuService],
 })
