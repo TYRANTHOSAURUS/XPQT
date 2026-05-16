@@ -88,12 +88,17 @@ export class RoutingService {
       rule_id: evaluation.rule_id,
       trace: evaluation.trace,
       context: {
+        // extraContext FIRST so the resolver-fidelity keys below always
+        // win on collision (review NIT, 380098e0): a future caller's
+        // breadcrumb key can never silently clobber the real resolver
+        // context. Today's only caller passes {reason, actor} (no
+        // collision) so behaviour is unchanged — this is future-proofing.
+        ...(extraContext ?? {}),
         request_type_id: context.request_type_id,
         domain: context.domain,
         priority: context.priority,
         asset_id: context.asset_id,
         location_id: context.location_id,
-        ...(extraContext ?? {}),
       },
     });
   }

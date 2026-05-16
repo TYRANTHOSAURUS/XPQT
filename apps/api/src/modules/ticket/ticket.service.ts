@@ -1357,15 +1357,6 @@ export class TicketService {
       };
       // (i) Read-only resolve.
       const result = await this.routingService.evaluate(evalCtx);
-      // (ii) RoutingService writes the SINGLE rich routing_decisions row
-      // (real strategy / chosen_by / trace / rule_id). Thread the human
-      // reason into recordDecision's context so the reason lands on the
-      // canonical resolver audit row — NOT a second `manual` row from the
-      // RPC (we omit `reason` from the RPC payload below, see (iii)).
-      await this.routingService.recordDecision(id, evalCtx, result, {
-        reassign_reason: dto.reason,
-        reassign_actor_person_id: dto.actor_person_id ?? null,
-      });
       if (result.target) {
         if (result.target.kind === 'team') nextTarget = { kind: 'team', id: result.target.team_id };
         else if (result.target.kind === 'user') nextTarget = { kind: 'user', id: result.target.user_id };
@@ -1414,10 +1405,40 @@ export class TicketService {
       });
       if (rerunErr) throw mapRpcErrorToAppError(rerunErr);
 
-      // (iv) ALSO emit one internal activity carrying the human reason —
-      // the RPC only wrote an `assignment_changed` system note (no
-      // reason, because we suppressed it). This keeps the rerun reason
-      // visible on the timeline as a note, parity with the manual path.
+      // (iv) AFTER the assignment commits, write the SINGLE rich
+      // routing_decisions row (real strategy / chosen_by / trace /
+      // rule_id) — NOT a second `manual` row from the RPC (reason is
+      // omitted from the RPC payload above). Audit-the-APPLIED-decision
+      // ordering (review Plan-C2, 380098e0): recording the decision
+      // BEFORE the RPC left an orphan "resolver chose X" row whenever the
+      // RPC was rejected (tenant-validate / payload_mismatch / lock /
+      // not_found), and a client retry duplicated it. Now a rejected RPC
+      // throws above → no decision row is written for an assignment that
+      // never happened. Residual (acceptable, append-only audit): if the
+      // RPC commits but THIS write fails and the client retries, a second
+      // decision row can appear — far narrower than the pre-fix window;
+      // an idempotency key on recordDecision is a separate RoutingService
+      // concern (it is shared by create/reclassify). The human `reason`
+      // + `actor` use the SAME context keys the RPC's manual path writes
+      // (`context.reason` / `context.actor`) so a routing-audit consumer
+      // reads one uniform shape regardless of path (review NIT).
+      await this.routingService.recordDecision(id, evalCtx, result, {
+        reason: dto.reason,
+        actor: dto.actor_person_id ?? null,
+      });
+
+      // (v) ALSO emit one internal activity carrying the human reason.
+      // The RPC wrote at most an `assignment_changed` system note (reason
+      // suppressed); when the resolver re-picked the same target with no
+      // reason the RPC no-ops entirely and writes no activity/event (an
+      // accepted asymmetry — matches pre-cutover rerun behaviour, which
+      // also never emitted `ticket_assigned`). This internal note is the
+      // canonical operator-visible "why the rerun happened" entry. The
+      // resulting system-stub + internal-card pair for a changing rerun
+      // is accepted: it reads as "assignment changed (system) + operator
+      // rationale (note)" — strictly more information than the old single
+      // card, and suppressing the RPC's activity would require an RPC
+      // migration (out of slice scope).
       await this.addActivity(id, {
         activity_type: 'system_event',
         author_person_id: dto.actor_person_id,

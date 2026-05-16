@@ -29,6 +29,7 @@ type Row = Record<string, unknown>;
 function makeSupabase(rowsByTable: Record<string, Row[]>) {
   const updateCalls: Array<{ table: string; patch: Record<string, unknown> }> = [];
   const insertCalls: Array<{ table: string; row: Row }> = [];
+  const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
 
   function buildSelectChain(table: string) {
     const filters: Record<string, unknown> = {};
@@ -63,8 +64,13 @@ function makeSupabase(rowsByTable: Record<string, Row[]>) {
   return {
     updateCalls,
     insertCalls,
+    rpcCalls,
     supabase: {
       admin: {
+        rpc: async (fn: string, args: Record<string, unknown>) => {
+          rpcCalls.push({ fn, args });
+          return { data: { noop: false }, error: null };
+        },
         from: (table: string) => ({
           select: () => buildSelectChain(table),
           update: (patch: Record<string, unknown>) => ({
@@ -195,5 +201,100 @@ describe('TicketService.reassign(rerun_resolver=true) — Plan A.2 tenant valida
     expect((caught as Error).message).toEqual(
       expect.stringContaining('assigned_team_id'),
     );
+  });
+
+  it('happy path: RPC called WITHOUT reason, recordDecision AFTER the RPC with {reason,actor} (audit-02 P1-1 FORK-1a)', async () => {
+    const deps = makeSupabase({
+      teams: [{ id: VALID_TEAM, tenant_id: TENANT.id }],
+    });
+
+    const visibility = {
+      loadContext: jest.fn().mockResolvedValue({
+        user_id: 'u-1',
+        person_id: 'p-1',
+        tenant_id: TENANT.id,
+        has_read_all: false,
+        has_write_all: true,
+        has_admin: false,
+      }),
+      assertCanPlan: jest.fn().mockResolvedValue(undefined),
+      assertVisible: jest.fn().mockResolvedValue(undefined),
+    };
+
+    // recordDecision captures how many RPC calls had already happened at
+    // its invocation time — proves it runs AFTER set_entity_assignment.
+    let rpcCountWhenRecordDecisionCalled = -1;
+    const routingService = {
+      evaluate: jest.fn().mockResolvedValue({
+        target: { kind: 'team', team_id: VALID_TEAM },
+        chosen_by: 'request_type_default',
+        rule_id: null,
+        rule_name: null,
+        strategy: 'fixed',
+        trace: [],
+      }),
+      recordDecision: jest.fn().mockImplementation(async () => {
+        rpcCountWhenRecordDecisionCalled = deps.rpcCalls.length;
+      }),
+    };
+
+    const svc = new TicketService(
+      deps.supabase as never,
+      routingService as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      visibility as never,
+      {} as never,
+    );
+
+    jest.spyOn(svc, 'getById').mockResolvedValue({
+      id: TICKET_ID,
+      tenant_id: TENANT.id,
+      ticket_kind: 'case',
+      ticket_type_id: null,
+      location_id: null,
+      asset_id: null,
+      priority: 'medium',
+      assigned_team_id: null,
+      assigned_user_id: 'u-old',
+      assigned_vendor_id: null,
+      status_category: 'assigned',
+    } as never);
+    jest.spyOn(svc, 'addActivity').mockResolvedValue(undefined as never);
+
+    await svc.reassign(
+      TICKET_ID,
+      { rerun_resolver: true, reason: 'try again', actor_person_id: 'p-1' },
+      'auth-uid',
+      'crid-rerun-2',
+    );
+
+    // Exactly one set_entity_assignment RPC, kind=case, idempotency key
+    // shaped reassign:case:<id>:<crid>, payload carries the resolved
+    // assignee but NO `reason` (FORK-1a: reason is suppressed from the RPC
+    // so it does not write a duplicate `manual` routing_decisions row).
+    const sea = deps.rpcCalls.filter((c) => c.fn === 'set_entity_assignment');
+    expect(sea).toHaveLength(1);
+    expect(sea[0].args.p_entity_kind).toBe('case');
+    expect(sea[0].args.p_idempotency_key).toBe(
+      `reassign:case:${TICKET_ID}:crid-rerun-2`,
+    );
+    const payload = sea[0].args.p_payload as Record<string, unknown>;
+    expect(payload.assigned_team_id).toBe(VALID_TEAM);
+    expect(payload.assigned_user_id).toBeNull();
+    expect('reason' in payload).toBe(false);
+
+    // recordDecision: exactly once, AFTER the RPC, with the human reason
+    // + actor under the SAME keys the RPC's manual path uses.
+    expect(routingService.recordDecision).toHaveBeenCalledTimes(1);
+    expect(rpcCountWhenRecordDecisionCalled).toBeGreaterThanOrEqual(1);
+    const rdArgs = routingService.recordDecision.mock.calls[0];
+    expect(rdArgs[3]).toEqual({ reason: 'try again', actor: 'p-1' });
+
+    // No duplicate routing_decisions written directly from TS.
+    expect(
+      deps.insertCalls.filter((c) => c.table === 'routing_decisions'),
+    ).toHaveLength(0);
   });
 });
