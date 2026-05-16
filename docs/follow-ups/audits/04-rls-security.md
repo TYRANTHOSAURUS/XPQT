@@ -416,6 +416,38 @@ Verified:
 Remaining:
 - Slice 11 (CRITICAL re-gate) — architecture fork pending user steer. P4 browser-direct/Storage RLS investigation. Global `ValidationPipe` gap (separate backlog). GET info-disclosure sequenced behind Slice 11.
 
+#### Update — 2026-05-16 (Slice 11.1 + 11.2 — fork decided by codex, executed)
+
+Original finding:
+- The `/full-review` CRITICAL above ("Blanket `AdminGuard` is coarser than the codebase's CI-enforced permission model").
+- Location: `docs/follow-ups/audits/04-rls-security.md` ("Closure Updates" — the 2026-05-16 `/full-review` block).
+
+Status:
+- partial — core CRITICAL closed for Slice-10's 9 controllers + verified; Slice-2/9 re-gate (11.3) and the non-admin-WITH-permission proof probe + endpoint→key mapping table (11.2b, codex risk #2) remain; then full-review + codex on the whole of Slice 11.
+
+Decision: **codex picked Option A** (stdin-piped invocation; `--full-auto` was the prior hang cause — see `[[feedback_codex_long_argv_hang]]`). Build a reusable `@RequirePermission('domain.action')` composed decorator (`applyDecorators(SetMetadata, UseGuards(PermissionMetadataGuard))`) delegating to the canonical `PermissionGuard.requirePermission` → `public.user_has_permission` path; add explicit `business_hours`/`catalog_menus`/`delegations` catalog domains (no vague mapping); mapping table + per-key tests + non-admin-with-permission smoke as the key risk mitigation. Codex's caveats folded in: "same security semantics" only holds because the guard delegates to the canonical RPC (it does); module/provider cleanup needed (done).
+
+Changed:
+- `apps/api/src/common/require-permission.decorator.ts` (NEW — `@RequirePermission` + `PermissionMetadataGuard`) + `require-permission.guard.spec.ts` (5/5)
+- `packages/shared/src/permissions.ts` (+`business_hours`/`catalog_menus`/`delegations` domains), `packages/shared/src/role-defaults.ts` (+10 `EXPLICITLY_NO_DEFAULT_ROLE` entries with reasons — admin-tier config, same posture as gdpr.*/settings.billing; the catalog model makes the grant POSSIBLE, which AdminGuard did not)
+- 9 Slice-10 controllers re-gated `@UseGuards(AdminGuard)` → `@RequirePermission('<key>')` + 9 modules wired (`PermissionGuard`+`PermissionMetadataGuard` providers; 8 dropped now-unused `AuthModule`; config-engine retains it for ConfigEntityController's still-AdminGuard'd Slice-2 routes)
+- `apps/api/src/modules/auth/admin.guard.spec.ts` (the I3 orphaned-role fail-closed case from the prior block)
+
+Verified:
+- `pnpm --filter @prequest/shared build` -> clean (PermissionKey includes new keys)
+- `pnpm --filter @prequest/api test -- "require-permission.guard|admin.guard.spec|permission-catalog"` -> 27/27 (incl. the CI catalog-coverage gate green with the 3 new domains)
+- `pnpm --filter @prequest/api lint` -> tsc clean
+- `pnpm smoke:cross-tenant` -> 22/22 (runtime DI intact — re-gated routes 403 not 500; no-permission deny path preserved identical to AdminGuard; operational GETs 200; cross-tenant still blocked)
+- `pnpm smoke:work-orders` -> 109/109 (no regression)
+
+Commits: `988d6452` (11.1 primitive+catalog), `b4577f20` (11.2 re-gate). Branch `feature/booking-audit-remediation`.
+
+Remaining:
+- **11.2b**: seed a non-admin role holding e.g. `spaces.create`, mint its JWT, assert `POST /spaces` → 2xx (proves the fix delivers what AdminGuard could not — codex risk #2's "one live case"); endpoint→permission-key mapping table + a unit test asserting every `@RequirePermission` route's key.
+- **11.3**: re-gate Slice-2 (routing/workflow/sla-policy/webhook-admin/config-entity) + Slice-9 (user-management Users/Roles/RoleAssignments/PersonsAdmin) controllers from AdminGuard → `@RequirePermission` (keys: `routing.*`/`workflows.*`/`sla.*`/`users.*`/`roles.*` already exist; webhooks may need a domain) for full consistency; then drop `AdminGuard` if zero callers remain.
+- Then `/full-review` + codex on the whole Slice 11.
+- Unchanged opens: P4 browser-direct/Storage RLS investigation; global `ValidationPipe` gap (separate backlog); GET info-disclosure (sequenced behind 11.3).
+
 ## Agent Handoff Prompt
 
 ```text
