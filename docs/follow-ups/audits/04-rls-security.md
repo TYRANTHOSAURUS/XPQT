@@ -555,6 +555,60 @@ Remaining:
 - Unchanged opens: P4 browser-direct / Storage RLS; global `ValidationPipe` gap.
 - Commits: Slice 11.3 `5d6f1b6f`; 11.2b `4edede82`; this synthesis (pending).
 
+#### Update — 2026-05-16 (Slice 11.4 — config-entity portal fix; codex DECISION A; pre-existing P1 CLOSED)
+
+Original finding:
+- The NEW FINDING [P1] in the `/full-review` synthesis block above ("Employee-portal request submission breaks for Requester-role users…").
+- Location: the 2026-05-16 "/full-review synthesis" Update block.
+
+Status:
+- **closed** — implemented codex's DECISION A. The latent defect is now fixed (not just preserved); it was *broader* than the original P1: the desk create-ticket dialog (`apps/web/src/components/desk/create-ticket-dialog.tsx:79`) hits the same `GET /config-entities/:id`, so non-admin **agents** creating a ticket via a form-schema request type were equally 403'd pre-11.3. 11.4 fixes all callers.
+
+Changed:
+- `packages/shared/src/permissions.ts`: new `request_types.use` action ("Use a request type to submit" — read its form schema to submit; distinct from admin `request_types.read` which backs the form-schema *management* surface).
+- `packages/shared/src/role-defaults.ts`: `request_types.use` granted to every ticket-creating template — **Requester** (portal `submit-request.tsx`), **IT Agent** / **FM Agent** / **Service Desk Lead** (desk `create-ticket-dialog.tsx`). Auditor (`*.read`, read-only, no submit) intentionally not granted; Tenant Admin auto-covered by `*.*`.
+- `supabase/migrations/00409_backfill_request_types_use_permission.sql`: idempotent additive backfill of `request_types.use` onto existing tenants' seeded Requester/IT Agent/FM Agent/Service Desk Lead roles (mirrors 00393's `pg_temp.merge_role_permissions` union-dedupe; replay-safe; per-tenant, RLS-scoped). Required by `permission-catalog-parity.spec.ts` (every concrete `DEFAULT_ROLE_TEMPLATES` key must appear in a migration) AND by correctness (existing tenants need the grant).
+- `apps/api/src/modules/config-engine/config-entity.controller.ts`: `GET /:id` (`getById`) re-gated `request_types.read` → **`request_types.use`** (the portal/desk form-render path). `GET /` (`list` — admin form-schemas index) stays `request_types.read`; mutations stay `request_types.create/update/publish`. Per codex: not `@Public`, not overloaded `tickets.create` — a dedicated portal-scoped key.
+- `apps/api/src/common/require-permission-routes.spec.ts`: mapping updated (`getById` → `request_types.use`).
+- `apps/api/scripts/smoke-cross-tenant.mjs`: the 11.2b proof role now holds `["spaces.create","request_types.use"]`; added a probe — non-admin (type='agent') role holding `request_types.use` (NOT `request_types.read`, NOT admin) → `GET /config-entities/:id` is NOT 403 (404 on a dummy id ⇒ gate passed). Proves the 11.4 fix with the same fixture machinery; the role lacking `request_types.read` isolates that it is `request_types.use` specifically.
+
+Verified:
+- `pnpm --filter @prequest/shared run build` -> clean.
+- `pnpm --filter @prequest/api test -- "permission-catalog|require-permission"` -> **109/109** (5 suites; parity green — `request_types.use` literal present in 00409; route spec asserts `getById`→`request_types.use`).
+- `00409` pushed via psql (standing authority; additive/non-destructive) -> `UPDATE 4`; post-push check: all 4 roles (`requester`/`it agent`/`fm agent`/`service desk lead`) `permissions @> ["request_types.use"]` = true; `notify pgrst` issued.
+- `pnpm smoke:cross-tenant` -> **25/25**, exit 0 (new probe: `GET /config-entities/:id (non-admin holds request_types.use → guard PASSES) → HTTP 404`). `pnpm smoke:work-orders` -> **109/109**. Proof-fixture residue check post-run: `roles`/`user_role_assignments` proof rows count=0.
+- (Operational note: the user's API dev server had exited mid-session; restarted via `pnpm dev:api` to run the mandated gates — local/reversible, the verification protocol depends on it.)
+
+Remaining (Slice 11 — what's left to call the whole audit done):
+- AdminGuard⇔`user_has_permission` parity test (residual-risk follow-up for the one remaining AdminGuard caller, visitors/admin).
+- Hand the `visitors/admin` re-gate (`visitors.configure` + ~18 routes) to the visitors workstream (codex DECISION B — deferred in writing, fail-closed meanwhile).
+- P4 logged below; global `ValidationPipe` gap = P3 API-hardening backlog (separate).
+- Commits: 11.3 `5d6f1b6f`; 11.2b `4edede82`; /full-review synthesis `006b60a1`; this slice (pending).
+
+#### Update — 2026-05-16 (P4 + opens — investigated, logged; no remediation required for P4)
+
+Original finding:
+- `[IMPORTANT P4 — open]` browser-direct PostgREST + Supabase Storage RLS (from the 2026-05-16 `/full-review on the Slice 9+10 step` block) + the global `ValidationPipe` gap + GET info-disclosure.
+- Location: the 2026-05-16 "/full-review on the Slice 9+10 step" Update block.
+
+Status:
+- **closed (investigated; P4 NOT-REACHABLE for escalation; two P3 backlog items logged)** — read-only investigation (Explore subagent + live `pg_policies`/`role_table_grants` queries against remote).
+
+Findings:
+- **P4 browser-direct escalation → NOT-REACHABLE (no remediation needed).** `apps/web` instantiates exactly one Supabase client (`apps/web/src/lib/supabase.ts`) with the **publishable/anon** key (`VITE_SUPABASE_PUBLISHABLE_KEY`), used **only** for auth/session, realtime `channel()` subscriptions, and `storage.from('floor-plans')` uploads. **Zero** `.from('<table>')`/`.rpc()` calls anywhere in `apps/web/src` for any escalation-class table (`user_role_assignments`/`team_members`/`roles`/`spaces`/`delegations`/`org_node_location_grants`). Those tables' RLS is tenant-scoped only (no `WITH CHECK`, no permission gate) — but **moot**: `information_schema.role_table_grants` shows the `anon`/`authenticated` roles have **zero table privileges** on them (no `GRANT … TO anon/authenticated` in any migration), so Postgres denies at the grant layer *before* RLS is evaluated. The same escalation Slices 9/10/11 closed at HTTP is **not** independently open at the data layer. Severity: **P3 (defense-in-depth clarity)** — RLS on these tables is a redundant declarative layer (the real perimeter is grant-level deny + the app layer), consistent with `docs/visibility.md` §8.
+- **Supabase Storage avatar cross-tenant READ gap → P3 (known, information-disclosure, no escalation).** `portal-assets` bucket is `public=true` with **no** `storage.objects` RLS policies; avatar object paths are `{tenant_id}/avatar/{person_id}.{ext}` and the stored `persons.avatar_url` is a public unscoped URL — any party who can guess tenant+person UUIDs can read avatars cross-tenant. Write is blocked (anon has no storage grant; writes go via the API service-role). Confirms the known gap in `[[project_people_and_users_surface_shipped]]`. Not a permission-escalation vector; metadata (profile photo) disclosure only. Logged for the GDPR/storage-hardening backlog (signed/expiring URLs or per-tenant bucket prefixes + RLS).
+- **Global `ValidationPipe` gap → P3 (API input-hardening backlog, not a security gate here).** `apps/api/src/main.ts` has no `app.useGlobalPipes(new ValidationPipe(...))`; `app.module.ts` has no `APP_PIPE`; request DTOs are plain TS interfaces. Confirmed not a security perimeter for the Slice-11 work — permission gates are decorator/RPC-driven, not body-shape-driven. Pure input-hardening debt; recommend class-validator migration. Separate backlog item, explicitly NOT in the RLS-audit remediation scope.
+- **GET info-disclosure** — the Slice-2 admin read surface is now `.read`-gated by 11.3 (no longer plain-authenticated-readable). The residual is the Slice-9 user-management operational GETs (`/users`, `/roles`, `/persons-admin`, …) deliberately kept open (back non-admin operator pickers; not an escalation vector). Remains a standing **P2** (scoped read-keys vs accept-with-reason) — owned by the RLS-audit follow-up, unchanged by this investigation.
+
+Changed:
+- None (read-only investigation). Logged here.
+
+Verified:
+- `grep` `createClient`/`.from(`/`.rpc(` in `apps/web/src`; `grep` `GRANT … TO anon|authenticated` in `supabase/migrations`; live `select … from pg_policies / information_schema.role_table_grants` on the escalation-class tables; `apps/api/src/main.ts` + `app.module.ts` read for `useGlobalPipes`/`APP_PIPE`.
+
+Remaining:
+- P4 escalation surface: **none** (not reachable). Avatar Storage P3 + ValidationPipe P3 → respective backlogs (not RLS-audit scope). GET info-disclosure P2 unchanged.
+
 ## Agent Handoff Prompt
 
 ```text
