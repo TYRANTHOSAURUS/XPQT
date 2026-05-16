@@ -1412,7 +1412,7 @@ Mints real Admin JWT, runs full mutation matrix against live API. **16 probes mi
 2. **Happy create → workflow → grant (threshold='any') → advance.** Single grant resolves; others expired with `comments='Sibling approved (any-of-N)'`.
 3. **Happy create → workflow → reject → cancel.**
 4. **Ghost approval id.** → 404 `approval.not_found`.
-5. **Malformed approval id.** → 400 (validation gate).
+5. **Malformed approval id.** → 404 `approval.not_found`. *[Reconciled 2026-05-16 against live gate: was "→ 400 (validation gate)". The deliberate contract is 404 `approval.not_found` — a malformed/non-uuid id flows into the same approval lookup as a ghost id, which returns not-found rather than echoing or validating the malformed id. Why: this avoids a 500 on uuid coercion and avoids leaking whether the supplied id is even well-formed. Non-leaky behaviour is correct; code unchanged.]*
 6. **Foreign-tenant approval id with workflow_instance_id link.** Trigger refuses at SQL layer; handler defense refuses at TS layer.
 7. **Cancel-during-grant race.** Two concurrent processes; terminal state consistent.
 8. **Double-emit `approval.granted`.** Idempotent.
@@ -1432,7 +1432,7 @@ Mints real Admin JWT, runs full mutation matrix against live API. **16 probes mi
 - 50 concurrent grants of the same approval id — exactly one succeeds.
 - 10 concurrent booking creations matching a rule with an approval workflow — 10 workflow_instances; no double-starts.
 - 10 concurrent `booking.cancelled` events — exactly one `cancel_workflow_instance_with_approvals` call effective; approvals expire ONCE.
-- 5 concurrent approval grants of a threshold='any' chain — exactly one wins under the booking row lock; others return `kind='already_resolved'` cleanly; no double-emit.
+- 5 concurrent approval grants of a threshold='any' chain — exactly one wins under the booking row lock; losing siblings return `kind='already_responded'` (the dominant loser class) cleanly; no double-emit. *[Reconciled 2026-05-16 against live gate: was "others return `kind='already_resolved'`". Because the per-booking ROW lock serialises contenders, the winner expires the sibling approvals BEFORE releasing the lock — so losers most commonly hit the already-responded terminal state and return `kind='already_responded'`, not `already_resolved`. `kind='already_resolved'` is also a valid no-op terminal outcome (the loser whose self-CAS lands before its row was expired). Both are correct no-op terminal states; the load-bearing assertions are the BLOCKER-2 invariants — exactly one `kind='resolved'`, exactly one `approval.granted` outbox row, booking confirmed, zero crashes — and those all hold regardless of which no-op loser class is observed. Code unchanged.]*
 - **Concurrent auto-recompile** **NEW v4 (BLOCKER 1)** — 5 concurrent `ensure_room_booking_rule_workflow_definition` calls on the same rule. Row lock serialises. Versions monotonically increase (v=2, 3, 4, 5, 6). Unique index never collides. Rule FK ends at the last committed version.
 
 ---
