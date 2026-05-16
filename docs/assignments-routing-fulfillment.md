@@ -325,6 +325,17 @@ Resolution runs after routing fills in assignees, so routing-derived assignees p
 
 This is intentional and matches standard ITSM behavior: SLA is a promise to the requester (for cases) or to the service desk (for children), not to the specific assignee. Shuffling ownership does not reset the clock.
 
+### SLA escalation reassign — routes through `set_entity_assignment` (audit-02 P0-2, 2026-05-16)
+
+When an `escalate` threshold crosses, the SLA cron (`SlaService.checkBreaches` → `processThresholds` → `fireThreshold` → `applyReassignment`, `apps/api/src/modules/sla/sla.service.ts`) reassigns the entity to the resolved target (team, or a person resolved to a user). This is a **routing-axis assignment change**, not an SLA-clock change — the clock invariant above still holds.
+
+The reassignment is **not** a raw `UPDATE`. It goes through the canonical RPCs, exactly like every other audited assignment:
+
+- **Assignment** → `set_entity_assignment` (00327 v2) with idempotency key `sla:escalation:<sla_timer_id>:<at_percent>`. The key is deterministic per *crossing* — a single timer can cross 80% then 100%, so `at_percent` makes each crossing its own idempotent canonical event; a re-fired cron tick for the **same** crossing replays the cached `command_operations` result instead of re-applying. `reason` is non-null (`"SLA escalation — <at_percent>% threshold breached"`) so the RPC writes a `routing_decisions` row (`strategy='manual'`, `chosen_by='manual_reassign'`), a `reassigned` `ticket_activities` row, and a `ticket_assigned` `domain_events` row in one transaction. Actor is the system/cron (null). Entity kind (`case` vs `work_order`) is resolved **once** by `loadTicketForFire` — the same query that loads the row for the notification copy — and threaded through; there is no separate existence probe.
+- **Watchers** → `update_entity_combined` (00384 v6) metadata branch, key `sla:escalation:<sla_timer_id>:<at_percent>:watchers`, called only when the watcher set actually changes. The previous assignee is followed onto the ticket as a watcher. `tickets.watchers` is a **persons.id[]** column, so the outgoing assignee's `users.id` is translated to its `persons.id` before being added (the legacy raw path added the `users.id` directly — a latent person/user-ID-mixing bug now corrected on this path).
+
+Assignment RPC first, then watchers RPC; each is independently idempotent. SLA escalation reassignments are therefore now visible in the routing audit feed and emit a domain event for downstream subscribers (notifications, MS Graph sync), closing the gap where cron-driven reassignment had none of the audit guarantees the user-driven `reassign()` paths have.
+
 ### WorkOrderService surface — single PATCH endpoint backed by `update_entity_combined`
 
 Post-B.2.A Step 6 (2026-05-11), every mutating command on a work_order lives on `WorkOrderService`, not `TicketService`. `TicketService.update` is **case-only** — it `BadRequest`s any incoming `sla_id` change because parent SLA is locked.

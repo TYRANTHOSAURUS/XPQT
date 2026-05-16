@@ -12,7 +12,7 @@ import type {
 } from './sla-threshold.types';
 import { crossingKey } from './sla-threshold.types';
 import { percentElapsed, selectApplicableThresholds } from './sla-threshold.helpers';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
 
 @Injectable()
 export class SlaService {
@@ -645,6 +645,14 @@ export class SlaService {
     // a colliding/smuggled id from another tenant would feed the wrong
     // ticket title, assignee, and requester into the notification + the
     // reassignment write. Caller (fireThreshold) passes timer.tenant_id.
+    //
+    // audit-02 P0-2: this lookup is the SINGLE place SLA resolves whether
+    // an id is a case or a work_order. The resolved `entity_kind` is
+    // returned alongside the row so the escalation-reassign path can pass
+    // the correct `p_entity_kind` to `set_entity_assignment` /
+    // `update_entity_combined` (00327 / 00384) without a second
+    // existence probe — entity-kind is resolved ONCE here, by the query
+    // that already had to run.
     const cols = 'id, tenant_id, title, assigned_user_id, assigned_team_id, requester_person_id, watchers';
     const caseRes = await this.supabase.admin
       .from('tickets')
@@ -652,15 +660,19 @@ export class SlaService {
       .eq('id', ticketId)
       .eq('tenant_id', tenantId)
       .maybeSingle();
+    if (caseRes.error) throw caseRes.error;
     if (caseRes.data) {
-      return caseRes.data as {
-        id: string;
-        tenant_id: string;
-        title: string;
-        assigned_user_id: string | null;
-        assigned_team_id: string | null;
-        requester_person_id: string | null;
-        watchers: string[] | null;
+      return {
+        ...(caseRes.data as {
+          id: string;
+          tenant_id: string;
+          title: string;
+          assigned_user_id: string | null;
+          assigned_team_id: string | null;
+          requester_person_id: string | null;
+          watchers: string[] | null;
+        }),
+        entity_kind: 'case' as const,
       };
     }
     const woRes = await this.supabase.admin
@@ -675,14 +687,17 @@ export class SlaService {
         detail: `SLA target ${ticketId} not found in tickets or work_orders`,
       });
     }
-    return woRes.data as {
-      id: string;
-      tenant_id: string;
-      title: string;
-      assigned_user_id: string | null;
-      assigned_team_id: string | null;
-      requester_person_id: string | null;
-      watchers: string[] | null;
+    return {
+      ...(woRes.data as {
+        id: string;
+        tenant_id: string;
+        title: string;
+        assigned_user_id: string | null;
+        assigned_team_id: string | null;
+        requester_person_id: string | null;
+        watchers: string[] | null;
+      }),
+      entity_kind: 'work_order' as const,
     };
   }
 
@@ -747,28 +762,82 @@ export class SlaService {
   }
 
   /**
-   * Reassign ticket based on resolved target. Returns true if an assignment actually changed.
-   * For user/manager target: set assigned_user_id, keep assigned_team_id; move previous user to watchers.
-   * For team target: set assigned_team_id, null assigned_user_id; move previous user to watchers.
+   * Reassign ticket based on resolved target. Returns true if an assignment
+   * actually changed.
+   *
+   * For user/manager target: set assigned_user_id, keep assigned_team_id;
+   * move previous assignee into watchers.
+   * For team target: set assigned_team_id, null assigned_user_id; move
+   * previous assignee into watchers.
+   *
+   * ── audit-02 P0-2 (2026-05-16) ──────────────────────────────────────
+   * This path NO LONGER raw-UPDATEs via `updateTicketOrWorkOrder`. The
+   * assignment write goes through the canonical `set_entity_assignment`
+   * RPC (00327 v2) and the watchers (metadata) write through
+   * `update_entity_combined` (00384 v6). Each RPC is independently
+   * idempotent via `command_operations` keyed on a deterministic
+   * per-crossing key — a re-fired cron tick for the SAME crossing
+   * replays the cached result instead of re-applying. The RPCs emit the
+   * `routing_decisions` audit row + `reassigned` ticket_activities row +
+   * `ticket_assigned` domain event (assignment) and a `metadata_changed`
+   * activity (watchers) — all the audit/event guarantees the raw write
+   * silently skipped.
+   *
+   * `crossingIdemKey` is the stable per-crossing anchor built by the
+   * caller from `sla:escalation:<timer_id>:<at_percent>` (a single timer
+   * can cross 80% then 100%; each crossing is its own canonical event).
    */
   private async applyReassignment(
-    ticket: { id: string; tenant_id: string; assigned_user_id: string | null; assigned_team_id: string | null; watchers: string[] | null },
+    ticket: {
+      id: string;
+      tenant_id: string;
+      assigned_user_id: string | null;
+      assigned_team_id: string | null;
+      watchers: string[] | null;
+      entity_kind: 'case' | 'work_order';
+    },
     resolved: { personId?: string; teamId?: string },
+    crossingIdemKey: string,
+    reason: string,
   ): Promise<boolean> {
-    const updates: Record<string, unknown> = {};
+    const assignmentPayload: Record<string, unknown> = {
+      reason,
+      // System/cron actor — no person attribution. set_entity_assignment
+      // (00327:291-299) falls back cleanly when both actor_person_id and
+      // p_actor_user_id are null.
+      actor_person_id: null,
+    };
     let changed = false;
-    const newWatchers = new Set<string>((ticket.watchers as string[] | null) ?? []);
+
+    // `watchers` is a persons.id[] column ("person IDs following this
+    // ticket" — 00011_tickets.sql:26). The PREVIOUS assignee is
+    // `ticket.assigned_user_id`, a users.id — NOT a person id. The legacy
+    // raw write added the users.id directly, which the unvalidated UPDATE
+    // silently accepted (a latent data bug: user IDs in a person-ID
+    // column). `update_entity_combined` v6 (00384:633-645) validates the
+    // watchers array against `persons`, so we must translate the outgoing
+    // assignee's users.id → persons.id before adding it to watchers.
+    let outgoingAssigneePersonId: string | null = null;
 
     if (resolved.teamId) {
       if (ticket.assigned_team_id !== resolved.teamId) {
-        updates.assigned_team_id = resolved.teamId;
-        updates.assigned_user_id = null;
-        if (ticket.assigned_user_id) newWatchers.add(ticket.assigned_user_id);
+        assignmentPayload.assigned_team_id = resolved.teamId;
+        // set_entity_assignment treats an absent key as "no change"; pass
+        // an explicit empty string so the RPC clears assigned_user_id
+        // (00327:189 nullif('','')::uuid → NULL), matching the legacy
+        // "team target nulls the user" behaviour.
+        assignmentPayload.assigned_user_id = '';
+        if (ticket.assigned_user_id) {
+          outgoingAssigneePersonId = await this.resolveUserPersonId(
+            ticket.assigned_user_id,
+            ticket.tenant_id,
+          );
+        }
         changed = true;
       }
     } else if (resolved.personId) {
-      // tickets.assigned_user_id references users(id). resolved.personId is a persons id;
-      // look up the user row.
+      // tickets.assigned_user_id references users(id). resolved.personId
+      // is a persons id; look up the user row.
       //
       // HIGH severity tenant-scope: this user lookup feeds a WRITE
       // (assigned_user_id on the case/work_order). Without the tenant
@@ -776,26 +845,97 @@ export class SlaService {
       // foreign-tenant users row and assign that foreign user to this
       // tenant's ticket — cross-tenant ticket reassignment via SLA
       // escalation. supabase.admin bypasses RLS so id alone is unsafe.
-      const { data: user } = await this.supabase.admin
+      // (set_entity_assignment also re-validates the assignee is
+      // tenant-owned via validate_assignees_in_tenant — 00327:194 — so
+      // this is defence-in-depth, not the sole gate.)
+      const { data: user, error: userErr } = await this.supabase.admin
         .from('users')
         .select('id, person_id')
         .eq('person_id', resolved.personId)
         .eq('tenant_id', ticket.tenant_id)
         .maybeSingle();
+      if (userErr) throw userErr;
       const newAssigneeUserId = (user?.id as string) ?? null;
       if (newAssigneeUserId && ticket.assigned_user_id !== newAssigneeUserId) {
-        updates.assigned_user_id = newAssigneeUserId;
-        if (ticket.assigned_user_id) newWatchers.add(ticket.assigned_user_id);
+        assignmentPayload.assigned_user_id = newAssigneeUserId;
+        if (ticket.assigned_user_id) {
+          outgoingAssigneePersonId = await this.resolveUserPersonId(
+            ticket.assigned_user_id,
+            ticket.tenant_id,
+          );
+        }
         changed = true;
       }
     }
 
-    if (changed) {
-      updates.watchers = Array.from(newWatchers);
-      // Step 1c.10c: route to tickets (case) or work_orders.
-      await this.updateTicketOrWorkOrder(ticket.id, updates, ticket.tenant_id);
+    if (!changed) return false;
+
+    // ── 1. Assignment via the canonical RPC (idempotent per crossing) ──
+    const { error: assignErr } = await this.supabase.admin.rpc(
+      'set_entity_assignment',
+      {
+        p_entity_id: ticket.id,
+        p_entity_kind: ticket.entity_kind,
+        p_tenant_id: ticket.tenant_id,
+        p_actor_user_id: null,
+        p_idempotency_key: crossingIdemKey,
+        p_payload: assignmentPayload,
+      },
+    );
+    if (assignErr) throw mapRpcErrorToAppError(assignErr);
+
+    // ── 2. Watchers via update_entity_combined metadata (idempotent) ──
+    // Only call when the watchers set actually changed (a no-op call is
+    // wasteful and would still consume a command_operations row). The
+    // outgoing assignee is added by persons.id; if it was already a
+    // watcher or could not be resolved to a person, the set is unchanged
+    // and the second RPC is skipped.
+    if (
+      outgoingAssigneePersonId &&
+      !(ticket.watchers ?? []).includes(outgoingAssigneePersonId)
+    ) {
+      const newWatchers = Array.from(
+        new Set<string>([
+          ...((ticket.watchers as string[] | null) ?? []),
+          outgoingAssigneePersonId,
+        ]),
+      );
+      const { error: watchErr } = await this.supabase.admin.rpc(
+        'update_entity_combined',
+        {
+          p_entity_kind: ticket.entity_kind,
+          p_entity_id: ticket.id,
+          p_tenant_id: ticket.tenant_id,
+          p_actor_user_id: null,
+          p_idempotency_key: `${crossingIdemKey}:watchers`,
+          p_patches: { metadata: { watchers: newWatchers } },
+        },
+      );
+      if (watchErr) throw mapRpcErrorToAppError(watchErr);
     }
+
     return changed;
+  }
+
+  /**
+   * Resolve a users.id → its persons.id for this tenant. Used by the SLA
+   * escalation path to translate the outgoing assignee (users.id) into a
+   * watcher entry (persons.id — see applyReassignment). Tenant-scoped:
+   * supabase.admin bypasses RLS, so a colliding users.id from another
+   * tenant must not leak a foreign person into this tenant's watchers.
+   */
+  private async resolveUserPersonId(
+    userId: string,
+    tenantId: string,
+  ): Promise<string | null> {
+    const { data, error } = await this.supabase.admin
+      .from('users')
+      .select('person_id')
+      .eq('id', userId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (error) throw error;
+    return (data?.person_id as string | null) ?? null;
   }
 
   private async writeCrossing(row: {
@@ -816,25 +956,16 @@ export class SlaService {
     if (error && (error as { code?: string }).code !== '23505') throw error;
   }
 
-  private async writeActivity(
-    ticket: { id: string; tenant_id: string },
-    threshold: EscalationThreshold,
-    policyName: string,
-  ) {
-    await this.supabase.admin.from('ticket_activities').insert({
-      tenant_id: ticket.tenant_id,
-      ticket_id: ticket.id,
-      activity_type: 'system_event',
-      visibility: 'system',
-      content: `SLA escalated — ${policyName} at ${threshold.at_percent}% of ${threshold.timer_type}`,
-      metadata: {
-        source: 'sla_escalation',
-        at_percent: threshold.at_percent,
-        timer_type: threshold.timer_type,
-        target_type: threshold.target_type,
-      },
-    });
-  }
+  // audit-02 P0-2 (2026-05-16): `writeActivity` was DELETED here. It
+  // wrote a `system_event` "SLA escalated — <policy> at X% of <timer>"
+  // ticket_activities row, called only from the escalate+reassigned
+  // branch of `fireThreshold`. `set_entity_assignment` (00327 v2) now
+  // writes the canonical `reassigned` ticket_activities row for the same
+  // logical event (content = the SLA-escalation reason), so the old call
+  // produced a DUPLICATE timeline entry. With its sole caller removed the
+  // method was dead code; deleting it (rather than suppressing the
+  // unused-symbol error) enforces the single-write-path contract
+  // structurally — same precedent as docs/follow-ups/b2-followups.md:172.
 
   private async emitEvent(
     tenantId: string,
@@ -907,10 +1038,32 @@ export class SlaService {
 
     let reassigned = false;
     if (threshold.action === 'escalate') {
-      reassigned = await this.applyReassignment(ticket, resolved);
-      if (reassigned) {
-        await this.writeActivity(ticket, threshold, policyName);
-      }
+      // audit-02 P0-2: deterministic per-crossing idempotency anchor. A
+      // timer can cross 80% then 100%; `at_percent` makes each crossing
+      // its own idempotent event, and a re-fired cron tick for the SAME
+      // crossing replays the cached command_operations result instead of
+      // re-applying the assignment.
+      const crossingIdemKey = `sla:escalation:${timer.id}:${threshold.at_percent}`;
+      // Non-null reason → set_entity_assignment writes the
+      // routing_decisions audit row + `reassigned` ticket_activities row
+      // + `ticket_assigned` domain event (00327:258-410). No prose leak:
+      // this is an internal routing-audit string, not a user-facing
+      // error message.
+      const reason = `SLA escalation — ${threshold.at_percent}% threshold breached`;
+      reassigned = await this.applyReassignment(
+        ticket,
+        resolved,
+        crossingIdemKey,
+        reason,
+      );
+      // NOTE: no `writeActivity` call here anymore. Pre-P0-2 this wrote a
+      // second `system_event` "SLA escalated …" ticket_activities row.
+      // `set_entity_assignment` now writes the canonical `reassigned`
+      // activity row for the SAME logical event (with the SLA-escalation
+      // reason as its content) — keeping the old call would produce a
+      // duplicate timeline entry for one reassignment. `writeActivity`
+      // is retained as a method (no other caller today) but is not
+      // invoked on the escalate+reassigned path.
     }
 
     let firstNotificationId: string | null = null;

@@ -544,3 +544,59 @@ of `edit_booking` (next time a real defect requires touching the RPC).
 Low-priority — only matters when investigating a tenant complaint
 about unexpected approval re-trigger. No correctness impact on the
 write path; cosmetic on the audit row.
+
+## audit-02 P0-2 — SLA escalation reassign now routes through `set_entity_assignment` (closed, 2026-05-16)
+
+**Status:** closed (code; live smoke deferred to the orchestrator).
+
+The audit-02 P0-2 finding (`docs/follow-ups/audits/02-tickets-work-orders.md:97`)
+was acknowledged **nowhere** until now (the b2-followups note at :165-170
+covers only the user-driven `WorkOrderService.reassign` /
+`TicketService.reassign` paths — it explicitly did not cover the
+cron-driven SLA escalation path, which had *none* of that scrutiny).
+
+The SLA escalation cron previously reassigned tickets/work_orders via a
+raw `UPDATE` (`SlaService.updateTicketOrWorkOrder`): zero
+`command_operations` row (no idempotency — a re-fired cron tick
+re-applied), zero `routing_decisions` audit, zero `ticket_assigned`
+domain event.
+
+Closed by routing the escalation-reassign path
+(`SlaService.applyReassignment`, `apps/api/src/modules/sla/sla.service.ts`)
+through the canonical RPCs:
+
+- **Assignment** → `set_entity_assignment` (00327 v2), idempotency key
+  `sla:escalation:<sla_timer_id>:<at_percent>` — deterministic per
+  *crossing*, so a re-fired tick for the same crossing replays the
+  cached result instead of re-applying. `reason` non-null ⇒ the RPC
+  writes the `routing_decisions` + `reassigned` activity +
+  `ticket_assigned` domain event atomically.
+- **Watchers** → `update_entity_combined` (00384 v6) metadata branch,
+  key `…:watchers`, called only when the watcher set changes. The
+  outgoing assignee's `users.id` is translated to its `persons.id`
+  before being added — `tickets.watchers` is a persons.id[] column
+  (00011:26) and v6 validates against `persons`; the legacy raw path
+  added the raw `users.id`, a latent ID-type bug now corrected here.
+- Entity kind (`case`/`work_order`) is resolved once by
+  `loadTicketForFire` (now returns `entity_kind`) — no extra probe.
+- The now-duplicate `writeActivity` "SLA escalated …" `system_event`
+  row was removed: `set_entity_assignment` writes the canonical
+  `reassigned` activity for the same logical event. With its sole
+  caller gone the method was dead code and was deleted (structural
+  enforcement of the single-write-path contract — same precedent as
+  the "Dead code removed" note at :172).
+
+No migration — `set_entity_assignment` (00327) and
+`update_entity_combined` (00384) already provide every guarantee. The
+legitimate SLA-internal raw writes (response/resolution `due_at`,
+pause/resume, restart/clear, `sla_at_risk`) still go through
+`updateTicketOrWorkOrder` unchanged — only the escalation-reassign
+changed.
+
+Verified: `pnpm -C apps/api lint` (tsc --noEmit) pass ·
+`pnpm errors:check-app-errors` pass (0 raw throws). Live smoke handled
+by the orchestrator.
+
+Doc synced same commit: `docs/assignments-routing-fulfillment.md`
+gained a "SLA escalation reassign" subsection under §7 (closes the
+audit doc-drift finding §342).
