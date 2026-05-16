@@ -63,6 +63,35 @@ The smoke-work-orders gate is the strongest part of the system, but it has two m
 
 If the second isn't on the roadmap, at minimum: add `@UseGuards(RequireClientRequestIdGuard)`, run the DTO through the same controller-layer type checks the single-PATCH does, run the per-action permission gates, and emit activity rows per id.
 
+#### Update — 2026-05-16
+
+Original finding:
+- `P0-1 — PATCH /tickets/bulk/update is the back door to every B.2.A guarantee` (+ `P2-5 — bulkUpdate accepts any DTO; no _source or plan_version discrimination`)
+- Location: `docs/follow-ups/audits/02-tickets-work-orders.md:34` (P0-1), `:217` (P2-5)
+
+Status:
+- closed (code; live smoke deferred to Slice 8 with rationale below)
+
+Changed:
+- `apps/api/src/modules/ticket/ticket.controller.ts` — `@UseGuards(RequireClientRequestIdGuard)` on `@Patch('bulk/update')`; `ids` validated as non-empty array of RFC-4122 UUID strings (`reference.invalid_uuid`); tags/watchers boundary narrowing mirrored from `@Patch(':id')`; `@Res({passthrough})` sets HTTP status per error-handling spec §3.1:88 (all-ok 200 · mixed 207 · all-failed 422).
+- `apps/api/src/modules/ticket/ticket.service.ts` — `bulkUpdate` rewritten: de-dupe ids → loop the hardened single-path `update()` per id (inherits perm gates / tenant validation / `sla_id` immutability / parent-close guard / cost-norm / `update_entity_combined` idempotency+audit+domain-event / satisfaction fold); `results[]`/`okCount`/`errorCount`/`partialSuccess` contract; per-id error carries the neutral registered `code` only (no prose); effective crid folds a stable patch-payload fingerprint so a corrected resubmit reusing the batch crid does not `payload_mismatch`-brick already-succeeded ids.
+- `docs/visibility.md:87` — corrected (was the mischaracterised "doesn't call assertVisible" line; now documents the closed state).
+- No migration — `update_entity_combined` (00384) is already atomic; the audit's optional `bulk_update_entity_combined` batch RPC is the tracked deferral below.
+- P2-5: dissolves — bulk DTO is `UpdateTicketDto` (no `plan_version`/`_source`); `update()`'s case path rejects `plan` and never threads `_source`.
+
+Verified:
+- `pnpm -C apps/api lint` (tsc --noEmit) -> pass
+- `pnpm errors:check-app-errors` -> pass (0 raw throws across 35 migrated modules)
+- `/full-review` (2 parallel adversarial subagents) -> run; 4 substantive findings folded in this commit (prose leak, ids amplification, retry-with-correction key, HTTP status semantics), 3 documented deferrals
+- codex review -> pending in this slice
+- Live smoke -> Not run. Reason: the dedicated bulk-update probe is a Slice-8 deliverable (no probe exists yet); the running :3001 server is shared with a concurrent audit-03 session (fixture-collision + code-provenance risk if run now); the *reused* single-path `update()` logic is unchanged by this slice and is covered by the existing committed `smoke:tickets`/`smoke:work-orders` gates.
+
+Remaining:
+- DEFERRED (integrator-verdict Week-1 follow-up): a true `bulk_update_entity_combined` batch RPC for cross-id atomicity (one tx, all-or-nothing). Current loop is per-id atomic + per-id idempotent; a mid-batch crash leaves each id individually consistent and replay-safe but the batch is not all-or-nothing. Acceptable interim per integrator verdict roadmap ("ship iterating-over-update_entity_combined first; batch RPC follow-up").
+- DEFERRED (owned by error-handling workstream, spec §3.1): the FE bulk wire envelope (RFC-9457 `results[]` extension), 207 client handling, and the "Show me" expanding list are not yet built anywhere in the codebase. This slice ships the forward-compatible server side (status codes + `results[]` body); the FE rendering is that workstream's scope.
+- Slice 8 will add the dedicated bulk-update smoke probe (P0-1 gate) + reassign / getChildTasks / vendor / dispatch-replay probes.
+- Inherited behaviour (intended, not a bug): an all-noop dto returns per-id `ok` with no write/audit — correct idempotent no-op semantics of the canonical path; not divergently "fixed" here (would re-introduce a bulk-vs-single split).
+
 ---
 
 #### P0-2 — SLA escalation cron bypasses `set_entity_assignment` entirely
@@ -402,6 +431,7 @@ Maintainer rule: every agent that closes, partially closes, or deliberately defe
 |---|---|---|---|---|---|
 | 2026-05-13 | Handoff prompt added | tracking | `docs/follow-ups/audits/02-tickets-work-orders.md` | Not run | All findings remain open unless a later row says otherwise. |
 | 2026-05-16 | **P0-1 + P2-5** — `PATCH /tickets/bulk/update` back door | **CLOSED (code)** | `apps/api/src/modules/ticket/ticket.controller.ts` (added `@UseGuards(RequireClientRequestIdGuard)` + controller-boundary tags/watchers narrowing + threads `clientRequestId`); `apps/api/src/modules/ticket/ticket.service.ts` `bulkUpdate` rewritten to loop the hardened single-path `update()` per id (inherits perm gates, tenant validation, sla_id immutability, parent-close guard, cost-norm, `update_entity_combined` idempotency+audit+domain-event, satisfaction fold) with de-dupe + `results[]`/`partialSuccess` contract; `docs/visibility.md:87` corrected. No migration (TS-only — reuses existing RPC). No FE caller existed (grep `apps/web` clean). P2-5 dissolves: bulk DTO is `UpdateTicketDto` (no `plan_version`/`_source`); `update()` rejects `plan` on case. | `pnpm -C apps/api lint` (tsc --noEmit) green. Live smoke (new bulk probe) deferred to Slice 8 per slice plan; `/full-review` + codex pending in same slice. | Idempotency: shared batch `clientRequestId`; per-id key `patch:case:<id>:<crid>` via `buildPatchIdempotencyKey` → whole-batch retry replays each id once. Behaviour change (safe, no FE caller): return shape now `{results,okCount,errorCount,partialSuccess}` instead of raw row array; permission denials surface as per-id `error` rows instead of silent drop. Residual: per-id `loadContext` inside `update()` = N round-trips for N ids (≤200 cap; bulk is rare/admin) — perf note, not correctness. |
+| 2026-05-16 | **P0-1 review-fix pass** (`/full-review` 2 adversarial agents) | **HARDENED** | Folded 4 substantive review findings: (1) prose leak — per-id `error` now carries neutral registered `code` only via `AppError`/`mapRpcErrorToAppError`, never `err.message` (was re-leaking server prose + cross-scope child UUIDs); (2) `ids` amplification — controller now validates non-empty UUID-string array (`reference.invalid_uuid`) before the loop; (3) retry-with-correction — effective crid folds a stable patch fingerprint so a corrected resubmit reusing the batch crid doesn't `payload_mismatch`-brick succeeded ids (EditBookingOp-discriminator pattern); (4) HTTP status — controller maps outcome to 200/207/422 per error-handling spec §3.1:88. Inline append-only Update block added under P0-1. | `pnpm -C apps/api lint` green; `pnpm errors:check-app-errors` green (0 raw throws / 35 modules). | Deferrals (tracked, see inline Update block): `bulk_update_entity_combined` batch RPC for cross-id atomicity (integrator Week-1 follow-up); FE bulk wire envelope + 207 handling + Show-me list (owned by error-handling workstream, spec §3.1, unbuilt); all-noop→ok is intended idempotent no-op (not divergently "fixed"). codex review next (P0 = big step). |
 
 ## Agent Handoff Prompt
 
