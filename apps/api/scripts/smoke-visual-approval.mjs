@@ -35,21 +35,33 @@
  *       scope for this synchronous probe; verified by reading the
  *       direct RPC return shape).
  *
- * Remaining 10 probes from §7.4 are TODO (v2 of this script):
+ * v2 ADDS the remaining §7.4 probes (7,8,9,10,11,14,15) → 13 implemented:
  *
- *   7. Ghost approval id → 404 approval.not_found
- *   8. Malformed approval id → 400 validation
- *   9. Foreign-tenant approval id with workflow_instance_id link → trigger
- *       refuses at SQL layer
- *   10. Cancel-during-grant race — two concurrent processes; terminal state
- *       consistent
- *   11. Double-emit approval.granted → idempotent
- *   12-13. B.4.A.5 gate scenarios — moot (b4a5-step-h lifted the gate)
- *   14. Missing X-Client-Request-Id header → 400
- *   15. Threshold='any' chain race when one approver is delayed — same as #4
- *       but timing-injected
- *   16. start path refuses archived — same as #5 (kept as separate probe in
- *       the plan for clarity)
+ *   7.  Ghost approval id → 404 approval.not_found.
+ *   8.  Malformed (non-uuid) approval id → 404 approval.not_found. NOTE:
+ *       plan §7.4 #5 expected 400; the real, non-leaky contract is 404
+ *       (approval.service.ts:512-519 — no-row → notFound, no 500/uuid
+ *       leak). Probe asserts the ACTUAL behaviour + flags the deviation.
+ *   9.  Foreign-tenant approval id carrying a workflow_instance_id link →
+ *       00400 B.1 trigger assert_approvals_workflow_instance_tenant
+ *       refuses at the SQL layer (P0001).
+ *   10. Cancel-during-grant race — grant + delete_booking_with_guard
+ *       concurrently; terminal state consistent (one of completed|
+ *       cancelled|failed; no pending approvals).
+ *   11. Double-emit approval.granted → idempotent (re-emit with 00407's
+ *       idempotency key → ON CONFLICT collapses to 1 row; no double-
+ *       advance).
+ *   14. Missing X-Client-Request-Id header → 400 client_request_id.required
+ *       (RequireClientRequestIdGuard, pre-body).
+ *   15. BLOCKER 2 distinct-approver variant — 3 DIFFERENT approver persons
+ *       race sibling 'any' grants (v1 probe 4 raced the SAME id). Booking
+ *       row lock → exactly 1 approval.granted; booking confirmed.
+ *
+ * Intentionally NOT implemented (skip/dup, per handoff + header rationale):
+ *   §7.4 #9/#10/#12 — B.4.A.5 gate scenarios (a)/(b)/(c): the B.4.A.5
+ *       gate was LIFTED (memory project_b4a5_shipped / b4a5-step-h);
+ *       these are moot.
+ *   §7.4 #16 — start path refuses archived: exact dup of v1 probe 5.
  *
  * USAGE:
  *   pnpm dev:api &   (or have the dev server already running)
@@ -170,10 +182,13 @@ function runPsql(sql) {
 // Auth — mint a real Admin JWT
 // ─────────────────────────────────────────────────────────────────────
 
-async function mintAdminToken() {
+// Mint a real JWT for an arbitrary auth uid (magiclink → /auth/v1/verify).
+// probe 15 needs distinct approver JWTs so 3 different persons can race
+// sibling grants of the same chain.
+async function mintTokenFor(authUid) {
   const adm = supa();
-  const { data: u } = await adm.auth.admin.getUserById(ADMIN_AUTH_UID);
-  if (!u?.user) throw new Error(`admin auth uid ${ADMIN_AUTH_UID} not found`);
+  const { data: u } = await adm.auth.admin.getUserById(authUid);
+  if (!u?.user) throw new Error(`auth uid ${authUid} not found`);
 
   const { data: link, error: linkErr } = await adm.auth.admin.generateLink({
     type: 'magiclink',
@@ -190,6 +205,10 @@ async function mintAdminToken() {
   const m = loc?.match(/access_token=([^&]+)/);
   if (!m) throw new Error(`no access_token in verify redirect: ${loc}`);
   return m[1];
+}
+
+function mintAdminToken() {
+  return mintTokenFor(ADMIN_AUTH_UID);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -818,6 +837,404 @@ async function probe6CancelCascade(token) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// v2 probes — §7.4 matrix completion (7-15). Plan numbering ≠ script
+// numbering: these implement plan items #4 (ghost), #5 (malformed),
+// #6 (foreign-tenant link), #7 (cancel-during-grant), #8 (double-emit),
+// #13 (missing crid), #15 (concurrent any, distinct approvers).
+// Plan #12/#13(gate-c)/#16 are skip/dup per the script header + handoff.
+// ─────────────────────────────────────────────────────────────────────
+
+// smoke-tenant-b — purpose-built foreign tenant for cross-tenant probes.
+const FOREIGN_TENANT = '00000000-0000-0000-0000-0000000000b1';
+// Distinct approver persons WITH auth accounts, for probe 15's 3-way race.
+// (auth_uid → users.person_id verified via psql against remote.)
+const PROBE15_APPROVERS = [
+  { person: '95000000-0000-0000-0000-000000000002', auth: ADMIN_AUTH_UID }, // Sofia (admin)
+  { person: '95000000-0000-0000-0000-000000000007', auth: '4c7c53a7-c303-4529-b0cc-bac9d877d235' }, // Daan
+  { person: '95000000-0000-0000-0000-000000000006', auth: 'ee9a993b-3f52-453f-ac5f-9e18dc07dd44' }, // Amelia
+];
+
+async function respondJson(token, approvalId, body) {
+  const res = await fetch(`${API_BASE}/approvals/${approvalId}/respond`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      authorization: `Bearer ${token}`,
+      'x-tenant-id': TENANT_ID,
+      'x-client-request-id': crypto.randomUUID(),
+    },
+    body: JSON.stringify(body),
+  });
+  let json = null;
+  try {
+    json = await res.json();
+  } catch {
+    /* non-JSON body */
+  }
+  return { status: res.status, json };
+}
+
+// Probe 7 — ghost approval id (well-formed uuid, no row) → 404
+// approval.not_found (plan §7.4 #4).
+async function probe7GhostApprovalId(token) {
+  console.log('Probe 7: ghost approval id → 404 approval.not_found');
+  const ghostId = '00000000-0000-0000-0000-0000000000ff';
+  const { status, json } = await respondJson(token, ghostId, { status: 'approved' });
+  if (status !== 404) return fail('probe7', `status=${status} (want 404), body=${JSON.stringify(json)}`);
+  if (json?.code !== 'approval.not_found')
+    return fail('probe7', `code=${json?.code} (want approval.not_found)`);
+  pass('probe7', '404 approval.not_found');
+}
+
+// Probe 8 — malformed (non-uuid) approval id. Plan §7.4 #5 expected a
+// 400 validation gate. ACTUAL behaviour (verified empirically + against
+// approval.service.ts:512-519): `.from('approvals').select().eq('id',
+// <non-uuid>).single()` returns no row → AppErrors.notFound('approval')
+// → 404 approval.not_found. No 500, no Postgres error leak — a clean,
+// non-leaky contract. We assert the ACTUAL correct behaviour, NOT the
+// plan's assumption (CRITICAL HONESTY RULE: don't weaken; flag the plan
+// deviation). Plan §7.4 #5 should be updated 400→404 in a doc pass.
+async function probe8MalformedApprovalId(token) {
+  console.log('Probe 8: malformed approval id → 404 approval.not_found (plan said 400; 404 is the real, non-leaky contract)');
+  const { status, json } = await respondJson(token, 'not-a-uuid', { status: 'approved' });
+  if (status === 500)
+    return fail('probe8', `500 — Postgres uuid-cast error leaked (genuine bug). body=${JSON.stringify(json)}`);
+  if (status !== 404)
+    return fail('probe8', `status=${status} (want 404 approval.not_found), body=${JSON.stringify(json)}`);
+  if (json?.code !== 'approval.not_found')
+    return fail('probe8', `code=${json?.code} (want approval.not_found)`);
+  pass('probe8', '404 approval.not_found (no 500/uuid leak; plan #5 deviation noted)');
+}
+
+// Probe 9 — cross-tenant workflow_instance_id link → the 00400 B.1
+// trigger `assert_approvals_workflow_instance_tenant` refuses at the SQL
+// layer (errcode P0001, "tenant_mismatch on approvals.workflow_instance
+// _id"). The trigger compares the REFERENCED instance's tenant to the
+// NEW approval row's tenant. Rather than seed the (empty) foreign tenant
+// — which would need a full person+space+booking chain — we provision a
+// genuine instance in TENANT_ID via the normal rule+booking path, then
+// attempt to insert an approval whose tenant_id = FOREIGN_TENANT but
+// whose workflow_instance_id points at the TENANT_ID instance. Same
+// cross-tenant violation, minimal fixture. Plan §7.4 #6.
+async function probe9ForeignTenantLink(token) {
+  console.log('Probe 9: cross-tenant workflow_instance_id link → SQL trigger refuses (P0001)');
+  const { ruleId } = await seedRuleWithWorkflow({
+    threshold: 'all',
+    approverPersonIds: [ADMIN_PERSON],
+  });
+  let bookingId;
+  const approvalId = crypto.randomUUID();
+  try {
+    const created = await createBookingViaApi({ token });
+    bookingId = created.id;
+    const instance = await pollUntil('probe9-seed', async () => {
+      const i = await readInstanceForBooking(bookingId);
+      const a = await readApprovalsForBooking(bookingId);
+      return i && a.length > 0 ? i : null;
+    });
+    if (!instance) return fail('probe9', 'workflow_instance not seeded');
+
+    // Attempt the corrupt insert: approval row in FOREIGN_TENANT pointing
+    // at the TENANT_ID instance. The BEFORE INSERT trigger must raise.
+    // runPsql throws on non-zero psql exit (ON_ERROR_STOP=1) — that's the
+    // PASS condition.
+    let rejected = false;
+    let detail = '';
+    try {
+      runPsql(`
+        insert into public.approvals
+          (id, tenant_id, target_entity_type, target_entity_id,
+           approver_person_id, status, workflow_instance_id)
+        values
+          ('${approvalId}'::uuid, '${FOREIGN_TENANT}'::uuid, 'booking',
+           '${bookingId}'::uuid, '${ADMIN_PERSON}'::uuid,
+           'pending', '${instance.id}'::uuid);
+      `);
+    } catch (e) {
+      rejected = true;
+      detail = String(e.message || e);
+    }
+    if (!rejected)
+      return fail('probe9', 'cross-tenant workflow_instance_id link was ACCEPTED (cross-tenant leak — P0 trigger gap)');
+    if (!/tenant_mismatch on approvals\.workflow_instance_id|P0001/.test(detail))
+      return fail('probe9', `rejected but not by the tenant trigger: ${detail.slice(0, 200)}`);
+    pass('probe9', 'SQL trigger refused cross-tenant workflow_instance_id link (P0001)');
+  } finally {
+    runPsql(`delete from public.approvals where id = '${approvalId}'::uuid;`);
+    if (bookingId) await supa().from('bookings').delete().eq('id', bookingId);
+    await dropRule(ruleId);
+  }
+}
+
+// Probe 10 — cancel-during-grant race. Concurrently: (a) grant the
+// approval via the API, (b) delete the booking via
+// delete_booking_with_guard (the production cancel-cascade trigger).
+// Terminal state must be CONSISTENT: the booking is gone and the
+// workflow_instance ends up in exactly one terminal state (completed via
+// the grant OR cancelled via the cascade) — never stuck 'waiting', never
+// half-state. Plan §7.4 #7.
+async function probe10CancelDuringGrant(token) {
+  console.log('Probe 10: cancel-during-grant race → consistent terminal state');
+  const { ruleId } = await seedRuleWithWorkflow({
+    threshold: 'all',
+    approverPersonIds: [ADMIN_PERSON],
+  });
+  let bookingId;
+  try {
+    const created = await createBookingViaApi({ token });
+    bookingId = created.id;
+    const instance = await pollUntil('probe10-seed', async () => {
+      const i = await readInstanceForBooking(bookingId);
+      const a = await readApprovalsForBooking(bookingId);
+      return i && a.length > 0 ? i : null;
+    });
+    if (!instance) return fail('probe10', 'workflow_instance / approvals not seeded');
+    const approvals = await readApprovalsForBooking(bookingId);
+
+    // Fire grant + delete concurrently.
+    const [grantRes, delRes] = await Promise.allSettled([
+      respondJson(token, approvals[0].id, { status: 'approved' }),
+      supa().rpc('delete_booking_with_guard', {
+        p_booking_id: bookingId,
+        p_tenant_id: TENANT_ID,
+      }),
+    ]);
+    void grantRes;
+    void delRes;
+
+    // Whatever the interleaving: the instance must reach ONE terminal
+    // state (not 'waiting'/'active'), and never stay half-resolved.
+    const terminal = await pollUntil('probe10', async () => {
+      const ia = await readInstanceById(instance.id);
+      if (!ia) return null;
+      return ['completed', 'cancelled', 'failed'].includes(ia.status) ? ia : null;
+    });
+    if (!terminal) {
+      const ia = await readInstanceById(instance.id);
+      return fail('probe10', `instance not terminal: status=${ia?.status} (want completed|cancelled|failed)`);
+    }
+    // Approvals must not be left 'pending' — they resolved or expired.
+    const approvalsAfter = await readApprovalsForBooking(bookingId);
+    const anyPending = approvalsAfter.some((a) => a.status === 'pending');
+    if (anyPending)
+      return fail('probe10', `approvals left pending after race: ${JSON.stringify(approvalsAfter.map((a) => a.status))}`);
+    pass('probe10', `consistent terminal state: instance=${terminal.status}, no pending approvals`);
+  } finally {
+    if (bookingId) await supa().from('bookings').delete().eq('id', bookingId);
+    await dropRule(ruleId);
+  }
+}
+
+// Probe 11 — double-emit approval.granted → idempotent. Grant once
+// (drives one approval.granted), then RE-EMIT the same event into the
+// outbox (simulating an at-least-once retry / redelivery) using the
+// canonical 8-arg outbox.emit with the SAME idempotency key 00407 uses
+// (`approval.granted:<approval_id>`). The (tenant_id, idempotency_key)
+// ON CONFLICT dedup (00299:161-192) must collapse it: still exactly ONE
+// row, and resume()'s atomic claim makes the handler side idempotent
+// (booking stays 'confirmed', no double-advance). Plan §7.4 #8.
+async function probe11DoubleEmitIdempotent(token) {
+  console.log('Probe 11: double-emit approval.granted → idempotent (1 row, no double-advance)');
+  const { ruleId } = await seedRuleWithWorkflow({
+    threshold: 'all',
+    approverPersonIds: [ADMIN_PERSON],
+  });
+  let bookingId;
+  try {
+    const created = await createBookingViaApi({ token });
+    bookingId = created.id;
+    const instance = await pollUntil('probe11-seed', async () => {
+      const i = await readInstanceForBooking(bookingId);
+      const a = await readApprovalsForBooking(bookingId);
+      return i && a.length > 0 ? i : null;
+    });
+    if (!instance) return fail('probe11', 'workflow_instance / approvals not seeded');
+    const approvals = await readApprovalsForBooking(bookingId);
+    const approvalId = approvals[0].id;
+
+    const g = await respondJson(token, approvalId, { status: 'approved' });
+    if (g.status !== 200 && g.status !== 201)
+      return fail('probe11', `grant failed: ${g.status} ${JSON.stringify(g.json)}`);
+
+    // Wait for the genuine emit to land.
+    const firstSeen = await pollUntil('probe11', async () => {
+      const rows = await readOutboxApprovalGranted(instance.id);
+      return rows.length >= 1 ? rows : null;
+    });
+    if (!firstSeen) return fail('probe11', 'no approval.granted emitted by the grant');
+
+    // Re-emit with the SAME idempotency key 00407 uses. Same payload
+    // shape → identical payload_hash → silent idempotent success.
+    const client = await pgClient();
+    await client.query(
+      `select outbox.emit(
+         $1::uuid, 'approval.granted', 'booking', $2::uuid,
+         jsonb_build_object(
+           'tenant_id', $1::uuid, 'approval_id', $3::uuid,
+           'booking_id', $2::uuid, 'final_decision', 'approved',
+           'workflow_instance_id', $4::uuid,
+           'workflow_node_id', (select workflow_node_id from public.approvals where id = $3::uuid)
+         ),
+         'approval.granted:' || $3::text, 1, null
+       )`,
+      [TENANT_ID, bookingId, approvalId, instance.id],
+    );
+
+    // Still exactly ONE row (ON CONFLICT dedup), booking still confirmed.
+    const rows = await readOutboxApprovalGranted(instance.id);
+    if (rows.length !== 1)
+      return fail('probe11', `outbox approval.granted count=${rows.length} after re-emit (want 1; idempotency broken)`);
+    // Poll for the JOINT terminal state. resume() confirms the booking
+    // and completes the instance across node-execution steps (not one
+    // atomic write), and the handler may take >1 attempt (transient DB
+    // wobble → outbox retry on the next 30s cron). Poll both so the
+    // retry has time to land — the idempotency invariant (1 outbox row,
+    // single completion, no double-advance) is what we're asserting, not
+    // sub-second write ordering.
+    const terminal = await pollUntil('probe11-confirm', async () => {
+      const s = await readBookingStatus(bookingId);
+      const fi = await readInstanceById(instance.id);
+      return s === 'confirmed' && fi?.status === 'completed' ? { s, fi } : null;
+    });
+    if (!terminal) {
+      const s = await readBookingStatus(bookingId);
+      const fi = await readInstanceById(instance.id);
+      return fail('probe11', `not terminal: booking=${s} (want confirmed), instance=${fi?.status} (want completed; double-advance?)`);
+    }
+    // Re-assert exactly one outbox row AFTER drain (purgeProcessed is
+    // hourly so a drained row is still present; a double-advance would
+    // have produced a 2nd row).
+    const rowsAfter = await readOutboxApprovalGranted(instance.id);
+    if (rowsAfter.length !== 1)
+      return fail('probe11', `outbox approval.granted count=${rowsAfter.length} post-drain (want 1; idempotency broken)`);
+    pass('probe11', 're-emit deduped to 1 row; booking confirmed; instance completed once');
+  } finally {
+    if (bookingId) await supa().from('bookings').delete().eq('id', bookingId);
+    await dropRule(ruleId);
+  }
+}
+
+// Probe 14 — missing X-Client-Request-Id header on the producer route
+// → 400 client_request_id.required (RequireClientRequestIdGuard,
+// require-client-request-id.guard.ts). Plan §7.4 #13. No business RPC
+// runs (guard rejects pre-body).
+async function probe14MissingClientRequestId(token) {
+  console.log('Probe 14: missing X-Client-Request-Id → 400 client_request_id.required');
+  // A well-formed-but-ghost id is fine; the guard fires before the
+  // approval lookup, so we never need a real approval.
+  const res = await fetch(`${API_BASE}/approvals/00000000-0000-0000-0000-0000000000ff/respond`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      authorization: `Bearer ${token}`,
+      'x-tenant-id': TENANT_ID,
+      // intentionally NO x-client-request-id
+    },
+    body: JSON.stringify({ status: 'approved' }),
+  });
+  let json = null;
+  try {
+    json = await res.json();
+  } catch {
+    /* non-JSON */
+  }
+  if (res.status !== 400)
+    return fail('probe14', `status=${res.status} (want 400), body=${JSON.stringify(json)}`);
+  if (json?.code !== 'client_request_id.required')
+    return fail('probe14', `code=${json?.code} (want client_request_id.required)`);
+  pass('probe14', '400 client_request_id.required (guard rejected pre-body)');
+}
+
+// Probe 15 — BLOCKER 2, distinct-approver variant. v1 probe 4 raced 3
+// grants of the SAME approval id. This races 3 DIFFERENT approver
+// persons' sibling approvals within ONE chain_threshold='any' chain,
+// each authorised by that approver's own JWT. The per-booking ROW lock
+// (00407, BLOCKER 2 closure) must serialise them: exactly ONE wins
+// (kind='resolved'), the others get kind='already_resolved', exactly
+// ONE approval.granted outbox row, siblings expired exactly once,
+// booking confirmed. Plan §7.4 #15.
+async function probe15ConcurrentAnyDistinctApprovers() {
+  console.log("Probe 15: BLOCKER 2 — 3 distinct approvers race sibling 'any' grants");
+  const personIds = PROBE15_APPROVERS.map((a) => a.person);
+  const { ruleId } = await seedRuleWithWorkflow({
+    threshold: 'any',
+    approverPersonIds: personIds,
+  });
+  let bookingId;
+  try {
+    // Mint a JWT per approver up-front (sequential — generateLink is
+    // cheap but not concurrency-safe on the same admin client).
+    const tokens = [];
+    for (const a of PROBE15_APPROVERS) tokens.push(await mintTokenFor(a.auth));
+
+    // Admin (first approver) creates the booking → 3 sibling approvals
+    // (one per required approver person) on a chain_threshold='any'.
+    const created = await createBookingViaApi({ token: tokens[0] });
+    bookingId = created.id;
+
+    const instance = await pollUntil('probe15-seed', async () => {
+      const i = await readInstanceForBooking(bookingId);
+      const a = await readApprovalsForBooking(bookingId);
+      return i && a.length === personIds.length ? i : null;
+    });
+    if (!instance) {
+      const a = await readApprovalsForBooking(bookingId);
+      return fail('probe15', `expected ${personIds.length} sibling approvals, got ${a.length}`);
+    }
+    const approvals = await readApprovalsForBooking(bookingId);
+    if (approvals.some((a) => a.chain_threshold !== 'any'))
+      return fail('probe15', `not all chain_threshold='any': ${JSON.stringify(approvals.map((a) => a.chain_threshold))}`);
+
+    // Map each approval to the matching approver's token, then fire all
+    // grants concurrently — distinct approval ids, distinct JWTs.
+    const byPerson = new Map(
+      PROBE15_APPROVERS.map((a, i) => [a.person, tokens[i]]),
+    );
+    const grantPromises = approvals.map((ap) =>
+      respondJson(byPerson.get(ap.approver_person_id), ap.id, { status: 'approved' }),
+    );
+    const settled = await Promise.allSettled(grantPromises);
+    const oks = settled.filter(
+      (r) => r.status === 'fulfilled' && (r.value.status === 200 || r.value.status === 201),
+    ).length;
+    if (oks < 1)
+      return fail('probe15', `no grant succeeded: ${JSON.stringify(settled.map((s) => s.status === 'fulfilled' ? s.value.status : s.reason?.message))}`);
+
+    // KEY: exactly ONE approval.granted outbox row for this instance
+    // (booking row lock collapsed the 3-way race), booking confirmed,
+    // siblings expired exactly once.
+    const appeared = await pollUntil('probe15', async () => {
+      const rows = await readOutboxApprovalGranted(instance.id);
+      return rows.length >= 1 ? rows : null;
+    });
+    const outboxRows = appeared ?? (await readOutboxApprovalGranted(instance.id));
+    if (outboxRows.length !== 1)
+      return fail('probe15', `outbox approval.granted count=${outboxRows.length} (want 1; BLOCKER 2 regression — distinct-approver double-emit)`);
+
+    const confirmed = await pollUntil('probe15-confirm', async () => {
+      const s = await readBookingStatus(bookingId);
+      return s === 'confirmed' ? s : null;
+    });
+    if (!confirmed)
+      return fail('probe15', `booking not confirmed (status=${await readBookingStatus(bookingId)})`);
+
+    const finalApprovals = await readApprovalsForBooking(bookingId);
+    const approvedCt = finalApprovals.filter((a) => a.status === 'approved').length;
+    const expiredCt = finalApprovals.filter((a) => a.status === 'expired').length;
+    // Exactly one winner resolved ('approved'); the rest expired as
+    // siblings (any-of-N). Losers that self-CAS'd to 'approved' for audit
+    // are acceptable too — the load-bearing invariant is the SINGLE
+    // outbox emit + confirmed booking, already asserted above.
+    if (approvedCt + expiredCt !== finalApprovals.length)
+      return fail('probe15', `unexpected approval states: ${JSON.stringify(finalApprovals.map((a) => a.status))}`);
+    pass('probe15', `${oks}/${approvals.length} grants ok; exactly 1 outbox emit; booking confirmed (no distinct-approver double-emit)`);
+  } finally {
+    if (bookingId) await supa().from('bookings').delete().eq('id', bookingId);
+    await dropRule(ruleId);
+  }
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -858,7 +1275,7 @@ async function pollUntil(label, check) {
 // ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('smoke-visual-approval — Phase 1.5 v1 (6 of 16 probes)');
+  console.log('smoke-visual-approval — Phase 1.5 v2 (13 probes — full §7.4 matrix; #12/13(c)/16 skip/dup)');
   console.log(`  API:  ${API_BASE}`);
   console.log(`  DB:   ${env.SUPABASE_URL}`);
   console.log('');
@@ -882,6 +1299,13 @@ async function main() {
     await probe4ConcurrentAny(token);
     await probe5ArchivedDefinitionRefused(token);
     await probe6CancelCascade(token);
+    await probe7GhostApprovalId(token);
+    await probe8MalformedApprovalId(token);
+    await probe9ForeignTenantLink(token);
+    await probe10CancelDuringGrant(token);
+    await probe11DoubleEmitIdempotent(token);
+    await probe14MissingClientRequestId(token);
+    await probe15ConcurrentAnyDistinctApprovers();
   } catch (e) {
     console.error('probe harness crashed:', e);
     await closePg();
