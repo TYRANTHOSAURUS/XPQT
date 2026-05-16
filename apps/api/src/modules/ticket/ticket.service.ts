@@ -205,6 +205,28 @@ const INBOX_REASON_PRIORITY: Record<InboxReason, number> = {
   watching: 1,
 };
 
+/**
+ * Deterministic canonical JSON: object keys sorted recursively, arrays kept
+ * in order, primitives as-is. Used to fingerprint a bulk patch payload so the
+ * effective idempotency key is stable regardless of request key order and
+ * robust if `UpdateTicketDto` grows nested fields (codex Slice-1 P3 — the
+ * `JSON.stringify(obj, replacer[])` form is a recursive *allowlist*, not a
+ * canonicaliser, and would silently drop nested keys).
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.keys(value as Record<string, unknown>)
+    .sort()
+    .map(
+      (k) =>
+        `${JSON.stringify(k)}:${canonicalJson(
+          (value as Record<string, unknown>)[k],
+        )}`,
+    );
+  return `{${entries.join(',')}}`;
+}
+
 @Injectable()
 export class TicketService {
   private attachmentBucketReady = false;
@@ -1667,13 +1689,21 @@ export class TicketService {
     // by position — `results.length` may be < `ids.length`.)
     const uniqueIds = Array.from(new Set(ids));
 
-    // Stable fingerprint of the patch payload (sorted keys → sha1/12). Folded
-    // into the effective crid so a corrected resubmit reusing the batch crid
-    // does not payload_mismatch already-succeeded ids. Identical dto on a
-    // genuine retry → identical fp → idempotent replay.
+    // Stable fingerprint of the *effective* patch payload, folded into the
+    // effective crid so a corrected resubmit reusing the batch crid does not
+    // payload_mismatch already-succeeded ids; an identical genuine retry
+    // hashes the same → idempotent replay. canonicalJson sorts keys
+    // recursively (codex P3: the JSON.stringify replacer-array form is not a
+    // canonicaliser). `cost` is rounded to mirror update()'s float
+    // normalisation (codex P2) so `0.30000000000000004` and `0.3` — the same
+    // persisted patch — collapse to one key instead of diverging.
+    const fingerprintInput =
+      typeof dto.cost === 'number'
+        ? { ...dto, cost: Math.round(dto.cost * 100) / 100 }
+        : dto;
     const effectiveClientRequestId = clientRequestId
       ? `${clientRequestId}:${createHash('sha1')
-          .update(JSON.stringify(dto, Object.keys(dto as object).sort()))
+          .update(canonicalJson(fingerprintInput))
           .digest('hex')
           .slice(0, 12)}`
       : clientRequestId;
