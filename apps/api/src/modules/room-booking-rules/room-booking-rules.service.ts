@@ -73,71 +73,37 @@ export class RoomBookingRulesService {
   ) {}
 
   /**
-   * Phase 1.5 sub-step 6.E — auto-recompile a workflow_definition for
-   * a rule whose approval_config is non-null. Idempotent + atomic via the
-   * `ensure_room_booking_rule_workflow_definition` PL/pgSQL RPC (migration
-   * 00400 §2.6.7) which row-locks the rule, computes the next version
-   * under the lock, INSERTs the new definition row, archives prior
-   * versions safe to archive, and flips the rule's FK — all in one tx.
+   * Phase 1.5 (Universal Workflow Architecture) — compile the approval
+   * graph for a rule whose `approval_config` is non-null. Pure compile
+   * only: persistence (rule INSERT/UPDATE + workflow_definition mint +
+   * FK flip) is the consolidating PL/pgSQL RPCs' job
+   * (`create_room_booking_rule_with_workflow` /
+   * `update_room_booking_rule_with_workflow`, migration
+   * 00406_room_booking_rule_with_workflow_rpcs.sql), which do all writes
+   * in ONE transaction. There is no longer an INSERT-then-recompile
+   * window, so no TS-side compensation.
    *
-   * Called from `.create()` and `.update()` on every save that has
-   * non-null `approval_config`. When `approval_config IS NULL` (the
-   * "rule doesn't require approval" case) this is a no-op; the rule's
-   * `workflow_definition_id` stays NULL and runtime falls back to the
-   * legacy createApprovalRows path (which itself no-ops when
-   * approvalConfig is null).
+   * Returns the compiled graph_definition (to hand to the create RPC)
+   * or `null` when `approval_config` is null (the "rule doesn't require
+   * approval" case — the RPC then skips the workflow_definition mint and
+   * leaves `workflow_definition_id` NULL; runtime falls back to the
+   * legacy createApprovalRows path which itself no-ops when there's
+   * nothing to approve).
    *
-   * Failure mode: throws the compiler's
-   * `workflow_definition.compilation_failed` (422) on a malformed
-   * approval_config, OR the RPC's `P0002` (rule not found in tenant) /
-   * other PL/pgSQL errors. Caller propagates — the rule INSERT/UPDATE
-   * has already committed by then, so a subsequent retry can re-run
-   * recompile via re-saving the rule. This is acceptable because the
-   * RPC body is idempotent (the unique index on (tenant_id,
-   * source_rule_id, version) + the per-rule FOR UPDATE lock prevent
-   * duplicate version numbers).
+   * The compiler throws `workflow_definition.compilation_failed` (422)
+   * on a malformed approval_config; let it propagate verbatim — it's
+   * already the right error code for the caller.
    */
-  private async recompileApprovalWorkflow(
-    ruleId: string,
-    tenantId: string,
+  private compileApprovalGraph(
     ruleName: string,
     approvalConfig: ApprovalConfig | null,
-  ): Promise<void> {
-    if (!approvalConfig) {
-      // No approval_config → no workflow. Leave workflow_definition_id NULL;
-      // legacy runtime falls back to createApprovalRows which itself
-      // skips when there's nothing to approve.
-      return;
-    }
-    // The compiler throws `workflow_definition.compilation_failed` (422)
-    // on a malformed approval_config; let it propagate verbatim — it's
-    // already the right error code for the caller. (Adversarial-review
-    // I2 fix 2026-05-14: previously the RPC error AND compile error both
-    // got wrapped in `workflow.advance_failed`, losing the cause.)
+  ): unknown | null {
+    if (!approvalConfig) return null;
     const compiled = this.approvalCompiler.compile(approvalConfig, {
       ruleName,
       ruleType: 'room_booking',
     });
-    const { error } = await this.supabase.admin.rpc(
-      'ensure_room_booking_rule_workflow_definition',
-      {
-        p_rule_id: ruleId,
-        p_tenant_id: tenantId,
-        p_graph_definition: compiled.graphDefinition,
-        p_rule_name: ruleName,
-      },
-    );
-    if (error) {
-      // RPC-layer failure (P0002 rule-not-found, DB wobble, FK violation).
-      // Caller (create/update) treats this as a corrupting partial-write
-      // and compensates by deleting/rolling-back the rule (see L203 +
-      // L290 catch-blocks). The error code is server-class so the FE
-      // shows a "couldn't save the rule" toast rather than a validation
-      // banner.
-      throw AppErrors.server('room_rule.workflow_recompile_failed', {
-        detail: `ensure_room_booking_rule_workflow_definition RPC failed: ${error.message}`,
-      });
-    }
+    return compiled.graphDefinition;
   }
 
   async list(filters: RuleListFilters = {}) {
@@ -178,8 +144,14 @@ export class RoomBookingRulesService {
     const tenant = TenantContext.current();
     this.validateCreateInput(dto);
 
-    const insertBody: Record<string, unknown> = {
-      tenant_id: tenant.id,
+    // Phase 1.5 (Universal Workflow Architecture): the rule INSERT +
+    // workflow_definition mint + FK flip are now ONE transaction in the
+    // `create_room_booking_rule_with_workflow` PL/pgSQL RPC (migration
+    // 00406_room_booking_rule_with_workflow_rpcs.sql). This replaces the
+    // legacy INSERT-then-recompile-then-TS-compensate path (commit
+    // 2a5f1af3): there is no partial-write window, so the
+    // delete-the-rule-on-recompile-failure block is gone.
+    const ruleData: Record<string, unknown> = {
       name: dto.name.trim(),
       description: dto.description?.trim() || null,
       target_scope: dto.target_scope,
@@ -192,66 +164,57 @@ export class RoomBookingRulesService {
       template_id: dto.template_id ?? null,
       template_params: dto.template_params ?? null,
       active: dto.active ?? true,
-      created_by: actorUserId,
-      updated_by: actorUserId,
     };
 
-    const { data, error } = await this.supabase.admin
-      .from('room_booking_rules')
-      .insert(insertBody)
-      .select()
-      .single();
-    if (error) throw error;
+    // Compile the approval graph before the write (the compiler throws
+    // `workflow_definition.compilation_failed` (422) on a malformed
+    // config — surface that to the caller before touching the DB). NULL
+    // when the rule has no approval_config: the RPC then skips the
+    // workflow_definition mint and leaves workflow_definition_id NULL.
+    const graphDefinition = this.compileApprovalGraph(
+      dto.name.trim(),
+      (dto.approval_config ?? null) as ApprovalConfig | null,
+    );
 
-    await this.writeVersion(data.id, tenant.id, 'create', null, data, actorUserId);
-    await this.emitAudit('room_booking_rule.created', data.id, {
-      name: data.name,
-      effect: data.effect,
-      target_scope: data.target_scope,
-    });
-    // Phase 1.5 sub-step 6.E: auto-mint workflow_definition + flip the
-    // rule's workflow_definition_id FK iff approval_config is non-null.
-    //
-    // Adversarial-review I1 fix (2026-05-14): the rule INSERT above is
-    // already committed by the time we call the recompile RPC. If the
-    // RPC fails (DB wobble, malformed config that slipped past the
-    // compiler's validation), the rule lives on with
-    // workflow_definition_id=NULL + a non-null approval_config — it
-    // would silently fall through the booking-flow cutover gate to the
-    // legacy createApprovalRows path. The fix here is a TS-side
-    // compensation: on recompile failure, DELETE the just-INSERTed rule
-    // so the admin sees a clean 500 + nothing in the table to retry
-    // against. The proper long-term fix is a
-    // `create_room_booking_rule_with_workflow` consolidating PL/pgSQL
-    // RPC per CLAUDE.md "multi-step writes are RPCs" — tracked as a
-    // follow-up; this compensation closes the partial-failure window.
-    try {
-      await this.recompileApprovalWorkflow(
-        data.id,
-        tenant.id,
-        data.name,
-        data.approval_config as ApprovalConfig | null,
-      );
-    } catch (err) {
-      // Best-effort rollback. If THIS delete fails we're in real
-      // trouble — log + throw the original error so the admin sees the
-      // root cause. The orphan rule survives in the table but at least
-      // the admin knows.
-      try {
-        await this.supabase.admin
-          .from('room_booking_rules')
-          .delete()
-          .eq('id', data.id)
-          .eq('tenant_id', tenant.id);
-      } catch (deleteErr) {
-        console.error(
-          '[room-booking-rules] orphan-rule compensation delete FAILED — manual cleanup required',
-          { ruleId: data.id, tenantId: tenant.id, recompileErr: err, deleteErr },
-        );
-      }
-      throw err;
+    const { data, error } = await this.supabase.admin.rpc(
+      'create_room_booking_rule_with_workflow',
+      {
+        p_tenant_id: tenant.id,
+        p_rule_data: ruleData,
+        p_graph_definition: graphDefinition,
+        p_actor_user_id: actorUserId,
+      },
+    );
+    if (error) {
+      // RPC-layer failure (P0001 bad input, P0002 not found, DB wobble,
+      // cross-tenant FK trigger). Server-class so the FE shows a
+      // "couldn't save the rule" toast rather than a validation banner.
+      throw AppErrors.server('room_rule.workflow_recompile_failed', {
+        detail: `create_room_booking_rule_with_workflow RPC failed: ${error.message}`,
+      });
     }
-    return data;
+    const result = (data ?? null) as { rule: Record<string, unknown> } | null;
+    if (!result?.rule) {
+      throw AppErrors.server('room_rule.workflow_recompile_failed', {
+        detail: 'create_room_booking_rule_with_workflow RPC returned no rule',
+      });
+    }
+    const rule = result.rule;
+
+    await this.writeVersion(
+      rule.id as string,
+      tenant.id,
+      'create',
+      null,
+      rule,
+      actorUserId,
+    );
+    await this.emitAudit('room_booking_rule.created', rule.id as string, {
+      name: rule.name,
+      effect: rule.effect,
+      target_scope: rule.target_scope,
+    });
+    return rule;
   }
 
   async update(id: string, patch: UpdateRuleDto, actorUserId: string | null) {
@@ -262,36 +225,56 @@ export class RoomBookingRulesService {
       throw AppErrors.validationFailed('room_rule.invalid_effect', { detail: `unknown effect: ${patch.effect}` });
     }
 
-    const body: Record<string, unknown> = {
-      updated_at: new Date().toISOString(),
-      updated_by: actorUserId,
-    };
+    // Build the sparse patch — ONLY keys present in the DTO are sent; the
+    // RPC keeps every absent column at its current value (CLAUDE.md
+    // "multi-step writes are RPCs": the UPDATE + recompile are one tx in
+    // `update_room_booking_rule_with_workflow`, migration 00406).
+    const rulePatch: Record<string, unknown> = {};
     if (patch.name !== undefined) {
       const trimmed = patch.name.trim();
       if (!trimmed) throw AppErrors.validationFailed('room_rule.name_required', { detail: 'name cannot be empty' });
-      body.name = trimmed;
+      rulePatch.name = trimmed;
     }
-    if (patch.description !== undefined) body.description = patch.description?.trim() || null;
-    if (patch.target_scope !== undefined) body.target_scope = patch.target_scope;
-    if (patch.target_id !== undefined) body.target_id = patch.target_id;
-    if (patch.applies_when !== undefined) body.applies_when = patch.applies_when;
-    if (patch.effect !== undefined) body.effect = patch.effect;
-    if (patch.approval_config !== undefined) body.approval_config = patch.approval_config;
-    if (patch.denial_message !== undefined) body.denial_message = patch.denial_message?.trim() || null;
-    if (patch.priority !== undefined) body.priority = patch.priority;
-    if (patch.template_id !== undefined) body.template_id = patch.template_id;
-    if (patch.template_params !== undefined) body.template_params = patch.template_params;
-    if (patch.active !== undefined) body.active = patch.active;
+    if (patch.description !== undefined) rulePatch.description = patch.description?.trim() || null;
+    if (patch.target_scope !== undefined) rulePatch.target_scope = patch.target_scope;
+    if (patch.target_id !== undefined) rulePatch.target_id = patch.target_id;
+    if (patch.applies_when !== undefined) rulePatch.applies_when = patch.applies_when;
+    if (patch.effect !== undefined) rulePatch.effect = patch.effect;
+    if (patch.approval_config !== undefined) rulePatch.approval_config = patch.approval_config;
+    if (patch.denial_message !== undefined) rulePatch.denial_message = patch.denial_message?.trim() || null;
+    if (patch.priority !== undefined) rulePatch.priority = patch.priority;
+    if (patch.template_id !== undefined) rulePatch.template_id = patch.template_id;
+    if (patch.template_params !== undefined) rulePatch.template_params = patch.template_params;
+    if (patch.active !== undefined) rulePatch.active = patch.active;
 
-    const { data, error } = await this.supabase.admin
-      .from('room_booking_rules')
-      .update(body)
-      .eq('id', id)
-      .eq('tenant_id', tenant.id)
-      .select()
-      .single();
-    if (error) throw error;
-    if (!data) throw AppErrors.notFoundWithCode('room_rule.not_found', `Rule ${id} not found`);
+    // Recompile iff approval_config was in the patch OR the rule's name
+    // changed (the rule name is the workflow_definitions.name suffix).
+    // The RPC additionally no-ops the recompile when the rule has no
+    // approval_config — but compute the flag here to mirror prior
+    // behaviour exactly (changing effect/applies_when does NOT recompile;
+    // the graph shape derives solely from approval_config).
+    const recompile = patch.approval_config !== undefined || patch.name !== undefined;
+
+    const { data, error } = await this.supabase.admin.rpc(
+      'update_room_booking_rule_with_workflow',
+      {
+        p_tenant_id: tenant.id,
+        p_rule_id: id,
+        p_patch: rulePatch,
+        p_recompile: recompile,
+        p_actor_user_id: actorUserId,
+      },
+    );
+    if (error) {
+      throw AppErrors.server('room_rule.workflow_recompile_failed', {
+        detail: `update_room_booking_rule_with_workflow RPC failed: ${error.message}`,
+      });
+    }
+    const result = (data ?? null) as { rule: Record<string, unknown> } | null;
+    if (!result?.rule) {
+      throw AppErrors.notFoundWithCode('room_rule.not_found', `Rule ${id} not found`);
+    }
+    const rule = result.rule;
 
     const changeType: ChangeType =
       patch.active === false && before.active
@@ -299,26 +282,12 @@ export class RoomBookingRulesService {
         : patch.active === true && !before.active
           ? 'enable'
           : 'update';
-    await this.writeVersion(id, tenant.id, changeType, before, data, actorUserId);
+    await this.writeVersion(id, tenant.id, changeType, before, rule, actorUserId);
     await this.emitAudit(`room_booking_rule.${changeType}`, id, {
-      name: data.name,
-      effect: data.effect,
+      name: rule.name,
+      effect: rule.effect,
     });
-    // Phase 1.5 sub-step 6.E: recompile iff approval_config was in the
-    // patch OR the rule's name changed (rule name is the workflow_
-    // definitions.name suffix). When approval_config is unchanged AND
-    // name is unchanged, skip the RPC call to avoid minting a no-op
-    // version row. Note: changing effect or applies_when does NOT
-    // recompile — the graph shape is derived solely from approval_config.
-    if (patch.approval_config !== undefined || patch.name !== undefined) {
-      await this.recompileApprovalWorkflow(
-        id,
-        tenant.id,
-        data.name,
-        data.approval_config as ApprovalConfig | null,
-      );
-    }
-    return data;
+    return rule;
   }
 
   async softDelete(id: string, actorUserId: string | null) {
