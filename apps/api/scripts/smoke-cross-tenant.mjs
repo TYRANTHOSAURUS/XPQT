@@ -80,6 +80,20 @@ const ADMIN_ROLE_ID = '91000000-0000-0000-0000-000000000001';
 // self-add escalation probe (team_members feeds ticket_visibility_ids).
 const TEAM_ID = '94000000-0000-0000-0000-000000000001';
 
+// Slice 11.2b (2026-05-16, codex risk #2) — the "one live case" proving
+// the @RequirePermission re-gate delivers what blanket AdminGuard
+// structurally could NOT: a non-admin role (type='agent', NOT 'admin')
+// holding exactly `spaces.create` can POST /spaces. Under the old
+// AdminGuard (hard role.type==='admin') this same role 403'd; under
+// @RequirePermission('spaces.create') it passes the guard. Fixed UUIDs
+// so the finally-cleanup is deterministic. Assigned to the existing
+// NONADMIN user — the proof section runs LAST (after every Slice-9/10
+// probe that asserts this user 403s) so it cannot perturb them, and
+// user_has_permission re-evaluates roles.permissions live per request
+// (no token re-mint needed).
+const PROOF_ROLE_ID = '91000000-0000-0000-0000-0000000011b2';
+const PROOF_ASSIGNMENT_ID = '96000000-0000-0000-0000-0000000011b2';
+
 // Mirror smoke-tickets.mjs:86-87 — TENANT_B fixture seed shape.
 const TENANT_B_ID = '00000000-0000-0000-0000-0000000000b1';
 
@@ -118,6 +132,70 @@ async function ensureTenantBFixture() {
     throw new Error(
       `ensureTenantBFixture: psql seed failed: ${e.message}\nstdout: ${stdout}\nstderr: ${stderr}`,
     );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Slice 11.2b — non-admin-WITH-permission proof fixture.
+// Idempotent seed + deterministic teardown. Same psql/replica pattern
+// as ensureTenantBFixture (roles + user_role_assignments carry audit
+// triggers that have drifted from migrations — out of scope here).
+// ─────────────────────────────────────────────────────────────────────
+
+function proofDbArgs() {
+  const dbPass = env.SUPABASE_DB_PASS;
+  if (!dbPass) {
+    throw new Error(
+      'Slice 11.2b proof: SUPABASE_DB_PASS missing from .env — cannot seed the non-admin proof role',
+    );
+  }
+  const dbUrl =
+    env.SUPABASE_DB_URL ||
+    'postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres';
+  return { dbPass, dbUrl };
+}
+
+function seedProofRoleFixture() {
+  const { dbPass, dbUrl } = proofDbArgs();
+  // type='agent' — explicitly NOT 'admin'. permissions holds exactly
+  // spaces.create and nothing else. This is the role AdminGuard would
+  // have 403'd (role.type !== 'admin') but @RequirePermission lets
+  // through.
+  const sql = `
+    set session_replication_role = 'replica';
+    insert into public.roles (id, tenant_id, name, description, permissions, type, active)
+      values ('${PROOF_ROLE_ID}', '${TENANT_A_ID}', 'xtenant-proof spaces.create',
+              'RLS Slice 11.2b proof — non-admin (agent) role holding exactly spaces.create',
+              '["spaces.create"]'::jsonb, 'agent', true)
+      on conflict (id) do update
+        set permissions = excluded.permissions, type = excluded.type, active = true;
+    insert into public.user_role_assignments (id, tenant_id, user_id, role_id, active)
+      values ('${PROOF_ASSIGNMENT_ID}', '${TENANT_A_ID}', '${NONADMIN_USER_ID}', '${PROOF_ROLE_ID}', true)
+      on conflict (id) do update set active = true;
+    set session_replication_role = 'origin';
+  `;
+  execFileSync('psql', [dbUrl, '-v', 'ON_ERROR_STOP=1', '-c', sql], {
+    env: { ...process.env, PGPASSWORD: dbPass },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function cleanupProofRoleFixture() {
+  try {
+    const { dbPass, dbUrl } = proofDbArgs();
+    // Order: assignment → role (FK), then any space the proof POST
+    // actually created (idempotent; harmless if it 400'd on the body).
+    const sql = `
+      delete from public.user_role_assignments where id = '${PROOF_ASSIGNMENT_ID}';
+      delete from public.roles where id = '${PROOF_ROLE_ID}';
+      delete from public.spaces where tenant_id = '${TENANT_A_ID}' and name = 'xtenant-11.2b-proof';
+    `;
+    execFileSync('psql', [dbUrl, '-v', 'ON_ERROR_STOP=1', '-c', sql], {
+      env: { ...process.env, PGPASSWORD: dbPass },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    console.log(`  ! slice11.2b-cleanup failed (non-fatal): ${e.message}`);
   }
 }
 
@@ -183,7 +261,13 @@ async function probe(name, options) {
     (expect === 'badrequest' && r.status === 400) ||
     (expect === 'unauthorized' && r.status === 401) ||
     (expect === 'forbidden' && r.status === 403) ||
-    (expect === 'notfound' && r.status === 404);
+    (expect === 'notfound' && r.status === 404) ||
+    // Slice 11.2b: "the permission guard let it through". 403 = denied
+    // by the guard, 401 = no platform user (guard couldn't resolve the
+    // caller). Anything else (2xx, or 400/422 business validation on the
+    // body) proves the @RequirePermission gate PASSED — which is the
+    // whole proof. Robust to POST /spaces body-validation variance.
+    (expect === 'not_forbidden' && r.status !== 403 && r.status !== 401);
   const txt = await r.text();
   if (ok) {
     results.pass += 1;
@@ -457,6 +541,47 @@ async function probe(name, options) {
     );
   } catch (e) {
     console.log(`  ! slice10-cleanup failed (non-fatal): ${e.message}`);
+  }
+
+  // ── Slice 11.2b: non-admin WITH the permission must NOT be 403 ──
+  // codex risk #2's "one live case". Runs LAST so seeding spaces.create
+  // onto NONADMIN cannot flip the earlier Slice-9/10 403 assertions
+  // (which use the same user). Proves the @RequirePermission re-gate
+  // delivers what blanket AdminGuard structurally could not: a
+  // non-admin (type='agent') role that holds exactly spaces.create
+  // passes the guard where AdminGuard (role.type==='admin') 403'd it.
+  console.log(
+    '\n─── Slice 11.2b: non-admin WITH permission (proves the re-gate)',
+  );
+  try {
+    seedProofRoleFixture();
+    // Sanity: the SAME role/user with NO spaces.create still 403s on a
+    // different key's route — isolates "the grant did it", not "the
+    // user is now privileged". POST /workflows needs workflows.create,
+    // which this role does not hold.
+    await probe('POST /workflows  (non-admin, role lacks workflows.create → still 403)', {
+      url: `${API_BASE}/api/workflows`,
+      method: 'POST',
+      headers: nonAdminA,
+      body: { name: 'xtenant-11.2b-neg', graph_definition: {} },
+      expect: 'forbidden',
+    });
+    // The proof: same non-admin user, now holding spaces.create, hits
+    // POST /spaces. NOT 403/401 ⇒ the permission guard passed (2xx, or
+    // 400/422 body-validation — either way the gate let it through).
+    await probe('POST /spaces  (non-admin role holds spaces.create → guard PASSES)', {
+      url: `${API_BASE}/api/spaces`,
+      method: 'POST',
+      headers: nonAdminA,
+      body: { name: 'xtenant-11.2b-proof', type: 'site' },
+      expect: 'not_forbidden',
+    });
+  } catch (e) {
+    results.fail += 1;
+    results.failed.push('Slice 11.2b proof (seed/probe threw)');
+    console.log(`  ✗ Slice 11.2b proof threw: ${e.message}`);
+  } finally {
+    cleanupProofRoleFixture();
   }
 
   console.log('');

@@ -504,6 +504,30 @@ Remaining:
 - Unchanged opens: **P4** browser-direct PostgREST / Supabase Storage RLS investigation; global `ValidationPipe` gap (separate API-hardening backlog); GET info-disclosure — for the Slice-9 user-management open GETs (the Slice-2 surface is now `.read`-gated, no longer plain-readable, so that part of the P2 is closed by 11.3).
 - Commits: (pending this change).
 
+#### Update — 2026-05-16 (Slice 11.2b — non-admin-WITH-permission live proof + key-mapping unit test)
+
+Original finding:
+- codex risk #2 on the Slice-11 re-gate ("need one live case proving a non-admin role granted the key actually works; and unit tests that assert every decorated mutation calls the expected permission key"), from the Slice 11.1+11.2 decision block.
+- Location: `docs/follow-ups/audits/04-rls-security.md` (the 2026-05-16 Slice 11.1+11.2 + Slice 11.3 Update blocks).
+
+Status:
+- closed — both halves delivered and green. The endpoint→key mapping table is in the Slice 11.3 block above.
+
+Changed:
+- `apps/api/scripts/smoke-cross-tenant.mjs`: new `seedProofRoleFixture()` / `cleanupProofRoleFixture()` (idempotent psql seed + deterministic finally-teardown, same replica-role pattern as `ensureTenantBFixture`); new `probe` `expect:'not_forbidden'` mode (ok ⇔ status ∉ {401,403} — "the guard let it through", robust to POST-body validation variance); a **Slice 11.2b** section that runs LAST (so seeding `spaces.create` onto the existing NONADMIN user cannot perturb the Slice-9/10 403 assertions on that same user) with a **negative control** (same user/role lacking `workflows.create` → `POST /workflows` still **403**) and the **proof** (same non-admin `type='agent'` role now holding exactly `spaces.create` → `POST /spaces` → **201**, i.e. NOT 403).
+- `apps/api/src/common/require-permission-routes.spec.ts` (NEW): asserts every re-gated route's `@RequirePermission` metadata equals the audited catalog key (the run-and-compile mirror of the Slice-11.3 mapping table), class-level keys, the must-stay-OPEN Slice-9 operational GETs + public branding read (re-gate widened/narrowed neither), and that every mapped key passes `validatePermission`. (`isomorphic-dompurify` stubbed — `BrandingController`'s transitive `svg-sanitizer`→jsdom import breaks under jest; metadata-only test never sanitizes.)
+
+Verified:
+- `pnpm --filter @prequest/api run test -- require-permission-routes` -> **88/88** pass.
+- `pnpm smoke:cross-tenant` -> **24/24**, exit 0. Decisive line: `POST /spaces (non-admin role holds spaces.create → guard PASSES) → HTTP 201`. Under the prior blanket `@UseGuards(AdminGuard)` (hard `role.type==='admin'`, `admin.guard.ts:61`) that exact `type='agent'` role 403'd; under `@RequirePermission('spaces.create')` it 201s — the structural proof the re-gate delivers what AdminGuard could not. Negative control `POST /workflows … → 403` confirms it is the *grant* (not user privilege) doing it.
+- Post-run remote check: `roles`/`user_role_assignments`/`spaces` proof rows all `count=0` — finally-teardown leaves zero fixture residue.
+- (Prior Slice-11.3 gates unchanged: 27/27 + 88/88 unit, smoke:work-orders 109/109.)
+
+Remaining:
+- Whole-of-Slice-11 `/full-review` + codex (next).
+- Unchanged opens: P4 browser-direct / Storage RLS; global `ValidationPipe` gap; Slice-9 open-GET info-disclosure (the Slice-2 read surface is now `.read`-gated by 11.3).
+- Commits: Slice 11.3 `5d6f1b6f`; this change (pending).
+
 ## Agent Handoff Prompt
 
 ```text
