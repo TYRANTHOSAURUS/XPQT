@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Param, Body, Query } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Body, Query, UseGuards } from '@nestjs/common';
 import {
   SpaceService,
   CreateSpaceDto,
@@ -6,7 +6,13 @@ import {
   MoveSpaceDto,
   BulkUpdateDto,
 } from './space.service';
+import { AdminGuard } from '../auth/admin.guard';
 
+// docs/follow-ups/audits/04-rls-security.md Slice 10 (2026-05-16).
+// Spaces are the tenant location hierarchy (buildings/floors/rooms)
+// that feeds booking, floor-plan, routing location-scope and
+// ticket/visitor visibility closures. Mutations are admin-only. GETs
+// stay open — heavily operational (every location picker reads them).
 @Controller('spaces')
 export class SpaceController {
   constructor(private readonly spaceService: SpaceService) {}
@@ -36,6 +42,7 @@ export class SpaceController {
   }
 
   @Patch('bulk')
+  @UseGuards(AdminGuard)
   async bulk(@Body() dto: BulkUpdateDto) {
     return this.spaceService.bulkUpdate(dto);
   }
@@ -51,16 +58,19 @@ export class SpaceController {
   }
 
   @Post()
+  @UseGuards(AdminGuard)
   async create(@Body() dto: CreateSpaceDto) {
     return this.spaceService.create(dto);
   }
 
   @Patch(':id')
+  @UseGuards(AdminGuard)
   async update(@Param('id') id: string, @Body() dto: UpdateSpaceDto) {
     return this.spaceService.update(id, dto);
   }
 
   @Post(':id/move')
+  @UseGuards(AdminGuard)
   async move(@Param('id') id: string, @Body() dto: MoveSpaceDto) {
     return this.spaceService.move(id, dto);
   }
