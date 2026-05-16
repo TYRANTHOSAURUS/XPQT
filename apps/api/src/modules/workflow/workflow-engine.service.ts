@@ -160,6 +160,39 @@ export class WorkflowEngineService {
   }
 
   /**
+   * Pure resolver for the polymorphic (kind, entityId) pair off a raw
+   * `workflow_instances` row. Single source of truth for the column-
+   * selection rule so the DB-reading `getEntityKindForInstance` and the
+   * already-claimed-row path in `resume()` can't silently diverge.
+   *
+   * Rule: entity_kind NULL → 'case' (pre-00369 legacy default). For
+   * 'case', prefer case_id (post-00238 contract) and fall back to
+   * ticket_id (legacy NULL-able column). 'work_order' → work_order_id,
+   * 'booking' → booking_id. Returns entityId=null when the chosen
+   * polymorphic column is null; callers throw `workflow.advance_failed`.
+   */
+  private resolvePolymorphicEntity(row: {
+    entity_kind: WorkflowEntityKind | null;
+    case_id: string | null;
+    work_order_id: string | null;
+    booking_id: string | null;
+    ticket_id: string | null;
+  }): { kind: WorkflowEntityKind; entityId: string | null } {
+    const kind: WorkflowEntityKind = row.entity_kind ?? 'case';
+    let entityId: string | null;
+    if (kind === 'case') {
+      entityId = row.case_id ?? row.ticket_id;
+    } else if (kind === 'work_order') {
+      entityId = row.work_order_id;
+    } else if (kind === 'booking') {
+      entityId = row.booking_id;
+    } else {
+      entityId = row.ticket_id;
+    }
+    return { kind, entityId };
+  }
+
+  /**
    * Phase 1.5 sub-step 6.A — read the polymorphic (entity_kind, entityId) pair
    * off a `workflow_instances` row. Used by the `approval` executor to write
    * the right (target_entity_type, target_entity_id) pair on each
@@ -203,17 +236,7 @@ export class WorkflowEngineService {
       booking_id: string | null;
       ticket_id: string | null;
     };
-    const kind: WorkflowEntityKind = row.entity_kind ?? 'case';
-    let entityId: string | null;
-    if (kind === 'case') {
-      // Prefer case_id (post-00238 contract); fall back to ticket_id for
-      // legacy rows that pre-date 00369.
-      entityId = row.case_id ?? row.ticket_id;
-    } else if (kind === 'work_order') {
-      entityId = row.work_order_id;
-    } else {
-      entityId = row.booking_id;
-    }
+    const { kind, entityId } = this.resolvePolymorphicEntity(row);
     if (!entityId) {
       throw AppErrors.server('workflow.advance_failed', {
         detail: `missing polymorphic entityId for instance ${instanceId} (kind=${kind})`,
@@ -316,7 +339,6 @@ export class WorkflowEngineService {
       reason,
       cascadeContext,
       visitedSet,
-      { entityKind, entityId },
     );
   }
 
@@ -332,15 +354,14 @@ export class WorkflowEngineService {
    * not `(entity_kind, entity_id)` — the latter is ambiguous for
    * cascaded calls into booking-children whose entity row is gone.
    *
-   * `entityHint` is set when the caller already knows (entity_kind,
-   * entity_id) — `cancelInstance` resolved them from its own params
-   * before calling here. Recursive cascade calls don't carry the hint:
-   * the link row only has the child's entity descriptor, and the
-   * recursive call needs to read the actual instance row to get the
-   * true entity_kind off the row (since for a booking-child whose row
-   * was deleted, the link still names `child_entity_kind='booking'` +
-   * `child_entity_id=<bookingId>`, but the workflow_instance row has
-   * `booking_id=NULL` after the FK SET NULL — entity_kind survives).
+   * The entity (kind, id) is no longer threaded in: the
+   * `cancel_workflow_instance_with_approvals` RPC (00400) owns the
+   * entity resolution (CTE RETURNING + coalesce) and the audit emit, so
+   * a TS-side hint would be dead. For a booking-child whose row was
+   * deleted, the link still names `child_entity_kind='booking'` +
+   * `child_entity_id=<bookingId>` while the workflow_instance row has
+   * `booking_id=NULL` after the FK SET NULL — the RPC reads entity_kind
+   * off the surviving row.
    */
   private async cancelInstanceById(
     instanceId: string,
@@ -351,7 +372,6 @@ export class WorkflowEngineService {
       parentInstanceId: string;
     },
     visitedSet?: Set<string>,
-    entityHint?: { entityKind: WorkflowEntityKind; entityId: string },
   ): Promise<void> {
     const visited = visitedSet ?? new Set<string>();
     if (visited.has(instanceId)) {
@@ -375,9 +395,7 @@ export class WorkflowEngineService {
     // entity_kind + entity_id. With the RPC owning the atomic claim it
     // also owns the audit emit AND the entity_kind/entity_id lookup
     // (CTE RETURNING + coalesce), so the TS-side resolution is now dead.
-    // The `entityHint` parameter is no longer load-bearing; the upstream
-    // caller (cancelInstance) still passes it for backward compat but the
-    // RPC ignores it.
+    // That's why no entity (kind, id) hint is threaded into this method.
     //
     // cascadeContext (triggered_by_link_id + parent_instance_id) is NOT
     // threaded into the RPC payload. The link audit chain at
@@ -410,11 +428,6 @@ export class WorkflowEngineService {
       return;
     }
 
-    // entityHint is unused now that the RPC owns the entity resolution.
-    // Keeping the parameter on the signature for backward compat with the
-    // `cancelInstance` caller path that already computes + passes it; the
-    // refactor to remove it from the signature is a follow-up.
-    void entityHint;
     void cascadeContext;
 
     // Step 4: cascade through workflow_instance_links. Tenant-filtered
@@ -2012,18 +2025,14 @@ export class WorkflowEngineService {
       ticket_id: string | null;
     };
 
-    // Polymorphic entityId resolution — pick the right column off the row
-    // based on entity_kind. legacy default is ticket_id (pre-00369 rows).
-    // For 'case' kind, prefer case_id (post-00238 contract) over ticket_id.
-    const resumedEntityKind: WorkflowEntityKind = instance.entity_kind ?? 'case';
-    const resumedEntityId: string | null =
-      resumedEntityKind === 'case'
-        ? (instance.case_id ?? instance.ticket_id)
-        : resumedEntityKind === 'work_order'
-          ? instance.work_order_id
-          : resumedEntityKind === 'booking'
-            ? instance.booking_id
-            : instance.ticket_id;
+    // Polymorphic entityId resolution off the just-claimed row. Shares
+    // the column-selection rule with getEntityKindForInstance via
+    // resolvePolymorphicEntity (single source of truth) — resume() can't
+    // re-query through that method because the atomic claim already
+    // mutated status='waiting'→'active', so the row must come from the
+    // claim's RETURNING.
+    const { kind: resumedEntityKind, entityId: resumedEntityId } =
+      this.resolvePolymorphicEntity(instance);
     if (!resumedEntityId) {
       throw AppErrors.server('workflow.advance_failed', {
         detail: `missing polymorphic entityId for instance ${instanceId} (kind=${resumedEntityKind})`,
