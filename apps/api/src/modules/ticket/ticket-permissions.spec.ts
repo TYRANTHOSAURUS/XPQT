@@ -198,6 +198,25 @@ function makeDeps(
             }
             return { data: null, error: null };
           }
+          if (fn === 'set_entity_assignment') {
+            // Audit-02 P1-1: reassign now goes through this RPC. Apply the
+            // payload's assignees onto `row` so the post-RPC refetch (via
+            // getById) reflects the committed write — the row state is the
+            // write proof, same pattern as update_entity_combined above.
+            const payload =
+              ((args as { p_payload?: Record<string, unknown> }).p_payload ??
+                {}) as Record<string, unknown>;
+            row = {
+              ...row,
+              assigned_team_id:
+                (payload.assigned_team_id as string | null) ?? null,
+              assigned_user_id:
+                (payload.assigned_user_id as string | null) ?? null,
+              assigned_vendor_id:
+                (payload.assigned_vendor_id as string | null) ?? null,
+            } as Row;
+            return { data: { noop: false }, error: null };
+          }
           throw new Error(`unexpected rpc in mock: ${fn}`);
         },
       ),
@@ -225,6 +244,8 @@ function makeDeps(
       has_write_all: !!options.has_write_all,
     }),
     assertVisible: jest.fn().mockResolvedValue(undefined),
+    // Audit-02 P1-4: reassign now gates on the planning floor.
+    assertCanPlan: jest.fn().mockResolvedValue(undefined),
   };
 
   return {
@@ -562,14 +583,17 @@ describe('TicketService — per-action permission gates', () => {
             reason: 'team handover',
           },
           'auth-uid-non-admin',
+          'crid-1',
         ),
       ).rejects.toThrow(/tickets\.assign permission required/);
 
       expect(deps.permissionChecks).toEqual([
         { user_id: 'u1', permission: 'tickets.assign' },
       ]);
-      // No combined RPC was issued.
-      expect(combinedCalls(deps.rpcCalls)).toHaveLength(0);
+      // No assignment RPC was issued — the gate threw first.
+      expect(
+        deps.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
+      ).toHaveLength(0);
     });
 
     it('skips the permission RPC when caller has tickets.write_all', async () => {
@@ -586,18 +610,14 @@ describe('TicketService — per-action permission gates', () => {
           reason: 'team handover',
         },
         'auth-uid-admin',
+        'crid-2',
       );
 
       expect(deps.permissionChecks).toHaveLength(0);
-      // C-remediation strengthening (2026-05-11, F-IMP-A): the prior
-      // assertion (`visibility.loadContext was called`) was a weak proxy
-      // for "the mutation ran". `loadContext` fires during the gate even
-      // when the subsequent write is short-circuited, so it cannot
-      // distinguish "permission cleared, write happened" from "permission
-      // cleared, write threw". Reassign writes via `.from('tickets')
-      // .update(...)` (ticket.service.ts:1431) — its mock at the top of
-      // this file applies the patch onto `row`, so the row state IS the
-      // write proof.
+      // The write-proof: reassign now commits via the atomic
+      // `set_entity_assignment` RPC (Audit-02 P1-1). The mock applies the
+      // payload's assignees onto `row`, so the row state IS the proof the
+      // mutation ran (loadContext alone proves nothing about the outcome).
       expect(deps.row().assigned_team_id).toBe(
         '33333333-3333-3333-3333-333333333333',
       );
@@ -617,17 +637,17 @@ describe('TicketService — per-action permission gates', () => {
           reason: 'workflow auto-route',
         },
         SYSTEM_ACTOR,
+        'crid-3',
       );
 
       expect(deps.visibility.loadContext).not.toHaveBeenCalled();
+      expect(deps.visibility.assertCanPlan).not.toHaveBeenCalled();
       expect(deps.visibility.assertVisible).not.toHaveBeenCalled();
       expect(deps.permissionChecks).toHaveLength(0);
-      // codex-C-I1 (2026-05-11): also assert the write LANDED — gate-bypass
-      // tests previously only proved "permission path skipped", which would
-      // pass even if the reassign short-circuited before the
-      // `.from('tickets').update(...)` write at ticket.service.ts:1431. The
-      // supabase mock at the top of this file applies the patch onto `row`,
-      // so the row state IS the write proof.
+      // Also assert the write LANDED — gate-bypass tests must prove more
+      // than "permission path skipped". reassign commits via the atomic
+      // `set_entity_assignment` RPC (Audit-02 P1-1); the mock applies the
+      // payload onto `row`, so the row state IS the write proof.
       expect(deps.row().assigned_team_id).toBe(
         '33333333-3333-3333-3333-333333333333',
       );
@@ -647,16 +667,16 @@ describe('TicketService — per-action permission gates', () => {
           reason: 'team handover',
         },
         'auth-uid-agent',
+        'crid-4',
       );
 
       expect(deps.permissionChecks).toEqual([
         { user_id: 'u1', permission: 'tickets.assign' },
       ]);
-      // C-remediation strengthening (2026-05-11, F-IMP-A): assert that
-      // the write actually landed, not just that the gate was traversed
-      // (`loadContext` alone proves nothing about the write outcome).
-      // See the sibling `skips the permission RPC` test for the same
-      // pattern.
+      // Assert the write actually landed (via the atomic
+      // `set_entity_assignment` RPC, Audit-02 P1-1), not just that the
+      // gate was traversed. See the sibling `skips the permission RPC`
+      // test for the same pattern.
       expect(deps.row().assigned_team_id).toBe(
         '33333333-3333-3333-3333-333333333333',
       );

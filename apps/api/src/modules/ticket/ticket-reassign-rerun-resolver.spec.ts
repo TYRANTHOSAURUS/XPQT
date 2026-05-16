@@ -3,12 +3,18 @@
 //
 // Gap map §work-order.service.ts:1763 attributed the
 // rerunAssignmentResolver gap to work-orders, but the work-order side
-// currently throws NotImplementedException for `rerun_resolver: true`
-// (see work-order.service.ts:1717-1727). The actual rerun_resolver path
-// lives in ticket.service.ts:1210-1253 (case side). This spec covers
-// that real surface: even though routing tables are tenant-scoped, the
-// resolver returns a structured payload that we now validate before
-// writing into the tickets row.
+// throws for `rerun_resolver: true`. The actual rerun_resolver path
+// lives in ticket.service.ts (case side). This spec covers that real
+// surface: even though routing tables are tenant-scoped, the resolver
+// returns a structured payload that we validate before propagating it
+// into the atomic set_entity_assignment RPC.
+//
+// Audit-02 P1-1 cutover (2026-05-16): the rerun path is now
+// resolver-FIRST (no clear-then-write), records the single rich
+// routing_decisions row via RoutingService.recordDecision, then calls
+// set_entity_assignment WITHOUT `reason`. The tenant-validation guard
+// (this spec's subject) still fires before the RPC. P1-4: the entry
+// gate is now `assertCanPlan` (was `assertVisible('write')`).
 
 import { TicketService } from './ticket.service';
 
@@ -119,6 +125,8 @@ describe('TicketService.reassign(rerun_resolver=true) — Plan A.2 tenant valida
         has_write_all: true,
         has_admin: false,
       }),
+      // P1-4: reassign now gates on the planning floor, not write.
+      assertCanPlan: jest.fn().mockResolvedValue(undefined),
       assertVisible: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -176,6 +184,7 @@ describe('TicketService.reassign(rerun_resolver=true) — Plan A.2 tenant valida
           actor_person_id: 'p-1',
         },
         'auth-uid',
+        'crid-rerun-1',
       );
     } catch (e) {
       caught = e;

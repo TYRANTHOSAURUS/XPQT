@@ -4,6 +4,7 @@ import {
   buildPatchIdempotencyKey,
   buildCreateTicketIdempotencyKey,
   buildCreateTicketId,
+  buildReassignIdempotencyKey,
 } from '@prequest/shared';
 import { AppError, AppErrors, mapRpcErrorToAppError } from '../../common/errors';
 import { hasOwnDefined } from '../../common/has-own-defined';
@@ -1254,17 +1255,24 @@ export class TicketService {
     id: string,
     dto: ReassignDto,
     actorAuthUid: string,
-    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
-    // controller for `POST /tickets/:id/reassign`. Plumbed only today;
-    // Step 3+ uses it as the idempotency-key seed for the
-    // set_entity_assignment RPC (spec §3.2 + §3.9.1).
-    _clientRequestId?: string,
+    // Audit-02 P1-1 cutover (2026-05-16): threaded from
+    // RequireClientRequestIdGuard via the controller for
+    // `POST /tickets/:id/reassign` and used as the
+    // `set_entity_assignment` idempotency-key seed (spec §3.2 / §3.9.1).
+    clientRequestId?: string,
   ) {
     const tenant = TenantContext.current();
 
     if (actorAuthUid !== SYSTEM_ACTOR) {
       const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      await this.visibility.assertVisible(id, ctx, 'write');
+      // Audit-02 P1-4 (FORK 2, decided): reassign is an
+      // execution/ownership action, not a generic write. Gate on the
+      // planning floor (`assertCanPlan`) — the SAME floor the WO-side
+      // already enforces via `assertAssignPermission`. Deliberate
+      // behaviour change: a requester/watcher who can `write` a case but
+      // lacks the planning floor can no longer reassign it. WO-side is
+      // the reference; do not weaken it back to `assertVisible('write')`.
+      await this.visibility.assertCanPlan(id, ctx);
 
       // Reassign is by definition an assignment change — always require the
       // per-action `tickets.assign` permission (or `tickets.write_all`
@@ -1296,27 +1304,28 @@ export class TicketService {
       });
     }
 
-    const prev = {
-      team: current.assigned_team_id as string | null,
-      user: current.assigned_user_id as string | null,
-      vendor: current.assigned_vendor_id as string | null,
-    };
+    if (!clientRequestId) {
+      // Producer route — RequireClientRequestIdGuard enforces presence at
+      // the HTTP boundary; this hard-fail covers internal callers and
+      // keeps the idempotency key non-optional. Same registered code +
+      // factory as update() (ticket.service.ts:1122-1126).
+      throw AppErrors.badRequest(
+        'command_operations.client_request_id_required',
+        'POST /tickets/:id/reassign requires X-Client-Request-Id header per I1 (RequireClientRequestIdGuard).',
+      );
+    }
+
+    const idempotencyKey = buildReassignIdempotencyKey('case', id, clientRequestId);
+    const actorUserId = actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid;
 
     let nextTarget: { kind: 'team' | 'user' | 'vendor'; id: string } | null = null;
-    let chosenBy: 'manual_reassign' | 'rerun_resolver' = 'manual_reassign';
-    let strategy: string = 'manual';
-    let trace: Array<Record<string, unknown>> = [
-      { step: 'manual_reassign', matched: true, reason: dto.reason, by: dto.actor_person_id ?? null },
-    ];
 
     if (dto.rerun_resolver) {
-      // Clear current assignment and let the resolver pick fresh
-      await this.supabase.admin
-        .from('tickets')
-        .update({ assigned_team_id: null, assigned_user_id: null, assigned_vendor_id: null })
-        .eq('id', id)
-        .eq('tenant_id', tenant.id);
-
+      // Audit-02 P1-1 / FORK 1 (decided = option a): resolver-FIRST.
+      // The legacy path raw-nulled all three assignees BEFORE running the
+      // resolver — a crash between clear-and-rerun left the ticket
+      // unassigned forever. We never null-then-write: resolve the target
+      // first (read-only), then atomically assign via the RPC.
       const rtCfg = current.ticket_type_id
         ? (await this.supabase.admin
             .from('request_types')
@@ -1346,8 +1355,17 @@ export class TicketService {
         asset_id: (current.asset_id as string | null) ?? null,
         location_id: effectiveLocation,
       };
+      // (i) Read-only resolve.
       const result = await this.routingService.evaluate(evalCtx);
-      await this.routingService.recordDecision(id, evalCtx, result);
+      // (ii) RoutingService writes the SINGLE rich routing_decisions row
+      // (real strategy / chosen_by / trace / rule_id). Thread the human
+      // reason into recordDecision's context so the reason lands on the
+      // canonical resolver audit row — NOT a second `manual` row from the
+      // RPC (we omit `reason` from the RPC payload below, see (iii)).
+      await this.routingService.recordDecision(id, evalCtx, result, {
+        reassign_reason: dto.reason,
+        reassign_actor_person_id: dto.actor_person_id ?? null,
+      });
       if (result.target) {
         if (result.target.kind === 'team') nextTarget = { kind: 'team', id: result.target.team_id };
         else if (result.target.kind === 'user') nextTarget = { kind: 'user', id: result.target.user_id };
@@ -1357,9 +1375,10 @@ export class TicketService {
       // Plan A.2 / Commit 4 / gap map analogue of work-order rerunAssignmentResolver.
       // Routing definitions are tenant-scoped, but the resolver result is
       // a structured payload — if a routing-table compromise, rule import,
-      // or test-time override returned a foreign uuid, we'd write it
-      // blind to the tickets row. Validate before propagating into
-      // `updates` below.
+      // or test-time override returned a foreign uuid, we'd write it blind
+      // to the tickets row. Validate before handing it to the RPC.
+      // (The RPC also re-validates via validate_assignees_in_tenant; this
+      // surfaces a clean AppError before the idempotency row is written.)
       if (nextTarget) {
         await validateAssigneesInTenant(
           this.supabase,
@@ -1372,65 +1391,82 @@ export class TicketService {
           { skipForSystemActor: actorAuthUid === SYSTEM_ACTOR },
         );
       }
-      chosenBy = 'rerun_resolver';
-      strategy = result.strategy;
-      trace = [
-        { step: 'manual_reassign', matched: true, reason: dto.reason, by: dto.actor_person_id ?? null },
-        ...(result.trace as unknown as Array<Record<string, unknown>>),
-      ];
-    } else {
-      if (dto.assigned_team_id) nextTarget = { kind: 'team', id: dto.assigned_team_id };
-      else if (dto.assigned_user_id) nextTarget = { kind: 'user', id: dto.assigned_user_id };
-      else if (dto.assigned_vendor_id) nextTarget = { kind: 'vendor', id: dto.assigned_vendor_id };
+
+      // (iii) Atomic assignment via the canonical RPC, WITHOUT `reason`
+      // in the payload — so the RPC does NOT write a duplicate `manual`
+      // routing_decisions row. It still does the atomic assignment +
+      // status_category inheritance + `assignment_changed` activity +
+      // `ticket_assigned` domain event + command_operations idempotency.
+      const rerunPayload: Record<string, unknown> = {
+        actor_person_id: dto.actor_person_id ?? null,
+      };
+      rerunPayload.assigned_team_id = nextTarget?.kind === 'team' ? nextTarget.id : null;
+      rerunPayload.assigned_user_id = nextTarget?.kind === 'user' ? nextTarget.id : null;
+      rerunPayload.assigned_vendor_id = nextTarget?.kind === 'vendor' ? nextTarget.id : null;
+
+      const { error: rerunErr } = await this.supabase.admin.rpc('set_entity_assignment', {
+        p_entity_id: id,
+        p_entity_kind: 'case',
+        p_tenant_id: tenant.id,
+        p_actor_user_id: actorUserId,
+        p_idempotency_key: idempotencyKey,
+        p_payload: rerunPayload,
+      });
+      if (rerunErr) throw mapRpcErrorToAppError(rerunErr);
+
+      // (iv) ALSO emit one internal activity carrying the human reason —
+      // the RPC only wrote an `assignment_changed` system note (no
+      // reason, because we suppressed it). This keeps the rerun reason
+      // visible on the timeline as a note, parity with the manual path.
+      await this.addActivity(id, {
+        activity_type: 'system_event',
+        author_person_id: dto.actor_person_id,
+        visibility: 'internal',
+        content: dto.reason,
+        metadata: {
+          event: 'reassigned',
+          previous: {
+            team: current.assigned_team_id as string | null,
+            user: current.assigned_user_id as string | null,
+            vendor: current.assigned_vendor_id as string | null,
+          },
+          next: nextTarget,
+          mode: 'rerun_resolver',
+          reason: dto.reason,
+        },
+      });
+
+      return this.getById(id, SYSTEM_ACTOR);
     }
 
-    const updates: Record<string, unknown> = {
-      assigned_team_id: null,
-      assigned_user_id: null,
-      assigned_vendor_id: null,
-      status_category: nextTarget ? 'assigned' : 'new',
+    // ── Manual path (explicit assignee) ──────────────────────────────
+    // Audit-02 P1-1: ONE atomic RPC call replaces the 3 raw writes
+    // (assignment UPDATE + routing_decisions insert + addActivity). The
+    // RPC writes routing_decisions (`manual` / `manual_reassign`, with
+    // entity_kind/case_id set explicitly inside the RPC — P2-2 closed for
+    // this path) + the `reassigned` activity + the `ticket_assigned`
+    // domain event + command_operations idempotency in one transaction.
+    if (dto.assigned_team_id) nextTarget = { kind: 'team', id: dto.assigned_team_id };
+    else if (dto.assigned_user_id) nextTarget = { kind: 'user', id: dto.assigned_user_id };
+    else if (dto.assigned_vendor_id) nextTarget = { kind: 'vendor', id: dto.assigned_vendor_id };
+
+    const payload: Record<string, unknown> = {
+      reason: dto.reason,
+      actor_person_id: dto.actor_person_id ?? null,
     };
-    if (nextTarget?.kind === 'team') updates.assigned_team_id = nextTarget.id;
-    if (nextTarget?.kind === 'user') updates.assigned_user_id = nextTarget.id;
-    if (nextTarget?.kind === 'vendor') updates.assigned_vendor_id = nextTarget.id;
+    payload.assigned_team_id = nextTarget?.kind === 'team' ? nextTarget.id : null;
+    payload.assigned_user_id = nextTarget?.kind === 'user' ? nextTarget.id : null;
+    payload.assigned_vendor_id = nextTarget?.kind === 'vendor' ? nextTarget.id : null;
 
-    await this.supabase.admin.from('tickets').update(updates).eq('id', id).eq('tenant_id', tenant.id);
-
-    // Routing decision audit row. Convention (code-review C5): set the
-    // polymorphic columns explicitly on both case + WO sides — the 00232
-    // derive trigger remains as a defensive fallback, but writing them
-    // here makes the audit row deterministic at write time and removes the
-    // "depends on the trigger" coupling. Mirror of work-order.service.ts:1000.
-    await this.supabase.admin.from('routing_decisions').insert({
-      tenant_id: tenant.id,
-      ticket_id: id, // legacy soft pointer; FK to tickets dropped in 00233
-      entity_kind: 'case',
-      case_id: id,
-      strategy,
-      chosen_team_id: nextTarget?.kind === 'team' ? nextTarget.id : null,
-      chosen_user_id: nextTarget?.kind === 'user' ? nextTarget.id : null,
-      chosen_vendor_id: nextTarget?.kind === 'vendor' ? nextTarget.id : null,
-      chosen_by: chosenBy,
-      trace,
-      context: { reason: dto.reason, previous: prev, actor: dto.actor_person_id ?? null },
+    const { error: rpcErr } = await this.supabase.admin.rpc('set_entity_assignment', {
+      p_entity_id: id,
+      p_entity_kind: 'case',
+      p_tenant_id: tenant.id,
+      p_actor_user_id: actorUserId,
+      p_idempotency_key: idempotencyKey,
+      p_payload: payload,
     });
-
-    // Activity row. Mirrors the WO-side `reassigned` shape
-    // (work-order.service.ts:1039) — `reason` included in metadata for
-    // parity with WO surface. Code-review C2 alignment.
-    await this.addActivity(id, {
-      activity_type: 'system_event',
-      author_person_id: dto.actor_person_id,
-      visibility: 'internal',
-      content: dto.reason,
-      metadata: {
-        event: 'reassigned',
-        previous: prev,
-        next: nextTarget,
-        mode: chosenBy,
-        reason: dto.reason,
-      },
-    });
+    if (rpcErr) throw mapRpcErrorToAppError(rpcErr);
 
     return this.getById(id, SYSTEM_ACTOR);
   }

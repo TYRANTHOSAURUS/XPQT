@@ -87,7 +87,7 @@ Every step appends a `TraceEntry` to the decision's trace — whether it matched
 | Ticket create | `TicketService.create` → `create_ticket_with_automation` RPC | TS builds the `automation_plan` (effective location + scope override + workflow + SLA + optional routing). The RPC (00349/00350/00351) writes the ticket + routing decision row + audit/event rows in one PG tx and emits `sla.timer_recompute_required` + `workflow.start_required` to the outbox. Skipped if `ticket_kind = 'work_order'`; if the DTO supplies an assignee, routing is bypassed and no `routing_decisions` row is written. |
 | Approval granted | `ApprovalService.respond({ status: 'approved' })` → `grant_ticket_approval` RPC (00356) | RPC commits approval CAS + tickets `status_category='new'` + ticket_activities + domain_events atomically, then emits `sla.timer_recompute_required` (with `started_at = now()`) + `routing.evaluation_required` + `workflow.start_required` outbox events. The §3.9.3 handlers drain each event post-commit: SlaTimerHandler / RoutingEvaluationHandler / WorkflowStartHandler shipped in Step 11 / Step 12. |
 | Approval rejected | `ApprovalService.respond({ status: 'rejected' })` → `grant_ticket_approval` RPC (00356) | RPC commits approval CAS + tickets `status='rejected'` / `status_category='closed'` / `closed_at=now()` + ticket_activities + domain_events atomically. NO outbox events fire — a closed ticket has no further automation. Partial-decision (multi-step chain or parallel group with peers remaining non-terminal — `pending` or `delegated`) returns `kind='partial_approved'`, leaves the ticket in `pending_approval`, and emits nothing. |
-| Manual reassign with rerun | `TicketService.reassign({ rerun_resolver: true })` | Clears current assignment, re-evaluates, records a new `routing_decisions` row. |
+| Manual reassign with rerun | `TicketService.reassign({ rerun_resolver: true })` | **Resolver-first** (audit-02 P1-1, 2026-05-16): never clears assignment up front. Reads the resolver target, writes ONE rich `routing_decisions` row via `RoutingService.recordDecision` (real `strategy`/`chosen_by`/`trace`/`rule_id`, with the human reason threaded into `context`), then atomically applies the resolved assignees via `set_entity_assignment` **without** `reason` (so no duplicate `manual` audit row), plus one internal-visibility activity carrying the reason. |
 | Workflow-spawned child | `WorkflowEngineService.create_child_tasks` → `DispatchService.dispatch` | Goes through the full resolver + SLA + audit pipeline, same as manual dispatch. |
 | Manual dispatch | `DispatchService.dispatch` (called by `POST /tickets/:id/dispatch`) | Runs when the DTO doesn't supply an assignee. |
 | Inbound webhook | `WebhookIngestService.ingest` → `TicketService.create` → `create_ticket_with_automation` RPC | Webhook auth + mapping → normal create path. Routing + SLA + workflow all fire identically to any other create source. Webhooks with a `workflow_id` mapping thread it through `CreateTicketOptions.forceWorkflowDefinitionId` (post-cutover replacement for the legacy `skipWorkflow` flag), which the RPC tenant-validates, applies post-gate to `tickets.workflow_id`, and threads into the `workflow.start_required` outbox payload. A `workflow_forced_by_caller` activity breadcrumb records both the caller value and the request_type default it displaced. |
@@ -348,7 +348,7 @@ The `WorkOrderService.update()` (and `TicketService.update()`) orchestrator no l
 |---|---|---|
 | `PATCH /work-orders/:id` | `WorkOrderService.update(id, dto, actor, clientRequestId)` | **Canonical command surface.** Union DTO; preflight runs inline; one `update_entity_combined` RPC call commits every branch atomically. |
 | `GET /work-orders/:id/can-plan` | `WorkOrderService.canPlan(id, actor)` | Probe for the plandate gate. Used by the desk to disable affordances instead of waiting for a 403. |
-| `POST /work-orders/:id/reassign` | `WorkOrderService.reassign(id, dto, actor)` | Audited reassignment with required `reason`. **Still writes through a direct `.from('work_orders').update(...)` path** — not yet cut over to `update_entity_combined`. Slated for B.2.A Step 9. |
+| `POST /work-orders/:id/reassign` | `WorkOrderService.reassign(id, dto, actor, clientRequestId)` | Audited reassignment with required `reason` + `X-Client-Request-Id`. **Atomic via `set_entity_assignment` (00327 v2)** as of audit-02 P1-1 (2026-05-16) — assignment + `routing_decisions` + activity + domain event + idempotency in one tx. See §8a. |
 
 `UpdateWorkOrderDto` accepts any subset of:
 
@@ -436,13 +436,13 @@ Post-cutover, every branch's side-effects live inside `update_entity_combined` a
 - Watcher tenant validation mirrors `tenant-validation.ts:271-302`: each uuid must be a `persons` row with `active = true AND anonymized_at IS NULL AND left_at IS NULL`. Duplicate uuids in the input are deduped server-side (order-preserving) before the tenant check + the row write.
 - One `metadata_changed` activity row per call carries `metadata.changes = { <field>: { previous, next }, ... }`. No domain event, no outbox emit.
 
-`reassign` specifics:
+`reassign` specifics (audit-02 P1-1 cutover, 2026-05-16 — now atomic):
 
-- DTO `{ ...assignment_fields, reason, actor_person_id?, rerun_resolver? }`. `reason` is required (non-empty).
-- Writes a `routing_decisions` row with `entity_kind = 'work_order'` + `work_order_id` set explicitly. The 00232 derive trigger (which superseded 00230) would also fill these polymorphic columns via existence-check across `tickets` + `work_orders`, but writing them directly skips a per-row trigger lookup and makes the audit row deterministic on the application side.
-- `chosen_by = 'manual_reassign'`, `strategy = 'manual'`, `trace = [{ step: 'manual_reassign', matched: true, reason, by: actor_person_id }]`, `context = { reason, previous, actor }`.
-- Activity row: `system_event` with `visibility = 'internal'` (NOT `'system'` — the reason is human-authored and surfaces in the timeline as a note), `content = reason`, `author_person_id = actor_person_id ?? resolved-from-actor-uid`.
-- `rerun_resolver: true` is rejected with **501 NotImplemented** for now — the resolver-rerun path needs a planning-board-aware decision about whether to use the case_owner or child_dispatch routing context, and the existing case-side implementation in `ticket.service.ts:986-1029` is case-shaped. 501 (not 400) because the request shape is valid; the resource just doesn't implement that mode yet. Surface as a follow-up slice when the planning board needs it.
+- DTO `{ ...assignment_fields, reason, actor_person_id?, rerun_resolver? }`. `reason` is required (non-empty). `X-Client-Request-Id` is required (producer route; the service hard-fails internal callers without one).
+- **One atomic `set_entity_assignment` (00327 v2) call** replaces the former 3 non-atomic raw writes (assignment UPDATE + `routing_decisions` insert + activity insert) and the two `try/catch`-swallowed audit-error blocks. In one transaction the RPC commits: the assignment columns + `status_category` inheritance, the `routing_decisions` audit row (`strategy='manual'`, `chosen_by='manual_reassign'`, `entity_kind='work_order'` + `work_order_id` set **explicitly inside the RPC** — audit-02 P2-2 closed for this path), the `reassigned` `ticket_activities` row, the `ticket_assigned` `domain_events` row, and `command_operations` idempotency keyed `reassign:work_order:<id>:<crid>` (`buildReassignIdempotencyKey`). Audit failures now surface as a mapped `AppError`, not a console-swallowed log.
+- Idempotency: a retry with the same `X-Client-Request-Id` replays the cached result (no double routing_decisions/activity rows). Reusing a crid with a different payload raises `command_operations.payload_mismatch`.
+- A null post-RPC refetch throws `notFound` (the RPC committed under service_role + tenant match; a missing row is not-found, not a permission failure — audit-02 P2-4, mirrors the case-side F-IMP-1 fix on `update()`).
+- `rerun_resolver: true` is **still rejected** with `work_order.rerun_resolver_unsupported` (unchanged by this cutover) — the resolver-rerun path needs a planning-board-aware decision about whether to use the case_owner or child_dispatch routing context, and the case-side rerun implementation is case-shaped. Surface as a follow-up slice when the planning board needs it.
 
 ### Shared mechanics
 
@@ -482,16 +482,18 @@ Two endpoints can change a ticket's assignee. They differ in audit trail, not in
 
 Use when: bulk tooling, background jobs, trusted system actions where a reason is meaningless.
 
-### Audited `POST /tickets/:id/reassign`
+### Audited `POST /tickets/:id/reassign` — atomic (audit-02 P1-1, 2026-05-16)
 
-`ReassignDto` requires a `reason` string. Two modes:
+`ReassignDto` requires a `reason` string. `X-Client-Request-Id` is required (producer route; the service hard-fails internal callers without one). Both reassign paths (case + WO) are now atomic via `set_entity_assignment` (00327 v2) — the former 3 non-atomic raw writes are gone.
 
-- **Manual** (`rerun_resolver: false | undefined`): caller supplies the target assignee directly. Clears previous assignment, sets the new one.
-- **Rerun resolver** (`rerun_resolver: true`): clears assignment, re-invokes `ResolverService.resolve()` with the current `{location, asset, request_type, priority, domain}` (falls back to `asset.assigned_space_id` if `location_id` is null).
+**Permission floor (audit-02 P1-4, FORK 2 — decided):** reassign is an execution/ownership action, not a generic write. **Both** case- and WO-side gate on the **planning floor** (`TicketVisibilityService.assertCanPlan`) + the per-action `tickets.assign` permission (or `tickets.write_all`). The case-side was tightened in this slice (was `assertVisible('write')`, which admitted requesters/watchers); the WO-side already used `assertCanPlan` and is the reference — it was **not** weakened. Net behaviour change: a requester/watcher who can `write` a case but lacks the planning floor can no longer reassign it. See `docs/visibility.md` for the floor definition.
 
-Either mode:
-- Writes a `routing_decisions` row with `chosen_by: 'manual_reassign'` or `'rerun_resolver'`. In rerun mode, the resolver's own trace is appended after a `manual_reassign` step so both the human reason and the machine decision are captured.
-- Posts an **internal-visibility** activity (not `system_event`) with the reason in the `content` field — it shows up in the ticket timeline as a note.
+Two modes:
+
+- **Manual** (`rerun_resolver: false | undefined`): caller supplies the target assignee directly. ONE `set_entity_assignment` call (payload includes `reason`) atomically commits the assignment + `status_category` inheritance + a `routing_decisions` row (`strategy='manual'`, `chosen_by='manual_reassign'`, `entity_kind`/`case_id`|`work_order_id` set explicitly inside the RPC — audit-02 P2-2 closed for this path) + a `reassigned` activity + a `ticket_assigned` domain event + `command_operations` idempotency. No clear-then-write.
+- **Rerun resolver** (`rerun_resolver: true`, case-side only — FORK 1, decided = option a): **resolver-first, never clears assignment up front** (the legacy raw `assigned_*=null` pre-clear is removed — a crash mid-flow can no longer leave the case unassigned forever). Order: (i) `RoutingService.evaluate(...)` (read-only) resolves the target with the current `{location, asset, request_type, priority, domain}` (falls back to `asset.assigned_space_id` if `location_id` is null); (ii) `RoutingService.recordDecision(...)` writes the SINGLE rich `routing_decisions` row (real `strategy`/`chosen_by`/`trace`/`rule_id`), with the human `reason` (+ actor) threaded into its `context`; (iii) `set_entity_assignment` applies the resolved assignees atomically **without `reason`** in the payload (so it does NOT write a duplicate `manual` routing_decisions row — it still does the atomic assignment + `assignment_changed` activity + domain event + idempotency); (iv) one internal-visibility activity carries the human reason so the timeline still shows why the rerun happened. Net: exactly ONE routing_decisions row with full resolver fidelity, atomic idempotent assignment, reason preserved, no unassigned-forever hazard. WO-side rerun is still rejected (`work_order.rerun_resolver_unsupported`).
+
+Idempotency: a retry with the same `X-Client-Request-Id` replays the cached result (no double audit rows). Key shape `reassign:<kind>:<entityId>:<crid>` (`buildReassignIdempotencyKey`).
 
 Use when: a human is making the call and the reason matters for audit / ops review.
 

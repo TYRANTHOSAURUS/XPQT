@@ -61,8 +61,21 @@ export class RoutingService {
    * Persist a previously computed evaluation to `routing_decisions`.
    * Each call inserts a new row — routing history is append-only so
    * callers can see the full decision trail per ticket.
+   *
+   * `extraContext` (audit-02 P1-1 reassign cutover): the rerun_resolver
+   * reassign path threads the human `reason` (+ actor) through here so
+   * the reason is captured on the SINGLE canonical resolver audit row,
+   * instead of the RPC writing a second `manual` routing_decisions row.
+   * Merged into `context` — keeps the resolver-context keys + adds the
+   * caller's reassign breadcrumb. Other callers (none in prod today)
+   * are unaffected: omitting it yields the previous shape exactly.
    */
-  async recordDecision(ticketId: string, context: ResolverContext, evaluation: RoutingEvaluation) {
+  async recordDecision(
+    ticketId: string,
+    context: ResolverContext,
+    evaluation: RoutingEvaluation,
+    extraContext?: Record<string, unknown>,
+  ) {
     const tenant = TenantContext.current();
     await this.supabase.admin.from('routing_decisions').insert({
       tenant_id: tenant.id,
@@ -80,6 +93,7 @@ export class RoutingService {
         priority: context.priority,
         asset_id: context.asset_id,
         location_id: context.location_id,
+        ...(extraContext ?? {}),
       },
     });
   }

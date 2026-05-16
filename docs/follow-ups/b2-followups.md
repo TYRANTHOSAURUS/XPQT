@@ -162,12 +162,29 @@ Idempotency keys are stable across replays (same instance + node +
 entity ⇒ same key ⇒ `command_operations` short-circuits). All
 audit-row + domain-event emission moves to the RPC layer.
 
-**`WorkOrderService.reassign` and `TicketService.reassign` still remain
-outside §3.0** — both write via `.from('<table>').update(...)` plus a
-`routing_decisions` audit insert. Folding reassign into
-`set_entity_assignment` (§3.2) is a separate follow-up, not part of
-Step 9. Until then reassign is a known second write path for the
-reason field.
+**`WorkOrderService.reassign` and `TicketService.reassign` — CUT OVER /
+DONE (audit-02 P1-1, 2026-05-16).** Both paths are now atomic via
+`set_entity_assignment` (00327 v2). The former 3 non-atomic raw writes
+(`.from('<table>').update(...)` + `routing_decisions` insert + activity
+insert) and the WO-side's two `try/catch`-swallowed audit-error blocks
+are deleted. One RPC call commits assignment + `status_category`
+inheritance + `routing_decisions` (entity_kind/case_id|work_order_id
+set explicitly inside the RPC) + `reassigned` activity + `ticket_assigned`
+domain event + `command_operations` idempotency (key
+`reassign:<kind>:<id>:<crid>`, `buildReassignIdempotencyKey`) in one
+transaction. The case-side `rerun_resolver` branch no longer
+clears-then-writes (was an unassigned-forever hazard): it is now
+resolver-first → `RoutingService.recordDecision` (single rich audit
+row, reason threaded into `context`) → `set_entity_assignment` without
+`reason` → one internal activity carrying the reason. Permission floor
+parity also closed (audit-02 P1-4): both sides gate on `assertCanPlan`
+(case-side tightened from `assertVisible('write')`). Audit failures
+surface as mapped `AppError`s — no more silent swallow. This closes the
+deferred §3.2 reassign follow-up. Residual: `routing.service.ts
+recordDecision` + the routing-evaluation outbox handler still rely on
+the 00232 derive trigger for `entity_kind` (Slice-4-adjacent — out of
+scope here). Live smoke deferred (Slice 8 — no reassign probe exists;
+shared :3001 runtime contended by concurrent audit sessions).
 
 **Dead code removed (Commit C remediation, 2026-05-11).** The
 per-field `WorkOrderService` methods (`updateSla` / `setPlan` /

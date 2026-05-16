@@ -380,3 +380,43 @@ export function buildEditBookingIdempotencyKey(
     ? `${EDIT_BOOKING_IDEMPOTENCY_KEY_PREFIX}:${op}:${bookingId}:${clientRequestId}`
     : `${EDIT_BOOKING_IDEMPOTENCY_KEY_PREFIX}:${bookingId}:${clientRequestId}`;
 }
+
+/**
+ * Prefix for the `set_entity_assignment` outer idempotency key on the
+ * audited `POST /tickets/:id/reassign` + `POST /work-orders/:id/reassign`
+ * paths. Audit-02 P1-1 reassign cutover (2026-05-16). Namespaced
+ * separately from `patch` / `dispatch` / `workflow:assignment` so a
+ * controller reassign retry can never collide with a single PATCH, a
+ * dispatch, or a workflow-engine assign-node call against the same
+ * entity (all of which also drive `set_entity_assignment` /
+ * `update_entity_combined`).
+ *
+ * Citations:
+ *   - 00327_set_entity_assignment_v2.sql (RPC accepts arbitrary text key)
+ *   - docs/follow-ups/audits/02-tickets-work-orders.md P1-1 / P2-2 / P2-4
+ *   - apps/api/src/modules/ticket/ticket.service.ts (TicketService.reassign)
+ *   - apps/api/src/modules/work-orders/work-order.service.ts (WorkOrderService.reassign)
+ */
+export const REASSIGN_IDEMPOTENCY_KEY_PREFIX = 'reassign';
+
+/**
+ * Build the outer idempotency key for `set_entity_assignment` on the
+ * reassign paths. Shape:
+ *   `reassign:<kind>:<entityId>:<clientRequestId>`
+ *
+ * Same entity + same clientRequestId + same kind ⇒ same key ⇒
+ * `command_operations` short-circuits the second call (the RPC's own
+ * gate). `kind` is part of the key so a (coincidentally shared)
+ * clientRequestId reused across a case reassign and a work_order
+ * reassign mints distinct keys — they are independent retry chains.
+ * **No actor in the key** per F-CRIT-2 / plan-C1 (dispatch RPC): the
+ * clientRequestId is the deduplication boundary; tying it to actor
+ * identity defeats deduplication across a delegation switch.
+ */
+export function buildReassignIdempotencyKey(
+  kind: PatchEntityKind,
+  entityId: string,
+  clientRequestId: string,
+): string {
+  return `${REASSIGN_IDEMPOTENCY_KEY_PREFIX}:${kind}:${entityId}:${clientRequestId}`;
+}
