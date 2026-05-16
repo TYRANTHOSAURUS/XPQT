@@ -1,11 +1,11 @@
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import {
   buildPatchIdempotencyKey,
   buildCreateTicketIdempotencyKey,
   buildCreateTicketId,
 } from '@prequest/shared';
-import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
+import { AppError, AppErrors, mapRpcErrorToAppError } from '../../common/errors';
 import { hasOwnDefined } from '../../common/has-own-defined';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import {
@@ -1605,15 +1605,34 @@ export class TicketService {
    * event, and the satisfaction fold. There is no separate validation to
    * keep in sync — bulk == N× the hardened path.
    *
-   * Idempotency: a single `clientRequestId` is shared by the batch and
-   * `update()` derives a deterministic per-id key
-   * (`patch:case:<id>:<crid>` via buildPatchIdempotencyKey), so a network
-   * retry of the whole batch replays each id exactly once.
+   * Idempotency (Slice-1 review fix, code-reviewer C1): the per-id
+   * `update()` key is `patch:case:<id>:<crid>`. A bulk "fix the failures
+   * and resubmit" UX commonly reuses the same client-request-id with a
+   * *corrected* payload — with a bare crid that would raise
+   * `command_operations.payload_mismatch` on every already-succeeded id
+   * (bricking them). We therefore fold a stable fingerprint of the patch
+   * payload into the effective crid (`<crid>:<fp>`): a genuine network
+   * retry (same dto) replays each id exactly once; a corrected resubmit
+   * (different dto) gets a fresh key set instead of false 409s. Mirrors
+   * the EditBookingOp discriminator pattern (idempotency.ts) that closed
+   * the identical cross-attempt-collision class for booking edits.
    *
    * Partial success: per the error-handling spec (CLAUDE.md "Bulk ops use
-   * results[] + partialSuccess"), one bad id never aborts the batch. The
-   * caller gets a per-id outcome; permission denials surface as an `error`
-   * row, not a silent drop.
+   * results[] + partialSuccess") + spec §3.1 line 88 — one bad id never
+   * aborts the batch; the controller maps the outcome to HTTP status
+   * (all ok → 200 · mixed → 207 · all failed → 422), `results[]` always
+   * present. Per-id `error` carries ONLY the neutral registered `code`
+   * (review fix: never raw `err.message` — that re-leaked server prose +
+   * cross-scope child UUIDs the single-path keeps server-side).
+   *
+   * DEFERRED (tracked, audit-02 ledger 2026-05-16): a true
+   * `bulk_update_entity_combined` batch RPC giving cross-id atomicity
+   * (one tx, all-or-nothing) is the integrator-verdict Week-1 follow-up.
+   * This loop is per-id atomic + per-id idempotent; a mid-batch crash
+   * leaves each id individually consistent and replay-safe, but the batch
+   * is not all-or-nothing. The FE bulk wire envelope + 207 handling +
+   * "Show me" list are owned by the error-handling workstream (spec §3.1,
+   * not yet built); this slice ships the forward-compatible server side.
    */
   async bulkUpdate(
     ids: string[],
@@ -1625,7 +1644,7 @@ export class TicketService {
       id: string;
       status: 'ok' | 'error';
       data?: unknown;
-      error?: { code: string; message: string };
+      error?: { code: string };
     }>;
     okCount: number;
     errorCount: number;
@@ -1644,27 +1663,46 @@ export class TicketService {
     // De-dupe: the same id twice in one batch maps to the same per-id
     // idempotency key — the second would replay the first's cached result,
     // but emitting two result rows for one id is confusing. Collapse first.
+    // (insertion order preserved; consumers must key results[] by `id`, not
+    // by position — `results.length` may be < `ids.length`.)
     const uniqueIds = Array.from(new Set(ids));
+
+    // Stable fingerprint of the patch payload (sorted keys → sha1/12). Folded
+    // into the effective crid so a corrected resubmit reusing the batch crid
+    // does not payload_mismatch already-succeeded ids. Identical dto on a
+    // genuine retry → identical fp → idempotent replay.
+    const effectiveClientRequestId = clientRequestId
+      ? `${clientRequestId}:${createHash('sha1')
+          .update(JSON.stringify(dto, Object.keys(dto as object).sort()))
+          .digest('hex')
+          .slice(0, 12)}`
+      : clientRequestId;
 
     const results: Array<{
       id: string;
       status: 'ok' | 'error';
       data?: unknown;
-      error?: { code: string; message: string };
+      error?: { code: string };
     }> = [];
 
     for (const id of uniqueIds) {
       try {
-        const data = await this.update(id, dto, actorAuthUid, clientRequestId);
+        const data = await this.update(
+          id,
+          dto,
+          actorAuthUid,
+          effectiveClientRequestId,
+        );
         results.push({ id, status: 'ok', data });
       } catch (err) {
+        // Neutral registered code only. AppError → its own code; anything
+        // else (raw Postgrest/PG) → mapRpcErrorToAppError, which fails
+        // closed to `unknown.server_error`. No prose ever leaves here.
         const code =
-          (err as { code?: string } | null)?.code ??
-          (err as { name?: string } | null)?.name ??
-          'unknown.server_error';
-        const message =
-          err instanceof Error ? err.message : String(err ?? 'bulk update failed');
-        results.push({ id, status: 'error', error: { code, message } });
+          err instanceof AppError
+            ? err.code
+            : mapRpcErrorToAppError(err as Error).code;
+        results.push({ id, status: 'error', error: { code } });
       }
     }
 
