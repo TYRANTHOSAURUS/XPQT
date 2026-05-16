@@ -82,6 +82,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createClient } from '@supabase/supabase-js';
+import pg from 'pg';
 
 // ─────────────────────────────────────────────────────────────────────
 // Env + constants
@@ -105,11 +106,34 @@ const env = Object.fromEntries(
     }),
 );
 
-const API_BASE = process.env.API_BASE || 'http://localhost:3001';
+// The NestJS app sets a global `/api` prefix (apps/api/src/main.ts:55).
+// Sibling smoke scripts (smoke-edit-booking.mjs:636) hit `${API_BASE}/api/...`;
+// v1 of this script omitted the prefix → every endpoint 404'd. Normalise the
+// base to always carry exactly one `/api` segment regardless of how the env
+// var is supplied.
+const API_BASE = (() => {
+  const raw = (process.env.API_BASE || 'http://localhost:3001').replace(/\/+$/, '');
+  return /\/api$/.test(raw) ? raw : `${raw}/api`;
+})();
 const TENANT_ID = '00000000-0000-0000-0000-000000000001'; // Solana Inc.
 const ADMIN_AUTH_UID = '93d41232-35b5-424c-b215-bb5d55a2dfd9';
+// The minted Admin JWT (ADMIN_AUTH_UID) resolves to this person via
+// `public.users.auth_uid` → `users.person_id` (Sofia Meyer). The approval
+// `respond` endpoint server-derives the actor person from the JWT and
+// rejects with `approval.not_an_approver` (403) when it is not the
+// designated approver. v1 of this script seeded the approver as a DIFFERENT
+// person (THOMAS_PERSON) → every grant 403'd. Approvers in grant probes
+// MUST be ADMIN_PERSON so the minted JWT can legitimately respond.
+const ADMIN_PERSON = '95000000-0000-0000-0000-000000000002';
 const THOMAS_PERSON = 'b3a0aa30-3648-4783-92fa-973090877238';
 const ROOM_HUDDLE = '14d74559-7f91-470a-98a3-780b3e8a5349';
+// Pre-existing seed rules in this tenant include a tenant-scoped
+// priority=100 "Off-hours bookings need approval" rule. The probe rule is
+// room-scoped (specificity 1, beats tenant specificity 4) but we also seed
+// priority=200 as a defensive margin so the probe's rule + its compiled
+// workflow_definition deterministically win the resolver's
+// (specificity, priority) selection (rule-resolver.service.ts:539-551).
+const FIXTURE_RULE_PRIORITY = 200;
 const FIXTURE_DAYS_FROM_NOW = 140;
 
 // ─────────────────────────────────────────────────────────────────────
@@ -191,10 +215,10 @@ async function seedRuleWithWorkflow({ threshold, approverPersonIds }) {
       ('${ruleId}'::uuid, '${TENANT_ID}'::uuid,
        'smoke-visual-approval-${ruleId.slice(0, 8)}',
        'room', '${ROOM_HUDDLE}'::uuid,
-       jsonb_build_object('op','eq','left','room_id','right','${ROOM_HUDDLE}'),
+       jsonb_build_object('op','eq','left','$.space.id','right','${ROOM_HUDDLE}'),
        'require_approval',
        '${approvalConfig}'::jsonb,
-       50, true);
+       ${FIXTURE_RULE_PRIORITY}, true);
   `;
   runPsql(sql);
 
@@ -308,6 +332,20 @@ async function readInstanceForBooking(bookingId) {
   return data;
 }
 
+// Read by instance id — required for the cancel-cascade probe: deleting the
+// booking FK-SET-NULLs workflow_instances.booking_id (00369), so a
+// booking_id filter would lose the row exactly when we need to assert its
+// terminal status.
+async function readInstanceById(instanceId) {
+  const { data } = await supa()
+    .from('workflow_instances')
+    .select('id, status, workflow_definition_id, current_node_id, entity_kind, booking_id')
+    .eq('id', instanceId)
+    .eq('tenant_id', TENANT_ID)
+    .maybeSingle();
+  return data;
+}
+
 async function readApprovalsForBooking(bookingId) {
   const { data } = await supa()
     .from('approvals')
@@ -330,15 +368,57 @@ async function readBookingStatus(bookingId) {
   return data?.status ?? null;
 }
 
+// outbox.events lives in the `outbox` schema, which PostgREST does NOT
+// expose (confirmed by the sibling pattern at
+// smoke-outbox-roundtrip.mjs:179-184). v1 of this script read it via
+// supabase-js `.schema('outbox')` → silently returned [] → probes 2/4
+// always saw count=0. Use a direct pg connection, same fallback the rest of
+// the toolchain uses (CLAUDE.md "Supabase: remote vs local").
+let PG = null;
+let pgConnected = false;
+async function pgClient() {
+  if (!PG) {
+    const dbPass = env.SUPABASE_DB_PASS;
+    if (!dbPass) throw new Error('SUPABASE_DB_PASS missing from .env');
+    PG = new pg.Client({
+      host: 'db.iwbqnyrvycqgnatratrk.supabase.co',
+      port: 5432,
+      user: 'postgres',
+      password: dbPass,
+      database: 'postgres',
+      ssl: { rejectUnauthorized: false },
+    });
+  }
+  if (!pgConnected) {
+    await PG.connect();
+    pgConnected = true;
+  }
+  return PG;
+}
+async function closePg() {
+  if (PG && pgConnected) {
+    try {
+      await PG.end();
+    } catch {
+      /* best-effort */
+    }
+    pgConnected = false;
+  }
+}
+
 async function readOutboxApprovalGranted(workflowInstanceId) {
-  // outbox schema — emitted by 00403's `perform outbox.emit(...)`.
-  const { data } = await supa()
-    .schema('outbox')
-    .from('events')
-    .select('id, event_type, payload, created_at')
-    .eq('event_type', 'approval.granted')
-    .contains('payload', { workflow_instance_id: workflowInstanceId });
-  return data ?? [];
+  // approval.granted rows are emitted by 00407's `perform outbox.emit(...)`.
+  // Rows persist post-drain (purgeProcessed cron is hourly) so the count is
+  // stable. Match on the payload's workflow_instance_id (jsonb ->>).
+  const client = await pgClient();
+  const r = await client.query(
+    `select id, event_type, payload, enqueued_at
+       from outbox.events
+      where event_type = 'approval.granted'
+        and payload->>'workflow_instance_id' = $1`,
+    [workflowInstanceId],
+  );
+  return r.rows;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -349,17 +429,24 @@ async function probe1HappyAll(token) {
   console.log('Probe 1: happy threshold=all (2 approvers, both grant → confirmed)');
   const { ruleId } = await seedRuleWithWorkflow({
     threshold: 'all',
-    approverPersonIds: [THOMAS_PERSON],
+    approverPersonIds: [ADMIN_PERSON],
   });
   let bookingId;
   try {
     const created = await createBookingViaApi({ token });
     bookingId = created.id;
-    // Wait for sync-side effects (workflow start is synchronous in booking-flow).
-    await sleep(500);
-    const instance = await readInstanceForBooking(bookingId);
-    if (!instance) return fail('probe1', 'no workflow_instance created');
-    if (instance.status !== 'waiting') return fail('probe1', `instance status=${instance.status} (want waiting)`);
+    // Workflow start + approval-node execution is synchronous in
+    // booking-flow, but poll for the 'waiting' transition to absorb remote
+    // read lag (the engine inserts status='active' then advances to the
+    // approval node which sets 'waiting').
+    const instance = await pollUntil('probe1-seed', async () => {
+      const i = await readInstanceForBooking(bookingId);
+      return i && i.status === 'waiting' ? i : null;
+    });
+    if (!instance) {
+      const i = await readInstanceForBooking(bookingId);
+      return fail('probe1', `no waiting workflow_instance (status=${i?.status ?? 'none'})`);
+    }
     const approvals = await readApprovalsForBooking(bookingId);
     if (approvals.length !== 1) return fail('probe1', `approvals count=${approvals.length} (want 1)`);
     const approval = approvals[0];
@@ -385,17 +472,23 @@ async function probe1HappyAll(token) {
       return fail('probe1', `grant failed: ${grantRes.status} ${body}`);
     }
 
-    // Wait for outbox handler to drain (worker polls every 1-2s).
-    await sleep(3000);
-
-    const bookingStatus = await readBookingStatus(bookingId);
-    if (bookingStatus !== 'confirmed') return fail('probe1', `booking status=${bookingStatus} (want confirmed)`);
-    const finalInstance = await readInstanceForBooking(bookingId);
-    if (finalInstance.status !== 'completed')
+    // Wait for the 30s-cron OutboxWorker to drain approval.granted →
+    // resume() → workflow completes → booking confirmed.
+    const terminal = await pollUntil('probe1', async () => {
+      const s = await readBookingStatus(bookingId);
+      const fi = await readInstanceForBooking(bookingId);
+      return s === 'confirmed' && fi?.status === 'completed'
+        ? { s, fi }
+        : null;
+    });
+    if (!terminal) {
+      const bookingStatus = await readBookingStatus(bookingId);
+      const finalInstance = await readInstanceForBooking(bookingId);
       return fail(
         'probe1',
-        `instance final status=${finalInstance.status} (want completed)`,
+        `timed out: booking status=${bookingStatus} (want confirmed), instance status=${finalInstance?.status} (want completed)`,
       );
+    }
     pass('probe1', 'booking confirmed + workflow completed');
   } finally {
     if (bookingId) await supa().from('bookings').delete().eq('id', bookingId);
@@ -412,14 +505,18 @@ async function probe2HappyAny(token) {
   // the chain_threshold='any' branch DOES execute.
   const { ruleId } = await seedRuleWithWorkflow({
     threshold: 'any',
-    approverPersonIds: [THOMAS_PERSON],
+    approverPersonIds: [ADMIN_PERSON],
   });
   let bookingId;
   try {
     const created = await createBookingViaApi({ token });
     bookingId = created.id;
-    await sleep(500);
-    const instance = await readInstanceForBooking(bookingId);
+    const instance = await pollUntil('probe2-seed', async () => {
+      const i = await readInstanceForBooking(bookingId);
+      const a = await readApprovalsForBooking(bookingId);
+      return i && a.length > 0 ? i : null;
+    });
+    if (!instance) return fail('probe2', 'workflow_instance / approvals not seeded');
     const approvals = await readApprovalsForBooking(bookingId);
     if (approvals.length !== 1) return fail('probe2', `approvals count=${approvals.length}`);
     if (approvals[0].chain_threshold !== 'any') return fail('probe2', `chain_threshold=${approvals[0].chain_threshold}`);
@@ -436,11 +533,18 @@ async function probe2HappyAny(token) {
     });
     if (!grantRes.ok) return fail('probe2', `grant failed: ${grantRes.status}`);
 
-    await sleep(3000);
-    const bookingStatus = await readBookingStatus(bookingId);
-    if (bookingStatus !== 'confirmed') return fail('probe2', `booking status=${bookingStatus}`);
+    const confirmed = await pollUntil('probe2', async () => {
+      const s = await readBookingStatus(bookingId);
+      return s === 'confirmed' ? s : null;
+    });
+    if (!confirmed) {
+      const bookingStatus = await readBookingStatus(bookingId);
+      return fail('probe2', `timed out: booking status=${bookingStatus} (want confirmed)`);
+    }
 
     // Verify outbox emitted exactly ONE approval.granted for this instance.
+    // Rows persist post-drain (purgeProcessed cron is hourly), so the count
+    // is stable once booking is confirmed.
     const outboxRows = await readOutboxApprovalGranted(instance.id);
     if (outboxRows.length !== 1)
       return fail('probe2', `outbox approval.granted count=${outboxRows.length} (want 1)`);
@@ -455,14 +559,17 @@ async function probe3Reject(token) {
   console.log('Probe 3: reject path (booking cancelled)');
   const { ruleId } = await seedRuleWithWorkflow({
     threshold: 'all',
-    approverPersonIds: [THOMAS_PERSON],
+    approverPersonIds: [ADMIN_PERSON],
   });
   let bookingId;
   try {
     const created = await createBookingViaApi({ token });
     bookingId = created.id;
-    await sleep(500);
-    const approvals = await readApprovalsForBooking(bookingId);
+    const seeded = await pollUntil('probe3-seed', async () => {
+      const a = await readApprovalsForBooking(bookingId);
+      return a.length > 0 ? a : null;
+    });
+    const approvals = seeded ?? (await readApprovalsForBooking(bookingId));
     if (approvals.length === 0) return fail('probe3', 'no approval row');
 
     const rejectRes = await fetch(`${API_BASE}/approvals/${approvals[0].id}/respond`, {
@@ -477,10 +584,14 @@ async function probe3Reject(token) {
     });
     if (!rejectRes.ok) return fail('probe3', `reject failed: ${rejectRes.status}`);
 
-    await sleep(3000);
-    const bookingStatus = await readBookingStatus(bookingId);
-    if (bookingStatus !== 'cancelled')
-      return fail('probe3', `booking status=${bookingStatus} (want cancelled)`);
+    const cancelled = await pollUntil('probe3', async () => {
+      const s = await readBookingStatus(bookingId);
+      return s === 'cancelled' ? s : null;
+    });
+    if (!cancelled) {
+      const bookingStatus = await readBookingStatus(bookingId);
+      return fail('probe3', `timed out: booking status=${bookingStatus} (want cancelled)`);
+    }
     pass('probe3', 'booking cancelled on reject');
   } finally {
     if (bookingId) await supa().from('bookings').delete().eq('id', bookingId);
@@ -497,16 +608,20 @@ async function probe4ConcurrentAny(token) {
   // with race-grants; left for v2 of this probe (needs more seeded persons).
   const { ruleId } = await seedRuleWithWorkflow({
     threshold: 'any',
-    approverPersonIds: [THOMAS_PERSON],
+    approverPersonIds: [ADMIN_PERSON],
   });
   let bookingId;
   try {
     const created = await createBookingViaApi({ token });
     bookingId = created.id;
-    await sleep(500);
+    const instance = await pollUntil('probe4-seed', async () => {
+      const i = await readInstanceForBooking(bookingId);
+      const a = await readApprovalsForBooking(bookingId);
+      return i && a.length > 0 ? i : null;
+    });
+    if (!instance) return fail('probe4', 'workflow_instance / approvals not seeded');
     const approvals = await readApprovalsForBooking(bookingId);
     if (approvals.length === 0) return fail('probe4', 'no approval row');
-    const instance = await readInstanceForBooking(bookingId);
 
     // Fire 3 concurrent grants on the same approval id (different crids).
     const grantPromises = [0, 1, 2].map(() =>
@@ -525,10 +640,17 @@ async function probe4ConcurrentAny(token) {
     const oks = responses.filter((r) => r.ok).length;
     if (oks < 1) return fail('probe4', `no concurrent grant succeeded (all rejected)`);
 
-    await sleep(3000);
-    // The KEY assertion: outbox has exactly ONE approval.granted row for
-    // this instance — proves the booking-level row lock prevented double-emit.
-    const outboxRows = await readOutboxApprovalGranted(instance.id);
+    // The emit is synchronous inside grant_booking_approval (committed with
+    // the grant), so the row exists as soon as the winning POST returns.
+    // Poll briefly until ≥1 row appears (covers replication lag), then
+    // assert EXACTLY 1 — the booking-level row lock + stable idempotency
+    // key (`approval.granted:<approval_id>`) must collapse the 3 concurrent
+    // grants to a single outbox row (BLOCKER 2).
+    const appeared = await pollUntil('probe4', async () => {
+      const rows = await readOutboxApprovalGranted(instance.id);
+      return rows.length >= 1 ? rows : null;
+    });
+    const outboxRows = appeared ?? (await readOutboxApprovalGranted(instance.id));
     if (outboxRows.length !== 1)
       return fail('probe4', `outbox approval.granted count=${outboxRows.length} (want 1; BLOCKER 2 regression)`);
     pass('probe4', `${oks}/3 concurrent grants ok; exactly 1 outbox emit (no double-emit)`);
@@ -568,15 +690,15 @@ async function probe5ArchivedDefinitionRefused(token) {
         ('${ruleId}'::uuid, '${TENANT_ID}'::uuid,
          'smoke-archived-${ruleId.slice(0, 8)}',
          'room', '${ROOM_HUDDLE}'::uuid,
-         jsonb_build_object('op','eq','left','room_id','right','${ROOM_HUDDLE}'),
+         jsonb_build_object('op','eq','left','$.space.id','right','${ROOM_HUDDLE}'),
          'require_approval',
-         '{"required_approvers":[{"type":"person","id":"${THOMAS_PERSON}"}],"threshold":"all"}'::jsonb,
-         50, true);
+         '{"required_approvers":[{"type":"person","id":"${ADMIN_PERSON}"}],"threshold":"all"}'::jsonb,
+         ${FIXTURE_RULE_PRIORITY}, true);
     `);
     const graphV1 = {
       nodes: [
         { id: 'trigger', type: 'trigger', config: {} },
-        { id: 'approval_main', type: 'approval', config: { required_approvers: [{ type: 'person', id: THOMAS_PERSON }], threshold: 'all' } },
+        { id: 'approval_main', type: 'approval', config: { required_approvers: [{ type: 'person', id: ADMIN_PERSON }], threshold: 'all' } },
         { id: 'end_success', type: 'end', config: { outcome: 'approved' } },
         { id: 'end_failure', type: 'end', config: { outcome: 'rejected' } },
       ],
@@ -626,49 +748,70 @@ async function probe6CancelCascade(token) {
   console.log('Probe 6: CRITICAL 4 cancel cascade (booking deletion expires approvals atomically)');
   const { ruleId } = await seedRuleWithWorkflow({
     threshold: 'all',
-    approverPersonIds: [THOMAS_PERSON],
+    approverPersonIds: [ADMIN_PERSON],
   });
   let bookingId;
   try {
     const created = await createBookingViaApi({ token });
     bookingId = created.id;
-    await sleep(500);
-    const instance = await readInstanceForBooking(bookingId);
+    // Workflow start is synchronous in booking-flow, but poll defensively
+    // so a slow remote DB round-trip doesn't null `instance`.
+    const instance = await pollUntil('probe6-seed', async () => {
+      const i = await readInstanceForBooking(bookingId);
+      const a = await readApprovalsForBooking(bookingId);
+      return i && a.length > 0 ? i : null;
+    });
+    if (!instance) return fail('probe6', 'workflow_instance / approvals not seeded');
     const approvalsBefore = await readApprovalsForBooking(bookingId);
     if (approvalsBefore.length === 0) return fail('probe6', 'no approvals seeded');
 
-    // Cancel the booking via the API. The booking.cancelled outbox emit
-    // fires the WorkflowSpawnWakeOnBookingCancelledHandler (Phase 1.5 Change
-    // 6 of 6.A) which calls engine.cancelInstance('booking', ...) →
-    // cancel_workflow_instance_with_approvals RPC → atomic claim + expire.
-    const cancelRes = await fetch(`${API_BASE}/reservations/${bookingId}/cancel`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        authorization: `Bearer ${token}`,
-        'x-tenant-id': TENANT_ID,
-        'x-client-request-id': crypto.randomUUID(),
-      },
-      body: JSON.stringify({}),
+    void token;
+    // CRITICAL 4's surface is booking-DELETION-mid-approval (plan §1.11:
+    // "Booking-deletion-mid-approval leaves pending approvals dangling").
+    // The cancel-cascade is wired to the DELETE path, not soft-cancel:
+    // `POST /reservations/:id/cancel` is a SOFT cancel (reservation.service
+    // .ts:438 cancelOne → status='cancelled' + an audit_events row) and
+    // emits NOTHING to the outbox — so it can never trigger the wake
+    // handler. The production trigger is `delete_booking_with_guard`
+    // (00373) which DELETES the booking row and emits `booking.cancelled`
+    // to the outbox → WorkflowSpawnWakeOnBookingCancelledHandler →
+    // engine.cancelInstance('booking',…) → cancel_workflow_instance_with_
+    // approvals. There is no user-facing DELETE route (only compensation
+    // calls delete_booking_with_guard internally), so the probe invokes
+    // the RPC directly — same path the compensation service drives.
+    const { error: delErr } = await supa().rpc('delete_booking_with_guard', {
+      p_booking_id: bookingId,
+      p_tenant_id: TENANT_ID,
     });
-    if (!cancelRes.ok) {
-      const body = await cancelRes.text();
-      return fail('probe6', `cancel failed: ${cancelRes.status} ${body}`);
+    if (delErr) {
+      return fail('probe6', `delete_booking_with_guard failed: ${delErr.message}`);
     }
 
-    await sleep(4000); // outbox handler drain
-    const instanceAfter = await readInstanceForBooking(bookingId);
-    if (instanceAfter?.status !== 'cancelled')
-      return fail('probe6', `instance status=${instanceAfter?.status} (want cancelled)`);
-    const approvalsAfter = await readApprovalsForBooking(bookingId);
-    const allExpired = approvalsAfter.every((a) => a.status === 'expired');
-    if (!allExpired)
+    // booking.cancelled drains on the 30s cron → WorkflowSpawnWakeOn
+    // BookingCancelledHandler → engine.cancelInstance('booking',…) →
+    // cancel_workflow_instance_with_approvals (atomic claim + expire).
+    // Read the instance BY ID: delete_booking_with_guard removed the
+    // booking row so workflow_instances.booking_id was FK-SET-NULL'd
+    // (00369) — a booking_id-filtered read would lose the row. The
+    // approvals keep their target_entity_id so readApprovalsForBooking
+    // still resolves them post-deletion.
+    const cancelled = await pollUntil('probe6', async () => {
+      const ia = await readInstanceById(instance.id);
+      if (ia?.status !== 'cancelled') return null;
+      const aa = await readApprovalsForBooking(bookingId);
+      return aa.length > 0 && aa.every((a) => a.status === 'expired')
+        ? { ia, aa }
+        : null;
+    });
+    if (!cancelled) {
+      const instanceAfter = await readInstanceById(instance.id);
+      const approvalsAfter = await readApprovalsForBooking(bookingId);
       return fail(
         'probe6',
-        `approvals not all expired: ${JSON.stringify(approvalsAfter.map((a) => a.status))}`,
+        `timed out: instance status=${instanceAfter?.status} (want cancelled), approvals=${JSON.stringify(approvalsAfter.map((a) => a.status))} (want all expired)`,
       );
-    pass('probe6', `instance cancelled + ${approvalsAfter.length} approvals expired atomically`);
-    void instance;
+    }
+    pass('probe6', `instance cancelled + ${cancelled.aa.length} approvals expired atomically`);
   } finally {
     if (bookingId) await supa().from('bookings').delete().eq('id', bookingId);
     await dropRule(ruleId);
@@ -677,6 +820,37 @@ async function probe6CancelCascade(token) {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// The OutboxWorker drains on a 30s cron (apps/api/src/modules/outbox/
+// outbox.worker.ts:66 — `@Cron(CronExpression.EVERY_30_SECONDS)`). v1 of
+// this script waited a fixed 3-4s post-grant, so the `approval.granted`
+// event was still un-drained when the probe asserted → every workflow-
+// resume probe failed with a stale `waiting` instance. Mirror the
+// established sibling pattern (smoke-outbox-roundtrip.mjs:108-109): poll
+// the terminal condition with 60s slack instead of a fixed sleep.
+const WORKER_TIMEOUT_MS = 60_000;
+const WORKER_POLL_MS = 1_500;
+
+/**
+ * Poll `check()` until it returns a truthy value or WORKER_TIMEOUT_MS
+ * elapses. Returns the last value (truthy on success, falsy on timeout) so
+ * callers can assert on the resolved state. `label` is only used for the
+ * progress line.
+ */
+async function pollUntil(label, check) {
+  const deadline = Date.now() + WORKER_TIMEOUT_MS;
+  let last;
+  while (Date.now() < deadline) {
+    last = await check();
+    if (last) return last;
+    const remaining = Math.round((deadline - Date.now()) / 1000);
+    process.stdout.write(`    ${label}: waiting for outbox drain… (${remaining}s)\r`);
+    await sleep(WORKER_POLL_MS);
+  }
+  last = await check();
+  process.stdout.write('\r\x1b[K');
+  return last;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -710,8 +884,11 @@ async function main() {
     await probe6CancelCascade(token);
   } catch (e) {
     console.error('probe harness crashed:', e);
+    await closePg();
     process.exit(1);
   }
+
+  await closePg();
 
   console.log('');
   const passed = results.filter((r) => r.ok).length;
