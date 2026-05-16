@@ -76,6 +76,9 @@ const ADMIN_AUTH_UID = '93d41232-35b5-424c-b215-bb5d55a2dfd9';
 const NONADMIN_AUTH_UID = 'd572cfa5-b2b6-42b5-8853-5102621e3819';
 const NONADMIN_USER_ID = '95100000-0000-0000-0000-00000000000c';
 const ADMIN_ROLE_ID = '91000000-0000-0000-0000-000000000001';
+// Slice 10 (2026-05-16) — TENANT_A team for the team-membership
+// self-add escalation probe (team_members feeds ticket_visibility_ids).
+const TEAM_ID = '94000000-0000-0000-0000-000000000001';
 
 // Mirror smoke-tickets.mjs:86-87 — TENANT_B fixture seed shape.
 const TENANT_B_ID = '00000000-0000-0000-0000-0000000000b1';
@@ -378,6 +381,82 @@ async function probe(name, options) {
     );
   } catch (e) {
     console.log(`  ! escalation-cleanup failed (non-fatal): ${e.message}`);
+  }
+
+  // ── Slice 10: 9 further unguarded admin-mutation controllers ──
+  // The sweep after Slice 9 found these. Probe the two escalation-
+  // class ones with the same-tenant non-admin JWT (the rest follow
+  // the identical @UseGuards(AdminGuard)-per-mutation pattern, so
+  // these two are representative — team membership feeds
+  // ticket_visibility_ids; delegation.create takes no actor).
+  // Plus operational-GET regressions: Slice 10 must NOT have locked
+  // the reads that back non-admin operator pickers.
+  console.log('\n─── Slice 10: same-tenant non-admin on newly-guarded controllers');
+  await probe('GET /spaces  (non-admin, operational picker)', {
+    url: `${API_BASE}/api/spaces`,
+    headers: nonAdminA,
+    expect: 'success',
+  });
+  await probe('GET /vendors  (non-admin, operational)', {
+    url: `${API_BASE}/api/vendors`,
+    headers: nonAdminA,
+    expect: 'success',
+  });
+  await probe('GET /teams  (non-admin, assignment picker)', {
+    url: `${API_BASE}/api/teams`,
+    headers: nonAdminA,
+    expect: 'success',
+  });
+  // Escalation-class P0: non-admin self-adding to a team would grant
+  // operator visibility on that team's tickets (team_members →
+  // ticket_visibility_ids). Must 403.
+  await probe('POST /teams/:id/members  (non-admin self-add → visibility escalation)', {
+    url: `${API_BASE}/api/teams/${TEAM_ID}/members`,
+    method: 'POST',
+    headers: nonAdminA,
+    body: { user_id: NONADMIN_USER_ID },
+    expect: 'forbidden',
+  });
+  // Escalation-class: delegation.create takes no actor — a non-admin
+  // minting a delegation between arbitrary users. Must 403.
+  await probe('POST /delegations  (non-admin mints delegation → escalation)', {
+    url: `${API_BASE}/api/delegations`,
+    method: 'POST',
+    headers: nonAdminA,
+    body: { from_user_id: NONADMIN_USER_ID, to_user_id: NONADMIN_USER_ID },
+    expect: 'forbidden',
+  });
+  // Config-mutation sample: non-admin creating a space (location
+  // hierarchy) must 403.
+  await probe('POST /spaces  (non-admin config mutation)', {
+    url: `${API_BASE}/api/spaces`,
+    method: 'POST',
+    headers: nonAdminA,
+    body: { name: 'xtenant-noadmin', type: 'room' },
+    expect: 'forbidden',
+  });
+
+  // Defensive cleanup — only matters if a probe above regressed to a
+  // 2xx and actually wrote. Idempotent. Removes the would-be
+  // team-membership escalation row.
+  try {
+    const dbPass = env.SUPABASE_DB_PASS;
+    const dbUrl =
+      env.SUPABASE_DB_URL ||
+      'postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres';
+    execFileSync(
+      'psql',
+      [
+        dbUrl,
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-c',
+        `delete from public.team_members where team_id = '${TEAM_ID}' and user_id = '${NONADMIN_USER_ID}';`,
+      ],
+      { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+  } catch (e) {
+    console.log(`  ! slice10-cleanup failed (non-fatal): ${e.message}`);
   }
 
   console.log('');

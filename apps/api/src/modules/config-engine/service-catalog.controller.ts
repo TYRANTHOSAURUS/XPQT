@@ -7,10 +7,12 @@ import {
   Patch,
   Post,
   UploadedFile,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ServiceCatalogService } from './service-catalog.service';
+import { AdminGuard } from '../auth/admin.guard';
 import { AppErrors } from '../../common/errors';
 
 interface UpdateCategoryDto {
@@ -39,16 +41,19 @@ export class ServiceCatalogController {
   }
 
   @Post('categories')
+  @UseGuards(AdminGuard)
   async createCategory(@Body() dto: { name: string; description?: string; icon?: string; parent_category_id?: string; display_order?: number }) {
     return this.catalogService.createCategory(dto);
   }
 
   @Patch('categories/:id')
+  @UseGuards(AdminGuard)
   async updateCategory(@Param('id') id: string, @Body() dto: UpdateCategoryDto) {
     return this.catalogService.updateCategory(id, dto);
   }
 
   @Post('categories/:id/cover')
+  @UseGuards(AdminGuard)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 2 * 1024 * 1024 } }))
   async uploadCategoryCover(
     @Param('id') id: string,
@@ -59,11 +64,13 @@ export class ServiceCatalogController {
   }
 
   @Delete('categories/:id')
+  @UseGuards(AdminGuard)
   async deleteCategory(@Param('id') id: string) {
     return this.catalogService.deleteCategory(id);
   }
 
   @Post('categories/reorder')
+  @UseGuards(AdminGuard)
   async reorderCategories(
     @Body() body: { updates: Array<{ id: string; parent_category_id: string | null; display_order: number }> },
   ) {
@@ -71,6 +78,7 @@ export class ServiceCatalogController {
   }
 
   @Post('request-types/move')
+  @UseGuards(AdminGuard)
   async moveRequestTypes(
     @Body() body: { updates: Array<{ id: string; category_id: string; display_order: number }> },
   ) {
