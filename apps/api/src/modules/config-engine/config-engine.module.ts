@@ -9,13 +9,13 @@ import { ConfigEntityController } from './config-entity.controller';
 import { CriteriaSetController } from './criteria-set.controller';
 import { PermissionGuard } from '../../common/permission-guard';
 import { PermissionMetadataGuard } from '../../common/require-permission.decorator';
-import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  // AuthModule retained: ConfigEntityController still uses AdminGuard
-  // (Slice 2 — re-gate tracked as Slice 11.3). PermissionMetadataGuard
-  // added for ServiceCatalogController's Slice-11 @RequirePermission.
-  imports: [AuthModule],
+  // RLS audit Slice 11.3: ConfigEntityController (the last AdminGuard
+  // consumer here) re-gated AdminGuard → @RequirePermission(
+  // 'request_types.*'); AuthModule dropped. All controllers in this
+  // module now gate via the permission catalog (PermissionGuard +
+  // PermissionMetadataGuard, provided below).
   providers: [
     ConfigEngineService,
     RequestTypeService,

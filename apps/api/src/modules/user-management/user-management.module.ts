@@ -7,11 +7,16 @@ import {
   PersonsAdminController,
 } from './user-management.controller';
 import { PermissionsController } from './permissions.controller';
-import { AuthModule } from '../auth/auth.module';
+import { PermissionGuard } from '../../common/permission-guard';
+import { PermissionMetadataGuard } from '../../common/require-permission.decorator';
 
 @Module({
-  imports: [AuthModule],
-  providers: [UserManagementService],
+  // RLS audit Slice 11.3: the 4 mutation controllers re-gated AdminGuard
+  // → @RequirePermission('users.*' / 'roles.*' / 'roles.assign' /
+  // 'people.*'); no controller here uses AdminGuard anymore, so
+  // AuthModule is dropped and the two permission guards are provided
+  // locally (config-engine.module pattern).
+  providers: [UserManagementService, PermissionGuard, PermissionMetadataGuard],
   controllers: [
     UsersController,
     RolesController,

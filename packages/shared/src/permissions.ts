@@ -277,6 +277,12 @@ export const PERMISSION_CATALOG = {
       publish: { label: 'Publish a new version' },
       duplicate: { label: 'Duplicate a workflow' },
       test: { label: 'Run a test execution', description: 'Dry-run without side effects.' },
+      execute: {
+        label: 'Manually run an instance',
+        description:
+          'Start a workflow on a ticket or resume a paused instance — real side effects (distinct from test/dry-run).',
+        danger: true,
+      },
       rollback: { label: 'Roll back to a previous version', danger: true },
       archive: { label: 'Archive or restore' },
       delete: { label: 'Delete workflows', danger: true },
@@ -501,6 +507,24 @@ export const PERMISSION_CATALOG = {
       read: { label: 'View delegations' },
       create: { label: 'Create delegations' },
       update: { label: 'Edit or revoke delegations' },
+    },
+  },
+  webhooks: {
+    label: 'Workflow webhooks',
+    icon: 'webhook',
+    description:
+      'Outbound workflow webhook endpoints, their signing keys, and delivery log.',
+    actions: {
+      read: { label: 'View webhooks & delivery log' },
+      create: { label: 'Create webhook endpoints' },
+      update: { label: 'Edit webhook endpoints' },
+      rotate_key: {
+        label: 'Rotate signing key',
+        description: 'Invalidate the current API key and issue a new one.',
+        danger: true,
+      },
+      test: { label: 'Send a test payload' },
+      delete: { label: 'Delete webhook endpoints', danger: true },
     },
   },
 } as const satisfies Record<string, ModuleMeta>;

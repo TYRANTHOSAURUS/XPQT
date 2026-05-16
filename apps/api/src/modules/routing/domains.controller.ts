@@ -6,11 +6,10 @@ import {
   Param,
   Patch,
   Post,
-  Query,
-  UseGuards} from '@nestjs/common';
+  Query} from '@nestjs/common';
 import { TenantContext } from '../../common/tenant-context';
 import { AppErrors } from '../../common/errors';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 import { DomainRegistryService } from './domain-registry.service';
 
 /**
@@ -21,18 +20,19 @@ import { DomainRegistryService } from './domain-registry.service';
  * Routing Studio's domain-registry editor. During dual-run both endpoints
  * coexist; Artifact D step 9 retires the legacy one.
  */
-@UseGuards(AdminGuard)
 @Controller('admin/routing/domains')
 export class RoutingDomainsController {
   constructor(private readonly registry: DomainRegistryService) {}
 
   @Get()
+  @RequirePermission('routing.read')
   async list() {
     const tenant = TenantContext.current();
     return this.registry.list(tenant.id);
   }
 
   @Get('lookup')
+  @RequirePermission('routing.read')
   async lookup(@Query('key') key?: string) {
     if (!key) throw AppErrors.validationFailed('routing.field_required', { detail: 'key query param is required' });
     const tenant = TenantContext.current();
@@ -41,12 +41,14 @@ export class RoutingDomainsController {
   }
 
   @Get(':id')
+  @RequirePermission('routing.read')
   async get(@Param('id') id: string) {
     const tenant = TenantContext.current();
     return this.registry.get(tenant.id, id);
   }
 
   @Post()
+  @RequirePermission('routing.create')
   async create(@Body() body: CreateDomainBody) {
     if (!body?.key) throw AppErrors.validationFailed('routing.field_required', { detail: 'key is required' });
     if (!body.display_name) throw AppErrors.validationFailed('routing.field_required', { detail: 'display_name is required' });
@@ -59,6 +61,7 @@ export class RoutingDomainsController {
   }
 
   @Patch(':id')
+  @RequirePermission('routing.update')
   async update(@Param('id') id: string, @Body() body: UpdateDomainBody) {
     const tenant = TenantContext.current();
     return this.registry.update({
@@ -70,6 +73,7 @@ export class RoutingDomainsController {
   }
 
   @Delete(':id')
+  @RequirePermission('routing.delete')
   async deactivate(@Param('id') id: string) {
     const tenant = TenantContext.current();
     return this.registry.deactivate(tenant.id, id);

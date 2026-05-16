@@ -5,12 +5,11 @@ import {
   Get,
   Param,
   Patch,
-  Post,
-  UseGuards} from '@nestjs/common';
+  Post} from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 
 interface CreateSpaceGroupDto {
   name: string;
@@ -26,12 +25,12 @@ interface AddMemberDto {
   space_id: string;
 }
 
-@UseGuards(AdminGuard)
 @Controller('space-groups')
 export class SpaceGroupsController {
   constructor(private readonly supabase: SupabaseService) {}
 
   @Get()
+  @RequirePermission('routing.read')
   async list() {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
@@ -47,6 +46,7 @@ export class SpaceGroupsController {
   }
 
   @Post()
+  @RequirePermission('routing.create')
   async create(@Body() dto: CreateSpaceGroupDto) {
     const tenant = TenantContext.current();
     if (!dto.name?.trim()) throw AppErrors.validationFailed('routing.field_required', { detail: 'name is required' });
@@ -63,6 +63,7 @@ export class SpaceGroupsController {
   }
 
   @Patch(':id')
+  @RequirePermission('routing.update')
   async update(@Param('id') id: string, @Body() dto: UpdateSpaceGroupDto) {
     const tenant = TenantContext.current();
     const patch: Record<string, unknown> = {};
@@ -84,6 +85,7 @@ export class SpaceGroupsController {
   }
 
   @Delete(':id')
+  @RequirePermission('routing.delete')
   async remove(@Param('id') id: string) {
     const tenant = TenantContext.current();
     const { error } = await this.supabase.admin
@@ -96,6 +98,7 @@ export class SpaceGroupsController {
   }
 
   @Post(':id/members')
+  @RequirePermission('routing.update')
   async addMember(@Param('id') groupId: string, @Body() dto: AddMemberDto) {
     const tenant = TenantContext.current();
     if (!dto.space_id) throw AppErrors.validationFailed('routing.field_required', { detail: 'space_id is required' });
@@ -112,6 +115,7 @@ export class SpaceGroupsController {
   }
 
   @Delete(':id/members/:spaceId')
+  @RequirePermission('routing.update')
   async removeMember(@Param('id') groupId: string, @Param('spaceId') spaceId: string) {
     const tenant = TenantContext.current();
     const { error } = await this.supabase.admin

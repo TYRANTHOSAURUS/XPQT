@@ -1,8 +1,8 @@
-import { Controller, Get, Post, Patch, Param, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Body } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { AppErrors } from '../../common/errors';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 import type { EscalationThreshold, ThresholdTimerScope, ThresholdAction, ThresholdTargetType } from './sla-threshold.types';
 
 const TIMER_SCOPES: readonly ThresholdTimerScope[] = ['response', 'resolution', 'both'];
@@ -61,12 +61,12 @@ export function validateEscalationThresholds(input: unknown): EscalationThreshol
   return out;
 }
 
-@UseGuards(AdminGuard)
 @Controller('sla-policies')
 export class SlaPolicyController {
   constructor(private readonly supabase: SupabaseService) {}
 
   @Get()
+  @RequirePermission('sla.read')
   async list() {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
@@ -79,6 +79,7 @@ export class SlaPolicyController {
   }
 
   @Post()
+  @RequirePermission('sla.create')
   async create(@Body() dto: { name: string; response_time_minutes?: number; resolution_time_minutes?: number; escalation_thresholds?: unknown; [k: string]: unknown }) {
     const tenant = TenantContext.current();
     const payload: Record<string, unknown> = { ...dto, tenant_id: tenant.id };
@@ -95,6 +96,7 @@ export class SlaPolicyController {
   }
 
   @Patch(':id')
+  @RequirePermission('sla.update')
   async update(@Param('id') id: string, @Body() dto: Record<string, unknown>) {
     const tenant = TenantContext.current();
     const payload: Record<string, unknown> = { ...dto };
