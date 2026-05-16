@@ -158,15 +158,17 @@ function proofDbArgs() {
 function seedProofRoleFixture() {
   const { dbPass, dbUrl } = proofDbArgs();
   // type='agent' — explicitly NOT 'admin'. permissions holds exactly
-  // spaces.create and nothing else. This is the role AdminGuard would
+  // two single keys: spaces.create (the generic 11.2b re-gate proof)
+  // and request_types.use (the Slice 11.4 portal-fix proof). Neither is
+  // a wildcard and neither is admin — this is the role AdminGuard would
   // have 403'd (role.type !== 'admin') but @RequirePermission lets
-  // through.
+  // through, per-key.
   const sql = `
     set session_replication_role = 'replica';
     insert into public.roles (id, tenant_id, name, description, permissions, type, active)
-      values ('${PROOF_ROLE_ID}', '${TENANT_A_ID}', 'xtenant-proof spaces.create',
-              'RLS Slice 11.2b proof — non-admin (agent) role holding exactly spaces.create',
-              '["spaces.create"]'::jsonb, 'agent', true)
+      values ('${PROOF_ROLE_ID}', '${TENANT_A_ID}', 'xtenant-proof spaces.create+request_types.use',
+              'RLS Slice 11.2b/11.4 proof — non-admin (agent) role holding exactly spaces.create + request_types.use',
+              '["spaces.create","request_types.use"]'::jsonb, 'agent', true)
       on conflict (id) do update
         set permissions = excluded.permissions, type = excluded.type, active = true;
     insert into public.user_role_assignments (id, tenant_id, user_id, role_id, active)
@@ -574,6 +576,19 @@ async function probe(name, options) {
       method: 'POST',
       headers: nonAdminA,
       body: { name: 'xtenant-11.2b-proof', type: 'site' },
+      expect: 'not_forbidden',
+    });
+    // Slice 11.4 proof: the SAME non-admin role also holds
+    // request_types.use → GET /config-entities/:id (the Requester
+    // portal / desk create-ticket form-render path) must pass the gate.
+    // Pre-11.3 this was class-level AdminGuard (this exact role 403'd);
+    // 11.4 gates it request_types.use. A non-existent id 404s AFTER the
+    // gate — 404 ∉ {401,403} ⇒ the gate passed (which is the proof).
+    // Negative isolation: the role lacks request_types.read, so this
+    // proves request_types.use specifically, not a generic read grant.
+    await probe('GET /config-entities/:id  (non-admin holds request_types.use → guard PASSES, was AdminGuard-403 pre-11.3)', {
+      url: `${API_BASE}/api/config-entities/00000000-0000-0000-0000-0000000011b2`,
+      headers: nonAdminA,
       expect: 'not_forbidden',
     });
   } catch (e) {

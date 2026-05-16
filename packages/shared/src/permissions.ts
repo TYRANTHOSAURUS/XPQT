@@ -170,6 +170,11 @@ export const PERMISSION_CATALOG = {
     description: 'Catalog of requestable items and their forms.',
     actions: {
       read: { label: 'View request types' },
+      use: {
+        label: 'Use a request type to submit',
+        description:
+          "Read a request type's form schema in order to submit a request (portal + desk create-ticket). Distinct from admin .read which backs the form-schema management surface.",
+      },
       create: { label: 'Create request types' },
       update: { label: 'Edit request types' },
       publish: { label: 'Publish or unpublish' },

@@ -101,7 +101,9 @@ const METHOD_MAP: Array<[Ctor, string, PermissionKey]> = [
   [WebhookAdminController, 'listEvents', 'webhooks.read'],
   [WebhookAdminController, 'test', 'webhooks.test'],
   [ConfigEntityController, 'list', 'request_types.read'],
-  [ConfigEntityController, 'getById', 'request_types.read'],
+  // Slice 11.4 (codex DECISION A): the portal/desk form-render path —
+  // gated on the portal-reachable `request_types.use`, not admin .read.
+  [ConfigEntityController, 'getById', 'request_types.use'],
   [ConfigEntityController, 'create', 'request_types.create'],
   [ConfigEntityController, 'createDraft', 'request_types.update'],
   [ConfigEntityController, 'updateDraft', 'request_types.update'],

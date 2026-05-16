@@ -12,6 +12,16 @@ import { RequirePermission } from '../../common/require-permission.decorator';
  * match that sibling, NOT `routing.*` (the routing policy store is the
  * separate RoutingPoliciesController on PolicyStoreService). RLS audit
  * Slice 11.3.
+ *
+ * Slice 11.4 (codex DECISION A): `GET /:id` is on the REQUESTER portal
+ * critical path (submit-request.tsx renders a request type's form via
+ * this) and the desk create-ticket dialog — neither caller is admin.
+ * Pre-11.3 it was class-level AdminGuard (so they were already 403'd —
+ * a pre-existing latent defect). It is gated `request_types.use` (a
+ * portal-reachable key granted to every ticket-creating template), NOT
+ * the admin `request_types.read` that backs the form-schema management
+ * surface. `list` + mutations stay admin-tier (`request_types.read` /
+ * `.create` / `.update` / `.publish`).
  */
 @Controller('config-entities')
 export class ConfigEntityController {
@@ -25,7 +35,7 @@ export class ConfigEntityController {
   }
 
   @Get(':id')
-  @RequirePermission('request_types.read')
+  @RequirePermission('request_types.use')
   async getById(@Param('id') id: string) {
     return this.configEngineService.getById(id);
   }

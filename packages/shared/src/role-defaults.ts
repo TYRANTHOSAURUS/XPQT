@@ -58,6 +58,7 @@ export const DEFAULT_ROLE_TEMPLATES: readonly RoleTemplate[] = [
     permissions: [
       'tickets.*',
       'request_types.read',
+      'request_types.use',
       'assets.read',
       'people.read',
       'vendors.read',
@@ -70,6 +71,7 @@ export const DEFAULT_ROLE_TEMPLATES: readonly RoleTemplate[] = [
       'Handles facilities tickets. Grant domain_scope=["fm"] on assignment.',
     permissions: [
       'tickets.*',
+      'request_types.use',
       'assets.*',
       'spaces.read',
       'people.read',
@@ -85,6 +87,7 @@ export const DEFAULT_ROLE_TEMPLATES: readonly RoleTemplate[] = [
     permissions: [
       'tickets.*',
       'request_types.read',
+      'request_types.use',
       'assets.read',
       'people.read',
       'people.update',
@@ -107,6 +110,7 @@ export const DEFAULT_ROLE_TEMPLATES: readonly RoleTemplate[] = [
     permissions: [
       'tickets.create',
       'tickets.read',
+      'request_types.use',
       'service_catalog.read',
       'people.read',
       'visitors.invite',
