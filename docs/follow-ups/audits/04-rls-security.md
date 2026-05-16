@@ -382,6 +382,40 @@ Verified:
 Remaining:
 - `/full-review` + codex on the Slice 9+10 step (big-step review mandate). A residual **P2 IDOR**: `notification` `POST /:id/read` takes a bare notification id with no ownership check (same-tenant mark-anyone's-read) — integrity-class, not escalation; deferred. **P2 GET info-disclosure** across all guarded controllers persists by design (operational pickers depend on the reads). Commit 552e2db2.
 
+#### Update — 2026-05-16 (`/full-review` on the Slice 9+10 step)
+
+Original finding:
+- The two NEW FINDING blocks above (Slice 9 user-management P0; Slice 10 nine-controller sweep).
+- Location: `docs/follow-ups/audits/04-rls-security.md` (NEW FINDINGS section).
+
+Status:
+- partial — security closed & verified; **one CRITICAL design finding open (Slice 11)**; 3 cheap fixes applied/logged.
+
+Two adversarial reviewers (fresh-context) pressure-tested commits 50b6dc72 + 552e2db2. Outcomes:
+
+- **[CRITICAL — open, Slice 11] Blanket `AdminGuard` is coarser than the codebase's CI-enforced permission model.** `packages/shared/src/permissions.ts` `PERMISSION_CATALOG` defines `spaces.create/update/delete`, `teams.create/update/manage_members`, `vendors.*`, `assets.*`, `service_catalog.*`, `notifications.manage_templates`, `routing.*`, `workflows.*`, `sla.*`, `users.*`, `roles.*`. The sibling `config-engine/criteria-set.controller.ts:21-49` already gates via in-body `await this.permissions.requirePermission(request, 'criteria_sets.create')`. `packages/shared/src/role-defaults.ts` grants NON-admin roles `assets.*`, `teams.*`, `spaces.read`, `vendors.admin` etc. — so `AdminGuard` (hard `role.type==='admin'`, `admin.guard.ts:61`) 403s a legitimate non-admin role that holds the granted permission. Verified real: catalog keys exist; sibling pattern exists; role-defaults grant non-admin keys; false-positive check passed (none of the 9 Slice-10 services had pre-existing in-body authz, so AdminGuard ADDED a gate where none existed — the P0 close is genuine and fail-closed, the *mechanism* is the issue, not a security regression). **Slice 11** re-gates Slice-2/9/10 controllers to the permission catalog. Architecture fork (decorator-guard primitive vs. invasive in-body conversion vs. documented interim) surfaced to the user — codex (the mandated big-step tiebreaker) is CLI-broken. `business_hours` / `catalog_menus` / `delegations` have no catalog domain and need adding (CI-gated SoT + role-defaults).
+
+- **[CRITICAL C1 — fixed-in-doc] "guards run before pipes" rationale was wrong.** `apps/api/src/main.ts:55` has NO global `ValidationPipe` (and `app.module.ts` no `APP_PIPE`); the Slice-10 DTOs are plain interfaces. The smoke escalation probes are still REAL gates — `@UseGuards(AdminGuard)` is invoked by Nest before the handler regardless — but the recorded justification was a non-sequitur. **New finding logged:** the absence of a global `ValidationPipe` is an untracked input-validation gap (separate from this audit; flagged for the API-hardening backlog).
+
+- **[IMPORTANT I3 — closed] Orphaned-role fail-closed path now tested.** `admin.guard.ts` already fails closed when the PostgREST embed returns `role: null` (dangling FK). Added `admin.guard.spec.ts` case "rejects (fail-closed) when the embedded role is null". Verified: `pnpm --filter @prequest/api run test -- admin.guard.spec.ts` -> 9/9 pass.
+
+- **[IMPORTANT P4 — new finding, open] Highest-risk unaudited surface: browser-direct PostgREST + Supabase Storage RLS.** This audit + the sweep only covered NestJS `*.controller.ts`. If the web app's Supabase client (Realtime/Storage/anon-or-auth key) can directly `from('team_members').insert(...)` / `from('user_role_assignments').insert(...)`, RLS is the *only* gate there and `docs/visibility.md` §8 establishes RLS is tenant-scoped, NOT permission-scoped — so a browser-direct insert into `team_members` within one's own tenant is the SAME visibility escalation Slice 10 just closed at the HTTP layer, still open at the data layer. Plus the known avatar/Storage cross-tenant gap (`project_people_and_users_surface_shipped`). **Needs a dedicated investigation slice: does the browser hold a Supabase key with table-level reach, and what is RLS on the escalation-class tables?**
+
+- **[IMPORTANT P3 — strengthened] GET info-disclosure deferral.** Re-stated with an explicit owner+scope: the GET roster/role/permission-map exposure (`GET /users`, `/roles`, `/persons-admin`, `/permissions/users/:id/effective`, plus Slice-10 `GET /spaces|/teams|/vendors|...`) is **P2, owned by the RLS-audit follow-up, gated behind Slice 11** (the permission re-gate will naturally produce scoped read keys e.g. `teams.read` for picker projections). Not permanent; sequenced after Slice 11.
+
+- **[NIT — accepted] Admin-token smoke blindness.** All smoke gates mint an Admin JWT, so an over-restrictive Slice-10 regression (admin-locked endpoint a non-admin operator needs) is invisible. Partially mitigated by the Slice-9/10 non-admin GET probes (operator pickers assert 200). Fully resolved by Slice 11's non-admin-with-permission probe rework.
+
+Changed:
+- `apps/api/src/modules/auth/admin.guard.spec.ts` (I3 fail-closed case)
+- this ledger (C1/P3/P4 logged; Slice 11 opened)
+
+Verified:
+- `pnpm --filter @prequest/api run test -- admin.guard.spec.ts` -> pass 9/9
+- Slice 9/10 functional verification unchanged (smoke:cross-tenant 22/22, smoke:work-orders 109/109 from the prior blocks)
+
+Remaining:
+- Slice 11 (CRITICAL re-gate) — architecture fork pending user steer. P4 browser-direct/Storage RLS investigation. Global `ValidationPipe` gap (separate backlog). GET info-disclosure sequenced behind Slice 11.
+
 ## Agent Handoff Prompt
 
 ```text

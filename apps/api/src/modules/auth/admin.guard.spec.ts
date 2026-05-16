@@ -122,6 +122,34 @@ describe('AdminGuard', () => {
     expect((err as AppError).code).toBe('auth.admin_required');
   });
 
+  // /full-review I3 (2026-05-16): an orphaned user_role_assignments row
+  // (dangling role_id, or PostgREST LEFT-JOIN embed returning role:null)
+  // must fail CLOSED. `ra.role?.type !== 'admin'` already handles this in
+  // code; this test locks the behaviour so a future refactor can't
+  // silently make it fail-open.
+  it('rejects (fail-closed) when the embedded role is null (orphaned assignment)', async () => {
+    const supabaseNullRole = {
+      admin: {
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                eq: async () => ({
+                  data: [{ starts_at: null, ends_at: null, role: null }],
+                  error: null,
+                }),
+              }),
+            }),
+          }),
+        }),
+      },
+    } as any;
+    const err = await callAs(supabaseNullRole).catch((e) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).status).toBe(403);
+    expect((err as AppError).code).toBe('auth.admin_required');
+  });
+
   it('throws 500 when the role lookup fails with a DB error', async () => {
     const err = await callAs(
       makeSupabase([], { message: 'connection lost' }),
