@@ -525,6 +525,17 @@ export class ReservationController {
     const r = reservation as { requester_person_id: string; host_person_id?: string | null; booked_by_user_id?: string | null };
     this.assertReservationWritable(r, ctx);
 
+    // Slice 5: thread the X-Client-Request-Id (RequireClientRequestIdGuard
+    // above guarantees it is present) into the attach RPC's
+    // attach_operations idempotency key. Mirror editScope/cancelOne.
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    if (!clientRequestId) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail:
+          'attachServices reached the service layer with no clientRequestId despite RequireClientRequestIdGuard.',
+      });
+    }
+
     // Post-canonicalisation (2026-05-02 + Slice A): the URL `:id` is a
     // BOOKING id (what `findOne` returns now). Call the new canonical
     // `attachServicesToBooking` directly instead of the deprecated
@@ -533,6 +544,7 @@ export class ReservationController {
       booking_id: id,
       requester_person_id: r.requester_person_id,
       services: body?.services ?? [],
+      client_request_id: clientRequestId,
     });
   }
 

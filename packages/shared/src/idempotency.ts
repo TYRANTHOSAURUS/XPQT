@@ -467,6 +467,52 @@ export function buildSplitSeriesIdempotencyKey(
 }
 
 /**
+ * Prefix for the `attach_services_to_existing_booking` outer idempotency
+ * key. Booking-audit remediation Slice 5 (audit 03 P1-3). Paired with the
+ * `attach_services_to_existing_booking(...)` RPC (migration 00412), which
+ * gates on `public.attach_operations` (the attach-family idempotency table —
+ * NOT `command_operations`, mirroring the LIVE create_booking_with_attach_plan
+ * which also uses attach_operations). Namespaced separately from every
+ * other prefix (including `booking:edit`, `booking:cancel`,
+ * `booking:recurrence:split`) so a post-booking service-attach retry can
+ * never collide with an edit / cancel / split / dispatch / patch call on
+ * the same booking.
+ *
+ * The attach runs from `POST /reservations/:id/services`
+ * (RequireClientRequestIdGuard-gated). It is keyed on
+ * (bookingId, clientRequestId): a retry of the same attach click re-calls
+ * the RPC with the same key → the RPC's attach_operations gate returns the
+ * cached result, ZERO duplicate orders/OLIs/asset_reservations/approvals.
+ * This is what makes the legacy TS `Cleanup` reverse-order undo-queue
+ * obsolete — Postgres transaction atomicity replaces it.
+ *
+ * Citations:
+ *   - supabase/migrations/00412_attach_services_to_existing_booking_rpc.sql
+ *     (RPC accepts `p_idempotency_key text`, gates on attach_operations)
+ *   - apps/api/src/modules/booking-bundles/bundle.service.ts
+ *     (BundleService.attachServicesToBooking — the thin RPC wrapper)
+ */
+export const ATTACH_SERVICES_IDEMPOTENCY_KEY_PREFIX = 'booking:attach';
+
+/**
+ * Build the outer idempotency key for `attach_services_to_existing_booking`.
+ * Shape: `booking:attach:<booking_id>:<clientRequestId>`
+ *
+ * Same booking + same clientRequestId ⇒ same key ⇒ attach_operations
+ * short-circuits the second call and returns the cached result (no
+ * duplicate rows). **No actor in the key** per F-CRIT-2 / plan-C1
+ * (dispatch RPC): clientRequestId is the deduplication boundary. No
+ * scope/op discriminator — attach is a single operation kind per booking;
+ * the pair (bookingId, clientRequestId) is the natural retry boundary.
+ */
+export function buildAttachServicesIdempotencyKey(
+  bookingId: string,
+  clientRequestId: string,
+): string {
+  return `${ATTACH_SERVICES_IDEMPOTENCY_KEY_PREFIX}:${bookingId}:${clientRequestId}`;
+}
+
+/**
  * The three recurrence scopes the cancel RPC dispatches on. Mirrors the
  * `RecurrenceScope` union in
  * `apps/api/src/modules/reservations/dto/types.ts:378` (kept structurally

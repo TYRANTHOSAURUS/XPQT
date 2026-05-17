@@ -9,7 +9,6 @@ import {
 import { ApprovalRoutingService } from '../orders/approval-routing.service';
 import { ServiceRuleResolverService } from '../service-catalog/service-rule-resolver.service';
 import { buildServiceEvaluationContext } from '../service-catalog/service-evaluation-context';
-import { SetupWorkOrderTriggerService } from '../service-routing/setup-work-order-trigger.service';
 import { BundleEventBus, type BundleEvent } from './bundle-event-bus';
 import type { BundleSource, BundleType } from './dto/types';
 import type {
@@ -21,6 +20,7 @@ import type {
   BundleAuditPayload,
 } from './attach-plan.types';
 import { planUuid } from './plan-uuid';
+import { buildAttachServicesIdempotencyKey } from '@prequest/shared';
 import {
   comparePlanAssetReservations,
   comparePlanOrderLineItems,
@@ -78,6 +78,16 @@ export interface AttachServicesArgs {
     source?: BundleSource;
   };
   services: ServiceLineInput[];
+  /**
+   * Caller-supplied stable retry id (X-Client-Request-Id, threaded by the
+   * controller — RequireClientRequestIdGuard enforces presence at the HTTP
+   * boundary). Drives both the deterministic `buildAttachPlan` UUIDs AND
+   * the `attach_services_to_existing_booking` RPC's `attach_operations`
+   * idempotency key. Booking-audit Slice 5: required for the atomic-RPC
+   * cutover (the legacy non-atomic N-write + Cleanup path is gone). The
+   * service hard-fails if absent (mirrors ReservationService.cancelOne:488).
+   */
+  client_request_id?: string;
 }
 
 /**
@@ -95,6 +105,8 @@ export interface AttachServicesToReservationArgsDeprecated {
     source?: BundleSource;
   };
   services: ServiceLineInput[];
+  /** See AttachServicesArgs.client_request_id (Slice 5). */
+  client_request_id?: string;
 }
 
 export interface ServiceLineInput {
@@ -197,7 +209,6 @@ export class BundleService {
     private readonly supabase: SupabaseService,
     private readonly resolver: ServiceRuleResolverService,
     private readonly approvalRouter: ApprovalRoutingService,
-    private readonly setupTrigger: SetupWorkOrderTriggerService,
     private readonly eventBus: BundleEventBus,
   ) {}
 
@@ -222,6 +233,7 @@ export class BundleService {
       requester_person_id: args.requester_person_id,
       bundle: args.bundle,
       services: args.services,
+      client_request_id: args.client_request_id,
     });
   }
 
@@ -237,327 +249,195 @@ export class BundleService {
     }
     const tenantId = TenantContext.current().id;
 
-    const booking = await this.loadBooking(args.booking_id);
-    const lines = await this.hydrateLines(args.services, booking);
-    const requesterCtx = await loadRequesterContext(this.supabase, args.requester_person_id, tenantId);
-    const permissions = await loadPermissionMap(this.supabase, requesterCtx.user_id, tenantId);
-
-    const cleanup = new Cleanup(this.supabase, tenantId);
-    try {
-      // Under canonicalisation the booking IS the bundle — no separate
-      // `booking_bundles` row to lazy-create. Use the booking's id as the
-      // bundle id throughout (orders, approvals, audit). lazyCreateBundle
-      // is gone entirely.
-      const bundleId = booking.id;
-
-      // Group by service_type (from menu_items.menu → catalog_menus.service_type).
-      const linesByServiceType = new Map<string, HydratedLine[]>();
-      for (const line of lines) {
-        const list = linesByServiceType.get(line.service_type) ?? [];
-        list.push(line);
-        linesByServiceType.set(line.service_type, list);
-      }
-
-      const orderIds: string[] = [];
-      const oliIds: string[] = [];
-      const assetReservationIds: string[] = [];
-      const perLineOutcomeInputs: Array<{
-        lineKey: string;
-        catalog_item_id: string;
-        catalog_item_category: string | null;
-        menu_id: string | null;
-      }> = [];
-      const perLineScopes = new Map<string, { order_id: string; oli_id: string; asset_reservation_id: string | null; ticket_id: string | null }>();
-      // (oliId → HydratedLine) — the rule resolver's `contextFor` callback
-      // looks up by lineKey (= persisted oliId), not by HydratedLine.id (which
-      // is always the empty string until insert). Track the pair here.
-      const lineByOli = new Map<string, HydratedLine>();
-
-      // Pre-compute the order total once — `contextFor` would otherwise
-      // recompute it per line.
-      const orderTotal = lines.reduce(
-        (sum, l) => sum + (l.unit_price ?? 0) * l.quantity,
-        0,
-      );
-
-      for (const [serviceType, group] of linesByServiceType) {
-        const order = await this.createOrder({
-          tenantId,
-          booking,
-          requester_person_id: args.requester_person_id,
-          bundle_id: bundleId,
-          service_type: serviceType,
-        });
-        cleanup.order(order.id);
-        orderIds.push(order.id);
-
-        for (const line of group) {
-          // 1. Asset reservation first — GiST conflict fails fast and we don't
-          //    leak an order_line_items row on conflict.
-          let assetReservationId: string | null = null;
-          if (line.linked_asset_id) {
-            assetReservationId = await this.createAssetReservation({
-              tenantId,
-              asset_id: line.linked_asset_id,
-              start_at: line.service_window_start_at,
-              end_at: line.service_window_end_at,
-              requester_person_id: args.requester_person_id,
-              bundle_id: bundleId,
-            });
-            cleanup.assetReservation(assetReservationId);
-            assetReservationIds.push(assetReservationId);
-          }
-
-          // 2. Order line item.
-          const oliId = await this.createLineItem({
-            tenantId,
-            order_id: order.id,
-            line,
-            linked_asset_reservation_id: assetReservationId,
-          });
-          cleanup.orderLineItem(oliId);
-          oliIds.push(oliId);
-
-          // Track per-line for rule resolution + scope_breakdown.
-          perLineOutcomeInputs.push({
-            lineKey: oliId,
-            catalog_item_id: line.catalog_item_id,
-            catalog_item_category: line.catalog_item_category,
-            menu_id: line.menu_id ?? null,
-          });
-          perLineScopes.set(oliId, {
-            order_id: order.id,
-            oli_id: oliId,
-            asset_reservation_id: assetReservationId,
-            ticket_id: null,
-          });
-          lineByOli.set(oliId, line);
-        }
-      }
-
-      // Resolve service rules per line, assemble approvals.
-      // The `reservation` slot of the rule-evaluation context still uses
-      // legacy field names (`reservation.id`, etc.) — that's a context-shape
-      // contract owned by ServiceRuleResolverService and untouched by this
-      // slice. We pass the booking's id/window/space into those slots so the
-      // semantic meaning (the holding being booked) is preserved.
-      const outcomes = await this.resolver.resolveBulk({
-        lines: perLineOutcomeInputs,
-        contextFor: (lineKey) => {
-          const line = lineByOli.get(lineKey);
-          if (!line) throw AppErrors.server('bundle.context_lookup_failed', { detail: `context lookup failed for ${lineKey}` });
-          return buildServiceEvaluationContext({
-            requester: requesterCtx,
-            bundle: {
-              id: bundleId,
-              cost_center_id: args.bundle?.cost_center_id ?? null,
-              template_id: args.bundle?.template_id ?? null,
-              attendee_count: booking.attendee_count ?? null,
-            },
-            reservation: {
-              id: booking.id,                       // booking id (canonical entity)
-              space_id: booking.space_id,           // location anchor
-              start_at: booking.start_at,
-              end_at: booking.end_at,
-            },
-            line: {
-              catalog_item_id: line.catalog_item_id,
-              catalog_item_category: line.catalog_item_category,
-              menu_id: line.menu_id,
-              quantity: line.quantity,
-              quantity_per_attendee: null,
-              service_window_start_at: line.service_window_start_at,
-              service_window_end_at: line.service_window_end_at,
-              unit_price: line.unit_price,
-              lead_time_remaining_hours: line.lead_time_remaining_hours,
-              menu: {
-                fulfillment_vendor_id: line.fulfillment_vendor_id,
-                fulfillment_team_id: line.fulfillment_team_id,
-              },
-            },
-            order: {
-              total_per_occurrence: orderTotal,
-              total: orderTotal,
-              line_count: lines.length,
-            },
-            permissions,
-          });
-        },
+    // Booking-audit Slice 5 (audit 03 P1-3): the legacy non-atomic N-write
+    // path + reverse-order TS `Cleanup` undo-queue (same data-loss class as
+    // the P0-1 cancel bug) is RETIRED. The attach is now ONE atomic
+    // PL/pgSQL RPC — `attach_services_to_existing_booking` (00412), which
+    // mirrors the attach half of the LIVE create_booking_with_attach_plan
+    // WITHOUT booking/slot creation. Postgres transaction atomicity
+    // replaces the in-process compensation: any partial-write rolls back
+    // with the attach_operations marker, so a deny / FK miss / GiST
+    // conflict leaves ZERO orphan rows.
+    //
+    // X-Client-Request-Id is the idempotency boundary. The controller's
+    // RequireClientRequestIdGuard enforces presence at the HTTP boundary;
+    // this service-layer hard-fail enforces it for any internal caller
+    // (mirrors ReservationService.cancelOne:488 — F-CRIT-1).
+    const clientRequestId = args.client_request_id;
+    if (!clientRequestId) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail:
+          'attachServicesToBooking reached the RPC layer with no client_request_id ' +
+          'despite RequireClientRequestIdGuard (booking-audit Slice 5).',
       });
-
-      const perLineApproval = perLineOutcomeInputs.map((input) => {
-        const outcome = outcomes.get(input.lineKey);
-        const scope = perLineScopes.get(input.lineKey)!;
-        return {
-          line_key: input.lineKey,
-          outcome: outcome ?? this.allowOutcome(),
-          scope: {
-            // ApprovalScope.reservation_ids is the legacy field name — the
-            // value is now the booking id (canonical entity). The approvals
-            // slice rewrite will rename this field on the routing service.
-            reservation_ids: [booking.id],
-            order_ids: [scope.order_id],
-            order_line_item_ids: [scope.oli_id],
-            ticket_ids: scope.ticket_id ? [scope.ticket_id] : [],
-            asset_reservation_ids: scope.asset_reservation_id ? [scope.asset_reservation_id] : [],
-          },
-        };
-      });
-
-      // 00278:172 CHECK constraint enforces target_entity_type = 'booking'
-      // for booking-anchored approvals; the routing service union now
-      // admits 'booking' (approval-routing.service.ts AssembleApprovalsArgs).
-      const assembled = await this.approvalRouter.assemble({
-        target_entity_type: 'booking',
-        target_entity_id: bundleId,
-        per_line_outcomes: perLineApproval,
-        bundle_context: {
-          cost_center_id: args.bundle?.cost_center_id ?? null,
-          requester_person_id: args.requester_person_id,
-          bundle_id: bundleId,
-        },
-      });
-
-      const anyDeny = perLineApproval.some((p) => p.outcome.effect === 'deny');
-      if (anyDeny) {
-        const denials = perLineApproval.flatMap((p) => p.outcome.denial_messages);
-        // Throw before we mark orders 'submitted' — cleanup will undo the
-        // asset reservations + line items + bundle.
-        throw AppErrors.validationFailed('service_rule_deny', {
-          detail: denials[0] ?? 'A service rule denied this booking.',
-        });
-      }
-
-      const anyPending = perLineApproval.some((p) =>
-        p.outcome.effect === 'require_approval' || p.outcome.effect === 'allow_override',
-      );
-
-      // Update each order's status: submitted (pending approval) or approved.
-      for (const orderId of orderIds) {
-        await this.supabase.admin
-          .from('orders')
-          .update({ status: anyPending ? 'submitted' : 'approved' })
-          .eq('id', orderId);
-      }
-
-      cleanup.commit();
-
-      // Auto-create internal-setup work orders in parallel for any line
-      // whose rules emitted requires_internal_setup=true. Runs AFTER
-      // commit; failures are audited internally and never roll back
-      // the bundle. See plan §Slice 2 + SetupWorkOrderTriggerService.
-      //
-      // Approval interlock (codex 2026-04-30 review): if ANY line is
-      // pending approval (anyPending), the order/bundle sits in
-      // 'submitted' state until approved. We skip auto-creation entirely
-      // here — facilities should not start internal work for orders that
-      // may still be rejected. The args are PERSISTED on the OLI so
-      // BundleService.onApprovalDecided can re-fire the trigger on grant
-      // without re-resolving rules (00197 + handleBookingBundleApprovalDecided).
-      const requiresSetup = Array.from(outcomes.entries())
-        .filter(([oliId, outcome]) => outcome.requires_internal_setup && lineByOli.has(oliId))
-        .map(([oliId, outcome]) => {
-          const line = lineByOli.get(oliId)!;
-          return {
-            oliId,
-            outcome,
-            args: {
-              tenantId,
-              bundleId,                           // = booking.id post-canonicalisation
-              oliId,
-              serviceCategory: line.service_type,
-              serviceWindowStartAt: line.service_window_start_at,
-              locationId: booking.space_id,
-              ruleIds: outcome.matched_rule_ids,
-              leadTimeOverride: outcome.internal_setup_lead_time_minutes,
-              originSurface: 'bundle' as const,
-            },
-          };
-        });
-
-      if (anyPending) {
-        // Persist trigger args on each OLI so onApprovalDecided can re-fire
-        // exactly the snapshot that would have fired at create time. If the
-        // persist fails, emit a HIGH-severity event instead of the normal
-        // deferred marker — codex 2026-04-30 review: leaving the misleading
-        // "deferred" audit AND a missing persist means approval-grant later
-        // claims nothing and no work order ever fires, with the audit trail
-        // saying the opposite.
-        for (const { oliId, outcome, args } of requiresSetup) {
-          const { error: persistErr } = await this.supabase.admin
-            .from('order_line_items')
-            .update({ pending_setup_trigger_args: args })
-            .eq('id', oliId);
-          if (persistErr) {
-            this.log.error(
-              `failed to persist pending_setup_trigger_args for oli ${oliId}: ${persistErr.message}`,
-            );
-            void this.audit(
-              tenantId,
-              'bundle.setup_deferral_persist_failed',
-              'order_line_item',
-              oliId,
-              {
-                line_id: oliId,
-                bundle_id: bundleId,
-                rule_ids: outcome.matched_rule_ids,
-                error: persistErr.message,
-                severity: 'high',
-              },
-            );
-            continue;
-          }
-          void this.audit(
-            tenantId,
-            'bundle.setup_deferred_pending_approval',
-            'order_line_item',
-            oliId,
-            {
-              line_id: oliId,
-              bundle_id: bundleId,
-              rule_ids: outcome.matched_rule_ids,
-              reason: 'approval_pending',
-            },
-          );
-        }
-      } else {
-        await this.setupTrigger.triggerMany(requiresSetup.map((r) => r.args));
-      }
-
-      // Audit entity_type stays 'booking_bundle' on existing event_types so
-      // pre-rewrite audit consumers keep matching. New events should use
-      // 'booking' going forward — adopted here for the new
-      // 'booking.services_attached' marker. Historical 'booking_bundle' rows
-      // remain immutable (00278:18) and queryable by ops dashboards.
-      void this.audit(tenantId, 'bundle.created', 'booking_bundle', bundleId, {
-        bundle_id: bundleId,
-        booking_id: bundleId,                   // canonical alias (booking.id == bundleId post-rewrite)
-        order_ids: orderIds,
-        order_line_item_ids: oliIds,
-        asset_reservation_ids: assetReservationIds,
-        approval_ids: assembled.map((a) => a.target_entity_id),
-        any_pending_approval: anyPending,
-      });
-
-      return {
-        bundle_id: bundleId,
-        order_ids: orderIds,
-        order_line_item_ids: oliIds,
-        asset_reservation_ids: assetReservationIds,
-        approval_ids: assembled.map((a) => a.target_entity_id),
-        any_pending_approval: anyPending,
-      };
-    } catch (err) {
-      await cleanup.rollback();
-      // Asset GiST conflict path — surface a structured 409 with the
-      // conflicting asset for the picker to suggest alternatives.
-      if (isExclusionViolation(err)) {
-        throw AppErrors.conflict('asset_conflict', {
-          detail: 'A requested asset is already reserved for this window.',
-        });
-      }
-      throw err;
     }
+
+    // Verify the booking exists in this tenant (clean 404 + the projection
+    // the pure plan-builder needs). loadBooking is tenant-scoped (#0).
+    const booking = await this.loadBooking(args.booking_id);
+    const bundleId = booking.id; // booking IS the bundle (00277:27)
+
+    const idempotencyKey = buildAttachServicesIdempotencyKey(
+      args.booking_id,
+      clientRequestId,
+    );
+
+    // Reuse the EXISTING pure/deterministic plan-builder (every UUID via
+    // planUuid(idempotencyKey) — bundle.service.ts buildAttachPlan). Same
+    // builder the combined-create + multi-room paths use; identical
+    // (booking, services, idempotency_key) → byte-identical jsonb, so a
+    // same-key replay hashes identically inside the RPC's attach_operations
+    // gate (the determinism contract the smoke gate's probe (b) verifies).
+    const attachPlan = await this.buildAttachPlan({
+      booking_id: args.booking_id,
+      tenant_id: tenantId,
+      booking: {
+        location_id: booking.space_id,
+        requester_person_id: booking.requester_person_id,
+        host_person_id: booking.host_person_id,
+        start_at: booking.start_at,
+        end_at: booking.end_at,
+        attendee_count: booking.attendee_count,
+        source: (booking.source ??
+          'desk') as BuildAttachPlanArgs['booking']['source'],
+      },
+      requester_person_id: args.requester_person_id,
+      bundle: args.bundle,
+      services: args.services,
+      idempotency_key: idempotencyKey,
+    });
+
+    // ── Atomic RPC ─────────────────────────────────────────────────────
+    const { data: rpcData, error: rpcError } = await this.supabase.admin.rpc(
+      'attach_services_to_existing_booking',
+      {
+        p_booking_id: args.booking_id,
+        p_attach_plan: attachPlan as unknown as Record<string, unknown>,
+        p_tenant_id: tenantId,
+        p_idempotency_key: idempotencyKey,
+      },
+    );
+
+    if (rpcError) {
+      throw this.mapAttachRpcError(rpcError);
+    }
+
+    const result = (rpcData ?? null) as
+      | {
+          booking_id: string;
+          order_ids: string[];
+          order_line_item_ids: string[];
+          asset_reservation_ids: string[];
+          approval_ids: string[];
+          any_pending_approval: boolean;
+        }
+      | null;
+    if (!result?.booking_id) {
+      throw AppErrors.server('booking.unexpected_error', {
+        detail: 'attach_services_to_existing_booking returned no booking_id',
+      });
+    }
+
+    // Post-commit best-effort audit (mirrors the create path's
+    // void this.audit(...) at booking-flow.service.ts:622 — the RPC already
+    // committed; an audit-insert failure must NOT roll the attach back).
+    void this.audit(tenantId, 'bundle.created', 'booking_bundle', bundleId, {
+      bundle_id: bundleId,
+      booking_id: bundleId,
+      order_ids: result.order_ids,
+      order_line_item_ids: result.order_line_item_ids,
+      asset_reservation_ids: result.asset_reservation_ids,
+      approval_ids: result.approval_ids,
+      any_pending_approval: result.any_pending_approval,
+      via: 'attach_services_to_existing_booking',
+      idempotency_key: idempotencyKey,
+    });
+
+    return {
+      bundle_id: bundleId,
+      order_ids: result.order_ids,
+      order_line_item_ids: result.order_line_item_ids,
+      asset_reservation_ids: result.asset_reservation_ids,
+      approval_ids: result.approval_ids,
+      any_pending_approval: result.any_pending_approval,
+    };
+  }
+
+  /**
+   * Map a PostgREST `attach_services_to_existing_booking` RPC error to the
+   * appropriate AppError. Mirrors `BookingFlowService.mapAttachPlanRpcError`
+   * (booking-flow.service.ts:671-776) one-for-one — the new RPC raises the
+   * SAME error strings as the live create RPC's attach half (it IS that
+   * half), so every code reused here is already registered in
+   * packages/shared/src/error-codes.ts (no new error codes — verified):
+   *   - 23P01 GiST exclusion (asset_reservations_no_overlap) →
+   *     `asset_conflict` 409 (the picker surfaces alternatives upstream).
+   *   - `attach_operations.payload_mismatch` (P0001) →
+   *     `booking.idempotency_payload_mismatch` 409.
+   *   - `attach_plan.fk_invalid: …` (42501, validate_attach_plan_tenant_fks)
+   *     → `booking.fk_invalid` 422.
+   *   - `attach_plan.internal_refs: …` (42501 snapshot-uuid variant) →
+   *     `booking.snapshot_uuid_invalid` 422; (other) →
+   *     `booking.internal_ref_invalid` 422.
+   *   - `service_rule_deny: …` (P0001) → `service_rule_deny` 422.
+   *   - `attach_services_to_existing_booking.booking_not_found` (P0001) →
+   *     `booking` notFound 404 (the loadBooking pre-check normally catches
+   *     this first; the RPC raise is the defense-in-depth path).
+   *   - anything else → `booking.unexpected_error` 500 (raw message logged;
+   *     the SAME catch-all code the create path uses — no new error code).
+   */
+  private mapAttachRpcError(rpcError: { code?: string; message?: string }): Error {
+    const code = rpcError.code ?? '';
+    const message = rpcError.message ?? '';
+
+    if (code === '23P01' || isExclusionViolation(rpcError)) {
+      return AppErrors.conflict('asset_conflict', {
+        detail: 'A requested asset is already reserved for this window.',
+      });
+    }
+    if (message.includes('attach_operations.payload_mismatch')) {
+      return AppErrors.conflict('booking.idempotency_payload_mismatch', {
+        detail:
+          'A retry of this service attach arrived with different content. ' +
+          'Re-submit with a fresh request id, or refresh and try again.',
+      });
+    }
+    if (message.includes('attach_plan.fk_invalid')) {
+      return AppErrors.validationFailed('booking.fk_invalid', {
+        detail: this.extractRaiseMessage(message),
+      });
+    }
+    if (message.includes('attach_plan.internal_refs') && code === '42501') {
+      return AppErrors.validationFailed('booking.snapshot_uuid_invalid', {
+        detail: this.extractRaiseMessage(message),
+      });
+    }
+    if (message.includes('attach_plan.internal_refs')) {
+      return AppErrors.validationFailed('booking.internal_ref_invalid', {
+        detail: this.extractRaiseMessage(message),
+      });
+    }
+    if (message.includes('service_rule_deny')) {
+      return AppErrors.validationFailed('service_rule_deny', {
+        detail: this.extractRaiseMessage(message),
+      });
+    }
+    if (message.includes('attach_services_to_existing_booking.booking_not_found')) {
+      return AppErrors.notFound('booking', this.extractRaiseMessage(message));
+    }
+    this.log.error(
+      `attach_services_to_existing_booking unexpected error: code=${code} message=${message}`,
+    );
+    return AppErrors.server('booking.unexpected_error', {
+      detail: message || 'Unexpected error during service attach.',
+    });
+  }
+
+  /** Strip the `prefix: ` of a RAISE EXCEPTION message (mirrors
+   *  BookingFlowService.extractRaiseMessage at booking-flow.service.ts:780). */
+  private extractRaiseMessage(raw: string): string {
+    const idx = raw.indexOf(': ');
+    return idx >= 0 ? raw.slice(idx + 2) : raw;
   }
 
   /**
@@ -1694,120 +1574,6 @@ export class BundleService {
   // BookingFlowService.create via the create_booking RPC; service attach
   // never needs to materialise a bundle row of its own.
 
-  /**
-   * Create one `orders` row keyed to the booking + the booking's primary
-   * slot. Column renames from 00278:108-118:
-   *   - orders.booking_bundle_id  → orders.booking_id     (FK to bookings.id)
-   *   - orders.linked_reservation_id → orders.linked_slot_id (FK to booking_slots.id)
-   *
-   * `linked_slot_id` is intentionally null in v1 — the bundle service
-   * doesn't track which booking_slot a service line belongs to (multi-slot
-   * bookings are out of scope until MultiRoomBookingService rewrites). The
-   * column is nullable on the new schema (00278:117 — on delete set null).
-   * Wired up properly when the multi-room slice resumes.
-   */
-  private async createOrder(args: {
-    tenantId: string;
-    booking: BookingRow;
-    requester_person_id: string;
-    bundle_id: string;
-    service_type: string;
-  }): Promise<{ id: string }> {
-    const { data, error } = await this.supabase.admin
-      .from('orders')
-      .insert({
-        tenant_id: args.tenantId,
-        requester_person_id: args.requester_person_id,
-        booking_id: args.bundle_id,                 // = booking.id; column renamed 00278:109
-        linked_slot_id: null,                       // multi-slot tracking deferred (see comment above)
-        delivery_location_id: args.booking.space_id,
-        delivery_date: args.booking.start_at.slice(0, 10),
-        requested_for_start_at: args.booking.start_at,
-        requested_for_end_at: args.booking.end_at,
-        status: 'draft',
-        policy_snapshot: { service_type: args.service_type },
-      })
-      .select('id')
-      .single();
-    if (error) throw error;
-    return { id: (data as { id: string }).id };
-  }
-
-  private async createLineItem(args: {
-    tenantId: string;
-    order_id: string;
-    line: HydratedLine;
-    linked_asset_reservation_id: string | null;
-  }): Promise<string> {
-    const { data, error } = await this.supabase.admin
-      .from('order_line_items')
-      .insert({
-        order_id: args.order_id,
-        tenant_id: args.tenantId,
-        catalog_item_id: args.line.catalog_item_id,
-        quantity: args.line.quantity,
-        unit_price: args.line.unit_price,
-        line_total: args.line.unit_price != null ? args.line.unit_price * args.line.quantity : null,
-        fulfillment_status: 'ordered',
-        fulfillment_team_id: args.line.fulfillment_team_id,
-        vendor_id: args.line.fulfillment_vendor_id,
-        menu_item_id: args.line.menu_item_id,
-        linked_asset_id: args.line.linked_asset_id,
-        linked_asset_reservation_id: args.linked_asset_reservation_id,
-        service_window_start_at: args.line.service_window_start_at,
-        service_window_end_at: args.line.service_window_end_at,
-        repeats_with_series: args.line.repeats_with_series,
-        policy_snapshot: {
-          menu_id: args.line.menu_id,
-          menu_item_id: args.line.menu_item_id,
-          unit: args.line.unit,
-          service_type: args.line.service_type,
-        },
-      })
-      .select('id')
-      .single();
-    if (error) throw error;
-    return (data as { id: string }).id;
-  }
-
-  private async createAssetReservation(args: {
-    tenantId: string;
-    asset_id: string;
-    start_at: string;
-    end_at: string;
-    requester_person_id: string;
-    bundle_id: string;
-  }): Promise<string> {
-    // Confirm the asset belongs to this tenant — otherwise a cross-tenant
-    // asset id passed in the payload would land a tenant-A reservation
-    // pointing at a tenant-B asset.
-    const assetCheck = await this.supabase.admin
-      .from('assets')
-      .select('id')
-      .eq('id', args.asset_id)
-      .eq('tenant_id', args.tenantId)
-      .maybeSingle();
-    if (assetCheck.error) throw assetCheck.error;
-    if (!assetCheck.data) {
-      throw AppErrors.notFound('asset', args.asset_id);
-    }
-
-    const { data, error } = await this.supabase.admin
-      .from('asset_reservations')
-      .insert({
-        tenant_id: args.tenantId,
-        asset_id: args.asset_id,
-        start_at: args.start_at,
-        end_at: args.end_at,
-        status: 'confirmed',
-        requester_person_id: args.requester_person_id,
-        booking_id: args.bundle_id,                 // = booking.id; column renamed 00278:136
-      })
-      .select('id')
-      .single();
-    if (error) throw error;
-    return (data as { id: string }).id;
-  }
 
   private allowOutcome() {
     return {
@@ -2213,122 +1979,6 @@ interface HydratedLine {
   lead_time_remaining_hours: number;
 }
 
-// ── Cleanup helper ────────────────────────────────────────────────────────
-//
-// Post-canonicalisation: there is no booking-row creation in this service
-// (the booking is created upstream by BookingFlowService.create via the
-// create_booking RPC, atomically with its slots). Cleanup only undoes the
-// service-attach-side artefacts — order_line_items, asset_reservations,
-// orders, and any pre-deny approvals routed by ApprovalRoutingService.
-// The booking row stays as-is on rollback (it's the user's room
-// reservation; deleting it because services failed would surprise them).
-//
-// @deprecated B.0 cutover replaced this with the combined RPC
-// `create_booking_with_attach_plan` (00309), which is atomic at the
-// Postgres layer — no in-process compensation needed. The single-room
-// path (BookingFlowService.create) no longer hits this Cleanup class.
-// The multi-room path (multi-room-booking.service.ts:300-329) still
-// calls `attachServicesToBooking` (which uses Cleanup) because
-// multi-room hasn't been cut over to a combined RPC yet; that's
-// part of Phase 6 hardening backlog (spec §10X). Once multi-room is
-// migrated to a combined RPC, delete this class + the entire
-// `attachServicesToBooking` method per spec §16.1 step 6 + 17.
-// Tracked in `docs/follow-ups/b0-legacy-cleanup.md`.
-class Cleanup {
-  private orderIds: string[] = [];
-  private oliIds: string[] = [];
-  private assetReservationIds: string[] = [];
-  private done = false;
-
-  constructor(
-    private readonly supabase: SupabaseService,
-    // Defense-in-depth per the project's #0 invariant: admin-client writes
-    // filter by tenant_id explicitly even though uuid id collisions are
-    // practically impossible. Caller threads the booking's tenant id.
-    private readonly tenantId: string,
-  ) {}
-
-  order(id: string) { this.orderIds.push(id); }
-  orderLineItem(id: string) { this.oliIds.push(id); }
-  assetReservation(id: string) { this.assetReservationIds.push(id); }
-
-  commit() { this.done = true; }
-
-  async rollback() {
-    if (this.done) return;
-    // Reverse-creation order: oli → asset_reservation → orders → approvals.
-    // Each step is independent — a failure in step N shouldn't skip step
-    // N+1. Best effort: each branch in its own try/catch. Every write is
-    // tenant-scoped (#0 invariant).
-    const failures: string[] = [];
-    if (this.oliIds.length > 0) {
-      try {
-        await this.supabase.admin
-          .from('order_line_items')
-          .delete()
-          .eq('tenant_id', this.tenantId)
-          .in('id', this.oliIds);
-      } catch (err) {
-        failures.push(`oli: ${(err as Error).message}`);
-      }
-    }
-    if (this.assetReservationIds.length > 0) {
-      // Soft-delete via status='cancelled' so the GiST exclusion stops
-      // blocking; matches the room-side rollback semantics.
-      try {
-        await this.supabase.admin
-          .from('asset_reservations')
-          .update({ status: 'cancelled' })
-          .eq('tenant_id', this.tenantId)
-          .in('id', this.assetReservationIds);
-      } catch (err) {
-        failures.push(`asset_reservations: ${(err as Error).message}`);
-      }
-    }
-    if (this.orderIds.length > 0) {
-      try {
-        await this.supabase.admin
-          .from('orders')
-          .delete()
-          .eq('tenant_id', this.tenantId)
-          .in('id', this.orderIds);
-      } catch (err) {
-        failures.push(`orders: ${(err as Error).message}`);
-      }
-    }
-    // Void any approvals already persisted for the rolled-back orders /
-    // lines. Without this, ApprovalRoutingService.assemble's pre-anyDeny
-    // inserts orphan: approvers see a pending row in their queue for
-    // entities that no longer exist. (The booking-level approval row may
-    // also exist via target_entity_id=booking.id but we don't cancel it
-    // here — the booking still exists.)
-    const approvalTargetIds = [
-      ...this.orderIds,
-      ...this.oliIds,
-    ];
-    if (approvalTargetIds.length > 0) {
-      try {
-        await this.supabase.admin
-          .from('approvals')
-          .update({
-            status: 'cancelled',
-            comments: 'Auto-voided — service attach rolled back (orphan prevention).',
-          })
-          .eq('tenant_id', this.tenantId)
-          .in('target_entity_id', approvalTargetIds)
-          .eq('status', 'pending');
-      } catch (err) {
-        failures.push(`approvals: ${(err as Error).message}`);
-      }
-    }
-    if (failures.length > 0) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[bundle.rollback] ${failures.length} step(s) failed: ${failures.join('; ')}`,
-      );
-    }
-  }
-}
 
 function isExclusionViolation(err: unknown): boolean {
   return (
