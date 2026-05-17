@@ -2,25 +2,34 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * RLS audit Slice 11 residual-risk pin (the /full-review synthesis
- * flagged this). After Slice 11.3, `@UseGuards(AdminGuard)` survives on
- * exactly ONE controller (`visitors/admin.controller.ts`, deferred to
- * the visitors workstream — codex DECISION B). Everything else delegates
- * to `public.user_has_permission`. `AdminGuard` re-implements that RPC's
- * assignment-validity logic in TS by hand (admin.guard.ts:28-66). The
- * two are a MANUAL MIRROR across independent codepaths: if someone
- * hardens `user_has_permission` (e.g. adds `r.deleted_at is null`) and
- * forgets `admin.guard.ts`, the remaining AdminGuard caller silently
- * becomes WEAKER than the permission RPC — a privilege gap with no other
- * test catching it.
+ * RLS audit Slice 11 — AdminGuard caller-free guarantee + residual-risk
+ * parity pin.
  *
- * This spec pins the parity cheaply (fs + regex, no DB):
- *   1. both sources enforce the agreed validity set, AND
- *   2. a closed-set canary: `user_has_permission`'s WHERE clause
- *      references NO `ura.`/`r.` column outside the documented allowlist
- *      — so a NEW validity predicate trips this test and forces the
- *      author to also update admin.guard.ts (and this allowlist) on
- *      purpose.
+ * As of Slice 11.5 (2026-05-17) `@UseGuards(AdminGuard)` has **zero**
+ * callers in non-spec code — every admin/config controller delegates to
+ * `public.user_has_permission` via `@RequirePermission`. `AdminGuard`
+ * survives only as a caller-free primitive (still exported by
+ * AuthModule). codex's final review flagged that a caller-free
+ * admin-only guard wired into AuthModule is a *reintroduction footgun*:
+ * someone reaches for the familiar `@UseGuards(AdminGuard)` instead of
+ * `@RequirePermission`, silently resurrecting the exact coarse-model
+ * CRITICAL this whole slice closed.
+ *
+ * This spec is the cheap structural guard (fs + regex, no DB):
+ *
+ *   (0) CENSUS — zero `@UseGuards(...AdminGuard...)` decorators in any
+ *       non-spec `apps/api/src` file. A new one fails CI loudly. This is
+ *       the ban codex recommended in lieu of deleting the primitive.
+ *
+ *   (1)+(2) PARITY PIN — kept because the primitive still exists and
+ *       could be reintroduced: if it ever is, its hand-mirrored
+ *       assignment-validity must still match `user_has_permission`
+ *       (active assignment + roles.active + starts_at/ends_at + tenant,
+ *       admin.guard.ts:28-66). (1) both sources enforce the agreed
+ *       validity set; (2) a closed-set canary — `user_has_permission`'s
+ *       WHERE references NO `ura.`/`r.` column outside the documented
+ *       allowlist, so a NEW validity predicate trips the test and forces
+ *       a deliberate admin.guard.ts re-review.
  */
 
 const REPO = path.resolve(__dirname, '../../../../..');
@@ -53,10 +62,55 @@ function whereClauseOf(sql: string): string {
   return m[0];
 }
 
+const API_SRC = path.join(REPO, 'apps/api/src');
+
+/**
+ * Every non-spec .ts file under apps/api/src that has a real
+ * `@UseGuards(... AdminGuard ...)` DECORATOR (not a prose/JSDoc mention).
+ * Comment lines (trimmed start `*`, `//`, `/*`) are skipped so the
+ * Slice-11 explanatory comments that name the decorator don't false-fire.
+ */
+function adminGuardDecoratorFiles(): string[] {
+  const hits: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (
+        entry.name.endsWith('.ts') &&
+        !entry.name.endsWith('.spec.ts')
+      ) {
+        const lines = fs.readFileSync(full, 'utf8').split('\n');
+        for (const raw of lines) {
+          const t = raw.trim();
+          if (t.startsWith('*') || t.startsWith('//') || t.startsWith('/*')) {
+            continue;
+          }
+          if (/@UseGuards\([^)]*\bAdminGuard\b[^)]*\)/.test(raw)) {
+            hits.push(path.relative(REPO, full));
+            break;
+          }
+        }
+      }
+    }
+  };
+  walk(API_SRC);
+  return hits.sort();
+}
+
 describe('AdminGuard ⇔ user_has_permission validity parity (Slice 11 residual-risk pin)', () => {
   const { file: sqlFile, body: sql } = latestUserHasPermissionSql();
   const where = whereClauseOf(sql);
   const guard = fs.readFileSync(ADMIN_GUARD, 'utf8');
+
+  // (0) The ban codex recommended for the caller-free primitive. If
+  // anyone re-introduces @UseGuards(AdminGuard) instead of
+  // @RequirePermission, this fails — and the failure message tells them
+  // which file + that the catalog model is the only sanctioned gate.
+  it('has ZERO @UseGuards(AdminGuard) callers (the primitive stays caller-free)', () => {
+    expect(adminGuardDecoratorFiles()).toEqual([]);
+  });
 
   it(`canonical user_has_permission resolved from ${sqlFile}`, () => {
     expect(sqlFile).toMatch(/^\d{5}_.*\.sql$/);

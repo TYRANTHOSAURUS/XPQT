@@ -694,6 +694,35 @@ Verified:
 Remaining:
 - Slice 11.6 part (A) (4 safe gates) + part (B) (picker projection product decision). Tracked here with the split; not a blocker for the RLS audit's escalation-class closure (this is info-disclosure P2, no escalation).
 
+#### Update — 2026-05-17 (codex final review — DECISION-B reversal upheld; 2 findings actioned, 1 analysis corrected)
+
+Original finding:
+- Independent codex re-review of everything done after its prior pass (11.4 DECISION A, parity-pin, closing status, **11.5 — which reversed codex's own DECISION B**, the GET (A)/(B) split).
+- Location: the 2026-05-17 "Slice 11.5" + "GET info-disclosure" Update blocks.
+
+Status:
+- closed — codex pressure-tested via stdin (`codex exec -s read-only`, background). Verdicts + the three actioned items below.
+
+codex verdicts:
+- **DECISION-B reversal: CORRECT (codex upheld reversing its own prior decision).** It independently verified the stale-premise claim: `origin/worktree-visitors` is already an ancestor of `main` (visitors v1 shipped), so there is no in-flight visitors workstream to collide with, and `visitors.configure` is coherent with the existing `invite`/`reception`/`read_all` actions. The deferral premise was stale; doing the re-gate was right.
+- **Slice 11.5 mechanically sound (codex-confirmed):** all 18 routes correctly mapped (17 `visitors.configure` + `/all` `visitors.read_all`), the in-body→decorator `visitors.read_all` conversion is the same canonical `PermissionGuard.requirePermission` path (identical 401/403), the `AuthModule` drop is safe (`PermissionGuard`+`PermissionMetadataGuard` local; `KioskAuthGuard` module-local; global AuthGuard is APP_GUARD), and **no SQL backfill was missed** — `visitors.configure` ∈ `EXPLICITLY_NO_DEFAULT_ROLE`, not a template, and the parity scan only gates template grants.
+
+Actioned:
+- **[caller-free AdminGuard — codex overrode the "keep + log" call → reintroduction ban added].** codex's verdict: a caller-free admin-only guard still wired+exported by `AuthModule` is a reintroduction footgun (someone reaches for the familiar `@UseGuards(AdminGuard)` instead of `@RequirePermission`, silently resurrecting the coarse-model CRITICAL). Implemented its recommended mitigation in `apps/api/src/modules/auth/admin-guard-permission-parity.spec.ts`: a **CENSUS test (0)** that walks `apps/api/src`, skips comment lines, and asserts **zero** `@UseGuards(...AdminGuard...)` decorators — fails CI loudly on any reintroduction. Kept the parity pin (the primitive still exists and could be reintroduced; if so its hand-mirrored validity must still match `user_has_permission`). The spec's stale docstring ("survives on exactly ONE controller") is corrected to the caller-free reality.
+- **[GET-analysis correction — I oversold `/persons-admin`].** codex (correct, verified at `person.controller.ts:23,37`): the real shared person-directory exposure is **`GET /persons` + `GET /persons/:id` on `PersonController`** — **ungated reads** (mutations gate `people.create`/`people.update`; the two list/detail GETs have no permission check), broadly consumed by the frontend (`apps/web/src/api/persons/index.ts`). My Slice-9-scoped GET-analysis **missed this controller entirely**, so gating user-management's `/persons-admin`→`people.read` is **harmless hygiene, NOT directory-leak closure**. Corrected scope: the P2 directory-leak surface is `PersonController` `GET /persons|/persons/:id`, and because the persons API is a load-bearing picker it is a **(B)-class scoped-projection problem** (same shape as `/users`+`/roles`), not a quick gate. Slice 11.6 (B) is widened to include `PersonController` reads; (A)'s `/persons-admin` entry is reclassified hygiene.
+- **GET (A) audit/effective endpoints: codex confirmed admin-UI-only** (`roles/index.ts:106,120`, `permissions/index.ts:69`) — safe to gate in 11.6 (A) as planned; deferring `/users`+`/roles`+`/users/:id` is legitimate (`useUsers`/`useRoles` load-bearing pickers).
+
+Changed:
+- `apps/api/src/modules/auth/admin-guard-permission-parity.spec.ts` (census test (0) + corrected docstring).
+- This ledger (codex verdicts + the `/persons` scope correction + 11.6 (B) widened).
+
+Verified:
+- `pnpm --filter @prequest/api test -- admin-guard-permission-parity` -> **9/9** (census green = zero callers, independently re-confirming the AdminGuard-free state; parity pin intact).
+
+Remaining:
+- Slice 11.6 (unchanged scope + the `PersonController` addition): (A) gate `/users/:id/audit`, `/roles/:id/audit`, `/permissions/users/:id/effective` now (the safe set; `/persons-admin` is hygiene-only); (B) scoped picker-projection product decision for `/users` + `/roles` + `/users/:id` **+ `GET /persons|/persons/:id`** (the real directory-leak surface). Still P2 info-disclosure, no escalation — not a blocker for the audit's actionable closure.
+- Commits: this change (pending).
+
 ## Agent Handoff Prompt
 
 ```text
