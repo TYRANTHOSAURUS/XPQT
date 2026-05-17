@@ -2017,6 +2017,21 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon de reeks niet annuleren',
     detail: 'Deze reservering hoort niet bij een terugkerende reeks. Annuleer in plaats daarvan de losse reservering.',
   },
+  // ─── Booking-audit remediation Slice 4 — split_recurrence_series ────────
+  // NL-vertaling van de api en-tabel; audit 03 P1-2. Voice in lijn met de
+  // cancel_booking_with_cascade.*-familie ("Kon de reeks niet bijwerken").
+  'split_recurrence_series.actor_not_found': {
+    title: 'Kon de reeks niet bijwerken',
+    detail: 'Je account is niet geregistreerd in deze tenant. Meld je opnieuw aan of neem contact op met een beheerder.',
+  },
+  'split_recurrence_series.not_found': {
+    title: 'Kon de reeks niet bijwerken — niet gevonden',
+    detail: 'Deze reservering bestaat niet meer, of je hebt er geen toegang toe.',
+  },
+  'split_recurrence_series.not_recurring': {
+    title: 'Kon de reeks niet bijwerken',
+    detail: 'Deze reservering hoort niet bij een terugkerende reeks. Bewerk in plaats daarvan de losse reservering.',
+  },
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // NL-vertaling van de api en-tabel; spec §3.6 + §3.12.
   'spawn_link.parent_terminated': {

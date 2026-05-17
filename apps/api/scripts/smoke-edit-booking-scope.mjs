@@ -159,6 +159,19 @@ function buildEditBookingIdempotencyKey(op, bookingId, clientRequestId) {
   return `${EDIT_BOOKING_IDEMPOTENCY_KEY_PREFIX}:${op}:${bookingId}:${clientRequestId}`;
 }
 
+// Booking-audit Slice 4 (audit 03 P1-2) — split_recurrence_series RPC
+// (00411) key shape, replicated from
+// `packages/shared/src/idempotency.ts` (SPLIT_RECURRENCE_SERIES_
+// IDEMPOTENCY_KEY_PREFIX + buildSplitSeriesIdempotencyKey). Same
+// lockstep rule as the edit key above. The split runs INSIDE editScope
+// keyed on the SAME (bookingId, clientRequestId) the editScope uses.
+const SPLIT_RECURRENCE_SERIES_IDEMPOTENCY_KEY_PREFIX =
+  'booking:recurrence:split';
+
+function buildSplitSeriesIdempotencyKey(bookingId, clientRequestId) {
+  return `${SPLIT_RECURRENCE_SERIES_IDEMPOTENCY_KEY_PREFIX}:${bookingId}:${clientRequestId}`;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Supabase admin singleton — used for command_operations assertions,
 // booking_slots / audit_events introspection, and fixture cleanup.
@@ -397,32 +410,75 @@ async function deleteFixture(seriesId) {
   // booking ids. Best-effort: log + continue on individual failures.
   const sql = `
     set session_replication_role = 'replica';
+    -- Booking-audit Slice 4 — scope the booking-fan-out sweeps to the
+    -- FULL fixture set (original series OR title), so split-child
+    -- bookings' audit/domain/outbox/approval rows don't accumulate on
+    -- the shared remote. Tenant-scoped (#0 invariant).
     delete from public.audit_events
       where tenant_id = '${TENANT_ID}'::uuid
         and entity_type = 'booking'
-        and entity_id in (select id from public.bookings where recurrence_series_id = '${seriesId}'::uuid);
+        and entity_id in (select id from public.bookings
+                           where tenant_id = '${TENANT_ID}'::uuid
+                             and (recurrence_series_id = '${seriesId}'::uuid
+                                  or title = 'Smoke edit-scope series'));
     delete from public.domain_events
       where tenant_id = '${TENANT_ID}'::uuid
         and entity_type = 'booking'
-        and entity_id in (select id from public.bookings where recurrence_series_id = '${seriesId}'::uuid);
+        and entity_id in (select id from public.bookings
+                           where tenant_id = '${TENANT_ID}'::uuid
+                             and (recurrence_series_id = '${seriesId}'::uuid
+                                  or title = 'Smoke edit-scope series'));
     delete from outbox.events
       where tenant_id = '${TENANT_ID}'::uuid
-        and aggregate_id in (select id from public.bookings where recurrence_series_id = '${seriesId}'::uuid);
+        and aggregate_id in (select id from public.bookings
+                              where tenant_id = '${TENANT_ID}'::uuid
+                                and (recurrence_series_id = '${seriesId}'::uuid
+                                     or title = 'Smoke edit-scope series'));
     delete from public.approvals
       where tenant_id = '${TENANT_ID}'::uuid
         and target_entity_type = 'booking'
-        and target_entity_id in (select id from public.bookings where recurrence_series_id = '${seriesId}'::uuid);
+        and target_entity_id in (select id from public.bookings
+                                  where tenant_id = '${TENANT_ID}'::uuid
+                                    and (recurrence_series_id = '${seriesId}'::uuid
+                                         or title = 'Smoke edit-scope series'));
+    -- Booking-audit Slice 4 — the split RPC writes an in-tx
+    -- booking.recurrence_split audit_events row with
+    -- entity_type='recurrence_series' (entity_id = source series id).
+    -- The entity_type='booking' delete above misses it; sweep it here.
+    delete from public.audit_events
+      where tenant_id = '${TENANT_ID}'::uuid
+        and entity_type = 'recurrence_series'
+        and event_type = 'booking.recurrence_split'
+        and entity_id = '${seriesId}'::uuid;
     delete from public.command_operations
       where tenant_id = '${TENANT_ID}'::uuid
         and idempotency_key like 'booking:edit:scope:%';
+    -- Booking-audit Slice 4 — sweep the split RPC's own
+    -- command_operations rows (00411 key prefix). The edit-scope sweep
+    -- above does not match this prefix.
+    delete from public.command_operations
+      where tenant_id = '${TENANT_ID}'::uuid
+        and idempotency_key like 'booking:recurrence:split:%';
+    -- Booking-audit Slice 4 FIX: after a 'this_and_following' commit the
+    -- split RPC moves the forward bookings to a NEW recurrence_series.
+    -- The pre-fix slot-delete was keyed ONLY on the ORIGINAL seriesId,
+    -- so split-child bookings' slots were NOT deleted here; then the
+    -- title-scoped booking delete below removed the parent bookings,
+    -- ORPHANING those slots permanently — a GiST landmine on ROOM_BOARD
+    -- at the fixture window that made every SUBSEQUENT run's TAF commit
+    -- 409 with booking.slot_conflict. Delete slots for the FULL fixture
+    -- booking set (original-series OR title-scoped, which catches the
+    -- split-children that retain the title) BEFORE deleting the
+    -- bookings. Tenant-scoped (#0 invariant).
     delete from public.booking_slots
-      where booking_id in (select id from public.bookings where recurrence_series_id = '${seriesId}'::uuid);
-    -- After the pivot's splitSeries fires, forward bookings move to a
-    -- new series id. Sweep BOTH the original + any series whose rows
-    -- include our pivot bookings.
+      where booking_id in (
+        select id from public.bookings
+         where tenant_id = '${TENANT_ID}'::uuid
+           and (recurrence_series_id = '${seriesId}'::uuid
+                or title = 'Smoke edit-scope series'));
+    -- Sweep the original-series bookings + the post-split children
+    -- (forward occurrences moved to a new series id but keep the title).
     delete from public.bookings where recurrence_series_id = '${seriesId}'::uuid;
-    -- Catch the post-split series (forward occurrences moved here on
-    -- the 'this_and_following' commit probe).
     delete from public.bookings
       where tenant_id = '${TENANT_ID}'::uuid
         and title = 'Smoke edit-scope series';
@@ -586,11 +642,72 @@ async function countCommandOpsForPivot(pivotBookingId, crid) {
   const key = buildEditBookingIdempotencyKey('scope', pivotBookingId, crid);
   const { count, error } = await supa()
     .from('command_operations')
-    .select('id', { count: 'exact', head: true })
+    // command_operations is keyed on (tenant_id, idempotency_key) and
+    // has NO `id` column (00316 schema: tenant_id, idempotency_key,
+    // payload_hash, outcome, cached_result, enqueued_at, completed_at).
+    // Selecting a non-existent column makes PostgREST 400 with an empty
+    // message and aborts the whole smoke. Count over a real column.
+    .select('idempotency_key', { count: 'exact', head: true })
     .eq('tenant_id', TENANT_ID)
     .eq('idempotency_key', key);
   if (error) throw error;
   return count ?? 0;
+}
+
+// Booking-audit Slice 4 — count command_operations rows under the SPLIT
+// idempotency key (00411). Tenant-scoped (#0 invariant). On a successful
+// split there is exactly 1 row; a retry of the same editScope must NOT
+// mint a second (the RPC's command_operations gate cache-hits).
+async function countCommandOpsForSplitKey(pivotBookingId, crid) {
+  const key = buildSplitSeriesIdempotencyKey(pivotBookingId, crid);
+  const { data, error } = await supa()
+    .from('command_operations')
+    // No `id` column (see countCommandOpsForPivot note) — select the
+    // real key + outcome.
+    .select('idempotency_key, outcome')
+    .eq('tenant_id', TENANT_ID)
+    .eq('idempotency_key', key);
+  if (error) throw error;
+  return data ?? [];
+}
+
+// Booking-audit Slice 4 — count recurrence_series rows that point at a
+// given pivot booking (parent_booking_id). After an atomic split there
+// is EXACTLY 1 (the new series the RPC minted, anchored at the pivot).
+// A non-idempotent retry would mint a SECOND orphan series here — the
+// core P1-2 regression this probe defends. Tenant-scoped (#0 invariant).
+async function countRecurrenceSeriesForPivot(pivotBookingId) {
+  const { count, error } = await supa()
+    .from('recurrence_series')
+    .select('id', { count: 'exact', head: true })
+    .eq('tenant_id', TENANT_ID)
+    .eq('parent_booking_id', pivotBookingId);
+  if (error) throw error;
+  return count ?? 0;
+}
+
+// Booking-audit Slice 4 — total recurrence_series rows reachable from a
+// fixture (the source series row + any split-children pointing at any of
+// the fixture's bookings). Used to assert "exactly 1 NEW series minted,
+// no orphans" by comparing a before/after delta across a retry.
+// Tenant-scoped (#0 invariant).
+async function countRecurrenceSeriesForFixture(sourceSeriesId, bookingIds) {
+  // Source series row.
+  const src = await supa()
+    .from('recurrence_series')
+    .select('id', { count: 'exact', head: true })
+    .eq('tenant_id', TENANT_ID)
+    .eq('id', sourceSeriesId);
+  if (src.error) throw src.error;
+  // Any series whose parent_booking_id is one of the fixture bookings
+  // (the split-children — there should be exactly 1 after a split).
+  const children = await supa()
+    .from('recurrence_series')
+    .select('id', { count: 'exact', head: true })
+    .eq('tenant_id', TENANT_ID)
+    .in('parent_booking_id', bookingIds);
+  if (children.error) throw children.error;
+  return (src.count ?? 0) + (children.count ?? 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -944,6 +1061,224 @@ async function runScopeProbes(headers, probe, fixture) {
   }
 
   // ────────────────────────────────────────────────────────────────
+  // Scenario 7b — Booking-audit Slice 4 (audit 03 P1-2):
+  //   split_recurrence_series RPC (00411) is ATOMIC + IDEMPOTENT.
+  //
+  // Scenario 7 already committed a `this_and_following` split: the
+  // forward occurrences moved to `newSeriesId`, the source series was
+  // capped, exactly 1 new recurrence_series row was minted. These
+  // probes PROVE the regression the audit flagged is closed:
+  //
+  //   (i)  exactly 1 recurrence_series row points at the pivot
+  //        (parent_booking_id = pivot) — no orphan from the legacy
+  //        3-write race.
+  //   (ii) the split's OWN command_operations row exists with
+  //        outcome=success (the RPC's idempotency gate fired).
+  //   (iii) RETRY the SAME editScope (same crid, same body) — it
+  //        returns the SAME new_series_id, no SECOND/orphan
+  //        recurrence_series row is minted (the core P1-2 fix: the
+  //        legacy non-idempotent splitSeries minted a fresh orphan
+  //        series on every retry; the brittle TS skipSplitSeries hack
+  //        is gone — the RPC's command_operations gate now dedups).
+  //   (iv) the split command_operations row count stays 1 after the
+  //        retry (cache-hit, not a re-execute).
+  //
+  // pivot.bookingId IS forwardBookingIds[0] (PIVOT_INDEX occurrence).
+  // newSeriesId was captured by scenario 7.
+  // ────────────────────────────────────────────────────────────────
+  if (newSeriesId) {
+    // (i) Exactly 1 recurrence_series row anchored at the pivot.
+    const seriesForPivot = await countRecurrenceSeriesForPivot(
+      pivot.bookingId,
+    );
+    if (seriesForPivot === 1) {
+      results.pass += 1;
+      console.log(
+        `  ✓ Slice4 split: exactly 1 recurrence_series row points at the pivot (no orphan)`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Slice4 split: orphan/missing series for pivot');
+      console.log(
+        `  ✗ Slice4 split: ${seriesForPivot} recurrence_series rows point at the pivot (expected 1)`,
+      );
+    }
+
+    // (ii) The split RPC's OWN command_operations row exists + success.
+    const splitOpsAfterCommit = await countCommandOpsForSplitKey(
+      pivot.bookingId,
+      tafCommitCrid,
+    );
+    if (
+      splitOpsAfterCommit.length === 1 &&
+      splitOpsAfterCommit[0].outcome === 'success'
+    ) {
+      results.pass += 1;
+      console.log(
+        `  ✓ Slice4 split: 1 command_operations split row, outcome=success`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Slice4 split: split command_operations row state');
+      console.log(
+        `  ✗ Slice4 split: ${splitOpsAfterCommit.length} split command_operations row(s), outcomes=${JSON.stringify(splitOpsAfterCommit.map((r) => r.outcome))} (expected 1 × success)`,
+      );
+    }
+
+    // Snapshot the total recurrence_series footprint for this fixture
+    // BEFORE the retry. A non-idempotent split would inflate this by 1
+    // on the retry (a second orphan series).
+    const seriesCountBeforeRetry = await countRecurrenceSeriesForFixture(
+      fixture.seriesId,
+      allBookingIds,
+    );
+
+    // (iii) RETRY the exact same editScope (same crid, same body).
+    //
+    // PRE-EXISTING edit_booking_scope NON-DETERMINISM (NOT a Slice 4
+    // regression — documented honestly, not silently passed):
+    // `edit_booking_scope` (00395 v3 / 00399, OUT of Slice 4 scope)
+    // hashes its `p_plans` argument, and the assembler stamps a fresh
+    // wall-clock `_resolution_at` into every plan on each call. So a
+    // same-body editScope retry re-assembles plans that hash
+    // DIFFERENTLY → the edit RPC raises
+    // `command_operations.payload_mismatch` (409). This is a real
+    // pre-existing edit-pipeline bug; the smoke never surfaced it
+    // before because the harness died earlier on the
+    // `command_operations.id` column bug (fixed in this slice). It is
+    // tracked in docs/follow-ups/slice4-split-recurrence-decision.md
+    // §Newly-surfaced pre-existing failures (owner: booking-audit
+    // workstream — edit_booking_scope payload-hash determinism).
+    //
+    // CRUCIAL: this does NOT undermine the Slice 4 fix. `splitSeries`
+    // runs BEFORE the assembler, so on retry the split RPC IS invoked
+    // with the SAME (pivot, crid) → its OWN command_operations gate
+    // cache-hits → it returns the same new_series_id and mints NO
+    // second series. The editScope envelope being a 409 (the
+    // pre-existing edit bug) is irrelevant to the split's idempotency,
+    // which is observable directly at the DB level. We therefore
+    // EXPECT the editScope retry to 409 (the pre-existing behavior)
+    // and assert the split-level invariants — those are what P1-2
+    // actually requires and what Slice 4 actually fixed.
+    //
+    // FIXME(D-5 / audit-03 R-e / orchestrator task #14): this expect:409
+    // encodes a KNOWN pre-existing bug, not desired behavior. Root cause
+    // (live-DB verified 2026-05-17): edit_booking_scope ALREADY hashes via
+    // booking_edit_idempotency_payload_hash (00407:1256); the strip helper
+    // only removes `_`-prefixed keys, but the SCOPE producer
+    // (assemble-edit-plan.service.ts p_plans build) emits ≥1 NON-`_`
+    // value that varies across re-assembly. When that producer-determinism
+    // fix lands, FLIP this probe to expect cached success (no 409).
+    const tafRetryResult = await probe(
+      'Slice4 split: RETRY same editScope → 409 (pre-existing edit_booking_scope payload-hash non-determinism, NOT a split regression)',
+      {
+        url: dryRunSeriesUrl,
+        body: { scope: 'this_and_following', space_id: ROOM_BOARD },
+        clientRequestId: tafCommitCrid,
+        expect: 'conflict',
+      },
+    );
+    if (tafRetryResult.ok) {
+      try {
+        const retryParsed = JSON.parse(tafRetryResult.body);
+        if (retryParsed.code === 'command_operations.payload_mismatch') {
+          results.pass += 1;
+          console.log(
+            `  ✓ Slice4 split retry: editScope 409 payload_mismatch (pre-existing edit bug, documented)`,
+          );
+        } else {
+          results.fail += 1;
+          results.failed.push('Slice4 split retry: unexpected 409 code');
+          console.log(
+            `  ✗ Slice4 split retry: 409 code=${retryParsed.code} (expected command_operations.payload_mismatch)`,
+          );
+        }
+      } catch {
+        results.fail += 1;
+        results.failed.push('Slice4 split retry: 409 body parse');
+      }
+    }
+
+    // ── Split-level idempotency invariants (the actual P1-2 fix) ──
+    // These hold REGARDLESS of the editScope envelope above, because
+    // the split RPC fired (before the assembler) and is idempotent.
+
+    // No SECOND series minted: total fixture series footprint
+    // unchanged across the retry (the core P1-2 regression — the
+    // legacy non-idempotent splitSeries minted a fresh orphan series
+    // on every retry).
+    const seriesCountAfterRetry = await countRecurrenceSeriesForFixture(
+      fixture.seriesId,
+      allBookingIds,
+    );
+    if (seriesCountAfterRetry === seriesCountBeforeRetry) {
+      results.pass += 1;
+      console.log(
+        `  ✓ Slice4 split retry: recurrence_series count unchanged (${seriesCountAfterRetry}) — NO orphan series minted (P1-2 fixed)`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Slice4 split retry: orphan series minted');
+      console.log(
+        `  ✗ Slice4 split retry: recurrence_series count ${seriesCountBeforeRetry} → ${seriesCountAfterRetry} (orphan series minted — P1-2 REGRESSION)`,
+      );
+    }
+
+    // Still exactly 1 series anchored at the pivot after the retry.
+    const seriesForPivotAfter = await countRecurrenceSeriesForPivot(
+      pivot.bookingId,
+    );
+    if (seriesForPivotAfter === 1) {
+      results.pass += 1;
+      console.log(
+        `  ✓ Slice4 split retry: still exactly 1 recurrence_series row points at the pivot (idempotent)`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Slice4 split retry: pivot series count != 1');
+      console.log(
+        `  ✗ Slice4 split retry: ${seriesForPivotAfter} recurrence_series rows point at the pivot (expected 1)`,
+      );
+    }
+
+    // (iv) split command_operations row count still exactly 1 with
+    //      outcome=success (the split RPC's OWN gate cache-hit, not a
+    //      re-execute — proves the split is idempotent end-to-end even
+    //      though the surrounding editScope 409'd).
+    const splitOpsAfterRetry = await countCommandOpsForSplitKey(
+      pivot.bookingId,
+      tafCommitCrid,
+    );
+    if (
+      splitOpsAfterRetry.length === 1 &&
+      splitOpsAfterRetry[0].outcome === 'success'
+    ) {
+      results.pass += 1;
+      console.log(
+        `  ✓ Slice4 split retry: split command_operations row count still 1 × success (RPC cache-hit)`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Slice4 split retry: split command_operations row count');
+      console.log(
+        `  ✗ Slice4 split retry: ${splitOpsAfterRetry.length} split command_operations row(s) (expected 1 × success)`,
+      );
+    }
+
+    // Residual note: a dedicated payload-mismatch probe ON THE SPLIT
+    // KEY (same split crid, different pivot) is NOT added here — the
+    // split crid is derived from (pivot.bookingId, editScope crid) and
+    // the smoke harness drives the split only transitively via
+    // editScope, so it cannot mint a same-split-key/different-pivot
+    // request without a bespoke direct-RPC harness. The split RPC's
+    // payload_mismatch path mirrors 00408's verbatim (codex-reviewed in
+    // Slice 2) + is covered by the editScope payload-mismatch probe
+    // (Scenario 5) which exercises the SAME command_operations gate
+    // shape. Documented in
+    // docs/follow-ups/slice4-split-recurrence-decision.md §Residuals.
+  }
+
+  // ────────────────────────────────────────────────────────────────
   // Scenario 8 — Reject scope='this' (wrong endpoint).
   // ────────────────────────────────────────────────────────────────
   // ReservationService.editScope raises AppErrors.validationFailed
@@ -1133,17 +1468,49 @@ async function readFlipInboxForBookings(bookingIds) {
   return (data ?? []).filter((r) => set.has(r.payload?.booking_id));
 }
 
+function runPsqlJson(sql) {
+  // psql -t -A -c with row_to_json — returns one JSON object per line.
+  // The smoke already shells psql for fixtures; the `outbox` schema is
+  // reachable via direct postgres even though PostgREST does NOT expose
+  // it (only public + graphql_public). supabase-js `.schema('outbox')`
+  // therefore 400s with PGRST106 on this remote.
+  const dbPass = env.SUPABASE_DB_PASS;
+  if (!dbPass) throw new Error('SUPABASE_DB_PASS missing — cannot read outbox via psql');
+  const dbUrl =
+    env.SUPABASE_DB_URL ||
+    'postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres';
+  const out = execFileSync('psql', [dbUrl, '-t', '-A', '-c', sql], {
+    env: { ...process.env, PGPASSWORD: dbPass },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+    .toString()
+    .trim();
+  if (!out) return [];
+  return out
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+}
+
 async function readFlipOutboxForBookings(bookingIds) {
   if (bookingIds.length === 0) return [];
-  const { data, error } = await supa()
-    .schema('outbox')
-    .from('events')
-    .select('id, aggregate_id, payload')
-    .eq('tenant_id', TENANT_ID)
-    .eq('event_type', 'booking.approval_required')
-    .in('aggregate_id', bookingIds);
-  if (error) throw error;
-  return data ?? [];
+  // PostgREST on this remote does NOT expose the `outbox` schema
+  // (PGRST106 "Invalid schema: outbox"). Pre-existing flip-probe
+  // (B.4.A.5) Assertion 3 used supabase-js `.schema('outbox')` which
+  // 400s + aborted the whole gate via an uncaught throw — masking the
+  // Slice 4 probe results. Read via psql instead (the `outbox` schema
+  // IS reachable on direct postgres). Behavior-preserving: same rows,
+  // same fields. Tenant-scoped (#0 invariant).
+  const idList = bookingIds.map((b) => `'${b}'::uuid`).join(',');
+  return runPsqlJson(
+    `select row_to_json(t) from (
+       select id, aggregate_id, payload
+       from outbox.events
+       where tenant_id = '${TENANT_ID}'::uuid
+         and event_type = 'booking.approval_required'
+         and aggregate_id in (${idList})
+     ) t;`,
+  );
 }
 
 async function runFlipScopeProbe(probe, flipFixture) {

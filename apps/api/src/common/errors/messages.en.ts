@@ -2071,6 +2071,22 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't cancel the series",
     detail: 'This booking is not part of a recurring series. Cancel the single occurrence instead.',
   },
+  // ─── Booking-audit remediation Slice 4 — split_recurrence_series ────────
+  // RPC 00411 (audit 03 P1-2). Voice mirrors the cancel_booking_with_
+  // cascade.* family: same "Couldn't update the recurrence" shape with
+  // actionable recovery in the detail.
+  'split_recurrence_series.actor_not_found': {
+    title: "Couldn't update the recurrence",
+    detail: 'Your account is not registered in this tenant. Sign in again or contact an administrator.',
+  },
+  'split_recurrence_series.not_found': {
+    title: "Couldn't update the recurrence — not found",
+    detail: "This booking no longer exists, or you don't have access to it.",
+  },
+  'split_recurrence_series.not_recurring': {
+    title: "Couldn't update the series",
+    detail: 'This booking is not part of a recurring series. Edit the single occurrence instead.',
+  },
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // Spec §3.6 + §3.12. Three guards that block invalid spawn-link writes
   // before the engine commits. 422 surfaces as inline editor copy — the

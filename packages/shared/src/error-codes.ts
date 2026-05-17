@@ -1024,6 +1024,28 @@ export type KnownErrorCode =
   | 'cancel_booking_with_cascade.not_found'
   | 'cancel_booking_with_cascade.invalid_scope'
   | 'cancel_booking_with_cascade.not_recurring'
+  // ─── Booking-audit remediation Slice 4 — split_recurrence_series ────────
+  // RPC 00411 (audit 03 P1-2). The atomic, idempotent recurrence split.
+  // - actor_not_found (404): the JWT's auth_uid has no public.users row in
+  //   the tenant (F-CRIT-1 resolution miss). Defense-in-depth — the TS
+  //   auth guard normally rejects this earlier. Mirrors
+  //   cancel_booking_with_cascade.actor_not_found.
+  // - not_found (404): the pivot booking OR the source recurrence_series
+  //   row is missing / in a different tenant. Mirrors
+  //   cancel_booking_with_cascade.not_found shape.
+  // - not_recurring (422): a split was requested on a booking with no
+  //   recurrence_series_id. Mirrors cancel_booking_with_cascade.
+  //   not_recurring (same domain, same voice). 422 — payload valid,
+  //   booking state blocks the action.
+  // The 3 generic arg-shape raises ('split_recurrence_series:
+  // p_*_id required') intentionally have NO dotted code — they route to
+  // the booking.recurrence_failed 500 fallback (server-class; a non-HTTP
+  // caller passed a malformed tuple, not an actionable client error).
+  // command_operations.payload_mismatch / .unexpected_state are already
+  // registered (shared cross-RPC codes).
+  | 'split_recurrence_series.actor_not_found'
+  | 'split_recurrence_series.not_found'
+  | 'split_recurrence_series.not_recurring'
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.12
   // (Phase 1 codes — three spawn-link safety guards raised by
@@ -1728,6 +1750,13 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'cancel_booking_with_cascade.not_found',
   'cancel_booking_with_cascade.invalid_scope',
   'cancel_booking_with_cascade.not_recurring',
+  // Booking-audit remediation Slice 4 — split_recurrence_series RPC
+  // (00411, audit 03 P1-2). See KnownErrorCode union for per-code
+  // rationale (actor_not_found/not_found 404; not_recurring 422 —
+  // STATUS_BY_CODE in map-rpc-error.ts).
+  'split_recurrence_series.actor_not_found',
+  'split_recurrence_series.not_found',
+  'split_recurrence_series.not_recurring',
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // See KnownErrorCode union for per-code rationale. All 422.
   'spawn_link.parent_terminated',

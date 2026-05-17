@@ -5,6 +5,8 @@ import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import { TenantService } from '../tenant/tenant.service';
 import { ConflictGuardService } from './conflict-guard.service';
+import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
+import { buildSplitSeriesIdempotencyKey } from '@prequest/shared';
 import {
   BOOKING_TX_BOUNDARY,
   type BookingTransactionBoundary,
@@ -97,6 +99,23 @@ export class RecurrenceService {
     is_service_desk: false,
     has_override_rules: false,
   };
+
+  // F-CRIT-1 landmine guard (I1): split_recurrence_series.p_actor_user_id
+  // is `uuid`-typed (00411:97). A non-uuid string (e.g. the synthetic
+  // SYSTEM_ACTOR.auth_uid = 'system:recurrence', line above) sent to a
+  // uuid bind 500s on supabase-js/PostgREST BEFORE the SQL runs — the
+  // RPC's null-actor branch (00411:135) never gets the chance to handle
+  // it. Coerce any absent OR synthetic `system:*` sentinel auth_uid to
+  // null so the RPC takes its null-actor path (audit actor_user_id =
+  // null) instead of crashing. A genuine JWT uuid passes through. Only
+  // the editScope-commit caller (a real JWT) reaches splitSeries today,
+  // so this is currently latent — but every splitSeries-class caller
+  // that could pass a synthetic actor must route auth_uid through here.
+  private static actorAuthUidForRpc(actor: ActorContext): string | null {
+    const uid = actor.auth_uid;
+    if (!uid || uid.startsWith('system:')) return null;
+    return uid;
+  }
 
   // The optional Supabase service is only required when calling
   // materialize / splitSeries / cron. Passed via constructor when the module
@@ -747,120 +766,104 @@ export class RecurrenceService {
   }
 
   /**
-   * Split a recurrence series at `reservationId` and on. The given occurrence
-   * + every subsequent occurrence move to a fresh series_id (new
-   * recurrence_series row, cloned from the source). Returns the new series id.
+   * Split a recurrence series at `bookingId` and on. The given occurrence
+   * + every subsequent occurrence move to a fresh series id (new
+   * recurrence_series row, cloned from the source). Returns the new
+   * series id.
+   *
+   * Booking-audit remediation Slice 4 (audit 03 P1-2): this is now a
+   * THIN one-call wrapper over the atomic, idempotent
+   * `split_recurrence_series` RPC (migration 00411). The legacy body was
+   * the exact non-atomic, non-idempotent choreography the audit flagged
+   * as P1-2: (1) INSERT recurrence_series, (2) UPDATE forward bookings,
+   * (3) UPDATE source series, plus a swallowed best-effort audit_events
+   * insert, with NO actor + NO idempotency. A crash between writes 1 and
+   * 2 left an orphan recurrence_series; a retry of the surrounding
+   * editScope minted a SECOND orphan series (the brittle TS
+   * `skipSplitSeries` pre-check papered over the non-idempotency). All
+   * 3 writes + the audit are now ONE PL/pgSQL transaction, gated on
+   * command_operations keyed on (bookingId, clientRequestId). A retry
+   * of the same editScope re-calls this RPC with the SAME key → the
+   * RPC returns the SAME new_series_id, no orphan series — which is
+   * what made the TS pre-check obsolete (removed in the same change,
+   * see ReservationService.editScope).
+   *
+   * F-CRIT-1: p_actor_user_id is the JWT subject (auth_uid), NOT
+   * users.id — the RPC resolves `where u.auth_uid = p_actor_user_id`
+   * (Slice-1 D-1 lesson). p_actor_user_id is `uuid`-typed (00411:97);
+   * synthetic `system:*` sentinels (e.g. SYSTEM_ACTOR.auth_uid =
+   * 'system:recurrence', recurrence.service.ts:97) are NOT valid uuids
+   * and would 500 on the supabase-js/PostgREST uuid bind before reaching
+   * the SQL. They are coerced to null by `actorAuthUidForRpc` below; the
+   * RPC handles a null actor (00411:135 skips the lookup, audit
+   * actor_user_id = null). Real JWT callers (the only production caller
+   * is editScope-commit) pass a genuine uuid auth_uid through unchanged.
    */
-  async splitSeries(bookingId: string): Promise<string> {
+  async splitSeries(
+    bookingId: string,
+    actor: ActorContext,
+    clientRequestId: string,
+  ): Promise<string> {
     if (!this.supabase) {
-      throw AppErrors.server('booking.recurrence_not_injected', { detail: 'RecurrenceService.splitSeries requires Supabase injection' });
-    }
-
-    // /full-review v3 closure I3 — tenant_id filter on every read/write.
-    // The pivot is a BOOKING row (00277:74-77). Recurrence linkage lives on
-    // bookings, not slots.
-    const ctxTenantId = TenantContext.currentOrNull()?.id ?? null;
-    const pivotQuery = this.supabase.admin
-      .from('bookings')
-      .select('id, tenant_id, start_at, recurrence_series_id, recurrence_index')
-      .eq('id', bookingId);
-    if (ctxTenantId) pivotQuery.eq('tenant_id', ctxTenantId);
-    const { data: pivot } = await pivotQuery.maybeSingle();
-    if (!pivot) throw AppErrors.notFound('booking', bookingId);
-    const p = pivot as {
-      id: string;
-      tenant_id: string;
-      start_at: string;
-      recurrence_series_id: string | null;
-      recurrence_index: number | null;
-    };
-    if (!p.recurrence_series_id) {
-      throw AppErrors.validationFailed('not_recurring', { detail: 'booking is not part of a recurring series' });
-    }
-
-    // Tenant scope authoritative source: the pivot's tenant_id (already
-    // matched against ctxTenantId by the eq above when context exists).
-    const tenantId = p.tenant_id;
-
-    const seriesQuery = this.supabase.admin
-      .from('recurrence_series')
-      .select('*')
-      .eq('id', p.recurrence_series_id)
-      .eq('tenant_id', tenantId);
-    const { data: srcSeriesRow } = await seriesQuery.maybeSingle();
-    if (!srcSeriesRow) {
-      throw AppErrors.server('booking.recurrence_series_not_found', { detail: `recurrence_series ${p.recurrence_series_id} not found` });
-    }
-    const srcSeries = srcSeriesRow as {
-      id: string;
-      tenant_id: string;
-      recurrence_rule: RecurrenceRule;
-      series_start_at: string;
-      series_end_at: string | null;
-      max_occurrences: number;
-      holiday_calendar_id: string | null;
-      materialized_through: string;
-      // Renamed from parent_reservation_id (00278:179-181).
-      parent_booking_id: string | null;
-    };
-
-    // Create the new series row anchored at this occurrence's booking.
-    const { data: newSeriesRow, error: seriesErr } = await this.supabase.admin
-      .from('recurrence_series')
-      .insert({
-        tenant_id: srcSeries.tenant_id,
-        recurrence_rule: srcSeries.recurrence_rule,
-        series_start_at: p.start_at,
-        series_end_at: srcSeries.series_end_at,
-        max_occurrences: srcSeries.max_occurrences,
-        holiday_calendar_id: srcSeries.holiday_calendar_id,
-        materialized_through: srcSeries.materialized_through,
-        parent_booking_id: p.id,                  // renamed 00278:179-181
-      })
-      .select('id')
-      .single();
-    if (seriesErr || !newSeriesRow) {
-      throw AppErrors.server('booking.recurrence_failed', { cause: seriesErr });
-    }
-    const newSeriesId = (newSeriesRow as { id: string }).id;
-
-    // Move this occurrence + all later occurrence BOOKINGS onto the new
-    // series_id. recurrence_master_id was dropped from the canonical
-    // schema — the only link is recurrence_series_id.
-    const { error: updErr } = await this.supabase.admin
-      .from('bookings')
-      .update({ recurrence_series_id: newSeriesId })
-      .eq('tenant_id', srcSeries.tenant_id)
-      .eq('recurrence_series_id', srcSeries.id)
-      .gte('start_at', p.start_at);
-    if (updErr) throw AppErrors.server('booking.recurrence_failed', { cause: updErr });
-
-    // Cap the source series so no more occurrences materialise past the pivot.
-    // /full-review v3 closure I3 — tenant filter on the update.
-    await this.supabase.admin
-      .from('recurrence_series')
-      .update({ series_end_at: p.start_at })
-      .eq('tenant_id', tenantId)
-      .eq('id', srcSeries.id);
-
-    // Audit — phase K. The split changes the canonical series_id of every
-    // occurrence at-or-after the pivot, which downstream consumers
-    // (calendar sync, notifications, reporting) need to reconcile against.
-    try {
-      await this.supabase.admin.from('audit_events').insert({
-        tenant_id: srcSeries.tenant_id,
-        event_type: 'booking.recurrence_split',
-        entity_type: 'recurrence_series',
-        entity_id: srcSeries.id,
-        details: {
-          pivot_booking_id: p.id,
-          pivot_start_at: p.start_at,
-          new_series_id: newSeriesId,
-        },
+      throw AppErrors.server('booking.recurrence_not_injected', {
+        detail: 'RecurrenceService.splitSeries requires Supabase injection',
       });
-    } catch { /* best-effort */ }
+    }
 
-    return newSeriesId;
+    // Tenant scope: the active TenantContext. editScope (the sole
+    // production caller) always runs inside a resolved tenant; the
+    // recurrence cron sets TenantContext.run per series before any
+    // materialise/split (recurrence.service.ts recurrenceRollover).
+    const tenantId = TenantContext.current().id;
+
+    const idempotencyKey = buildSplitSeriesIdempotencyKey(
+      bookingId,
+      clientRequestId,
+    );
+
+    const { data: rpcData, error: rpcErr } = await this.supabase.admin.rpc(
+      'split_recurrence_series',
+      {
+        p_booking_id: bookingId,
+        p_tenant_id: tenantId,
+        // F-CRIT-1: the RPC resolves this via `where u.auth_uid =
+        // p_actor_user_id` (00411:140). Must be the JWT subject
+        // (auth_uid), NOT users.id, or every split fails with
+        // split_recurrence_series.actor_not_found (Slice-1 D-1 lesson).
+        // p_actor_user_id is uuid-typed (00411:97); synthetic system:*
+        // sentinels are coerced to null (the RPC permits a null actor —
+        // 00411:135), NOT passed as a non-uuid string that would 500 on
+        // the uuid bind. See RecurrenceService.actorAuthUidForRpc.
+        p_actor_user_id: RecurrenceService.actorAuthUidForRpc(actor),
+        p_idempotency_key: idempotencyKey,
+      },
+    );
+    if (rpcErr) {
+      // Recognised RPC raises (split_recurrence_series.actor_not_found
+      // 404, .not_found 404, .not_recurring 422,
+      // command_operations.payload_mismatch 409,
+      // command_operations.unexpected_state 500) route through
+      // mapRpcErrorToAppError exactly like the cancel + edit wrappers
+      // (reservation.service.ts:522 / :1059 / :1871). All 3 dotted
+      // codes are registered: STATUS_BY_CODE in map-rpc-error.ts + the
+      // KnownErrorCode union/registry in packages/shared/src/error-codes.ts
+      // + EN/NL messages. booking.recurrence_failed is the booking-scoped
+      // 500 fallback for any unrecognised raise (already registered).
+      throw mapRpcErrorToAppError(rpcErr, {
+        fallbackCode: 'booking.recurrence_failed',
+      });
+    }
+
+    const result = (rpcData ?? {}) as { new_series_id?: string };
+    if (!result.new_series_id) {
+      // The RPC always returns { new_series_id, ... } on success (and
+      // returns its cached_result verbatim on replay, same shape). A
+      // missing field is a contract break, not a client error.
+      throw AppErrors.server('booking.recurrence_failed', {
+        detail: 'split_recurrence_series returned no new_series_id',
+      });
+    }
+    return result.new_series_id;
   }
 
   /**

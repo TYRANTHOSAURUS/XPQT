@@ -182,6 +182,14 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // 404 shape as the edit_booking.* miss paths (this family's convention).
   'cancel_booking_with_cascade.actor_not_found': 404,
   'cancel_booking_with_cascade.not_found': 404,
+  // Booking-audit remediation Slice 4 — split_recurrence_series RPC
+  // (00411, audit 03 P1-2). actor_not_found fires when the caller's
+  // auth_uid has no public.users row in the tenant (F-CRIT-1 resolution
+  // miss); not_found fires when the pivot booking OR the source
+  // recurrence_series row is missing / in a different tenant. Same 404
+  // shape as cancel_booking_with_cascade.* (this family's convention).
+  'split_recurrence_series.actor_not_found': 404,
+  'split_recurrence_series.not_found': 404,
 
   // ── 409 conflict ─────────────────────────────────────────────────
   // payload_mismatch: the client reused the same X-Client-Request-Id
@@ -291,6 +299,12 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // edit_booking_scope.not_recurring's shape (same domain, same voice).
   'cancel_booking_with_cascade.invalid_scope': 422,
   'cancel_booking_with_cascade.not_recurring': 422,
+  // Booking-audit remediation Slice 4 — split_recurrence_series RPC
+  // (00411). not_recurring: the pivot booking has no recurrence_series_id
+  // (a split was requested on a non-recurring booking). 422 — payload is
+  // valid jsonb, the booking state blocks the action. Mirrors
+  // cancel_booking_with_cascade.not_recurring's shape.
+  'split_recurrence_series.not_recurring': 422,
   // B.2.A semantic re-derivation gates — RPCs raise these when the
   // TS-side plan disagrees with the server's recomputation at write time
   // (workflow/SLA/scope-override changed, effective location resolved
