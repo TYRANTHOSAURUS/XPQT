@@ -1649,22 +1649,50 @@ export class TicketService {
     const childCols =
       'id, title, status, status_category, priority, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at';
 
+    // null = no per-child filter (SYSTEM actor or `tickets:read_all`
+    // override); an array = the child work_order ids individually visible
+    // to this actor.
+    let visibleWoIds: string[] | null = null;
     if (actorAuthUid !== SYSTEM_ACTOR) {
       const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      // Gate on parent (case) visibility first.
+      // Parent-case `read` visibility is a PRECONDITION to list children
+      // at all (you can't enumerate a case's children if you can't see
+      // the case). It is NOT, however, sufficient to see each child.
       await this.visibility.assertVisible(parentTicketId, ctx, 'read');
       if (!ctx.user_id && !ctx.has_read_all) return [];
-      // If the actor can see the parent case, they can see its work_order
-      // children. (The visibility model treats children as inheriting parent
-      // visibility for read; tighter scoping is a future step 1c.9 concern.)
+      if (!ctx.has_read_all) {
+        // Audit-02 P1-5: children no longer INHERIT parent visibility.
+        // Each child work_order is filtered through the WO visibility
+        // predicate `work_order_visibility_ids` (00374) so a case-visible
+        // actor only sees the children individually visible to them
+        // (assignee / assigned vendor / team / non-readonly role scope).
+        // Previously a requester who could see a parent case also saw
+        // every child WO on it — including one dispatched to a sensitive
+        // vendor outside their visibility. ctx.user_id is non-null here
+        // (the !user_id && !read_all case returned [] above).
+        const { data: visRows, error: visErr } = await this.supabase.admin.rpc(
+          'work_order_visibility_ids',
+          { p_user_id: ctx.user_id, p_tenant_id: tenant.id },
+        );
+        if (visErr) throw mapRpcErrorToAppError(visErr);
+        visibleWoIds =
+          (visRows as Array<string | { id: string }> | null)?.map((r) =>
+            typeof r === 'string' ? r : r.id,
+          ) ?? [];
+      }
     }
 
-    const { data, error } = await this.supabase.admin
+    let childQuery = this.supabase.admin
       .from('work_orders')
       .select(childCols)
       .eq('parent_ticket_id', parentTicketId)
-      .eq('tenant_id', tenant.id)
-      .order('created_at');
+      .eq('tenant_id', tenant.id);
+    if (visibleWoIds !== null) {
+      // Empty set → `.in('id', [])` matches no rows: the actor can see
+      // the parent case but none of its children individually. Correct.
+      childQuery = childQuery.in('id', visibleWoIds);
+    }
+    const { data, error } = await childQuery.order('created_at');
 
     if (error) throw error;
     // Step 1c.10c: synthesize ticket_kind='work_order' for frontend
