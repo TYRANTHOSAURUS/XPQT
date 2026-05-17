@@ -816,6 +816,33 @@ Verified (correctly this time — against the COMMITTED tree):
 
 Honest restatement: "zero `@UseGuards(AdminGuard)` callers" is now TRUE **for committed HEAD as of `3aecf0e8`** (it was working-tree-only before). The earlier blocks asserting it pre-`3aecf0e8` were committed-state-wrong; this block is the correction of record. Still NOT on `main` — branch `feature/booking-audit-remediation`, merge gated on the parallel 03-booking workstream (unchanged).
 
+#### Update — 2026-05-17 (MERGED TO MAIN via PR #17 — supersedes all "not merged / branch-only" status above)
+
+Original finding:
+- The whole RLS / tenant-isolation / SECURITY DEFINER / least-privilege audit (this document).
+- Location: every prior block; specifically supersedes the "not merged / no PR" / `feature/booking-audit-remediation` bookkeeping in the 2026-05-17 honest-status, 11.6(B), and false-green-correction blocks (append-only — those lines are NOT rewritten; this records they are now historical).
+
+Status:
+- **MERGED to `main`.** PR **#17** (`rls-security-audit` → `main`) merged 2026-05-17 (merge commit `2c5e8220`). Slices 9–11.6 are now on the default branch; Slices 1–8 were already on `main`.
+
+Why a separate PR (not the source branch): the RLS work was committed on `feature/booking-audit-remediation`, which a parallel 03-booking-reservation workstream still shares with in-flight/partial commits. The 19 RLS-audit commits (`552e2db2`..`d6e8ecc1`) were cherry-picked onto a clean branch cut from current `origin/main` (post PR #16) — zero conflicts; patch-ids verified to match the source RLS commits with no booking/workflow-phase1.5/audit-02 commits included. This let the audit land independently of the still-running booking workstream.
+
+Merge gate (the user conditioned merge on codex validation):
+- Independent codex merge-gate review scoped to the two things its prior passes had NOT seen — the user-caught notification false-green fix (`3aecf0e8`/`d6e8ecc1`) and the isolation/cherry-pick fidelity. **`VERDICT: MERGE`**, zero critical / zero important: notification re-gate real & complete (4 routes `notifications.manage_templates`, DI present, spec pinned), false-green correction honestly documented, isolation faithful (19 commits, patch-ids match, no contamination), committed-tree AdminGuard census clean, migration 00409 additive/independent of main's 00410. Only nits (this stale-bookkeeping line — now closed by this block — and codex's read-only sandbox preventing a fresh `git fetch`, so it verified against current local `origin/*` refs, which were current).
+
+Verified (isolated branch, pre-merge) + (origin/main, post-merge):
+- Pre-merge on `rls-security-audit`: shared build clean; `pnpm --filter @prequest/api lint` (tsc) **fully clean, exit 0** (cleaner than the source feature branch, which carries unrelated parallel-workstream tsc breakage); RLS unit suite **151/151** (7 suites); committed census zero.
+- Post-merge on `origin/main` (`2c5e8220`): `git grep "@UseGuards([^)]*AdminGuard)"` → **zero real decorators**; `require-permission.decorator.ts`, migration `00409`, `admin-guard-permission-parity.spec.ts` (the CI reintroduction-ban) all present; `notification.controller.ts` 4× `@RequirePermission('notifications.manage_templates')`; `visitors/admin.controller.ts` 21× `@RequirePermission`; 19 RLS commits in the merge.
+- Live smoke (`smoke:cross-tenant` 31/31, `smoke:work-orders` 109/109) was green on the byte-identical RLS code pre-isolation; not re-run against the merge as the RLS code is unchanged by the cherry-pick and would require a dedicated dev server.
+
+Remaining (unchanged — none are escalation/cross-tenant, none block this closure):
+- 11.6(B) directory reads: **accepted-with-reason** (product decision), not code-fixed.
+- P3 backlog (other owners): avatar Storage cross-tenant READ; absent global `ValidationPipe`.
+- Hygiene: delete the now caller-free `AdminGuard` primitive (CI-banned against reintroduction meanwhile).
+- The source `feature/booking-audit-remediation` branch still carries the parallel 03-booking workstream (out of this audit's scope).
+
+This audit's actionable tenant-isolation / RLS / SECURITY DEFINER / cross-tenant / least-privilege findings are **closed or accepted-with-written-reason, and shipped to `main`.**
+
 ## Agent Handoff Prompt
 
 ```text
