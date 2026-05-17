@@ -293,19 +293,28 @@ describe('BookingFlowService.buildAttachPlan (B.0.C.4)', () => {
     expect(result.bookingInput.status).toBe('pending_approval');
   });
 
-  it('coerces source="auto" to "calendar_sync" by default', async () => {
+  // Booking-audit Slice 8 (audit 03 P2-2, 2026-05-17): `'auto'` was removed
+  // from `ReservationSource`. Resolution moved to the producers — the
+  // recurrence materialiser passes `'recurrence'` directly
+  // (recurrence.service.ts:514) and multi-room resolves `system:*` inline
+  // (multi-room-booking.service.ts:320-326). `buildAttachPlan` is the
+  // consumer: it must now pass an already-resolved DB-CHECK-valid source
+  // through UNCHANGED (no actor-prefix re-derivation). These two cases
+  // assert exactly the two resolved values the producers emit, proving the
+  // consumer preserves them rather than re-coercing.
+  it('passes a producer-resolved source="calendar_sync" through unchanged', async () => {
     const svc = new BookingFlowService(
       makeSupabase() as never,
       makeConflict() as never,
       makeRules() as never,
     );
     const result = await TenantContext.run(TENANT, () =>
-      svc.buildAttachPlan(baseInput({ source: 'auto' }), makeActor(), 'idem-1'),
+      svc.buildAttachPlan(baseInput({ source: 'calendar_sync' }), makeActor(), 'idem-1'),
     );
     expect(result.bookingInput.source).toBe('calendar_sync');
   });
 
-  it('coerces source="auto" to "recurrence" when actor is system:recurrence:*', async () => {
+  it('passes a producer-resolved source="recurrence" through unchanged even when actor is system:recurrence:*', async () => {
     const svc = new BookingFlowService(
       makeSupabase() as never,
       makeConflict() as never,
@@ -313,7 +322,9 @@ describe('BookingFlowService.buildAttachPlan (B.0.C.4)', () => {
     );
     const result = await TenantContext.run(TENANT, () =>
       svc.buildAttachPlan(
-        baseInput({ source: 'auto' }),
+        // The recurrence materialiser now passes `'recurrence'` directly;
+        // the consumer must NOT re-derive from the actor prefix.
+        baseInput({ source: 'recurrence' }),
         makeActor({ user_id: 'system:recurrence:abc' }),
         'idem-1',
       ),

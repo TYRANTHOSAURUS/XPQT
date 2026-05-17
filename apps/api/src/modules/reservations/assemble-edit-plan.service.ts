@@ -72,6 +72,7 @@ import type {
   EditPlanOrderPatch,
   EditPlanSlotPatch,
   EditPlanWorkOrderSlaPatch,
+  ScopeEditPlan,
 } from './edit-plan.types';
 import type { ApprovalConfig } from '../room-booking-rules/dto';
 
@@ -195,7 +196,14 @@ export interface AssembleEditPlanScopePatch {
  */
 export interface AssembleScopeEditPlanResult {
   series_id: string;
-  rpc_plans: Array<{ booking_id: string; plan: EditPlan }>;
+  /** Booking-audit Slice 8 (audit 03 P2-4) — `plan` is the scope-narrowed
+   * `ScopeEditPlan` (booking patch cannot carry `recurrence_overridden`).
+   * tsc now proves a scope plan never carries the key; the
+   * `edit_booking_scope` RPC guard (00395:218-222) stays as
+   * defense-in-depth. The per-occurrence (`kind:'one'`/`'slot'`) path +
+   * the shared `buildSingleSlotPlan` still return the full `EditPlan` —
+   * the narrow is a projection applied only at the scope boundary below. */
+  rpc_plans: Array<{ booking_id: string; plan: ScopeEditPlan }>;
 }
 
 /**
@@ -521,7 +529,7 @@ export class AssembleEditPlanService {
     // match a different rule subset (start_at + end_at are inputs to
     // the resolver). The hoist optimisation is a deferred follow-up
     // pending Step 2F.4 smoke probes.
-    const rpc_plans: Array<{ booking_id: string; plan: EditPlan }> = [];
+    const rpc_plans: Array<{ booking_id: string; plan: ScopeEditPlan }> = [];
     for (const row of scopeRows) {
       const bookingId = row.id;
 
@@ -585,7 +593,22 @@ export class AssembleEditPlanService {
       // .service.ts. Error code `booking.edit_requires_notification_
       // dispatch` stays registered for defense-in-depth.
 
-      rpc_plans.push({ booking_id: bookingId, plan });
+      // Booking-audit Slice 8 (audit 03 P2-4) — project the full
+      // `EditPlan` to the scope-narrowed `ScopeEditPlan`. The shared
+      // `buildSingleSlotPlan` returns the full shape (unchanged — its
+      // general return must keep compiling for the kind:'one'/'slot'
+      // paths); `auto_set_recurrence_overridden:false` above means the
+      // key is never set on scope, so this destructure is a no-op on the
+      // wire (same supabase-js rpc serialization — no `as EditPlan` /
+      // `JSON.parse` re-cast that would defeat the type). The explicit
+      // `Omit` projection is what lets tsc PROVE a scope plan can never
+      // carry `recurrence_overridden`; the 00395:218-222 RPC guard stays
+      // as runtime defense-in-depth.
+      const { recurrence_overridden: _scopeNeverSetsThis, ...scopeBooking } =
+        plan.booking;
+      void _scopeNeverSetsThis;
+      const scopePlan: ScopeEditPlan = { ...plan, booking: scopeBooking };
+      rpc_plans.push({ booking_id: bookingId, plan: scopePlan });
     }
 
     return { series_id: args.effectiveSeriesId, rpc_plans };
