@@ -141,6 +141,29 @@ Note: this gate also serves as a Slice-1/Slice-2 regression check — `MultiRoom
 
 ---
 
+## `pnpm smoke:attach-services`
+
+**Required before claiming complete:** any work touching `BundleService.attachServicesToBooking` / the `POST /reservations/:id/services` route / `attach_services_to_existing_booking` RPC (migrations **00412** / **00413**) / its `attach_operations` idempotency gate / `BundleService.buildAttachPlan` + `hydrateLines` (the attach producer) / `buildAttachServicesIdempotencyKey` / `mapAttachRpcError`.
+
+Script: `apps/api/scripts/smoke-attach-services.mjs`. Run via `pnpm --filter @prequest/api smoke:attach-services`.
+
+This is the **P1-3 regression gate** (audit `docs/follow-ups/audits/03-booking-reservation.md`). It proves post-create service attach is now ONE atomic `attach_services_to_existing_booking` transaction (orders + order_line_items + asset_reservations + approvals + the guarded `setup_work_order.create_required` outbox emit) — replacing the pre-Slice-5 non-atomic TS N-write + reverse-order TS `Cleanup` undo-queue (the same data-loss class as the cancelOne bug). Decision + residuals: `docs/follow-ups/slice5-attach-services-decision.md`.
+
+**Fixtures (psql-seeded, `session_replication_role='replica'`):** dedicated per-probe (+150d, clears sibling-smoke windows). 2 reservable rooms + a priced catering `catalog_item` + an AV `catalog_item` linked to a seeded `asset`/`asset_type` (service line `linked_asset_id` → 1 `asset_reservation`) + a `require_approval` `service_rules` row (catalog_item-scoped, always-true predicate, person approver). Each probe creates its OWN fresh no-services booking via `POST /api/reservations`, then attaches — so every assertion is a baseline→after delta keyed to that run's `booking_id` (multi-session-safe on the shared remote; outbox assertions key on `payload->>'booking_id'`, never a global count).
+
+**Probes (44 assertions):**
+- (1) atomic attach (catering + AV) → ≥1 order, exactly 2 OLIs (qty 8 + qty 1), exactly 1 asset_reservation, exactly 1 `attach_operations` row `outcome=success`, 0 approvals (plain items).
+- (2) idempotency replay (same booking + same `X-Client-Request-Id`) → orders/OLIs/AR counts UNCHANGED, still exactly 1 `attach_operations` success row.
+- (3) same `X-Client-Request-Id`, DIFFERENT payload → HTTP 409 `booking.idempotency_payload_mismatch`; zero new orders/OLIs; no qty=99 OLI ever persisted.
+- (4) cross-tenant: Tenant-A JWT + Tenant-B `X-Tenant-Id` → reject (403/404/401, all correct rejects); zero orders for the booking under the wrong tenant and under `OTHER_TENANT_ID`.
+- (5) missing `X-Client-Request-Id` → 400 (RequireClientRequestIdGuard); zero new orders.
+- (6) **load-bearing atomicity gate** — a pre-seeded `confirmed` asset_reservation overlapping the window makes the RPC's AR INSERT trip the `asset_reservations_no_overlap` GiST exclusion (23P01) AFTER the catering order/OLI insert; asserts the request did NOT succeed AND ZERO partial rows (no orphan order, no OLI incl. no qty=5 OLI, no AR, no approval, `attach_operations` marker rolled back). A surviving partial row here is a REAL RPC bug — the probe fails loudly, never weakens.
+- (7) require_approval `service_rules` rule → response `any_pending_approval=true`; ≥1 pending booking-targeted approval routed to the seeded approver; `setup_work_order.create_required` outbox SUPPRESSED for THIS booking (the RPC guards the emit on `NOT any_pending_approval`).
+
+**Known deferred (NOT a gate gap — documented, owned):** D-6 producer-determinism — `buildAttachPlan` bakes a `Date.now()`-derived `lead_time_remaining_hours` into the hashed plan, so a same-intent retry that straddles a tenant lead-time-rule boundary 409s. Same root class as D-5 (debt #14); bundled into the producer-determinism slice (audit 03 Closure Ledger, decision doc §D-6). Probes 2/3 cover the deterministic-case idempotency; the lead-time-rule retry case is an explicitly-recorded gap, not a hidden one.
+
+---
+
 ## `pnpm smoke:floor-plans`
 
 **Required before claiming complete:** any work touching `FloorPlanService` / `FloorPlanDraftService` / `publish_floor_plan_draft` RPC / the floor-plan editor.
