@@ -2,8 +2,8 @@ import { Module, forwardRef } from '@nestjs/common';
 import { DbModule } from '../../common/db/db.module';
 import { MailModule } from '../../common/mail/mail.module';
 import { PermissionGuard } from '../../common/permission-guard';
+import { PermissionMetadataGuard } from '../../common/require-permission.decorator';
 import { ApprovalModule } from '../approval/approval.module';
-import { AuthModule } from '../auth/auth.module';
 import { BookingBundlesModule } from '../booking-bundles/booking-bundles.module';
 import { NotificationModule } from '../notification/notification.module';
 import { PersonModule } from '../person/person.module';
@@ -64,7 +64,11 @@ import { VisitorsController } from './visitors.controller';
     NotificationModule,
     PrivacyComplianceModule,
     SpaceModule,
-    AuthModule,
+    // RLS audit Slice 11.5: VisitorsAdminController re-gated AdminGuard →
+    // @RequirePermission('visitors.configure'); it was the module's only
+    // AdminGuard consumer (the others use KioskAuthGuard / the global
+    // AuthGuard), so AuthModule is dropped and the permission guards are
+    // provided locally (config-engine.module pattern).
     forwardRef(() => BookingBundlesModule),
     forwardRef(() => ApprovalModule),
   ],
@@ -89,6 +93,7 @@ import { VisitorsController } from './visitors.controller';
     VisitorEmailWorker,
     VisitorReminderWorker,
     PermissionGuard,
+    PermissionMetadataGuard,
   ],
   exports: [
     VisitorService,

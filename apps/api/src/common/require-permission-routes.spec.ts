@@ -38,6 +38,7 @@ import {
   RoleAssignmentsController,
   PersonsAdminController,
 } from '../modules/user-management/user-management.controller';
+import { VisitorsAdminController } from '../modules/visitors/admin.controller';
 import { BrandingController } from '../modules/tenant/branding.controller';
 import { PortalAnnouncementsController } from '../modules/portal-announcements/portal-announcements.controller';
 import { PortalAppearanceController } from '../modules/portal-appearance/portal-appearance.controller';
@@ -118,6 +119,26 @@ const METHOD_MAP: Array<[Ctor, string, PermissionKey]> = [
   [RolesController, 'update', 'roles.update'],
   [PersonsAdminController, 'create', 'people.create'],
   [PersonsAdminController, 'update', 'people.update'],
+  // ── Slice-11.5: visitors/admin — the LAST AdminGuard caller →
+  //    visitors.configure (config console) + visitors.read_all (/all) ──
+  [VisitorsAdminController, 'listTypes', 'visitors.configure'],
+  [VisitorsAdminController, 'createType', 'visitors.configure'],
+  [VisitorsAdminController, 'updateType', 'visitors.configure'],
+  [VisitorsAdminController, 'deactivateType', 'visitors.configure'],
+  [VisitorsAdminController, 'listPools', 'visitors.configure'],
+  [VisitorsAdminController, 'listPoolAnchors', 'visitors.configure'],
+  [VisitorsAdminController, 'listPassesByAnchor', 'visitors.configure'],
+  [VisitorsAdminController, 'poolInheritance', 'visitors.configure'],
+  [VisitorsAdminController, 'createPool', 'visitors.configure'],
+  [VisitorsAdminController, 'updatePool', 'visitors.configure'],
+  [VisitorsAdminController, 'addPass', 'visitors.configure'],
+  [VisitorsAdminController, 'updatePass', 'visitors.configure'],
+  [VisitorsAdminController, 'passRecovered', 'visitors.configure'],
+  [VisitorsAdminController, 'listKioskTokens', 'visitors.configure'],
+  [VisitorsAdminController, 'provisionKiosk', 'visitors.configure'],
+  [VisitorsAdminController, 'rotateKiosk', 'visitors.configure'],
+  [VisitorsAdminController, 'revokeKiosk', 'visitors.configure'],
+  [VisitorsAdminController, 'listAll', 'visitors.read_all'],
   // ── Slice-11.3d: leftover AdminGuard → settings.* ──
   [BrandingController, 'updateBranding', 'settings.update'],
   [BrandingController, 'uploadLogo', 'settings.update'],

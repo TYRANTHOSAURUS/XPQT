@@ -432,6 +432,12 @@ export const PERMISSION_CATALOG = {
         description:
           'Access /reception/* and /desk/visitors. Check visitors in/out, manage walk-ups, run the pass pool. Off by default — granted explicitly to reception/service-desk roles.',
       },
+      configure: {
+        label: 'Administer visitor config',
+        description:
+          'Tenant-admin visitor console (/admin/visitors/*): manage visitor types, pass pools, and kiosk tokens. Kiosk token provisioning/rotation is security-sensitive.',
+        danger: true,
+      },
     },
     overrides: {
       read_all: {
