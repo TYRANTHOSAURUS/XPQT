@@ -419,6 +419,54 @@ export function buildCancelBookingIdempotencyKey(
 }
 
 /**
+ * Prefix for the `split_recurrence_series` outer idempotency key.
+ * Booking-audit remediation Slice 4 (audit 03 P1-2). Paired with the
+ * `split_recurrence_series(...)` RPC (migration 00411). Namespaced
+ * separately from every other prefix (including `booking:edit` and
+ * `booking:cancel`) so a recurrence-split retry can never collide with
+ * an edit / cancel / dispatch / patch call on the same booking.
+ *
+ * The split runs INSIDE `ReservationService.editScope` for
+ * `scope='this_and_following'` commits. It is keyed on the SAME
+ * (bookingId, clientRequestId) the surrounding editScope uses so a
+ * retry of the same editScope re-calls the split with the same key →
+ * the RPC's command_operations gate returns the cached new_series_id,
+ * no orphan series minted. This is what makes the legacy TS
+ * `skipSplitSeries` pre-check obsolete.
+ *
+ * Citations:
+ *   - supabase/migrations/00411_split_recurrence_series.sql
+ *     (RPC accepts `p_idempotency_key text`, gates on command_operations)
+ *   - apps/api/src/modules/reservations/recurrence.service.ts
+ *     (RecurrenceService.splitSeries — the thin RPC wrapper)
+ */
+export const SPLIT_RECURRENCE_SERIES_IDEMPOTENCY_KEY_PREFIX =
+  'booking:recurrence:split';
+
+/**
+ * Build the outer idempotency key for `split_recurrence_series`.
+ * Shape: `booking:recurrence:split:<booking_id>:<clientRequestId>`
+ *
+ * Same booking + same clientRequestId ⇒ same key ⇒ command_operations
+ * short-circuits the second call and returns the same new_series_id.
+ * **No actor in the key** per F-CRIT-2 / plan-C1 (dispatch RPC):
+ * clientRequestId is the deduplication boundary. No scope/op
+ * discriminator — split is only ever invoked on the
+ * `this_and_following` commit leg of editScope, so the pair
+ * (bookingId, clientRequestId) is the natural retry boundary (and it
+ * MUST match the editScope crid so a single editScope retry replays
+ * both the split and the edit_booking_scope RPC against the same
+ * post-split series — see the retry-replay trace in
+ * docs/follow-ups/slice4-split-recurrence-decision.md).
+ */
+export function buildSplitSeriesIdempotencyKey(
+  bookingId: string,
+  clientRequestId: string,
+): string {
+  return `${SPLIT_RECURRENCE_SERIES_IDEMPOTENCY_KEY_PREFIX}:${bookingId}:${clientRequestId}`;
+}
+
+/**
  * The three recurrence scopes the cancel RPC dispatches on. Mirrors the
  * `RecurrenceScope` union in
  * `apps/api/src/modules/reservations/dto/types.ts:378` (kept structurally
