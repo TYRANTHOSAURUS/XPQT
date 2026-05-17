@@ -102,7 +102,13 @@ export class UsersController {
     return this.service.removeUserRole(id, roleId, actor);
   }
 
+  // Slice 11.6(A): role-audit trail on the admin user-detail page only
+  // (apps/web .../admin/user-detail.tsx) — no non-admin operator reach
+  // (codex-verified). Gated to the existing `users.read` (Auditor *.read
+  // / Tenant Admin *.* hold it; no agent template does) — admin/
+  // compliance-only, no widen/narrow vs. the intended posture.
   @Get(':id/audit')
+  @RequirePermission('users.read')
   async audit(@Param('id') id: string) {
     return this.service.listRoleAuditEvents({ user_id: id });
   }
@@ -135,7 +141,11 @@ export class RolesController {
     return this.service.updateRole(id, dto, actor);
   }
 
+  // Slice 11.6(A): role-detail audit, admin role-detail page only
+  // (apps/web .../admin/role-detail.tsx) — codex-verified no operator
+  // reach. Gated to existing `roles.read` (admin/compliance-only).
   @Get(':id/audit')
+  @RequirePermission('roles.read')
   async audit(@Param('id') id: string) {
     return this.service.listRoleAuditEvents({ role_id: id });
   }

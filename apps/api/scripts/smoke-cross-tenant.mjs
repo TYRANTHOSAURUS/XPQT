@@ -525,6 +525,26 @@ async function probe(name, options) {
     body: { display_name: 'xtenant-noadmin', slug: 'xt-noadmin' },
     expect: 'forbidden',
   });
+  // Slice 11.6(A): the 3 admin-only audit/effective GETs were ungated
+  // pre-11.6 (any active same-tenant user → 200, the P2 leak). Now
+  // gated users.read / roles.read — plain non-admin must 403 (gate
+  // engaged; 403 not 500 also confirms DI). They're admin-detail-page
+  // only so no operator UX breaks (codex-verified).
+  await probe('GET /users/:id/audit  (non-admin, no users.read → 403, was open pre-11.6)', {
+    url: `${API_BASE}/api/users/00000000-0000-0000-0000-0000000011b2/audit`,
+    headers: nonAdminA,
+    expect: 'forbidden',
+  });
+  await probe('GET /roles/:id/audit  (non-admin, no roles.read → 403, was open pre-11.6)', {
+    url: `${API_BASE}/api/roles/00000000-0000-0000-0000-0000000011b2/audit`,
+    headers: nonAdminA,
+    expect: 'forbidden',
+  });
+  await probe('GET /permissions/users/:id/effective  (non-admin, no roles.read → 403, was open pre-11.6)', {
+    url: `${API_BASE}/api/permissions/users/00000000-0000-0000-0000-0000000011b2/effective`,
+    headers: nonAdminA,
+    expect: 'forbidden',
+  });
   // Config-mutation sample: non-admin creating a space (location
   // hierarchy) must 403.
   await probe('POST /spaces  (non-admin config mutation)', {
