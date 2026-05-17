@@ -723,6 +723,29 @@ Remaining:
 - Slice 11.6 (unchanged scope + the `PersonController` addition): (A) gate `/users/:id/audit`, `/roles/:id/audit`, `/permissions/users/:id/effective` now (the safe set; `/persons-admin` is hygiene-only); (B) scoped picker-projection product decision for `/users` + `/roles` + `/users/:id` **+ `GET /persons|/persons/:id`** (the real directory-leak surface). Still P2 info-disclosure, no escalation — not a blocker for the audit's actionable closure.
 - Commits: this change (pending).
 
+#### Update — 2026-05-17 (Slice 11.6(A) — the 3 safe GET gates closed; (B) remains a product decision)
+
+Original finding:
+- The GET info-disclosure (P2) split — part (A) "safe to gate now".
+- Location: the 2026-05-17 "GET info-disclosure — informed per-endpoint analysis" + "codex final review" Update blocks.
+
+Status:
+- **(A) closed — done now rather than deferred** (deferring a verified-safe mechanical gate would repeat the twice-flagged weak-deferral pattern). (B) remains: a genuine scoped-projection product decision, not labor.
+
+Changed (all 3 endpoints were ungated → readable by any active same-tenant user; all 3 verified admin-detail-page-only with zero non-admin operator-picker reach, by direct `apps/web` caller inspection + codex):
+- `apps/api/src/modules/user-management/user-management.controller.ts`: `UsersController.audit` (`GET /users/:id/audit`, admin user-detail page) → `@RequirePermission('users.read')`; `RolesController.audit` (`GET /roles/:id/audit`, admin role-detail page) → `@RequirePermission('roles.read')`.
+- `apps/api/src/modules/user-management/permissions.controller.ts`: `effective` (`GET /permissions/users/:id/effective`, admin user-detail "Effective Permissions" panel) → `@RequirePermission('roles.read')`. `getCatalog` (`GET /permissions/catalog`) **intentionally left open** with a pin comment — it is the static `@prequest/shared` catalog constant (zero tenant data / PII; the role-permission picker needs it for any role-editing user); gating it would break the picker and disclose nothing.
+- Keys are **existing** catalog keys (`users.read`/`roles.read`) → **no `permissions.ts`/`role-defaults.ts`/migration change**; coverage already satisfied (Auditor `*.read` / Tenant Admin `*.*`). Posture: admin/compliance-only (no agent template holds `users.read`/`roles.read` explicitly) — closes the P2 leak with zero operator-UX risk.
+- `require-permission-routes.spec.ts`: `audit`×2 + `effective` moved into `METHOD_MAP` with their keys; removed from `MUST_BE_OPEN`; `PermissionsController.getCatalog` **added** to `MUST_BE_OPEN` (pins the catalog open so it can't be accidentally gated).
+- `smoke-cross-tenant.mjs`: +3 probes — plain non-admin → each of the 3 endpoints **403** (was 200 pre-11.6; proves the gate engaged + 403-not-500 confirms DI).
+
+Verified:
+- `pnpm --filter @prequest/api test -- "require-permission-routes|admin-guard-permission-parity"` -> **120/120** (route map incl. the 3 new gated + getCatalog-stays-open; AdminGuard census still zero).
+- scoped tsc: zero errors in any 11.6(A) file.
+- `pnpm smoke:cross-tenant` -> **30/30**, exit 0 (the 3 new `… → HTTP 403, was open pre-11.6` probes). `pnpm smoke:work-orders` -> **109/109**.
+
+Remaining — Slice 11.6 **(B)** only (genuine product-shape decision, NOT avoidance): the load-bearing operator-picker reads `GET /users`, `GET /roles`, `GET /users/:id`, and `PersonController` `GET /persons` + `/persons/:id` need a **scoped projection** (minimal id/name/active fields under an agent-held read key) — deciding what a non-admin picker should see vs. the full roster is a UX/product call with real over-narrowing risk (the exact failure the /full-review warned of). This is the one open item in the whole RLS audit that is a decision rather than execution; still P2 info-disclosure, no escalation, not a blocker for the audit's actionable closure. Commits: this change (pending).
+
 ## Agent Handoff Prompt
 
 ```text

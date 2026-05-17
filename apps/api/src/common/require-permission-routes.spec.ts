@@ -38,6 +38,7 @@ import {
   RoleAssignmentsController,
   PersonsAdminController,
 } from '../modules/user-management/user-management.controller';
+import { PermissionsController } from '../modules/user-management/permissions.controller';
 import { VisitorsAdminController } from '../modules/visitors/admin.controller';
 import { BrandingController } from '../modules/tenant/branding.controller';
 import { PortalAnnouncementsController } from '../modules/portal-announcements/portal-announcements.controller';
@@ -119,6 +120,11 @@ const METHOD_MAP: Array<[Ctor, string, PermissionKey]> = [
   [RolesController, 'update', 'roles.update'],
   [PersonsAdminController, 'create', 'people.create'],
   [PersonsAdminController, 'update', 'people.update'],
+  // ── Slice-11.6(A): the 3 admin-only audit/effective GETs (codex-
+  //    verified no operator reach) — closed P2 info-disclosure ──
+  [UsersController, 'audit', 'users.read'],
+  [RolesController, 'audit', 'roles.read'],
+  [PermissionsController, 'effective', 'roles.read'],
   // ── Slice-11.5: visitors/admin — the LAST AdminGuard caller →
   //    visitors.configure (config console) + visitors.read_all (/all) ──
   [VisitorsAdminController, 'listTypes', 'visitors.configure'],
@@ -166,11 +172,14 @@ const MUST_BE_OPEN: Array<[Ctor, string]> = [
   [UsersController, 'list'],
   [UsersController, 'getById'],
   [UsersController, 'getRoles'],
-  [UsersController, 'audit'],
   [RolesController, 'list'],
-  [RolesController, 'audit'],
   [PersonsAdminController, 'list'],
   [BrandingController, 'getBranding'],
+  // Slice 11.6(A): the static permission catalog stays open (no tenant
+  // data; the role-permission picker needs it). UsersController.audit /
+  // RolesController.audit moved OUT of this list — 11.6(A) deliberately
+  // gates them (see METHOD_MAP) since they have no operator reach.
+  [PermissionsController, 'getCatalog'],
 ];
 
 const readKey = (target: unknown): unknown =>
