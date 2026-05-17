@@ -1668,8 +1668,11 @@ export class TicketService {
         // (assignee / assigned vendor / team / non-readonly role scope).
         // Previously a requester who could see a parent case also saw
         // every child WO on it — including one dispatched to a sensitive
-        // vendor outside their visibility. ctx.user_id is non-null here
-        // (the !user_id && !read_all case returned [] above).
+        // vendor outside their visibility. (An unknown/empty-user ctx is
+        // already rejected by the `assertVisible(parent,'read')` throw
+        // above before this point — and the migration's `actor` CTE
+        // fail-closes to an empty set anyway, so the predicate is safe
+        // even for a degenerate user id.)
         const { data: visRows, error: visErr } = await this.supabase.admin.rpc(
           'work_order_visibility_ids',
           { p_user_id: ctx.user_id, p_tenant_id: tenant.id },
