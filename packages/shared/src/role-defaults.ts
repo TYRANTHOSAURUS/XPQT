@@ -289,6 +289,20 @@ export const EXPLICITLY_NO_DEFAULT_ROLE: ReadonlyArray<{
     reason:
       'Manual workflow-runtime intervention (start on a ticket / resume a paused instance) — real side effects, distinct from the test dry-run. Admin-tier; Tenant Admin grants explicitly, no non-admin default role.',
   },
+  // RLS audit Slice 11.5 (2026-05-17): visitors.configure added so the
+  // last @UseGuards(AdminGuard) caller (visitors/admin.controller.ts —
+  // visitor types / pass pools / kiosk tokens) can be re-gated like the
+  // rest of Slice 11. Admin-tier console; kiosk-token provisioning is
+  // security-sensitive — same posture as gdpr.* / webhooks.* (Tenant
+  // Admin via *.*; manually granted; no non-admin default role). Closes
+  // codex DECISION B by DOING it rather than deferring (the original
+  // "parallel visitors workstream collision" rationale was stale —
+  // visitors v1 already shipped to main).
+  {
+    key: 'visitors.configure',
+    reason:
+      'Tenant-admin visitor console (types / pass pools / kiosk tokens). Kiosk-token provisioning + rotation are security-sensitive. Tenant Admin grants explicitly; no non-admin default role (same posture as gdpr.* / webhooks.*).',
+  },
 ];
 
 /**

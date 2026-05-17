@@ -631,6 +631,69 @@ Explicitly deferred (in writing, with owners — NOT silent):
 
 Remaining: none for the RLS/security audit's actionable findings. The audit is closed; the three deferrals above are tracked with named owners and (for visitors/admin) a regression-preventing pin.
 
+#### Update — 2026-05-17 (Slice 11.5 — visitors/admin re-gated; AdminGuard FULLY eliminated as a caller)
+
+Original finding:
+- The deferred item from the closing block: "`visitors/admin.controller.ts` stays on hardened `@UseGuards(AdminGuard)` → owner: the visitors workstream" (codex DECISION B).
+- Location: the 2026-05-16 "Slice 11 — COMPLETE" Update block.
+
+Status:
+- **closed — deferral reversed and the work DONE.** On user pushback, the deferral rationale was re-examined and didn't hold: (a) the handoff *explicitly* listed `visitors/admin` as a leftover caller and called re-gate "preferred, best-in-class" — I'd done exactly that for its 3 siblings (branding/portal-*) and stopped at the largest; (b) "needs a new catalog action" was a non-reason — `webhooks`/`workflows.execute`/`request_types.use` were all added the same way this workstream; (c) the "collides with the parallel visitors workstream" premise was **stale** — visitors v1 already shipped/merged to main (`[[project_visitors_v1_shipped]]`, commit 296d0a8), no active workstream to collide with. codex's DECISION B had agreed to the deferral but was reasoning from that stale framing. Doing it is the correct best-in-class call.
+
+Changed:
+- `packages/shared/src/permissions.ts`: new `visitors.configure` action (admin-tier; kiosk-token provisioning/rotation is security-sensitive — `danger:true`).
+- `packages/shared/src/role-defaults.ts`: `visitors.configure` → `EXPLICITLY_NO_DEFAULT_ROLE` (admin-tier, same posture as `gdpr.*`/`webhooks.*`; Tenant Admin via `*.*`; no non-admin default). NOT in `DEFAULT_ROLE_TEMPLATES` ⇒ **no migration** (parity spec only scans templates; coverage spec satisfied by the EXPLICITLY entry — same mechanism as the 11.3 `webhooks` additions).
+- `apps/api/src/modules/visitors/admin.controller.ts`: removed class-level `@UseGuards(AdminGuard)` + the AdminGuard import; the 17 type/pass-pool/kiosk routes → `@RequirePermission('visitors.configure')`; `GET /all` → declarative `@RequirePermission('visitors.read_all')` (replacing the in-body `permissions.requirePermission` — identical canonical path; `@Req() req` + the unused `PermissionGuard` constructor injection dropped). JSDoc + the `resolveAdminUserId` helper comment updated off the stale AdminGuard wording.
+- `apps/api/src/modules/visitors/visitors.module.ts`: `AuthModule` dropped (VisitorsAdminController was its sole consumer — the other controllers use `KioskAuthGuard`/global `AuthGuard`); `PermissionMetadataGuard` added (`PermissionGuard` already present). config-engine.module pattern.
+- `apps/api/src/modules/visitors/visitors.controller.ts`: stale "gated behind `AdminGuard`" prose comment corrected to `visitors.configure`.
+- `require-permission-routes.spec.ts`: +18 `VisitorsAdminController` mappings (17 `visitors.configure` + `listAll` `visitors.read_all`).
+- `smoke-cross-tenant.mjs`: proof role now holds `["spaces.create","request_types.use","visitors.configure"]`; +negative probe (plain non-admin → `POST /admin/visitors/types` **403**, which also proves the post-AuthModule-drop `PermissionMetadataGuard` DI is wired — a missing provider would 500 here) + positive proof (non-admin holding `visitors.configure` → same route, **gate passes**, empty body ⇒ Zod 400 after the gate, side-effect-free).
+
+Verified:
+- `pnpm --filter @prequest/shared run build` clean; `pnpm --filter @prequest/api test -- "permission-catalog|require-permission"` -> **127/127** (5 suites; parity green, no migration needed; route spec asserts all 18 visitors mappings).
+- scoped tsc: zero errors in any Slice-11.5 file.
+- `pnpm smoke:cross-tenant` -> **27/27**, exit 0 (negative `POST /admin/visitors/types` 403 + DI proof; positive `→ 400` gate-pass — pre-11.5 this exact `type='agent'` role was AdminGuard-403'd). `pnpm smoke:work-orders` -> **109/109**.
+- Census: **zero `@UseGuards(AdminGuard)` decorators remain in non-spec code** (only doc comments). Authoritative import grep: the only non-spec file importing `admin.guard` is `auth/auth.module.ts` (the AuthModule definition that still *declares/exports* AdminGuard). Proof-fixture residue: `roles`/`visitor_types` count=0.
+
+Outcome / remaining:
+- `AdminGuard` is now a **caller-free primitive** — still defined + exported by `AuthModule`, tested by `admin.guard.spec.ts`, and pinned by `admin-guard-permission-parity.spec.ts`, but **consumed by zero controllers**. Per the handoff ("do not delete it unless truly unreferenced") it is **kept** (it is still referenced by those three) — recommended as a low-risk **future cleanup** (delete `admin.guard.ts` + `AuthModule`'s AdminGuard provider/export + `admin.guard.spec.ts` + the now-moot parity-pin, once there's confidence no path re-introduces it). Logged, not silently dropped.
+- codex DECISION B is therefore **not** the end state — the work was done, not handed off. The visitors workstream has nothing to pick up here.
+- Commits: this slice (pending).
+
+#### Update — 2026-05-17 (GET info-disclosure (P2) — informed per-endpoint analysis; deferral now concrete, not a hand-wave)
+
+Original finding:
+- `[IMPORTANT P3 — strengthened] GET info-disclosure deferral` / the standing P2 (Slice-9 user-management operational GETs left open).
+- Location: the 2026-05-16 "/full-review on the Slice 9+10 step" + "Slice 11.4/P4" Update blocks.
+
+Status:
+- **partial — analysis done; deferral is now informed with a concrete per-endpoint plan (no code change this block; the gate decisions need a UI-usage product call, sequenced as a discrete follow-up slice).**
+
+Per-endpoint analysis (the open Slice-9 GETs; "non-admin operator reach" = is it called by a non-admin operator UI today):
+
+| Endpoint | Non-admin operator reach | Verdict |
+|---|---|---|
+| `GET /users` (`UsersController.list`) | **Yes** — `useUsers` backs desk ticket-filter / ticket-detail assignee / user-picker / workflow assign-form (non-admin agents). | Must NOT hard-gate admin-only. Needs a **scoped picker projection** (id+display_name+active only) under a low-tier key (e.g. `users.read` granted to agent templates) — a product/projection decision, not a re-gate. |
+| `GET /users/:id` | Partial — user-detail surfaces; mostly admin, but ticket-detail hydrates assignee. | Scoped projection or `users.read`; same follow-up. |
+| `GET /users/:id/roles` | Low — role badges on user detail (admin-ish). | Safe-ish to gate `users.read`/`roles.read`; low risk. |
+| `GET /users/:id/audit` | None operator — audit trail is admin/compliance. | **Safe to gate now** (`users.read` or a `users.audit`-tier key). Clear win. |
+| `GET /roles` (`RolesController.list`) | **Yes** — role pickers in the assignment UI (non-admin operators assign within scope). | Must NOT hard-gate. Scoped projection (id+name) under `roles.read`. |
+| `GET /roles/:id/audit` | None operator. | **Safe to gate now** (`roles.read`+). |
+| `GET /persons-admin` (`PersonsAdminController.list`) | Some — person admin surfaces; overlaps `people.read` (Requester/agents hold `people.read`). | Re-gate to `people.read` is likely correct + cheap (Requester/agents already hold it; non-people-readers lose a roster they shouldn't have). Strongest standalone candidate. |
+| `GET /permissions/users/:id/effective` (`PermissionsController`) | None operator — effective-permission inspector is admin. | **Safe to gate now** (`roles.read`/`users.read`). |
+| `GET /users/me`, `/users/:id/roles` self-shape | Self-service. | Stays open (self only). |
+
+Concrete plan (the informed deferral): a follow-up slice "11.6 — scoped read keys" splits into two cleanly-separable parts: **(A) immediate, low-risk gates** — `GET /users/:id/audit`, `GET /roles/:id/audit`, `GET /permissions/users/:id/effective`, and `GET /persons-admin` (→ `people.read`) have **no** non-admin-operator dependency and can be `@RequirePermission`-gated now with negligible UX risk; **(B) projection work** — `GET /users` + `GET /roles` + `GET /users/:id` are load-bearing for non-admin operator pickers and need a *scoped projection* (minimal id/name/active fields) under an agent-held read key, which is a product/UX decision (what does a picker need vs. the full roster) — NOT a same-session mechanical re-gate, and rushing it risks the exact over-narrowing the /full-review warned about. Deferred to slice 11.6 with this split as the spec; no longer "needs analysis".
+
+Changed:
+- None (analysis only — logged here).
+
+Verified:
+- Reach assessed against `apps/web` callers of each endpoint + `role-defaults.ts` (which templates hold `people.read`/`users.*`/`roles.*`). Static analysis; no behavior change.
+
+Remaining:
+- Slice 11.6 part (A) (4 safe gates) + part (B) (picker projection product decision). Tracked here with the split; not a blocker for the RLS audit's escalation-class closure (this is info-disclosure P2, no escalation).
+
 ## Agent Handoff Prompt
 
 ```text

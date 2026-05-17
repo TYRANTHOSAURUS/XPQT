@@ -7,15 +7,13 @@ import {
   Patch,
   Post,
   Query,
-  Req,
-  UseGuards } from '@nestjs/common';
+  Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { AppErrors } from '../../common/errors';
 import { DbService } from '../../common/db/db.service';
-import { PermissionGuard } from '../../common/permission-guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AdminGuard } from '../auth/admin.guard';
 import {
   formatZodError,
   PassCreateSchema,
@@ -32,33 +30,35 @@ import { VisitorPassPoolService } from './pass-pool.service';
  *
  * Spec: docs/superpowers/specs/2026-05-01-visitor-management-v1-design.md §13
  *
- * Auth model:
- *   - Global `AuthGuard` (Bearer JWT, tenant-scoped).
- *   - `AdminGuard` (role.type='admin' inside the tenant) — same key the
- *     other admin surfaces use (portal-announcements, branding). The
- *     permission catalog has no `visitors.admin` action and the spec
- *     §13 explicitly says this surface is gated by tenant-admin role,
- *     not a per-action permission.
- *   - `GET /admin/visitors/all` is the visibility-bypass read; it
- *     additionally requires the `visitors.read_all` override (so a
- *     scoped admin without read_all sees only their authorized set).
- *
- * Mutation endpoints (types + pools + kiosk tokens) all require admin.
+ * Auth model (RLS audit Slice 11.5, 2026-05-17 — re-gated off blanket
+ * `@UseGuards(AdminGuard)` onto the CI-enforced permission catalog, the
+ * same model as the rest of Slice 11; this was the LAST AdminGuard
+ * caller):
+ *   - Global `AuthGuard` (APP_GUARD; Bearer JWT, tenant-scoped) — sets
+ *     `req.user.platformUserId`.
+ *   - Every type / pass-pool / kiosk route: `@RequirePermission(
+ *     'visitors.configure')` (a new admin-tier catalog action; kiosk
+ *     token provisioning is security-sensitive). Same canonical
+ *     `user_has_permission` path as every other Slice-11 controller —
+ *     so a non-admin role explicitly granted the key works, which the
+ *     old `role.type==='admin'` AdminGuard wrongly 403'd.
+ *   - `GET /admin/visitors/all` is the visibility-bypass firehose: it
+ *     requires the `visitors.read_all` override directly (declarative
+ *     `@RequirePermission`, replacing the prior in-body check).
  */
 @Controller('admin/visitors')
-@UseGuards(AdminGuard)
 export class VisitorsAdminController {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly db: DbService,
     private readonly passPool: VisitorPassPoolService,
     private readonly kiosk: KioskService,
-    private readonly permissions: PermissionGuard,
   ) {}
 
   // ─── visitor types ─────────────────────────────────────────────────────
 
   @Get('types')
+  @RequirePermission('visitors.configure')
   async listTypes() {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
@@ -71,6 +71,7 @@ export class VisitorsAdminController {
   }
 
   @Post('types')
+  @RequirePermission('visitors.configure')
   async createType(@Body() body: unknown) {
     const parsed = VisitorTypeCreateSchema.safeParse(body);
     if (!parsed.success) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
@@ -85,6 +86,7 @@ export class VisitorsAdminController {
   }
 
   @Patch('types/:id')
+  @RequirePermission('visitors.configure')
   async updateType(@Param('id') id: string, @Body() body: unknown) {
     const parsed = VisitorTypeUpdateSchema.safeParse(body);
     if (!parsed.success) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
@@ -102,6 +104,7 @@ export class VisitorsAdminController {
   }
 
   @Delete('types/:id')
+  @RequirePermission('visitors.configure')
   async deactivateType(@Param('id') id: string) {
     /* Soft-delete via active=false. Visitor types are referenced from
        the visitors table so a hard delete would orphan historical
@@ -122,6 +125,7 @@ export class VisitorsAdminController {
   // ─── pass pools ────────────────────────────────────────────────────────
 
   @Get('pools')
+  @RequirePermission('visitors.configure')
   async listPools() {
     const tenant = TenantContext.current();
     return this.db.queryMany(
@@ -143,6 +147,7 @@ export class VisitorsAdminController {
    * — without it the page has to fetch every pass and group client-side.
    */
   @Get('pool-anchors')
+  @RequirePermission('visitors.configure')
   async listPoolAnchors() {
     const tenant = TenantContext.current();
     return this.db.queryMany(
@@ -174,6 +179,7 @@ export class VisitorsAdminController {
    * (resolved by space_id, not pool row id) with its passes underneath.
    */
   @Get('pools/by-anchor/:space_id')
+  @RequirePermission('visitors.configure')
   async listPassesByAnchor(@Param('space_id') spaceId: string) {
     const tenant = TenantContext.current();
     const anchor = await this.db.queryOne<{
@@ -221,6 +227,7 @@ export class VisitorsAdminController {
    * `opted_out` boolean.
    */
   @Get('pools/by-anchor/:space_id/inheritance')
+  @RequirePermission('visitors.configure')
   async poolInheritance(@Param('space_id') spaceId: string) {
     const tenant = TenantContext.current();
     const anchor = await this.db.queryOne<{ id: string; type: string }>(
@@ -280,6 +287,7 @@ export class VisitorsAdminController {
   }
 
   @Post('pools')
+  @RequirePermission('visitors.configure')
   async createPool(@Body() body: unknown) {
     /* "Pool" is a misnomer in the data model — visitor_pass_pool rows
        ARE individual passes, anchored at a space. The /admin/visitors/pools
@@ -321,6 +329,7 @@ export class VisitorsAdminController {
   }
 
   @Patch('pools/:id')
+  @RequirePermission('visitors.configure')
   async updatePool(@Param('id') id: string, @Body() body: unknown) {
     const parsed = PassPoolUpdateSchema.safeParse(body);
     if (!parsed.success) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
@@ -353,6 +362,7 @@ export class VisitorsAdminController {
   }
 
   @Post('pools/:id/passes')
+  @RequirePermission('visitors.configure')
   async addPass(@Param('id') poolId: string, @Body() body: unknown) {
     /* The "pool ID" here is treated as a space_id stand-in — the
        /admin/visitors/pools listing groups passes by space_id, so the
@@ -405,6 +415,7 @@ export class VisitorsAdminController {
   }
 
   @Patch('pools/passes/:id')
+  @RequirePermission('visitors.configure')
   async updatePass(@Param('id') passId: string, @Body() body: unknown) {
     const parsed = PassUpdateSchema.safeParse(body);
     if (!parsed.success) throw AppErrors.validationFailed('visitor.invalid_payload', { detail: formatZodError(parsed.error) });
@@ -428,6 +439,7 @@ export class VisitorsAdminController {
   }
 
   @Post('pools/passes/:id/recovered')
+  @RequirePermission('visitors.configure')
   async passRecovered(@Param('id') passId: string) {
     const tenant = TenantContext.current();
     await this.passPool.markPassRecovered(passId, tenant.id);
@@ -444,6 +456,7 @@ export class VisitorsAdminController {
    * only the relevant kiosks). Without `space_id`, returns all tokens.
    */
   @Get('kiosks')
+  @RequirePermission('visitors.configure')
   async listKioskTokens(@Query('space_id') spaceId?: string) {
     const tenant = TenantContext.current();
     if (!spaceId) {
@@ -484,6 +497,7 @@ export class VisitorsAdminController {
   }
 
   @Post('kiosks/:building_id/provision')
+  @RequirePermission('visitors.configure')
   async provisionKiosk(
     @Req() req: Request,
     @Param('building_id') buildingId: string,
@@ -494,6 +508,7 @@ export class VisitorsAdminController {
   }
 
   @Post('kiosks/:kiosk_token_id/rotate')
+  @RequirePermission('visitors.configure')
   async rotateKiosk(
     @Req() req: Request,
     @Param('kiosk_token_id') kioskTokenId: string,
@@ -504,6 +519,7 @@ export class VisitorsAdminController {
   }
 
   @Post('kiosks/:kiosk_token_id/revoke')
+  @RequirePermission('visitors.configure')
   async revokeKiosk(
     @Req() req: Request,
     @Param('kiosk_token_id') kioskTokenId: string,
@@ -525,13 +541,12 @@ export class VisitorsAdminController {
    * endpoint is the explicit firehose.
    */
   @Get('all')
+  @RequirePermission('visitors.read_all')
   async listAll(
-    @Req() req: Request,
     @Query('status') status?: string,
     @Query('building_id') buildingId?: string,
     @Query('limit') limit?: string,
   ) {
-    await this.permissions.requirePermission(req, 'visitors.read_all');
     const tenant = TenantContext.current();
     const lim = clamp(parseInt(limit ?? '100', 10), 1, 500);
 
@@ -560,9 +575,9 @@ export class VisitorsAdminController {
   // ─── helpers ───────────────────────────────────────────────────────────
 
   /**
-   * Resolve auth_uid → users.id for audit tagging on admin actions.
-   * AdminGuard already validated this user is an admin in the tenant;
-   * we just need their user.id for the audit row.
+   * Resolve auth_uid → users.id for audit tagging on kiosk actions.
+   * `@RequirePermission('visitors.configure')` already authorized this
+   * caller (Slice 11.5); we just need their user.id for the audit row.
    */
   private async resolveAdminUserId(req: Request): Promise<string> {
     const authUid = (req as { user?: { id: string } }).user?.id;

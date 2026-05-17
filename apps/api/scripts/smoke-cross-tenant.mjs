@@ -158,17 +158,18 @@ function proofDbArgs() {
 function seedProofRoleFixture() {
   const { dbPass, dbUrl } = proofDbArgs();
   // type='agent' — explicitly NOT 'admin'. permissions holds exactly
-  // two single keys: spaces.create (the generic 11.2b re-gate proof)
-  // and request_types.use (the Slice 11.4 portal-fix proof). Neither is
-  // a wildcard and neither is admin — this is the role AdminGuard would
-  // have 403'd (role.type !== 'admin') but @RequirePermission lets
-  // through, per-key.
+  // three single keys: spaces.create (generic 11.2b re-gate proof),
+  // request_types.use (Slice 11.4 portal-fix proof), and
+  // visitors.configure (Slice 11.5 — the LAST AdminGuard caller
+  // re-gated). None is a wildcard and none is admin — this is the role
+  // blanket AdminGuard would have 403'd (role.type !== 'admin') but
+  // @RequirePermission lets through, per-key.
   const sql = `
     set session_replication_role = 'replica';
     insert into public.roles (id, tenant_id, name, description, permissions, type, active)
-      values ('${PROOF_ROLE_ID}', '${TENANT_A_ID}', 'xtenant-proof spaces.create+request_types.use',
-              'RLS Slice 11.2b/11.4 proof — non-admin (agent) role holding exactly spaces.create + request_types.use',
-              '["spaces.create","request_types.use"]'::jsonb, 'agent', true)
+      values ('${PROOF_ROLE_ID}', '${TENANT_A_ID}', 'xtenant-proof multi-key',
+              'RLS Slice 11.2b/11.4/11.5 proof — non-admin (agent) role holding exactly spaces.create + request_types.use + visitors.configure',
+              '["spaces.create","request_types.use","visitors.configure"]'::jsonb, 'agent', true)
       on conflict (id) do update
         set permissions = excluded.permissions, type = excluded.type, active = true;
     insert into public.user_role_assignments (id, tenant_id, user_id, role_id, active)
@@ -512,6 +513,18 @@ async function probe(name, options) {
     body: { from_user_id: NONADMIN_USER_ID, to_user_id: NONADMIN_USER_ID },
     expect: 'forbidden',
   });
+  // Slice 11.5: the LAST AdminGuard caller, re-gated to
+  // @RequirePermission('visitors.configure'). A plain non-admin (no
+  // visitors.configure) must 403 — and 403 not 500 also proves the
+  // PermissionMetadataGuard DI is wired in visitors.module after the
+  // AuthModule drop (a missing provider would 500 here).
+  await probe('POST /admin/visitors/types  (non-admin, no visitors.configure → 403)', {
+    url: `${API_BASE}/api/admin/visitors/types`,
+    method: 'POST',
+    headers: nonAdminA,
+    body: { display_name: 'xtenant-noadmin', slug: 'xt-noadmin' },
+    expect: 'forbidden',
+  });
   // Config-mutation sample: non-admin creating a space (location
   // hierarchy) must 403.
   await probe('POST /spaces  (non-admin config mutation)', {
@@ -589,6 +602,22 @@ async function probe(name, options) {
     await probe('GET /config-entities/:id  (non-admin holds request_types.use → guard PASSES, was AdminGuard-403 pre-11.3)', {
       url: `${API_BASE}/api/config-entities/00000000-0000-0000-0000-0000000011b2`,
       headers: nonAdminA,
+      expect: 'not_forbidden',
+    });
+    // Slice 11.5 proof: the SAME non-admin role also holds
+    // visitors.configure → POST /admin/visitors/types (the last
+    // AdminGuard caller, now @RequirePermission) must pass the gate.
+    // Pre-11.5 the class-level AdminGuard 403'd this exact agent role.
+    // Empty body ⇒ Zod 400 AFTER the gate (handler reached) — proves
+    // gate-passed with zero side effects (no visitor_type row created),
+    // same side-effect-free pattern as the 404 proof above. The
+    // plain-nonAdmin negative for this route is asserted 403 in the
+    // Slice-10 section above.
+    await probe('POST /admin/visitors/types  (non-admin holds visitors.configure → guard PASSES, was AdminGuard-403 pre-11.5)', {
+      url: `${API_BASE}/api/admin/visitors/types`,
+      method: 'POST',
+      headers: nonAdminA,
+      body: {},
       expect: 'not_forbidden',
     });
   } catch (e) {
