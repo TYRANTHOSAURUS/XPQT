@@ -545,6 +545,20 @@ async function probe(name, options) {
     headers: nonAdminA,
     expect: 'forbidden',
   });
+  // Slice 11.2-fix: notification TEMPLATE mutation. This re-gate's
+  // controller edit sat uncommitted for two sessions (b4577f20 shipped
+  // only the module DI). Runtime proof the now-committed
+  // @RequirePermission('notifications.manage_templates') + the
+  // already-committed module DI actually work together: plain non-admin
+  // → 403 (gate engaged; 403 not 500 confirms the committed
+  // controller+module are wired).
+  await probe('POST /notification-templates  (non-admin, no notifications.manage_templates → 403)', {
+    url: `${API_BASE}/api/notification-templates`,
+    method: 'POST',
+    headers: nonAdminA,
+    body: {},
+    expect: 'forbidden',
+  });
   // Config-mutation sample: non-admin creating a space (location
   // hierarchy) must 403.
   await probe('POST /spaces  (non-admin config mutation)', {
