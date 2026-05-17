@@ -38,6 +38,10 @@ import {
   RoleAssignmentsController,
   PersonsAdminController,
 } from '../modules/user-management/user-management.controller';
+import {
+  NotificationController,
+  NotificationTemplateController,
+} from '../modules/notification/notification.controller';
 import { PermissionsController } from '../modules/user-management/permissions.controller';
 import { VisitorsAdminController } from '../modules/visitors/admin.controller';
 import { BrandingController } from '../modules/tenant/branding.controller';
@@ -120,6 +124,15 @@ const METHOD_MAP: Array<[Ctor, string, PermissionKey]> = [
   [RolesController, 'update', 'roles.update'],
   [PersonsAdminController, 'create', 'people.create'],
   [PersonsAdminController, 'update', 'people.update'],
+  // ── Slice-10/11.2 notification TEMPLATE mutations. These were the
+  //    re-gate whose controller edit sat UNCOMMITTED for two sessions
+  //    (b4577f20 shipped notification.module.ts DI but not the
+  //    controller — the file was wrongly excluded as "parallel
+  //    workstream"). Pinned here so the gap can never silently recur. ──
+  [NotificationController, 'createTemplate', 'notifications.manage_templates'],
+  [NotificationController, 'updateTemplate', 'notifications.manage_templates'],
+  [NotificationTemplateController, 'create', 'notifications.manage_templates'],
+  [NotificationTemplateController, 'update', 'notifications.manage_templates'],
   // ── Slice-11.6(A): the 3 admin-only audit/effective GETs (codex-
   //    verified no operator reach) — closed P2 info-disclosure ──
   [UsersController, 'audit', 'users.read'],
