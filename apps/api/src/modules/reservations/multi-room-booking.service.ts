@@ -103,7 +103,7 @@ export class MultiRoomBookingService {
       attendee_count?: number;
       attendee_person_ids?: string[];
       host_person_id?: string | null;
-      source?: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'auto';
+      source?: 'portal' | 'desk' | 'api' | 'calendar_sync';
       services?: Array<{
         catalog_item_id: string;
         menu_id?: string | null;
@@ -309,18 +309,21 @@ export class MultiRoomBookingService {
     // loop above — `approvalConfig`/`approvalWorkflowDefinitionId` already
     // hold the highest-ranked room's resolver-authoritative pair.)
 
-    // 2. Coerce source. The legacy ReservationSource admits 'auto' for
-    //    calendar-sync / system actors; the new bookings.source CHECK
-    //    rejects it (00277:56-58). Shim preserved verbatim from the legacy
-    //    path (audit P2-2 — a future slice retires the 'auto' union; do
-    //    NOT touch here per the Slice 3 brief).
-    const rawSource = actor.user_id.startsWith('system:')
-      ? 'auto'
-      : input.source ?? 'portal';
+    // 2. Resolve source. Booking-audit Slice 8 (audit 03 P2-2, 2026-05-17)
+    //    — the `'auto'` intermediate was removed; this producer now resolves
+    //    to a DB-CHECK-valid `bookings.source` value INLINE (mirroring the
+    //    booking-flow consumer's prior actor-prefix rule, verbatim
+    //    semantics): a `system:*` actor maps to `'recurrence'` when it is
+    //    the recurrence materialiser, else `'calendar_sync'`; a real caller
+    //    keeps its explicit `input.source` (default `'portal'`). The new
+    //    `bookings.source` CHECK (00295) rejects `'auto'`, and it is no
+    //    longer in the `ReservationSource` union.
     const bookingSource: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception' | 'recurrence' =
-      rawSource === 'auto'
-        ? actor.user_id.startsWith('system:recurrence') ? 'recurrence' : 'calendar_sync'
-        : rawSource;
+      actor.user_id.startsWith('system:')
+        ? actor.user_id.startsWith('system:recurrence')
+          ? 'recurrence'
+          : 'calendar_sync'
+        : input.source ?? 'portal';
 
     const status: 'pending_approval' | 'confirmed' = anyRequireApproval ? 'pending_approval' : 'confirmed';
     const policySnapshot: PolicySnapshot = {

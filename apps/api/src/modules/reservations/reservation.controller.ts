@@ -174,7 +174,7 @@ export class ReservationController {
         end_at: dto.end_at,
         attendee_count: dto.attendee_count,
         attendee_person_ids: dto.attendee_person_ids,
-        source: dto.source as 'portal' | 'desk' | 'api' | 'calendar_sync' | 'auto' | undefined,
+        source: dto.source as 'portal' | 'desk' | 'api' | 'calendar_sync' | undefined,
         services: dto.services,
         bundle: dto.bundle,
       },

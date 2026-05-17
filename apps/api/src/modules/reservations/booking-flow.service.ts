@@ -218,22 +218,16 @@ export class BookingFlowService {
     //    booking_slots fires inside that transaction so concurrent races
     //    surface as 23P01 here.
     //
-    //    Source-narrowing: the legacy `ReservationSource` admits 'auto' for
-    //    calendar-sync polling, but the new `bookings.source` CHECK constraint
-    //    does not (00277:56-58, FIX#2).
-    //
-    //    /full-review v3 closure Nit (2026-05-04) — split the 'auto'
-    //    coercion target by caller. Pre-fix every 'auto' became
-    //    'calendar_sync', mislabelling system-recurrence occurrences as
-    //    Outlook/Google sync events. Now: system-recurrence actors
-    //    (user_id starting with 'system:recurrence') get 'recurrence';
-    //    everything else still falls back to 'calendar_sync'. The
-    //    'recurrence' value lives on bookings.source per migration 00295.
-    const rawSource = input.source ?? 'portal';
+    //    Booking-audit Slice 8 (audit 03 P2-2, 2026-05-17) — the `'auto'`
+    //    coercion was REMOVED. Producers (recurrence materialiser →
+    //    `'recurrence'`; multi-room → resolved inline) now pass a
+    //    DB-CHECK-valid `bookings.source` value directly, so `input.source`
+    //    can never be `'auto'` here. `rawSource` is therefore already a
+    //    valid `BookingSource`; the prior actor-prefix re-derivation
+    //    (system-recurrence → 'recurrence', else 'calendar_sync') moved to
+    //    the producers and is no longer reachable from this consumer.
     const bookingSource: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception' | 'recurrence' =
-      rawSource === 'auto'
-        ? actor.user_id.startsWith('system:recurrence') ? 'recurrence' : 'calendar_sync'
-        : rawSource;
+      input.source ?? 'portal';
 
     // Map legacy reservation_type 'other' → 'asset' (the new schema's
     // closest analogue; 00277:122 lists room/desk/asset/parking only).
@@ -875,14 +869,12 @@ export class BookingFlowService {
 
     const costAmountSnapshot = this.computeCost(space, input);
 
-    // Source narrowing — mirrors `create` (the new bookings.source CHECK
-    // constraint at 00277:56-58 doesn't admit 'auto'; coerce based on
-    // actor identity).
-    const rawSource = input.source ?? 'portal';
+    // Source narrowing — mirrors `create`. Booking-audit Slice 8 (audit 03
+    // P2-2) removed the `'auto'` coercion: producers now pass a
+    // DB-CHECK-valid `bookings.source` directly, so `input.source` can
+    // never be `'auto'` here and no actor-prefix re-derivation is needed.
     const bookingSource: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception' | 'recurrence' =
-      rawSource === 'auto'
-        ? actor.user_id.startsWith('system:recurrence') ? 'recurrence' : 'calendar_sync'
-        : rawSource;
+      input.source ?? 'portal';
 
     // Map legacy 'other' → 'asset' (00277:122 admits room/desk/asset/parking).
     const inputType = input.reservation_type ?? 'room';

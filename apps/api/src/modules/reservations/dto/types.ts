@@ -45,11 +45,20 @@ export type SlotType = 'room' | 'desk' | 'asset' | 'parking';
 export type CalendarProvider = 'outlook';
 
 // ── Legacy aliases — kept for transitional compatibility with not-yet-rewritten
-//    callers (other slices). Map to the new canonical names. The 'auto' and
-//    'other' values stay here so other modules that constructed ReservationSource
-//    values (calendar-sync polling) still typecheck until they're rewritten.
+//    callers (other slices). Map to the new canonical names. The 'other'
+//    value stays here so other modules that constructed ReservationType
+//    values still typecheck until they're rewritten.
+//
+// Booking-audit Slice 8 (audit 03 P2-2, 2026-05-17) — `'auto'` removed from
+// `ReservationSource`. The live `bookings.source` CHECK (00295) never
+// admitted it; producers (recurrence / multi-room / booking-flow) used to
+// emit `'auto'` and let a consumer coerce it by actor prefix. Resolution is
+// now HOISTED to the producers: the recurrence materialiser passes
+// `'recurrence'` directly; multi-room resolves `system:*` inline; the
+// controller's compat cast no longer carries `'auto'`. No `'auto'` value
+// can reach a writer, and tsc exhaustiveness now proves it.
 export type ReservationStatus = BookingStatus;
-export type ReservationSource = BookingSource | 'auto';
+export type ReservationSource = BookingSource;
 export type ReservationType = SlotType | 'other';
 
 export interface RecurrenceRule {

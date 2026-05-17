@@ -306,8 +306,10 @@ export class RecurrenceService {
    * Materialise additional occurrences for an existing series. Per spec §G:
    * for each occurrence the expander returns *past the current
    * materialized_through* (and not already on disk), call
-   * BookingFlowService.create with `source='auto'`. Conflict-guard 23P01 is
-   * caught and counted as a skip rather than aborting the run.
+   * BookingFlowService.create with `source='recurrence'` (Slice 8 P2-2 —
+   * the resolved value; was `'auto'` until the shim was removed).
+   * Conflict-guard 23P01 is caught and counted as a skip rather than
+   * aborting the run.
    *
    * Caller passes a master row (the first reservation of the series) to seed
    * the schema (space, requester, attendees, duration, buffers).
@@ -501,7 +503,14 @@ export class RecurrenceService {
             // → bookings is one-direction (00277). The series row's
             // parent_booking_id (00278:179-181) is the only link.
             recurrence_index: occ.index,
-            source: 'auto',
+            // Booking-audit Slice 8 (audit 03 P2-2) — was `source:'auto'`;
+            // resolution is now hoisted to this producer. The recurrence
+            // materialiser is ALWAYS the recurrence actor
+            // (RecurrenceService.SYSTEM_ACTOR.user_id = 'system:recurrence',
+            // recurrence.service.ts:100) so the resolved value is always
+            // `'recurrence'` — pass it directly instead of emitting the
+            // removed `'auto'` shim and letting the consumer re-derive it.
+            source: 'recurrence',
           },
           RecurrenceService.SYSTEM_ACTOR,
         );
