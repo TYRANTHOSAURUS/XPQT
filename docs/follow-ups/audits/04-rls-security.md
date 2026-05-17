@@ -790,6 +790,32 @@ Honest "not done" list (so this isn't read as a clean close):
 
 What IS true: no remaining finding is an open *exploitable* escalation or cross-tenant path; the admin/config surface has a consistent CI-enforced `@RequirePermission` posture; the ledger is the complete append-only record. "Best-in-class for the actionable security scope" — yes. "Audit 100% closed, nothing left" — no; the bullets above are real and tracked.
 
+#### Update — 2026-05-17 (CORRECTION — false-green: notification re-gate sat uncommitted 2 sessions; prior "zero AdminGuard callers" was committed-state-FALSE)
+
+Original finding:
+- The Slice-11.2 notification-template re-gate; and the integrity of the "zero `@UseGuards(AdminGuard)`" claim asserted in the 11.5 / codex-final / honest-status blocks above.
+- Location: those 2026-05-17 blocks (now corrected by this one — append-only; the prior blocks are NOT rewritten, this records that their zero-callers assertion was false until `3aecf0e8`).
+
+Status:
+- **corrected & closed.** User-caught. The prior blocks' "zero AdminGuard decorators / census green" was true only for the **working tree**, not **committed HEAD**.
+
+What was wrong:
+- Slice 11.2 (`b4577f20`, prior session) committed `notification.module.ts` (the `PermissionGuard`+`PermissionMetadataGuard` DI) but **NOT** `notification.controller.ts`. The controller re-gate (4 template mutations `@UseGuards(AdminGuard)` → `@RequirePermission('notifications.manage_templates')`) was edited in the working tree and never staged.
+- `notification.controller.ts` showed as `M` at session start, listed among genuine parallel-03-booking dirty files (`outbox/*`, `reservations/*`). The explicit-per-file-staging discipline (correct for keeping 03-booking out) **misclassified this RLS file as parallel-workstream and excluded it from every commit across two sessions.**
+- Consequence: committed HEAD carried **4 live `@UseGuards(AdminGuard)` callers** the entire time, while the working-tree census and `require-permission-routes.spec` ran GREEN (they read the working tree, which had the uncommitted fix). The "zero callers" / earlier "AUDIT CLOSED" assertions were **false for the committed/shippable state**. `require-permission-routes.spec` also did not pin `NotificationController`/`NotificationTemplateController`, so nothing guarded the gap.
+- Root-cause methodology error: verifying a security invariant with a **working-tree grep** instead of `git grep HEAD` / `git show HEAD:` — especially for a file deliberately never staged. Excluding a file as "parallel workstream" without diffing it to confirm it contains no in-scope work.
+
+Changed:
+- `3aecf0e8` — committed ONLY the verified-pure-RLS diff of `notification.controller.ts` (`git diff HEAD` confirmed: import swap + 4 decorator swaps, zero 03-booking logic) + added all 4 routes to `require-permission-routes.spec.ts` `METHOD_MAP` (`NotificationController.createTemplate/updateTemplate`, `NotificationTemplateController.create/update` → `notifications.manage_templates`). Committed `notification.module.ts` already had the DI (`b4577f20`) — no module change.
+- This change — `smoke-cross-tenant.mjs` +1 probe: plain non-admin `POST /notification-templates` → 403 (runtime proof the now-committed controller + already-committed module DI actually work together — closing this episode's exact committed-vs-working-tree divergence at runtime).
+
+Verified (correctly this time — against the COMMITTED tree):
+- `git grep "@UseGuards([^)]*AdminGuard" HEAD -- apps/api/src | grep -v spec` → only doc-comment matches; **zero real decorators**. `git show HEAD:.../notification.controller.ts` → 4× `@RequirePermission('notifications.manage_templates')`.
+- `pnpm --filter @prequest/api test -- "permission-catalog|require-permission|admin.guard.spec|admin-guard-permission-parity"` → **151/151** (7 suites; the 4 notification pins included; AdminGuard census still zero).
+- `pnpm smoke:cross-tenant` → **31/31**, exit 0 (incl. the new notification-templates non-admin→403). `pnpm smoke:work-orders` → **109/109**.
+
+Honest restatement: "zero `@UseGuards(AdminGuard)` callers" is now TRUE **for committed HEAD as of `3aecf0e8`** (it was working-tree-only before). The earlier blocks asserting it pre-`3aecf0e8` were committed-state-wrong; this block is the correction of record. Still NOT on `main` — branch `feature/booking-audit-remediation`, merge gated on the parallel 03-booking workstream (unchanged).
+
 ## Agent Handoff Prompt
 
 ```text
