@@ -118,6 +118,29 @@ Note: the OBX assertions depend on the dev API's outbox worker (30s cron) draini
 
 ---
 
+## `pnpm smoke:create-multi-room`
+
+**Required before claiming complete:** any work touching `MultiRoomBookingService.createGroup` / the `POST /reservations/multi-room` route / its use of `create_booking_with_attach_plan` (migrations 00309 / 00315) / the `validate_attach_plan_internal_refs` §7a `applied_rule_ids[]` snapshot validator (migration **00410**) / `BundleService.buildAttachPlan` (multi-room consumer) / the multi-room room-rule approval fan-out (`createApprovalRows` / `WorkflowService.start`) / the cross-room approval priority aggregation.
+
+Script: `apps/api/scripts/smoke-create-multi-room.mjs`. Run via `pnpm --filter @prequest/api smoke:create-multi-room`.
+
+This is the **P1-1 + D-4 regression gate** (audit `docs/follow-ups/audits/03-booking-reservation.md`). It proves multi-room create is now ONE atomic `create_booking_with_attach_plan` transaction (booking + N slots + orders + OLIs + asset_reservations + approvals) — replacing the pre-Slice-3 legacy choreography (`create_booking` + a separate `bundle.attachServicesToBooking` + in-process `BookingTransactionBoundary` compensation, with a real window of inconsistency) — AND that the §7a `applied_rule_ids[] → room_booking_rules` validator fix (migration **00410**, shipped IN this slice, on remote) holds end-to-end. Equivalence + table-assignment decision: `docs/follow-ups/slice3-multiroom-validator-decision.md`.
+
+**Fixtures (psql-seeded, `session_replication_role='replica'`):** dedicated, self-contained per probe (no shared-room collision). Primary fixture: 3 reservable test rooms (+145d) + 1 catering `catalog_item` + 1 AV `catalog_item` linked to a seeded `asset`/`asset_type` (service line carries `linked_asset_id` → 1 `asset_reservation`). The approval + single-room probes seed no fixture rule — they deterministically match the pre-existing 00133-seeded off-hours tenant rule (hour-17 UTC 60-min booking).
+
+**Probes:**
+- (a) atomic create with services → 1 booking + 3 booking_slots + ≥1 order + ≥2 OLIs + ≥1 asset_reservation ALL present; exactly 1 `attach_operations` row with `outcome=success` + `cached_result` (proves single tx).
+- (b) idempotency replay (same actor + same `X-Client-Request-Id`) → same `group_id`, NO duplicate booking / slots / orders / OLIs / asset_reservations; still exactly 1 `attach_operations` row.
+- (c) partial-room conflict (one of the N rooms pre-booked → GiST 23P01 inside the tx) → 409 `multi_room_booking_failed`; WHOLE tx rolls back: zero new slots, zero orphan orders, zero orphan asset_reservations.
+- (d) cross-tenant `space_id` (one space seeded in another tenant) → 404 `space_not_found`; zero rows on the ok-space (no partial create).
+- (e) missing `X-Client-Request-Id` → 400 (RequireClientRequestIdGuard, already on the route).
+- (f) require_approval room rule matched (off-hours 00133 tenant rule) → create **succeeds** (200/201), NOT 400. Asserts the full post-00410 path: booking lands `status='pending_approval'`; `bookings.applied_rule_ids` carries ≥1 `room_booking_rules` id (the §7a fix — pre-00410 that exact id raised `attach_plan.internal_refs: applied_rule_ids[] … not in tenant service_rules`, 42501 → HTTP 400); the room-rule approval fan-out created the approval rows (booking-targeted, `status='pending'`, `approval_chain_id` set, approver set MATCHES the matched rule's `required_approvers` read from the DB — no hardcode); all N slots + service orders/OLIs/asset_reservations committed atomically in the one combined-RPC transaction (exactly 1 `attach_operations` row).
+- (g) **single-room** create-with-services + a matched room rule (same off-hours 00133 tenant rule, one space) → 201, booking row present, `bookings.applied_rule_ids` non-empty, NOT 400. This is the largest §7a/00410 blast radius: single-room create-with-services where a room rule matched was a pre-existing, never-smoke-covered latent break (the legacy `create_booking` RPC had no such validator). The probe genuinely exercises §7a (a matched room rule ⇒ non-empty `applied_rule_ids`), not a tautology.
+
+Note: this gate also serves as a Slice-1/Slice-2 regression check — `MultiRoomBookingService` shares the reservations module + `BundleService.buildAttachPlan`, so a break here would also threaten `smoke:edit-booking` / `smoke:cancel-booking`.
+
+---
+
 ## `pnpm smoke:floor-plans`
 
 **Required before claiming complete:** any work touching `FloorPlanService` / `FloorPlanDraftService` / `publish_floor_plan_draft` RPC / the floor-plan editor.
