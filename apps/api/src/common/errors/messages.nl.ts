@@ -1987,6 +1987,25 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon de reeks-wijziging niet opslaan',
     detail: 'Er ging iets mis bij het opslaan van deze reeks-wijziging. Probeer het over een moment opnieuw; neem contact op met support als dit blijft gebeuren.',
   },
+  // ─── Booking-audit remediation Slice 2 — cancel_booking_with_cascade ────
+  // NL-vertaling van de api en-tabel; audit 03 P0-1 + P1-5. Voice in lijn
+  // met de edit_booking.*-familie ("Kon ... niet annuleren").
+  'cancel_booking_with_cascade.actor_not_found': {
+    title: 'Kon de reservering niet annuleren',
+    detail: 'Je account is niet geregistreerd in deze tenant. Meld je opnieuw aan of neem contact op met een beheerder.',
+  },
+  'cancel_booking_with_cascade.not_found': {
+    title: 'Kon de reservering niet annuleren — niet gevonden',
+    detail: 'Deze reservering bestaat niet meer, of je hebt er geen toegang toe.',
+  },
+  'cancel_booking_with_cascade.invalid_scope': {
+    title: 'Kon de reservering niet annuleren',
+    detail: 'De annuleringsscope was ongeldig. Vernieuw de pagina en kies de scope opnieuw.',
+  },
+  'cancel_booking_with_cascade.not_recurring': {
+    title: 'Kon de reeks niet annuleren',
+    detail: 'Deze reservering hoort niet bij een terugkerende reeks. Annuleer in plaats daarvan de losse reservering.',
+  },
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // NL-vertaling van de api en-tabel; spec §3.6 + §3.12.
   'spawn_link.parent_terminated': {

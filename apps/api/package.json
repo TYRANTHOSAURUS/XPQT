@@ -18,6 +18,7 @@
     "smoke:floor-plans": "node scripts/smoke-floor-plans.mjs",
     "smoke:edit-booking-scope": "node scripts/smoke-edit-booking-scope.mjs",
     "smoke:edit-booking": "node scripts/smoke-edit-booking.mjs",
+    "smoke:cancel-booking": "node scripts/smoke-cancel-booking.mjs",
     "smoke:visual-approval": "node scripts/smoke-visual-approval.mjs",
     "smoke:cross-tenant": "node scripts/smoke-cross-tenant.mjs"
   },

@@ -168,6 +168,13 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // the caller's perspective the row is invisible inside this edit's
   // scope. Caller refetches the scope-edit plan and retries.
   'edit_booking_scope.booking_not_found': 404,
+  // Booking-audit remediation Slice 2 — cancel_booking_with_cascade RPC
+  // (00408). actor_not_found fires when the caller's auth_uid has no
+  // public.users row in the tenant (F-CRIT-1 resolution miss); not_found
+  // fires when the booking row is missing or in a different tenant. Same
+  // 404 shape as the edit_booking.* miss paths (this family's convention).
+  'cancel_booking_with_cascade.actor_not_found': 404,
+  'cancel_booking_with_cascade.not_found': 404,
 
   // ── 409 conflict ─────────────────────────────────────────────────
   // payload_mismatch: the client reused the same X-Client-Request-Id
@@ -268,6 +275,15 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   'edit_booking_scope.time_shift_not_supported': 422,
   'edit_booking_scope.not_recurring': 422,
   'edit_booking_scope.empty_scope': 422,
+  // Booking-audit remediation Slice 2 — cancel_booking_with_cascade RPC
+  // (00408). invalid_scope: p_scope is not this|this_and_following|series
+  // (request payload invalid but server-side validatable). not_recurring:
+  // a recurrence scope (this_and_following|series) was requested on a
+  // booking with no recurrence_series_id. Both 422 — payload is valid
+  // jsonb, the booking state / arg blocks the action. Mirrors
+  // edit_booking_scope.not_recurring's shape (same domain, same voice).
+  'cancel_booking_with_cascade.invalid_scope': 422,
+  'cancel_booking_with_cascade.not_recurring': 422,
   // B.2.A semantic re-derivation gates — RPCs raise these when the
   // TS-side plan disagrees with the server's recomputation at write time
   // (workflow/SLA/scope-override changed, effective location resolved

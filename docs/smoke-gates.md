@@ -88,6 +88,26 @@ Script: `apps/api/scripts/smoke-edit-booking.mjs`. Run via `pnpm --filter @prequ
 
 ---
 
+## `pnpm smoke:cancel-booking`
+
+**Required before claiming complete:** any work touching `ReservationService.cancelOne` / the `POST /reservations/:id/cancel` route / the `cancel_booking_with_cascade` RPC (migration 00408) / `RecurrenceService.cancelForward` / the `BookingCancelledCascadeHandler` outbox handler / `BundleCascadeAdapter.handleBundleCancelled` / `buildCancelBookingIdempotencyKey`.
+
+Script: `apps/api/scripts/smoke-cancel-booking.mjs`. Run via `pnpm --filter @prequest/api smoke:cancel-booking`.
+
+This is the **P0-1 / P1-5 regression gate** (audit `docs/follow-ups/audits/03-booking-reservation.md`). It proves the user-cancel cascade is atomic + emits `booking.cancelled` on every cancel + the durable visitor/notification cascade fires. Equivalence contract: `docs/follow-ups/cancel-booking-equivalence-checklist.md`.
+
+**Fixtures (psql-seeded, `session_replication_role='replica'`):** a single booking (+140d) and two recurrence series (3 occurrences each, +141d) — each booking carries the full linked graph: 1 order + 1 OLI + 1 asset_reservation + 1 non-terminal setup `work_order` + 1 pending approval + 1 `expected` visitor + 1 `arrived` visitor.
+
+**Probes per scope (`this` / `this_and_following` / `series`):**
+- TX rows: booking + slot → cancelled (grace set); order + OLI → cancelled (pending_setup_trigger_args nulled); asset_reservation → cancelled; work_order → status_category=closed + closed_at; approval → expired + responded_at; `series_end_at` capped for forward/series; `recurrence_cancel_forward` audit row.
+- `booking.cancelled` outbox present **per cancelled booking** with `{tenant_id,booking_id,reason,started_at}` payload; `booking.cancel_cascade_required` outbox present per booking.
+- OBX (after the 30s outbox worker drains, polled ≤75s): `expected` visitor → cancelled + `visitor.cancelled` + `visitor.cascade.cancelled` domain_event; `arrived` visitor unchanged + `visitor.cascade.host_alert`; requester `reservation_cancelled` notification + `reservation.notification_sent` audit.
+- Idempotency replay (same key → cached body, no double cascade, no duplicate outbox); payload mismatch (same key, different reason → 409); already-cancelled re-cancel (new key → 200 short-circuit, no new emit); missing `X-Client-Request-Id` → 400; cross-tenant booking id → 404.
+
+Note: the OBX assertions depend on the dev API's outbox worker (30s cron) draining `booking.cancel_cascade_required`; the probe polls with a 75s window per scope.
+
+---
+
 ## `pnpm smoke:floor-plans`
 
 **Required before claiming complete:** any work touching `FloorPlanService` / `FloorPlanDraftService` / `publish_floor_plan_draft` RPC / the floor-plan editor.

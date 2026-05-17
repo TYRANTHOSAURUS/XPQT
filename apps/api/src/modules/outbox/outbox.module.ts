@@ -1,11 +1,14 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { ReservationsModule } from '../reservations/reservations.module';
 import { RoutingModule } from '../routing/routing.module';
 import { ServiceRoutingModule } from '../service-routing/service-routing.module';
 import { SlaModule } from '../sla/sla.module';
+import { VisitorsModule } from '../visitors/visitors.module';
 import { WorkflowModule } from '../workflow/workflow.module';
 import { BookingApprovalRequiredHandler } from './handlers/booking-approval-required.handler';
+import { BookingCancelledCascadeHandler } from './handlers/booking-cancelled-cascade.handler';
 import { RoutingEvaluationHandler } from './handlers/routing-evaluation.handler';
 import { SetupWorkOrderHandler } from './handlers/setup-work-order.handler';
 import { SlaTimerHandler } from './handlers/sla-timer-recompute.handler';
@@ -110,6 +113,14 @@ import { OutboxWorker } from './outbox.worker';
     NotificationsModule,
     forwardRef(() => SlaModule),
     forwardRef(() => WorkflowModule),
+    // Booking-audit Slice 2 (audit 03 P0-1/P1-5): BookingCancelledCascade
+    // Handler reuses BundleCascadeAdapter (visitor cascade) +
+    // BookingNotificationsService (requester reservation_cancelled notif
+    // + audit). forwardRef both — they are large modules and the import
+    // is one-directional (no module imports OutboxModule), but forwardRef
+    // keeps Nest's resolver order-insensitive.
+    forwardRef(() => VisitorsModule),
+    forwardRef(() => ReservationsModule),
   ],
   providers: [
     OutboxService,
@@ -121,6 +132,16 @@ import { OutboxWorker } from './outbox.worker';
     WorkflowStartHandler,
     RoutingEvaluationHandler,
     BookingApprovalRequiredHandler,
+    // Booking-audit Slice 2 (audit 03 P0-1/P1-5) — durable user-cancel
+    // cascade. Drains `booking.cancel_cascade_required` (emitted by
+    // cancel_booking_with_cascade RPC 00408, distinct from the
+    // booking.cancelled event the workflow wake handler consumes — the
+    // registry forbids two handlers on one (event_type, version)).
+    // Reuses BundleCascadeAdapter (visitor cascade) +
+    // BookingNotificationsService (requester notif). Idempotent under
+    // at-least-once retry (audit-existence dedup on the requester notif;
+    // visitor transition is a no-op when already terminal).
+    BookingCancelledCascadeHandler,
     // Universal Workflow Architecture Phase 1.A — Tier 2 wake mechanism.
     // Core does the work; per-event shells own the @OutboxHandler decoration.
     WorkflowSpawnWakeCore,

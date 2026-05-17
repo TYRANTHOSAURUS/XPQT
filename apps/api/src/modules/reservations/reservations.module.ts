@@ -32,7 +32,6 @@ import { NotificationModule } from '../notification/notification.module';
 import { BookingBundlesModule } from '../booking-bundles/booking-bundles.module';
 import { OrdersModule } from '../orders/orders.module';
 import { OrderService } from '../orders/order.service';
-import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
 import { RoomMailboxService } from '../calendar-sync/room-mailbox.service';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -106,7 +105,6 @@ export class ReservationsModule implements OnModuleInit {
     private readonly supabase: SupabaseService,
     private readonly tenants: TenantService,
     private readonly orders: OrderService,
-    private readonly bundleCascade: BundleCascadeService,
   ) {}
 
   onModuleInit() {
@@ -120,13 +118,12 @@ export class ReservationsModule implements OnModuleInit {
     this.recurrence.setOrdersFanOut({
       cloneOrderForOccurrence: (args) => this.orders.cloneOrderForOccurrence(args),
     });
-    // Same cascade wiring for cancelForward — every cancelled occurrence's
-    // bundle-linked orders need to cascade. Scoped per reservation so a
-    // single occurrence cancel doesn't take down sibling occurrences sharing
-    // the bundle.
-    this.recurrence.setBundleCascade({
-      cancelOrdersForReservation: (args) => this.bundleCascade.cancelOrdersForReservation(args),
-    });
+    // Booking-audit Slice 2 (audit 03 P0-1/P1-5): the recurrence
+    // cancelForward bundle-cascade wiring was REMOVED. cancelForward is
+    // retired; ReservationService.cancelOne now routes every scope
+    // (this | this_and_following | series) through the atomic
+    // cancel_booking_with_cascade RPC (00408) which owns the whole
+    // cascade in one transaction. No setBundleCascade call remains.
 
     // Wire the calendar-sync intercept handler. When a Pattern-A room mailbox
     // receives an Outlook invite, room-mailbox.service translates it to a
