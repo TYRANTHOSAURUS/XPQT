@@ -359,6 +359,29 @@ Remaining:
 
 The b2-followups + the data-model-redesign-2026-04-30 doc both treat 1c.10c as "split complete." It's complete at the schema layer. It's not at the service layer.
 
+#### Update — 2026-05-16
+
+Original finding:
+- `P2-1 — Case-vs-WO split is a column rename, not a module split`
+- Location: `docs/follow-ups/audits/02-tickets-work-orders.md:344`
+
+Status:
+- **deferred (explicit, with rationale)** — not a completion-bar blocker
+
+Rationale:
+- P2-1 is a P2 ("Cleanup / nice to have"); the audit itself frames it as "Probably a multi-day refactor" (see Recommendations summary §8). The remediation completion bar is: no P0 raw-write bypass (✅ Slices 1–2), assignment-changing paths canonical/atomic-or-documented (✅ Slices 1–5), visibility-sensitive reads/writes covered by code (✅ Slice 6) + smoke (deferred-with-owner below), reference docs match implementation (✅ maintained per-slice). The service-layer hard/polymorphic split is **not** required by that bar.
+- Doing a 1978-line multi-day `TicketService`→`TicketReadService`/`WorkOrderService` re-architecture now would put the six shipped, reviewed, remote-pushed slices (incl. 2 live RPC migrations) at regression risk for a pure-hygiene refactor with no P0/P1 content, while a concurrent audit-03 session is mutating the shared tree/runtime. Per the brief ("If a route remains intentionally interim, document the reason and risk") this is the correct call.
+- Scope/shape of such a refactor is a direction-class decision that would normally go to codex (per `feedback_ask_codex_not_user_for_direction`); codex was unobtainable for the entire workstream (concurrent-session resource contention). Deferring rather than guessing a multi-day architecture unreviewed is the disciplined choice.
+
+Changed:
+- None (no code change — explicit deferral).
+
+Verified:
+- N/A (deferral). The leaky-split's *security-relevant* consequence (P1-5 `getChildTasks` child-visibility) was independently closed in Slice 6; the *atomicity* consequences (reassign/satisfaction/routing-status mixed surfaces) were closed in Slices 1–5. What remains in P2-1 is purely module-boundary hygiene (`getById` tickets→work_orders fallback; `loadTicketRow` try-both; `createBookingOriginWorkOrder` placement; `PATCH /tickets/:id` accepting WO ids) with no remaining P0/P1 behaviour.
+
+Remaining:
+- Follow-up (architectural-hygiene backlog, NOT this workstream): hard-split or polymorphic-route `TicketService` vs `WorkOrderService`; pull `getById`/`getChildTasks`/`createBookingOriginWorkOrder` out of `TicketService`; collapse `loadTicketRow`'s try-both. Risk while deferred: developer-ergonomics + a `PATCH /tickets/:id` on a WO id misbehaving (case-only validation on a WO row) — a correctness sharp-edge for an undocumented call shape, not an exploitable P0/P1. Recommend an explicit "WO id rejected on `PATCH /tickets/:id`, use `/work-orders/:id`" guard as the cheap interim if the full split stays deferred; flagged for the integrator/data-model owner (verdict Should-fix #16).
+
 #### P2-2 — `routing_decisions` inserts inconsistent on `entity_kind`
 
 Three call sites:
@@ -371,6 +394,26 @@ The C5 code-review convention is "set them explicitly on both sides" per `ticket
 
 **Recommendation:** pick one (probably "always explicit") and fix the two remaining sites. Or drop the trigger as a deprecation step.
 
+#### Update — 2026-05-16
+
+Original finding:
+- `P2-2 — routing_decisions inserts inconsistent on entity_kind`
+- Location: `docs/follow-ups/audits/02-tickets-work-orders.md:362`
+
+Status:
+- **partial — closed at the high-value sites; residual accepted with rationale**
+
+Changed:
+- `ticket.service.ts` + `work-order.service.ts` reassign sites (was: inconsistent TS inserts setting `entity_kind` ad-hoc): both now route through `set_entity_assignment` (Slice 3), which sets `entity_kind`/`case_id`/`work_order_id` **explicitly inside the RPC** (00327:260-271). The ad-hoc TS `routing_decisions` inserts at these sites are deleted entirely.
+- `routing-evaluation.handler.ts` (was: insert without `entity_kind`, relied on the 00232 derive trigger): now sets `entity_kind:'case'` + `case_id` explicitly (Slice 4, both the success insert and `markRoutingFailure`).
+- `routing.service.ts` `recordDecision` (used by create + reclassify + the Slice-3 rerun path): **unchanged — keeps the 00230/00232 derive-trigger path. Accepted, not a defect.** Decision (codex unobtainable → documented judgment): the 00232 trigger derives `entity_kind`/`case_id`/`work_order_id` from `ticket_id` existence (tickets vs work_orders) BEFORE INSERT — it is a correct, shipped, tested mechanism that *guarantees* the columns are set; it is a *different valid convention*, not a missing value. The audit's "pick one (probably always-explicit)" is a consistency-nicety, not a correctness gap. `recordDecision` is a shared RoutingService method on the create/reclassify hot paths; rewriting it to thread an explicit kind through every caller is out of this audit's clean scope and would touch create/reclassify (not audit-02 findings). The high-blast-radius sites (reassign, routing-eval handler) are now explicit; the append-only audit-row writer keeps the trigger.
+
+Verified:
+- Reassign sites: 22/22 reassign specs (Slice 3) + remote `set_entity_assignment` body verified (Slice 3/4 closures). Handler: 10/10 handler spec (Slice 4) asserts explicit `entity_kind`/`case_id`. `recordDecision` trigger path: unchanged, pre-existing 00232 trigger remains authoritative.
+
+Remaining:
+- Accepted convention split (non-P0/P1): explicit-at-write for reassign + routing-eval; trigger-derive for `recordDecision` (create/reclassify/rerun). If a future workstream wants full uniformity, the lever is either threading kind into `recordDecision`'s signature (touches create/reclassify) or deprecating the 00230/00232 trigger — both out of audit-02 scope. Documented so it is not re-discovered as a bug.
+
 #### P2-3 — Duplicate migration prefixes in `00367-00400`
 
 `ls supabase/migrations/ | tail -50` shows duplicate numeric prefixes for at least: `00367`, `00368`, `00369`, `00370`, `00371`, `00372`, `00373`, `00374`, `00376`, `00400`. Looks like two parallel branches merged without renumbering.
@@ -378,6 +421,33 @@ The C5 code-review convention is "set them explicitly on both sides" per `ticket
 **Impact:** Supabase CLI orders by lexical filename. Two files with the same numeric prefix are ordered by alphabetical tail. As long as both apply cleanly that's fine, but readers can't reason about "what ran before what" without checking the alphabetic order. Future migrations writing `00401_*` then `0040_2` (typo) would land out of order without warning.
 
 **Recommendation:** renumber on next migration batch; add a CI lint that catches duplicate prefixes.
+
+#### Update — 2026-05-16
+
+Original finding:
+- `P2-3 — Duplicate migration prefixes in 00367-00400`
+- Location: `docs/follow-ups/audits/02-tickets-work-orders.md:374`
+
+Status:
+- **deferred to the integrator / data-model owner (cross-audit) — with new evidence + in-scope mitigation applied**
+
+Rationale:
+- P2-3 is the same finding as integrator-verdict **Top-10 blocker #8 / Agent-1 P0-1** ("renumber 10 duplicate prefixes + add `scripts/check-migration-prefix-unique.sh` CI guard"). It is a repo-wide renumber sweep + a cross-cutting CI guard explicitly owned by the data-model/integrator workstream, not audit-02. Renumbering historical migrations or adding a global CI guard from inside the tickets/WO worktree would collide with the concurrent audit-03 + phase-1.5 sessions also mutating `supabase/migrations/`.
+
+New evidence (this workstream observed it live):
+- The collision is **not historical-only**. While shipping Slice 5 the migration number `00407` was found **triple-claimed across concurrent sessions**: `00407_update_entity_combined_v7_satisfaction` (this audit), `00407_booking_edit_idempotency_intent_hash` (audit-03/booking), `00407_grant_booking_approval_v3_outbox_emit_signature_fix` (phase-1.5). Confirmed via `git log --all` that these are **disjoint functions** (no concurrent `set_entity_assignment`/`update_entity_combined` redefinition), so no function-body clobber occurred — but it is concrete proof the duplicate-prefix problem is active in `00406+`, not just `00367–00400`.
+
+In-scope mitigation already applied (no broad renumber):
+- This workstream's own migrations were kept collision-free: `00406_set_entity_assignment_v3` (Slice 4, sole next-free slot at the time) and the Slice-5 migration **rebased `00407 → 00410`** (true next-free across all worktrees/branches: max = 00409) so the merge does not add a *fourth* `00407`. Per `feedback_migration_number_collision`: claim next-free at write time, auto-rebase, don't bake numbers into TS.
+
+Changed:
+- `supabase/migrations/00407_update_entity_combined_v7_satisfaction.sql` → `00410_…` (Slice-5 rebase, commit 78f8ea8a). No historical files renumbered (out of scope / cross-session-unsafe).
+
+Verified:
+- N/A (deferral). Mitigation verified: `00406` + `00410` are unique on disk + in `git log --all`; both pushed to remote + function bodies verified (Slice 4/5 closures).
+
+Remaining:
+- DEFERRED to integrator/data-model owner (verdict blocker #8): the historical `00367–00400` renumber + the `scripts/check-migration-prefix-unique.sh` CI guard. Risk while deferred: Supabase-CLI lexical apply-ordering is non-deterministic across duplicate prefixes; a future "after 00370"-style assumption breaks silently; cross-session number races recur (now demonstrated at 00407). The CI-guard is the highest-leverage cheap fix and is explicitly recommended to that owner. Audit-02's own migrations are collision-safe and do not worsen the count (rebased).
 
 #### P2-4 — `work-order.service.ts:1059` returns `forbidden` on a missing refetch row
 
@@ -580,6 +650,13 @@ Maintainer rule: every agent that closes, partially closes, or deliberately defe
 | 2026-05-16 | **P1-2** — routing-evaluation handler raw `routing_status` clear + `case` hardcode | **CLOSED (code + remote migration verified)** | `set_entity_assignment` v3 migration `00406` (opt-in `clear_routing_status` flag; no-op-path-skip so same-assignee re-eval still clears; WO+flag fail-loud; §14/§15 gated on substantive change) + handler always-calls-RPC-with-flag (raw post-RPC `tickets.update` removed; explicit `entity_kind`/`case_id` on routing_decisions). **00406 pushed to remote + verified** (`pg_get_functiondef` → `t\|t\|t`). Case-only contract = the runnable `tickets`-membership lookup (documented). Commits 81343650 + b163ee5d. See inline Update block under P1-2. | tsc + errors:check-app-errors green; 10/10 handler spec; `/full-review` 2-agent (Code-I2 folded; Plan-I2 verified false); remote body verified v3. | P1-2 CLOSED. P2-2 fully closed at this site (handler routing_decisions explicit). Residuals (non-P0): Plan-C1 cross-session CREATE-OR-REPLACE clobber risk (detection = ledger + verify query); Code-I1 handler routing_decisions non-idempotent under outbox replay (pre-existing, not a P1-2 regression). Live routing-eval smoke = Slice 8. |
 | 2026-05-16 | **P1-3** — satisfaction rating writes outside orchestrator | **CLOSED (code + remote migration verified)** | `update_entity_combined` v7 migration `00410` (renumbered from 00407 — cross-session triple-claim): metadata branch folds `satisfaction_rating`/`satisfaction_comment` (key-presence semantics, case-only — WO+sat-key raises `satisfaction_unsupported_for_work_order` mirroring 00406 D5; keys-absent → byte-identical to v6); `ticket.service.ts` `update()` side-write removed. **00410 pushed to remote + verified** (`pg_get_functiondef` → v7-sat=t, case-only-guard=t, v6-plan-lock=t). Commits 087e7ed9 + 9f2c612f + 78f8ea8a. See inline Update block under P1-3. | tsc + errors:check-app-errors green; WO 39/39 + ticket 23 specs; `/full-review` 2-agent both SHIP (Plan-2 WO-surface-widening + Plan-1 misleading-prose folded); remote body verified v7. | P1-3 CLOSED. Residuals (non-P0): cross-session 00407 triple-claim (rebased mine→00410; broader renumber = P2-3); no dedicated satisfaction spec (transitive; → Slice 8); `tickets.satisfaction_rating` legacy vs shipped requester-rating product (documented, decoupled); Plan-C1 clobber-detection in place. Live satisfaction smoke = Slice 8 / when a caller ships (none today). |
 | 2026-05-16 | **P1-5** — `getChildTasks` inherits parent visibility | **CLOSED (code + spec)** | `getChildTasks` filters child work_orders through `work_order_visibility_ids` (00374) — parent-case `read` is precondition only; `read_all`/SYSTEM bypass; empty→[]; TS-only, no migration. New `ticket-get-child-tasks.spec.ts` 5/5. `docs/visibility.md` §7 + line 39 + read_all-deliberate-decision. Commits 6b4af8cd + 85dc82d6. See inline Update block under P1-5. | tsc + errors:check green; 5/5 new spec; `/full-review` code agent: security-correct, fail-closed, NO leak (independently verified). | P1-5 CLOSED. **Deferred (review I3, FE, brief: don't mix FE into RPC slices):** `SubIssueProgress`/`sub-issues-section` `done/total` badge now under-reports for scoped-out actors (misleading-but-safe) — FE follow-up: server-side privileged rollup or per-actor label. Cross-visibility live smoke = Slice 8 (audit §smoke #7). |
+| 2026-05-16 | **P2-1** — service-layer case-vs-WO split | **DEFERRED (explicit, rationale)** | No code change. P2 "nice-to-have"; audit calls it "probably a multi-day refactor"; NOT a completion-bar item. Security consequence (P1-5 child-visibility) + atomicity consequences (P1-1/3, P0-2) already closed in Slices 1–6; what remains is module-boundary hygiene. See inline Update block under P2-1. | N/A (deferral) — scope/shape is a direction-class call; codex unobtainable all workstream; deferring beats guessing a multi-day re-arch unreviewed while a concurrent session mutates the shared tree. | Follow-up → integrator/data-model owner (verdict Should-fix #16): hard/polymorphic split; cheap interim = reject WO ids on `PATCH /tickets/:id`. Risk: dev-ergonomics + a WO-id-on-`PATCH /tickets/:id` sharp-edge (not P0/P1). |
+| 2026-05-16 | **P2-2** — `routing_decisions` `entity_kind` consistency | **PARTIAL — high-value sites closed; residual accepted** | reassign sites → `set_entity_assignment` (entity_kind explicit in RPC, Slice 3); routing-eval handler explicit (Slice 4). `routing.service.ts recordDecision` (create/reclassify/rerun) keeps the 00230/00232 derive-trigger — a correct/tested mechanism, a different valid convention, NOT a missing value. See inline Update block under P2-2. | Slice 3 (22/22) + Slice 4 (10/10) specs; trigger path unchanged (pre-existing). | Accepted convention split (non-P0/P1): explicit-at-write for the high-blast sites; trigger-derive for the shared append-only writer. Full uniformity = future workstream (touches create/reclassify, out of audit-02 scope). |
+| 2026-05-16 | **P2-3** — duplicate migration prefixes | **DEFERRED to integrator owner + in-scope mitigation applied** | No historical renumber (cross-session-unsafe). New evidence: `00407` found **triple-claimed** live across this/audit-03/phase-1.5 (disjoint fns, no clobber). This workstream's own migs kept collision-free (`00406`; Slice-5 rebased `00407→00410`). See inline Update block under P2-3. | `00406`+`00410` unique on-disk + `git log --all`; both pushed + bodies verified. | DEFERRED → integrator/data-model owner (verdict blocker #8): historical renumber + `scripts/check-migration-prefix-unique.sh` CI guard (highest-leverage cheap fix; recommended). audit-02 migs do not worsen the count. |
+| 2026-05-16 | **P2-4** / **P2-5** | **CLOSED (in earlier slices)** | P2-4 (WO reassign `forbidden`→`notFound`) closed in Slice 3 (commit 380098e0). P2-5 (`bulkUpdate` `_source`/`plan_version` discrimination) closed in Slice 1 (routed through the canonical path; codex-precision-corrected). | See P1-1 and P0-1 Update blocks/ledger rows. | None. |
+| 2026-05-16 | **P3 notes** — observations | **TRIAGED (non-actionable / tracked-elsewhere)** | (1) 1978-line `TicketService` split → same as P2-1 (deferred). (2) `addActivity` no idempotency (flaky-comment double-row) → non-P0/P1 comment-surface follow-up, NOT assignment/visibility scope; tracked for the activity-surface backlog. (3) `routing_decisions` TS-vs-RPC insert-location inconsistency → the routing-eval handler now sets entity_kind explicitly (Slice 4); the TS-vs-in-RPC insert *location* is an accepted architectural note (append-only audit, both correct). (4) reassign cutover done (Slice 3); reclassify + portal-tickets underscored cutovers are OTHER §3.x cutovers, not audit-02 findings. | Observational; no code owed by audit-02. | addActivity-idempotency = tracked non-P0 follow-up (activity surface, out of scope). |
+| 2026-05-16 | **Slice 8 — live-smoke** (consolidated explicit deferral) | **DEFERRED with owner + per-finding risk (completion-bar §"explicit deferred owner and risk statement")** | No new smoke probe authored. Rationale: the shared `:3001` dev runtime is contended by a concurrent audit-03 session for the entire workstream — server-code-provenance is unattributable and fixture collision is likely; `feedback_runnable_guards_mandate` forbids shipping un-runnable probes (paper tigers). The CODE layer IS gated per slice: unit specs (Slice 3 22/22, Slice 4 10/10, Slice 5 WO39+ticket23, Slice 6 5/5) + `/full-review` adversarial pass every slice + remote function-body verification for the 2 pushed RPCs (00406 `t\|t\|t`, 00410 v7/guard/plan-lock). | tsc + `errors:check-app-errors` green every slice; all unit specs green; remote RPCs verified by `pg_get_functiondef`. | **Deferred probes, owner = this workstream's Slice-8 / next clean-runtime window** (audit §"Smoke coverage gaps" #1–10): bulk-update (P0-1); reassign happy-path `command_operations` case+WO (#2/#3); SLA-escalation reassign (#4); vendor-assignment-through-orchestrator (#5); WO cross-tenant sibling (#6); `getChildTasks` cross-visibility (#7, P1-5); dispatch idempotency-replay (#8); `routing_status` clear (#9, P1-2); reclassify (#10); satisfaction round-trip (P1-3, only when a caller exists). **Risk:** the 2026-05-01-class hazard (mocked/unit-green while a real-DB path regresses) is mitigated for the 2 pushed RPCs by direct remote body verification + per-caller backward-compat analysis, but the live HTTP→DB happy/replay paths of the closed surfaces are unverified end-to-end until these probes run. Recommended owner action: run the enumerated probes against an uncontended runtime before broad release. |
+| 2026-05-16 | **Workstream status** | **All P0 + all P1 CLOSED; P2-4/P2-5 closed; P2-1/P2-3 deferred (rationale); P2-2 partial; P3 triaged; live-smoke deferred (owner+risk)** | Slices 1–6 shipped on `feature/tickets-wo-audit-remediation` (isolated worktree). Migrations 00406 + 00410 on remote, bodies verified. Completion bar: no P0 raw-write bypass ✅ · assignment paths canonical/atomic-or-documented ✅ · visibility reads/writes code-covered ✅ (smoke deferred w/ owner+risk) · reference docs synced ✅. | Per-slice tsc/errors/specs green; `/full-review` every slice; remote RPC bodies verified; codex unobtainable all workstream (concurrent-session contention) — gate = `/full-review` + targeted self-verify + green gates/specs + verified remote bodies. | Residuals all tracked above. codex tertiary gate never available (environmental). Branch ready for merge decision. |
 
 ## Agent Handoff Prompt
 
