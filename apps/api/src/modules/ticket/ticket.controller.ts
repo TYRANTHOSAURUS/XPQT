@@ -7,12 +7,13 @@ import {
   Post,
   Query,
   Req,
+  Res,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { AppErrors } from '../../common/errors';
 import { RequireClientRequestIdGuard } from '../../common/guards/require-client-request-id.guard';
 import {
@@ -25,6 +26,10 @@ import {
 import { DispatchService, DispatchDto } from './dispatch.service';
 import { TicketVisibilityService } from './ticket-visibility.service';
 import { TenantContext } from '../../common/tenant-context';
+
+/** RFC 4122 v1–5, mirrors client-request-id.middleware.ts. */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 @Controller('tickets')
 export class TicketController {
@@ -155,14 +160,73 @@ export class TicketController {
     return this.ticketService.update(id, dto, actorAuthUid, clientRequestId);
   }
 
+  /**
+   * B.2.A I1 — producer route, requires X-Client-Request-Id (spec §3.9.1).
+   * Audit 02 / P0-1: bulk now routes every id through the hardened
+   * single-path `update()` (see TicketService.bulkUpdate); the guard +
+   * controller-boundary narrowing match the single `@Patch(':id')` so the
+   * bulk surface inherits every B.2.A guarantee. `ids` is validated as a
+   * non-empty array of ticket UUIDs (review fix: closes the "raw garbage
+   * ids → N loadContext round-trips" amplification the cap didn't cover).
+   * HTTP status follows the error-handling spec §3.1 line 88: all ok →
+   * 200 · mixed → 207 Multi-Status · all failed → 422; `results[]` body is
+   * always present so the (future) FE bulk renderer has a single shape.
+   */
   @Patch('bulk/update')
+  @UseGuards(RequireClientRequestIdGuard)
   async bulkUpdate(
     @Req() request: Request,
+    @Res({ passthrough: true }) res: Response,
     @Body() body: { ids: string[]; updates: UpdateTicketDto },
   ) {
     const actorAuthUid = (request as { user?: { id: string } }).user?.id;
     if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
-    return this.ticketService.bulkUpdate(body.ids, body.updates, actorAuthUid);
+    const ids = body?.ids;
+    if (
+      !Array.isArray(ids) ||
+      ids.length === 0 ||
+      !ids.every((i) => typeof i === 'string' && UUID_RE.test(i))
+    ) {
+      throw AppErrors.validationFailed('reference.invalid_uuid', {
+        detail: 'bulk update requires a non-empty array of ticket UUIDs',
+      });
+    }
+    const updates = body?.updates ?? ({} as UpdateTicketDto);
+    if (
+      Object.prototype.hasOwnProperty.call(updates, 'tags') &&
+      updates.tags !== null &&
+      updates.tags !== undefined &&
+      (!Array.isArray(updates.tags) || !updates.tags.every((t) => typeof t === 'string'))
+    ) {
+      throw AppErrors.validationFailed('ticket.tags_invalid', {
+        detail: 'tags must be an array of strings or null',
+      });
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(updates, 'watchers') &&
+      updates.watchers !== null &&
+      updates.watchers !== undefined &&
+      (!Array.isArray(updates.watchers) ||
+        !updates.watchers.every((w) => typeof w === 'string'))
+    ) {
+      throw AppErrors.validationFailed('ticket.watchers_invalid', {
+        detail: 'watchers must be an array of strings (person UUIDs) or null',
+      });
+    }
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    const result = await this.ticketService.bulkUpdate(
+      ids,
+      updates,
+      actorAuthUid,
+      clientRequestId,
+    );
+    // error-handling spec §3.1 line 88 — HTTP status = worst-case outcome.
+    if (result.okCount > 0 && result.errorCount > 0) {
+      res.status(207); // Multi-Status — partial success
+    } else if (result.okCount === 0 && result.errorCount > 0) {
+      res.status(422); // every id failed
+    }
+    return result;
   }
 
   /** B.2.A I1 — producer route, requires X-Client-Request-Id (spec §3.9.1). */

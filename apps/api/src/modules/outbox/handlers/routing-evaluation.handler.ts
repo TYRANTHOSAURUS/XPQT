@@ -24,14 +24,33 @@ import type { OutboxEvent } from '../outbox.types';
  *   4. Call `RoutingService.evaluate(ctx)`. The evaluator runs sync in
  *      TS — no DB writes.
  *   5. If the resolver returns a target AND it differs from the current
- *      assignee tuple → call `set_entity_assignment` RPC (00327 v2) with
- *      a stable idempotency key derived from the OUTBOX EVENT ID (so a
- *      replay collapses to the same command_operations row).
+ *      assignee tuple → call `set_entity_assignment` RPC with a stable
+ *      idempotency key derived from the OUTBOX EVENT ID (so a replay
+ *      collapses to the same command_operations row).
  *   6. Always insert a `routing_decisions` row capturing the trace
  *      (including `unassigned` outcomes — spec line 2786 "valid
  *      `unassigned` outcome (v5 / I4); `'failed'` only for genuine errors").
- *   7. Set `tickets.routing_status='idle'` on success (target OR
- *      unassigned). Set `'failed'` only on resolver throws or RPC errors.
+ *   7. `tickets.routing_status` clear-to-`'idle'` is folded INTO the
+ *      `set_entity_assignment` RPC via the opt-in `clear_routing_status`
+ *      payload flag (v3, audit-02 P1-2) — atomic with the assignment, no
+ *      separate post-RPC raw UPDATE. The RPC's v3 no-op fast path still
+ *      clears routing_status when the flag is set, so a re-evaluation
+ *      that re-picks the current assignee can't leave it pinned at
+ *      'pending'. `'failed'` is still set out-of-band on resolver throws
+ *      or RPC errors (markRoutingFailure) — those paths skip the RPC.
+ *
+ * ── Case-only contract ───────────────────────────────────────────────────
+ *
+ * This handler is case-only by construction. The only producers of
+ * `routing.evaluation_required` are the `reclassify_ticket` RPC
+ * (00354:544-556) and the `grant_ticket_approval` RPC (00358:324-341) —
+ * both emit aggregate_type='ticket' with a ticket_id payload. There is NO
+ * work_order producer (confirmed: no TS `outbox.emit` of this type, no
+ * other SQL emitter). A work_order id would already fail loud inside
+ * `set_entity_assignment` (`set_entity_assignment.not_found` — the RPC
+ * SELECTs from `public.tickets` for kind='case'). WO routing-evaluation
+ * is an explicit FUTURE GAP, not handled here; no speculative WO branch
+ * is built (there is nothing to branch on).
  *
  * ── Idempotency ──────────────────────────────────────────────────────────
  *
@@ -117,6 +136,20 @@ export class RoutingEvaluationHandler
     }
     if (!ticketRes.data) {
       // Hard-deleted between emit + fire. Terminal per v9 / P-I5.
+      //
+      // audit-02 P1-2 (review Plan-N1): this lookup is ALSO the runtime
+      // case-only enforcement point — a runnable guard, not a doc-only
+      // paper tiger. `routing.evaluation_required` is produced only for
+      // cases (00354 reclassify_ticket + 00358 grant_ticket_approval_v3,
+      // both aggregate_type='ticket'); there is no work_order producer.
+      // If a WO id ever reached here it is NOT in `public.tickets`
+      // (post-1c.10c work_orders are their own table), so it lands in
+      // THIS branch and terminates cleanly — BEFORE the resolver, the
+      // set_entity_assignment RPC, or markRoutingFailure. The earlier
+      // review concern that a WO id would corrupt data via
+      // markRoutingFailure (case_id=<wo_id> + zero-row tickets.update)
+      // is therefore unreachable: the tickets-membership miss gates it
+      // out here. WO routing-evaluation remains an explicit future gap.
       this.log.log(`ticket_not_found ticket=${ticket_id} event=${event.id}`);
       return;
     }
@@ -176,62 +209,74 @@ export class RoutingEvaluationHandler
       return;
     }
 
-    // ── 5. Optional set_entity_assignment when the target differs ───────
+    // ── 5. set_entity_assignment — ALWAYS called (audit-02 P1-2) ────────
     //
-    // Skip the assignment call if the resolver produced no target
-    // (unassigned). Skip if the target matches current assignees exactly
-    // — the RPC's no-op fast path would handle it but saving the HTTP
-    // round-trip is cheap.
+    // The RPC is now invoked on EVERY non-failure path so the
+    // routing_status='idle' / routing_failure_reason=null clear is
+    // ATOMIC with (and idempotent like) the assignment write — folded
+    // into the RPC's single tx via the v3 opt-in `clear_routing_status`
+    // flag, never a separate post-RPC raw UPDATE a crash could skip.
+    //
+    // Two payload shapes:
+    //   * target found AND differs from current → include all three
+    //     assigned_*_id keys (explicit null = "clear that axis") so the
+    //     RPC applies the new assignment. The no-op shortcut won't fire
+    //     (assignees differ) so the §10 UPDATE runs and also clears
+    //     routing_status.
+    //   * unassigned (target === null) OR target already matches current
+    //     → OMIT the assigned_*_id keys entirely. key-absent = "no
+    //     change" in the RPC (00327:189-191), so the existing assignment
+    //     is preserved (an `unassigned` resolver outcome must NOT wipe a
+    //     standing assignee — v5/I4). The v3 no-op fast path is SKIPPED
+    //     because clear_routing_status is set, so the §10 UPDATE still
+    //     runs and clears routing_status — atomic, idempotent, crash-safe.
+    //
+    // No `reason` field on either shape — passing one would trigger
+    // set_entity_assignment's manual-reassign audit branch and write a
+    // routing_decisions row classified as `manual_reassign`. We want only
+    // the resolver-audit row written below at step 6, classified by
+    // `evaluation.chosen_by` (rule / asset_override / location_team /
+    // etc.). codex-S11-I2 (2026-05-11).
     const target: AssignmentTarget | null = evaluation.target;
-    let assignmentApplied = false;
-    if (target !== null && !this.targetMatchesCurrent(target, ticket)) {
-      const payload: Record<string, unknown> = {
-        // Set all three explicitly so the RPC's no-op-fast-path semantics
-        // are deterministic — `assigned_team_id=null` means "clear",
-        // omitted key means "no change". We want a clean overwrite.
-        assigned_team_id: target.kind === 'team' ? target.team_id : null,
-        assigned_user_id: target.kind === 'user' ? target.user_id : null,
-        assigned_vendor_id: target.kind === 'vendor' ? target.vendor_id : null,
-        // No `reason` field — passing one would trigger
-        // set_entity_assignment's manual-reassign audit branch
-        // (00327_v2:258) and write a routing_decisions row classified
-        // as `manual_reassign`. We want only the resolver-audit row
-        // written below at step 6, classified by `evaluation.chosen_by`
-        // (rule / asset_override / location_team / etc.). codex-S11-I2
-        // (2026-05-11).
-      };
-
-      const idempotencyKey = buildRoutingEvaluationIdempotencyKey(event.id);
-      const rpcRes = await this.supabase.admin.rpc('set_entity_assignment', {
-        p_entity_id: ticket_id,
-        p_entity_kind: 'case',
-        p_tenant_id: event.tenant_id,
-        // The outbox worker is the system actor — null actor lets the
-        // RPC's actor_person_id lookup (00327:291-299) fall through
-        // cleanly without raising.
-        p_actor_user_id: null,
-        p_idempotency_key: idempotencyKey,
-        p_payload: payload,
-      });
-
-      if (rpcRes.error) {
-        // RPC error → record routing failure, return. The downstream
-        // RPC has its own classify-and-dead-letter logic; here we just
-        // want the ticket to show `routing_status='failed'` until ops
-        // re-triggers routing.
-        await this.markRoutingFailure(
-          event.tenant_id,
-          ticket_id,
-          rpcRes.error.message,
-          event.id,
-        );
-        this.log.warn(
-          `assignment_failed ticket=${ticket_id} event=${event.id}: ${rpcRes.error.message}`,
-        );
-        return;
-      }
-      assignmentApplied = true;
+    const applyAssignment = target !== null && !this.targetMatchesCurrent(target, ticket);
+    const payload: Record<string, unknown> = { clear_routing_status: true };
+    if (applyAssignment && target !== null) {
+      payload.assigned_team_id = target.kind === 'team' ? target.team_id : null;
+      payload.assigned_user_id = target.kind === 'user' ? target.user_id : null;
+      payload.assigned_vendor_id = target.kind === 'vendor' ? target.vendor_id : null;
     }
+
+    const idempotencyKey = buildRoutingEvaluationIdempotencyKey(event.id);
+    const rpcRes = await this.supabase.admin.rpc('set_entity_assignment', {
+      p_entity_id: ticket_id,
+      // Case-only by construction — see the class-doc "Case-only contract"
+      // note. A WO id would fail loud as set_entity_assignment.not_found
+      // (the RPC SELECTs from public.tickets for kind='case').
+      p_entity_kind: 'case',
+      p_tenant_id: event.tenant_id,
+      // The outbox worker is the system actor — null actor lets the
+      // RPC's actor_person_id lookup fall through cleanly without raising.
+      p_actor_user_id: null,
+      p_idempotency_key: idempotencyKey,
+      p_payload: payload,
+    });
+
+    if (rpcRes.error) {
+      // RPC error → record routing failure, return. The downstream RPC
+      // has its own classify-and-dead-letter logic; here we just want the
+      // ticket to show `routing_status='failed'` until ops re-triggers.
+      await this.markRoutingFailure(
+        event.tenant_id,
+        ticket_id,
+        rpcRes.error.message,
+        event.id,
+      );
+      this.log.warn(
+        `assignment_failed ticket=${ticket_id} event=${event.id}: ${rpcRes.error.message}`,
+      );
+      return;
+    }
+    const assignmentApplied = applyAssignment;
 
     // ── 6. Always write the routing_decisions row (audit trail) ─────────
     //
@@ -246,6 +291,14 @@ export class RoutingEvaluationHandler
     const decisionRes = await this.supabase.admin.from('routing_decisions').insert({
       tenant_id: event.tenant_id,
       ticket_id,
+      // P2-2 tail (audit-02): set the polymorphic discriminator EXPLICITLY
+      // at this site instead of relying on the 00232 derive trigger. This
+      // handler is case-only by construction (see class-doc), so
+      // entity_kind='case' + case_id=ticket_id are statically correct —
+      // mirrors how set_entity_assignment sets them inside the RPC
+      // (00327:262-271) and the reassign sites (ticket.service.ts:1466).
+      entity_kind: 'case',
+      case_id: ticket_id,
       strategy: evaluation.strategy,
       chosen_team_id: target?.kind === 'team' ? target.team_id : null,
       chosen_user_id: target?.kind === 'user' ? target.user_id : null,
@@ -263,35 +316,23 @@ export class RoutingEvaluationHandler
       },
     });
     if (decisionRes.error) {
-      // The assignment write at step 5 already committed (if it ran).
-      // Surface the audit-row failure so ops can investigate; the outbox
-      // worker's retry will re-attempt the audit insert on next tick.
+      // The assignment write at step 5 already committed. Surface the
+      // audit-row failure so ops can investigate; the outbox worker's
+      // retry will re-attempt the audit insert on next tick.
       throw new Error(
         `routing.evaluation_required.audit_insert_failed event=${event.id}: ${decisionRes.error.message}`,
       );
     }
 
-    // ── 7. Clear routing_status to 'idle' ──────────────────────────────
+    // ── 7. routing_status clear — folded into the RPC (audit-02 P1-2) ───
     //
-    // Both target-found and unassigned-outcome converge to `idle`
-    // (v5 / I4). `failed` is reserved for the catch-paths above.
-    //
-    // codex-S11-I1: inspect .error explicitly. A silent failure leaves
-    // the ticket pinned in routing_status='pending' even though the
-    // assignment + audit-row commits succeeded.
-    const tStatusRes = await this.supabase.admin
-      .from('tickets')
-      .update({
-        routing_status: 'idle',
-        routing_failure_reason: null,
-      })
-      .eq('id', ticket_id)
-      .eq('tenant_id', event.tenant_id);
-    if (tStatusRes.error) {
-      throw new Error(
-        `routing.evaluation_required.status_clear_failed event=${event.id}: ${tStatusRes.error.message}`,
-      );
-    }
+    // No separate post-RPC raw UPDATE. tickets.routing_status='idle' /
+    // routing_failure_reason=null was cleared ATOMICALLY inside the §5
+    // set_entity_assignment call via the v3 `clear_routing_status` flag
+    // — including on the no-op / unassigned / target-matches-current
+    // shapes (the v3 fast path is skipped when the flag is set). A crash
+    // can no longer leave the ticket assigned with routing_status pinned
+    // at 'pending'.
 
     this.log.log(
       `evaluated ticket=${ticket_id} chosen_by=${evaluation.chosen_by} ` +
@@ -375,15 +416,19 @@ export class RoutingEvaluationHandler
       );
     }
 
-    // routing_decisions audit row. Mirrors the success-path insert shape
-    // (entity_kind='case' derived by the 00230 polymorphic trigger from
-    // ticket_id; rule_id/null since no rule fired). chosen_by =
-    // 'auto_routing_failed' is the failure sentinel — ops can filter
-    // routing_decisions on this value to surface unresolved routing
-    // problems. trace carries the truncated reason for forensics.
+    // routing_decisions audit row. Mirrors the success-path insert shape.
+    // P2-2 tail (audit-02): entity_kind='case' + case_id set EXPLICITLY
+    // (handler is case-only — see class-doc) rather than via the 00232
+    // derive trigger, matching the success path above. rule_id null since
+    // no rule fired. chosen_by='auto_routing_failed' is the failure
+    // sentinel — ops can filter routing_decisions on this value to
+    // surface unresolved routing problems. trace carries the truncated
+    // reason for forensics.
     const decisionRes = await this.supabase.admin.from('routing_decisions').insert({
       tenant_id: tenantId,
       ticket_id: ticketId,
+      entity_kind: 'case',
+      case_id: ticketId,
       strategy: 'failed',
       chosen_team_id: null,
       chosen_user_id: null,

@@ -61,16 +61,43 @@ were intentionally not folded into the Commit-B remediation pass
   documented below.
 
 - **Case-side satisfaction_rating + satisfaction_comment atomicity
-  gap (plan-review I4, 2026-05-11).** These fields are not in the
-  metadata branch of §3.0 RPC; case-side update() preserves the API
-  surface via a direct `.from('tickets').update({satisfaction_rating,
-  satisfaction_comment})` call AFTER the orchestrator commits. This
-  means satisfaction write can succeed while RPC fails (or vice
-  versa) — no audit row, no idempotency. Fix is to fold these into
-  the metadata branch of a future orchestrator version OR accept the
-  gap and document it on the satisfaction-survey workflow page. Not
-  P0 because satisfaction submissions are infrequent + non-critical
-  for SLA correctness.
+  gap (plan-review I4, 2026-05-11).** ✅ **CLOSED** — audit-02 P1-3,
+  `update_entity_combined` **v7** (migration `00410`). Both fields are
+  now folded into the metadata branch of the §3.0 RPC: the SAME row
+  UPDATE that writes title/description/cost/tags/watchers, and the
+  SAME `metadata_changed` activity row. The post-RPC
+  `.from('tickets').update({satisfaction_rating, satisfaction_comment})`
+  side-write in `ticket.service.ts` `update()` has been removed.
+  satisfaction is now **atomic** with every other branch, **audited**
+  (metadata_changed activity row), and **idempotent** (command_operations
+  payload-hash). **Case-only** (review Plan-2): the side-write this
+  replaced only ever wrote `.from('tickets')`. `work_orders` carries
+  `satisfaction_*` columns (00213) but they are **vestigial**;
+  `p_entity_kind='work_order'` + a satisfaction key now raises
+  `update_entity_combined.satisfaction_unsupported_for_work_order`
+  (mirrors 00406 D5) so v7 does NOT widen the writable surface beyond
+  the case-only side-write. The `tickets` column
+  `CHECK(satisfaction_rating between 1 and 5)` is the authoritative
+  range gate (the app enforces no range, so the RPC doesn't invent one).
+  Keys absent ⇒ v7 is byte-identical to 00384 v6, so every existing
+  non-satisfaction caller is unaffected.
+  **Contract nuance + accuracy correction (review Plan-1):** a
+  satisfaction-only update now produces a non-empty `patches.metadata`,
+  so it flows through the RPC and **requires X-Client-Request-Id**
+  (`PATCH /tickets/:id` is already behind `RequireClientRequestIdGuard`;
+  no satisfaction caller exists anywhere in the codebase today). Do NOT
+  read this as "the future rating feature wires through here": the
+  shipped requester-rating design
+  (`docs/superpowers/specs/2026-04-27-requester-rating-design.md`)
+  persists ratings to a **dedicated `requester_ratings` table** via a
+  **public single-use-token endpoint** (`/rate/:token`, anonymous by
+  spec), architecturally **decoupled** from `tickets.satisfaction_rating`
+  and from `update_entity_combined`. `tickets.satisfaction_rating` is
+  therefore effectively **legacy** w.r.t. the shipped rating product.
+  This fold is still correct + audit-mandated: it closes a real
+  non-atomic two-write divergence for any *direct* `PATCH /tickets/:id`
+  satisfaction write — atomicity hardening, not over-engineering — but
+  the next engineer implementing requester-rating must NOT wire it here.
 
 - **clientRequestId un-underscoring consistency (plan-review I1,
   2026-05-11).** Commit B un-underscored 2 of 8 Step-2 params (the
@@ -162,12 +189,29 @@ Idempotency keys are stable across replays (same instance + node +
 entity ⇒ same key ⇒ `command_operations` short-circuits). All
 audit-row + domain-event emission moves to the RPC layer.
 
-**`WorkOrderService.reassign` and `TicketService.reassign` still remain
-outside §3.0** — both write via `.from('<table>').update(...)` plus a
-`routing_decisions` audit insert. Folding reassign into
-`set_entity_assignment` (§3.2) is a separate follow-up, not part of
-Step 9. Until then reassign is a known second write path for the
-reason field.
+**`WorkOrderService.reassign` and `TicketService.reassign` — CUT OVER /
+DONE (audit-02 P1-1, 2026-05-16).** Both paths are now atomic via
+`set_entity_assignment` (00327 v2). The former 3 non-atomic raw writes
+(`.from('<table>').update(...)` + `routing_decisions` insert + activity
+insert) and the WO-side's two `try/catch`-swallowed audit-error blocks
+are deleted. One RPC call commits assignment + `status_category`
+inheritance + `routing_decisions` (entity_kind/case_id|work_order_id
+set explicitly inside the RPC) + `reassigned` activity + `ticket_assigned`
+domain event + `command_operations` idempotency (key
+`reassign:<kind>:<id>:<crid>`, `buildReassignIdempotencyKey`) in one
+transaction. The case-side `rerun_resolver` branch no longer
+clears-then-writes (was an unassigned-forever hazard): it is now
+resolver-first → `RoutingService.recordDecision` (single rich audit
+row, reason threaded into `context`) → `set_entity_assignment` without
+`reason` → one internal activity carrying the reason. Permission floor
+parity also closed (audit-02 P1-4): both sides gate on `assertCanPlan`
+(case-side tightened from `assertVisible('write')`). Audit failures
+surface as mapped `AppError`s — no more silent swallow. This closes the
+deferred §3.2 reassign follow-up. Residual: `routing.service.ts
+recordDecision` + the routing-evaluation outbox handler still rely on
+the 00232 derive trigger for `entity_kind` (Slice-4-adjacent — out of
+scope here). Live smoke deferred (Slice 8 — no reassign probe exists;
+shared :3001 runtime contended by concurrent audit sessions).
 
 **Dead code removed (Commit C remediation, 2026-05-11).** The
 per-field `WorkOrderService` methods (`updateSla` / `setPlan` /
@@ -436,11 +480,19 @@ they should be updated or the field demand pushed up to Product.
   is case-targeted by data model. If a workflow needs to set a child
   WO's plan, the path is `create_child_tasks` (which dispatches the WO
   with the plan as part of the dispatch payload) — not update_ticket.
-- `satisfaction_rating` / `satisfaction_comment` / `form_data` — defer
-  until user-driven satisfaction workflow exists. Today these are
-  applied via a direct side-write in `TicketService.update` after the
-  RPC commits (plan-review I4 — see "Case-side satisfaction_rating +
-  satisfaction_comment atomicity gap" entry above).
+- `satisfaction_rating` / `satisfaction_comment` / `form_data` — still
+  deferred from the workflow `update_ticket` allowlist until a
+  user-driven satisfaction workflow exists. NOTE (audit-02 P1-3,
+  00410 v7): `satisfaction_rating` / `satisfaction_comment` are NO
+  LONGER applied via a side-write — they are now folded into the
+  metadata branch of `update_entity_combined` (atomic + audited +
+  idempotent; see the CLOSED "Case-side satisfaction_rating +
+  satisfaction_comment atomicity gap" entry above). The workflow
+  engine still does not expose them via `update_ticket`
+  (`UPDATE_TICKET_ALLOWED_FIELDS` unchanged); the orchestrator branch
+  itself now accepts them, so a future workflow extension is a
+  one-line allowlist add (no RPC change needed). `form_data` remains
+  fully deferred (no orchestrator branch).
 
 The 12-field allowlist itself is in
 `apps/api/src/modules/workflow/workflow-engine.service.ts` under
@@ -544,3 +596,75 @@ of `edit_booking` (next time a real defect requires touching the RPC).
 Low-priority — only matters when investigating a tenant complaint
 about unexpected approval re-trigger. No correctness impact on the
 write path; cosmetic on the audit row.
+
+## audit-02 P0-2 — SLA escalation reassign now routes through `set_entity_assignment` (closed, 2026-05-16)
+
+**Status:** closed (code; live smoke deferred to the orchestrator).
+
+The audit-02 P0-2 finding (`docs/follow-ups/audits/02-tickets-work-orders.md:97`)
+was acknowledged **nowhere** until now (the b2-followups note at :165-170
+covers only the user-driven `WorkOrderService.reassign` /
+`TicketService.reassign` paths — it explicitly did not cover the
+cron-driven SLA escalation path, which had *none* of that scrutiny).
+
+The SLA escalation cron previously reassigned tickets/work_orders via a
+raw `UPDATE` (`SlaService.updateTicketOrWorkOrder`): zero
+`command_operations` row (no idempotency — a re-fired cron tick
+re-applied), zero `routing_decisions` audit, zero `ticket_assigned`
+domain event.
+
+Closed by routing the escalation-reassign path
+(`SlaService.applyReassignment`, `apps/api/src/modules/sla/sla.service.ts`)
+through the canonical RPCs:
+
+- **Assignment** → `set_entity_assignment` (00327 v2), idempotency key
+  `sla:escalation:<sla_timer_id>:<at_percent>:<timer_type>` — the exact
+  `crossingKey` identity (`sla-threshold.types.ts:33`), deterministic per
+  *crossing*. `timer_type` is required: a `both`-scope threshold crosses
+  for the response and resolution timers at the same `at_percent`; without
+  it those two legitimate crossings collide on one `command_operations`
+  key. A re-fired tick for the same crossing replays the cached result
+  instead of re-applying. `reason` non-null ⇒ the RPC writes the
+  `routing_decisions` + `reassigned` activity + `ticket_assigned` domain
+  event atomically.
+- **Watchers** → `update_entity_combined` (00384 v6) metadata branch,
+  key `…:<timer_type>:watchers`, called only when the watcher set changes. The
+  outgoing assignee's `users.id` is translated to its `persons.id`
+  before being added — `tickets.watchers` is a persons.id[] column
+  (00011:26) and v6 validates against `persons`; the legacy raw path
+  added the raw `users.id`, a latent ID-type bug now corrected here.
+- Entity kind (`case`/`work_order`) is resolved once by
+  `loadTicketForFire` (now returns `entity_kind`) — no extra probe.
+- The now-duplicate `writeActivity` "SLA escalated …" `system_event`
+  row was removed: `set_entity_assignment` writes the canonical
+  `reassigned` activity for the same logical event. With its sole
+  caller gone the method was dead code and was deleted (structural
+  enforcement of the single-write-path contract — same precedent as
+  the "Dead code removed" note at :172).
+- **Recurrence-safety (codex BLOCK fix) — anchor-first ordering.** The
+  crossing row is written immediately after the committed assignment and
+  BEFORE the best-effort side-effects (notification; watcher copy). Once
+  the anchor exists nothing afterwards — a thrown notifier, a thrown
+  telemetry insert, any future post-anchor await — can make the cron
+  re-fire the escalation (structural invariant, not "remembered to catch
+  every throw"). Pre-fix, side-effects ran before the crossing so a
+  throw between the committed assignment and the anchor caused permanent
+  per-tick re-fire. In-catch telemetry is itself best-effort
+  (`emitTelemetryBestEffort`). Only `writeCrossing` itself failing
+  leaves a bounded retry window (RPCs idempotent on replay). Trade-off:
+  `crossing.notification_id` is null (anchor precedes send).
+
+No migration — `set_entity_assignment` (00327) and
+`update_entity_combined` (00384) already provide every guarantee. The
+legitimate SLA-internal raw writes (response/resolution `due_at`,
+pause/resume, restart/clear, `sla_at_risk`) still go through
+`updateTicketOrWorkOrder` unchanged — only the escalation-reassign
+changed.
+
+Verified: `pnpm -C apps/api lint` (tsc --noEmit) pass ·
+`pnpm errors:check-app-errors` pass (0 raw throws). Live smoke handled
+by the orchestrator.
+
+Doc synced same commit: `docs/assignments-routing-fulfillment.md`
+gained a "SLA escalation reassign" subsection under §7 (closes the
+audit doc-drift finding §342).

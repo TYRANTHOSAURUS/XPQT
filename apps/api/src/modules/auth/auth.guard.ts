@@ -37,15 +37,30 @@ export class AuthGuard implements CanActivate {
     // Slice 1, P0). Bridge auth_uid → public.users(id) for the resolved
     // tenant. If the JWT-holder has no users row in the current tenant,
     // the request is a cross-tenant header-flip — reject with the same
-    // 403 AdminGuard already uses (admin.guard.ts:29). Attaches the
-    // resolved platform user id to request.user so downstream guards
-    // (AdminGuard, PermissionGuard) don't repeat the lookup.
-    const tenant = TenantContext.current();
+    // 403 AdminGuard already uses (admin.guard.ts:29).
+    //
+    // Defensive: TenantContext.current() throws a raw Error if the
+    // request bypassed TenantMiddleware. Surface that as a clean 400
+    // tenant.missing_context instead of a 500 stack trace.
+    //
+    // Filter on status='active' — the users table allows 'inactive'
+    // and 'suspended' (00003_people_users_roles.sql:42). An inactive
+    // user with a still-valid Supabase JWT must NOT pass.
+    let tenant;
+    try {
+      tenant = TenantContext.current();
+    } catch {
+      throw AppErrors.notFoundWithCode(
+        'tenant.unknown',
+        'Tenant context missing',
+      );
+    }
     const userLookup = await this.supabase.admin
       .from('users')
       .select('id')
       .eq('tenant_id', tenant.id)
       .eq('auth_uid', data.user.id)
+      .eq('status', 'active')
       .maybeSingle();
     if (userLookup.error) {
       throw AppErrors.server('auth.role_lookup_failed', {
@@ -61,6 +76,9 @@ export class AuthGuard implements CanActivate {
       );
     }
 
+    // Attach the resolved platform user id so downstream guards
+    // (AdminGuard, PermissionGuard) and services don't repeat the
+    // lookup. See admin.guard.ts + permission-guard.ts.
     request.user = Object.assign(data.user, { platformUserId });
     return true;
   }

@@ -5,10 +5,12 @@ import {
   Get,
   Param,
   Patch,
-  Post} from '@nestjs/common';
+  Post,
+  UseGuards} from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
+import { AdminGuard } from '../auth/admin.guard';
 
 interface CreateSpaceGroupDto {
   name: string;
@@ -24,6 +26,7 @@ interface AddMemberDto {
   space_id: string;
 }
 
+@UseGuards(AdminGuard)
 @Controller('space-groups')
 export class SpaceGroupsController {
   constructor(private readonly supabase: SupabaseService) {}

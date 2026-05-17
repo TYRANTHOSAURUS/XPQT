@@ -1,6 +1,8 @@
-import { Controller, Get, Post, Patch, Param, Body, Query } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Body, Query, UseGuards } from '@nestjs/common';
 import { ConfigEngineService, CreateConfigEntityDto, UpdateConfigVersionDto } from './config-engine.service';
+import { AdminGuard } from '../auth/admin.guard';
 
+@UseGuards(AdminGuard)
 @Controller('config-entities')
 export class ConfigEntityController {
   constructor(private readonly configEngineService: ConfigEngineService) {}

@@ -1,11 +1,12 @@
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import {
   buildPatchIdempotencyKey,
   buildCreateTicketIdempotencyKey,
   buildCreateTicketId,
+  buildReassignIdempotencyKey,
 } from '@prequest/shared';
-import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
+import { AppError, AppErrors, mapRpcErrorToAppError } from '../../common/errors';
 import { hasOwnDefined } from '../../common/has-own-defined';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import {
@@ -204,6 +205,28 @@ const INBOX_REASON_PRIORITY: Record<InboxReason, number> = {
   my_team: 2,
   watching: 1,
 };
+
+/**
+ * Deterministic canonical JSON: object keys sorted recursively, arrays kept
+ * in order, primitives as-is. Used to fingerprint a bulk patch payload so the
+ * effective idempotency key is stable regardless of request key order and
+ * robust if `UpdateTicketDto` grows nested fields (codex Slice-1 P3 — the
+ * `JSON.stringify(obj, replacer[])` form is a recursive *allowlist*, not a
+ * canonicaliser, and would silently drop nested keys).
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.keys(value as Record<string, unknown>)
+    .sort()
+    .map(
+      (k) =>
+        `${JSON.stringify(k)}:${canonicalJson(
+          (value as Record<string, unknown>)[k],
+        )}`,
+    );
+  return `{${entries.join(',')}}`;
+}
 
 @Injectable()
 export class TicketService {
@@ -1077,13 +1100,15 @@ export class TicketService {
     // The RPC's `update_entity_combined.invalid_patches` does NOT cover
     // "valid object, zero recognised branches" — it would just return a
     // noop result. Save the round-trip + idempotency-cache pollution.
+    //
+    // audit-02 P1-3 (00410 v7): satisfaction is now folded into
+    // `patches.metadata` by buildPatchesPayloadForCase, so a
+    // satisfaction-only dto produces a non-empty `patches` and correctly
+    // flows through the RPC below (no separate side-write). A truly
+    // empty dto (no branch keys, no satisfaction) still early-returns
+    // `current` here, unchanged.
     if (Object.keys(patches).length === 0) {
-      // satisfaction_* fall through to the side-write below; if neither
-      // is set, return the current row unchanged.
-      const wantsSatisfaction =
-        Object.prototype.hasOwnProperty.call(dto, 'satisfaction_rating') ||
-        Object.prototype.hasOwnProperty.call(dto, 'satisfaction_comment');
-      if (!wantsSatisfaction) return current;
+      return current;
     }
 
     if (Object.keys(patches).length > 0) {
@@ -1116,32 +1141,19 @@ export class TicketService {
       if (error) throw mapRpcErrorToAppError(error);
     }
 
-    // satisfaction_rating + satisfaction_comment are not part of the
-    // §3.0 RPC patches schema (00333 supports status / priority /
-    // assignment / sla / plan / metadata only). They have no audit-row
-    // or domain-event side effects — the legacy write path applied them
-    // via the catch-all `Object.entries` block with no activity emission.
-    // Preserve the API surface here as a direct UPDATE (gated by the
-    // same preflight permission/visibility checks above). Used by the
-    // satisfaction-survey workflow; not exercised by the desk UI today.
-    if (
-      Object.prototype.hasOwnProperty.call(dto, 'satisfaction_rating') ||
-      Object.prototype.hasOwnProperty.call(dto, 'satisfaction_comment')
-    ) {
-      const satPatch: Record<string, unknown> = {};
-      if (Object.prototype.hasOwnProperty.call(dto, 'satisfaction_rating')) {
-        satPatch.satisfaction_rating = dto.satisfaction_rating;
-      }
-      if (Object.prototype.hasOwnProperty.call(dto, 'satisfaction_comment')) {
-        satPatch.satisfaction_comment = dto.satisfaction_comment;
-      }
-      const { error: satErr } = await this.supabase.admin
-        .from('tickets')
-        .update(satPatch)
-        .eq('id', id)
-        .eq('tenant_id', tenant.id);
-      if (satErr) throw satErr;
-    }
+    // audit-02 P1-3 (00410 v7): the pre-fix post-RPC
+    // `.from('tickets').update({satisfaction_rating, satisfaction_comment})`
+    // side-write — non-atomic with the orchestrated write, no audit row,
+    // no idempotency — has been REMOVED. satisfaction_rating /
+    // satisfaction_comment are now folded into `patches.metadata` by
+    // buildPatchesPayloadForCase and committed inside the
+    // `update_entity_combined` RPC's metadata branch (00410): atomic
+    // with every other branch, emits the `metadata_changed` activity
+    // row, idempotent through command_operations. Satisfaction-only
+    // updates now flow through the RPC and therefore require
+    // X-Client-Request-Id (PATCH /tickets/:id is already guarded by
+    // RequireClientRequestIdGuard; no internal/SYSTEM satisfaction
+    // caller exists in the codebase).
 
     // Refetch so the response shape matches today's API contract
     // (joined requester / location / asset / assigned_* / request_type).
@@ -1211,6 +1223,17 @@ export class TicketService {
     if (has('cost')) metadata.cost = dto.cost;
     if (has('tags')) metadata.tags = dto.tags;
     if (has('watchers')) metadata.watchers = dto.watchers;
+    // audit-02 P1-3 (00410 v7): satisfaction folded into the metadata
+    // branch so it commits atomically inside `update_entity_combined`
+    // (was a separate non-atomic post-RPC side-write). Same key-presence
+    // semantics as title/cost/tags/watchers — absent ⇒ untouched,
+    // present-with-null ⇒ explicit clear. `hasOwnDefined` so a caller
+    // passing `{ satisfaction_rating: undefined }` does not spuriously
+    // trigger the metadata branch.
+    if (has('satisfaction_rating'))
+      metadata.satisfaction_rating = dto.satisfaction_rating;
+    if (has('satisfaction_comment'))
+      metadata.satisfaction_comment = dto.satisfaction_comment;
     if (Object.keys(metadata).length > 0) {
       patches.metadata = metadata;
     }
@@ -1232,17 +1255,24 @@ export class TicketService {
     id: string,
     dto: ReassignDto,
     actorAuthUid: string,
-    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
-    // controller for `POST /tickets/:id/reassign`. Plumbed only today;
-    // Step 3+ uses it as the idempotency-key seed for the
-    // set_entity_assignment RPC (spec §3.2 + §3.9.1).
-    _clientRequestId?: string,
+    // Audit-02 P1-1 cutover (2026-05-16): threaded from
+    // RequireClientRequestIdGuard via the controller for
+    // `POST /tickets/:id/reassign` and used as the
+    // `set_entity_assignment` idempotency-key seed (spec §3.2 / §3.9.1).
+    clientRequestId?: string,
   ) {
     const tenant = TenantContext.current();
 
     if (actorAuthUid !== SYSTEM_ACTOR) {
       const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      await this.visibility.assertVisible(id, ctx, 'write');
+      // Audit-02 P1-4 (FORK 2, decided): reassign is an
+      // execution/ownership action, not a generic write. Gate on the
+      // planning floor (`assertCanPlan`) — the SAME floor the WO-side
+      // already enforces via `assertAssignPermission`. Deliberate
+      // behaviour change: a requester/watcher who can `write` a case but
+      // lacks the planning floor can no longer reassign it. WO-side is
+      // the reference; do not weaken it back to `assertVisible('write')`.
+      await this.visibility.assertCanPlan(id, ctx);
 
       // Reassign is by definition an assignment change — always require the
       // per-action `tickets.assign` permission (or `tickets.write_all`
@@ -1274,27 +1304,28 @@ export class TicketService {
       });
     }
 
-    const prev = {
-      team: current.assigned_team_id as string | null,
-      user: current.assigned_user_id as string | null,
-      vendor: current.assigned_vendor_id as string | null,
-    };
+    if (!clientRequestId) {
+      // Producer route — RequireClientRequestIdGuard enforces presence at
+      // the HTTP boundary; this hard-fail covers internal callers and
+      // keeps the idempotency key non-optional. Same registered code +
+      // factory as update() (ticket.service.ts:1122-1126).
+      throw AppErrors.badRequest(
+        'command_operations.client_request_id_required',
+        'POST /tickets/:id/reassign requires X-Client-Request-Id header per I1 (RequireClientRequestIdGuard).',
+      );
+    }
+
+    const idempotencyKey = buildReassignIdempotencyKey('case', id, clientRequestId);
+    const actorUserId = actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid;
 
     let nextTarget: { kind: 'team' | 'user' | 'vendor'; id: string } | null = null;
-    let chosenBy: 'manual_reassign' | 'rerun_resolver' = 'manual_reassign';
-    let strategy: string = 'manual';
-    let trace: Array<Record<string, unknown>> = [
-      { step: 'manual_reassign', matched: true, reason: dto.reason, by: dto.actor_person_id ?? null },
-    ];
 
     if (dto.rerun_resolver) {
-      // Clear current assignment and let the resolver pick fresh
-      await this.supabase.admin
-        .from('tickets')
-        .update({ assigned_team_id: null, assigned_user_id: null, assigned_vendor_id: null })
-        .eq('id', id)
-        .eq('tenant_id', tenant.id);
-
+      // Audit-02 P1-1 / FORK 1 (decided = option a): resolver-FIRST.
+      // The legacy path raw-nulled all three assignees BEFORE running the
+      // resolver — a crash between clear-and-rerun left the ticket
+      // unassigned forever. We never null-then-write: resolve the target
+      // first (read-only), then atomically assign via the RPC.
       const rtCfg = current.ticket_type_id
         ? (await this.supabase.admin
             .from('request_types')
@@ -1324,8 +1355,8 @@ export class TicketService {
         asset_id: (current.asset_id as string | null) ?? null,
         location_id: effectiveLocation,
       };
+      // (i) Read-only resolve.
       const result = await this.routingService.evaluate(evalCtx);
-      await this.routingService.recordDecision(id, evalCtx, result);
       if (result.target) {
         if (result.target.kind === 'team') nextTarget = { kind: 'team', id: result.target.team_id };
         else if (result.target.kind === 'user') nextTarget = { kind: 'user', id: result.target.user_id };
@@ -1335,9 +1366,10 @@ export class TicketService {
       // Plan A.2 / Commit 4 / gap map analogue of work-order rerunAssignmentResolver.
       // Routing definitions are tenant-scoped, but the resolver result is
       // a structured payload — if a routing-table compromise, rule import,
-      // or test-time override returned a foreign uuid, we'd write it
-      // blind to the tickets row. Validate before propagating into
-      // `updates` below.
+      // or test-time override returned a foreign uuid, we'd write it blind
+      // to the tickets row. Validate before handing it to the RPC.
+      // (The RPC also re-validates via validate_assignees_in_tenant; this
+      // surfaces a clean AppError before the idempotency row is written.)
       if (nextTarget) {
         await validateAssigneesInTenant(
           this.supabase,
@@ -1350,65 +1382,112 @@ export class TicketService {
           { skipForSystemActor: actorAuthUid === SYSTEM_ACTOR },
         );
       }
-      chosenBy = 'rerun_resolver';
-      strategy = result.strategy;
-      trace = [
-        { step: 'manual_reassign', matched: true, reason: dto.reason, by: dto.actor_person_id ?? null },
-        ...(result.trace as unknown as Array<Record<string, unknown>>),
-      ];
-    } else {
-      if (dto.assigned_team_id) nextTarget = { kind: 'team', id: dto.assigned_team_id };
-      else if (dto.assigned_user_id) nextTarget = { kind: 'user', id: dto.assigned_user_id };
-      else if (dto.assigned_vendor_id) nextTarget = { kind: 'vendor', id: dto.assigned_vendor_id };
+
+      // (iii) Atomic assignment via the canonical RPC, WITHOUT `reason`
+      // in the payload — so the RPC does NOT write a duplicate `manual`
+      // routing_decisions row. It still does the atomic assignment +
+      // status_category inheritance + `assignment_changed` activity +
+      // `ticket_assigned` domain event + command_operations idempotency.
+      const rerunPayload: Record<string, unknown> = {
+        actor_person_id: dto.actor_person_id ?? null,
+      };
+      rerunPayload.assigned_team_id = nextTarget?.kind === 'team' ? nextTarget.id : null;
+      rerunPayload.assigned_user_id = nextTarget?.kind === 'user' ? nextTarget.id : null;
+      rerunPayload.assigned_vendor_id = nextTarget?.kind === 'vendor' ? nextTarget.id : null;
+
+      const { error: rerunErr } = await this.supabase.admin.rpc('set_entity_assignment', {
+        p_entity_id: id,
+        p_entity_kind: 'case',
+        p_tenant_id: tenant.id,
+        p_actor_user_id: actorUserId,
+        p_idempotency_key: idempotencyKey,
+        p_payload: rerunPayload,
+      });
+      if (rerunErr) throw mapRpcErrorToAppError(rerunErr);
+
+      // (iv) AFTER the assignment commits, write the SINGLE rich
+      // routing_decisions row (real strategy / chosen_by / trace /
+      // rule_id) — NOT a second `manual` row from the RPC (reason is
+      // omitted from the RPC payload above). Audit-the-APPLIED-decision
+      // ordering (review Plan-C2, 380098e0): recording the decision
+      // BEFORE the RPC left an orphan "resolver chose X" row whenever the
+      // RPC was rejected (tenant-validate / payload_mismatch / lock /
+      // not_found), and a client retry duplicated it. Now a rejected RPC
+      // throws above → no decision row is written for an assignment that
+      // never happened. Residual (acceptable, append-only audit): if the
+      // RPC commits but THIS write fails and the client retries, a second
+      // decision row can appear — far narrower than the pre-fix window;
+      // an idempotency key on recordDecision is a separate RoutingService
+      // concern (it is shared by create/reclassify). The human `reason`
+      // + `actor` use the SAME context keys the RPC's manual path writes
+      // (`context.reason` / `context.actor`) so a routing-audit consumer
+      // reads one uniform shape regardless of path (review NIT).
+      await this.routingService.recordDecision(id, evalCtx, result, {
+        reason: dto.reason,
+        actor: dto.actor_person_id ?? null,
+      });
+
+      // (v) ALSO emit one internal activity carrying the human reason.
+      // The RPC wrote at most an `assignment_changed` system note (reason
+      // suppressed); when the resolver re-picked the same target with no
+      // reason the RPC no-ops entirely and writes no activity/event (an
+      // accepted asymmetry — matches pre-cutover rerun behaviour, which
+      // also never emitted `ticket_assigned`). This internal note is the
+      // canonical operator-visible "why the rerun happened" entry. The
+      // resulting system-stub + internal-card pair for a changing rerun
+      // is accepted: it reads as "assignment changed (system) + operator
+      // rationale (note)" — strictly more information than the old single
+      // card, and suppressing the RPC's activity would require an RPC
+      // migration (out of slice scope).
+      await this.addActivity(id, {
+        activity_type: 'system_event',
+        author_person_id: dto.actor_person_id,
+        visibility: 'internal',
+        content: dto.reason,
+        metadata: {
+          event: 'reassigned',
+          previous: {
+            team: current.assigned_team_id as string | null,
+            user: current.assigned_user_id as string | null,
+            vendor: current.assigned_vendor_id as string | null,
+          },
+          next: nextTarget,
+          mode: 'rerun_resolver',
+          reason: dto.reason,
+        },
+      });
+
+      return this.getById(id, SYSTEM_ACTOR);
     }
 
-    const updates: Record<string, unknown> = {
-      assigned_team_id: null,
-      assigned_user_id: null,
-      assigned_vendor_id: null,
-      status_category: nextTarget ? 'assigned' : 'new',
+    // ── Manual path (explicit assignee) ──────────────────────────────
+    // Audit-02 P1-1: ONE atomic RPC call replaces the 3 raw writes
+    // (assignment UPDATE + routing_decisions insert + addActivity). The
+    // RPC writes routing_decisions (`manual` / `manual_reassign`, with
+    // entity_kind/case_id set explicitly inside the RPC — P2-2 closed for
+    // this path) + the `reassigned` activity + the `ticket_assigned`
+    // domain event + command_operations idempotency in one transaction.
+    if (dto.assigned_team_id) nextTarget = { kind: 'team', id: dto.assigned_team_id };
+    else if (dto.assigned_user_id) nextTarget = { kind: 'user', id: dto.assigned_user_id };
+    else if (dto.assigned_vendor_id) nextTarget = { kind: 'vendor', id: dto.assigned_vendor_id };
+
+    const payload: Record<string, unknown> = {
+      reason: dto.reason,
+      actor_person_id: dto.actor_person_id ?? null,
     };
-    if (nextTarget?.kind === 'team') updates.assigned_team_id = nextTarget.id;
-    if (nextTarget?.kind === 'user') updates.assigned_user_id = nextTarget.id;
-    if (nextTarget?.kind === 'vendor') updates.assigned_vendor_id = nextTarget.id;
+    payload.assigned_team_id = nextTarget?.kind === 'team' ? nextTarget.id : null;
+    payload.assigned_user_id = nextTarget?.kind === 'user' ? nextTarget.id : null;
+    payload.assigned_vendor_id = nextTarget?.kind === 'vendor' ? nextTarget.id : null;
 
-    await this.supabase.admin.from('tickets').update(updates).eq('id', id).eq('tenant_id', tenant.id);
-
-    // Routing decision audit row. Convention (code-review C5): set the
-    // polymorphic columns explicitly on both case + WO sides — the 00232
-    // derive trigger remains as a defensive fallback, but writing them
-    // here makes the audit row deterministic at write time and removes the
-    // "depends on the trigger" coupling. Mirror of work-order.service.ts:1000.
-    await this.supabase.admin.from('routing_decisions').insert({
-      tenant_id: tenant.id,
-      ticket_id: id, // legacy soft pointer; FK to tickets dropped in 00233
-      entity_kind: 'case',
-      case_id: id,
-      strategy,
-      chosen_team_id: nextTarget?.kind === 'team' ? nextTarget.id : null,
-      chosen_user_id: nextTarget?.kind === 'user' ? nextTarget.id : null,
-      chosen_vendor_id: nextTarget?.kind === 'vendor' ? nextTarget.id : null,
-      chosen_by: chosenBy,
-      trace,
-      context: { reason: dto.reason, previous: prev, actor: dto.actor_person_id ?? null },
+    const { error: rpcErr } = await this.supabase.admin.rpc('set_entity_assignment', {
+      p_entity_id: id,
+      p_entity_kind: 'case',
+      p_tenant_id: tenant.id,
+      p_actor_user_id: actorUserId,
+      p_idempotency_key: idempotencyKey,
+      p_payload: payload,
     });
-
-    // Activity row. Mirrors the WO-side `reassigned` shape
-    // (work-order.service.ts:1039) — `reason` included in metadata for
-    // parity with WO surface. Code-review C2 alignment.
-    await this.addActivity(id, {
-      activity_type: 'system_event',
-      author_person_id: dto.actor_person_id,
-      visibility: 'internal',
-      content: dto.reason,
-      metadata: {
-        event: 'reassigned',
-        previous: prev,
-        next: nextTarget,
-        mode: chosenBy,
-        reason: dto.reason,
-      },
-    });
+    if (rpcErr) throw mapRpcErrorToAppError(rpcErr);
 
     return this.getById(id, SYSTEM_ACTOR);
   }
@@ -1570,22 +1649,53 @@ export class TicketService {
     const childCols =
       'id, title, status, status_category, priority, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at';
 
+    // null = no per-child filter (SYSTEM actor or `tickets:read_all`
+    // override); an array = the child work_order ids individually visible
+    // to this actor.
+    let visibleWoIds: string[] | null = null;
     if (actorAuthUid !== SYSTEM_ACTOR) {
       const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      // Gate on parent (case) visibility first.
+      // Parent-case `read` visibility is a PRECONDITION to list children
+      // at all (you can't enumerate a case's children if you can't see
+      // the case). It is NOT, however, sufficient to see each child.
       await this.visibility.assertVisible(parentTicketId, ctx, 'read');
       if (!ctx.user_id && !ctx.has_read_all) return [];
-      // If the actor can see the parent case, they can see its work_order
-      // children. (The visibility model treats children as inheriting parent
-      // visibility for read; tighter scoping is a future step 1c.9 concern.)
+      if (!ctx.has_read_all) {
+        // Audit-02 P1-5: children no longer INHERIT parent visibility.
+        // Each child work_order is filtered through the WO visibility
+        // predicate `work_order_visibility_ids` (00374) so a case-visible
+        // actor only sees the children individually visible to them
+        // (assignee / assigned vendor / team / non-readonly role scope).
+        // Previously a requester who could see a parent case also saw
+        // every child WO on it — including one dispatched to a sensitive
+        // vendor outside their visibility. (An unknown/empty-user ctx is
+        // already rejected by the `assertVisible(parent,'read')` throw
+        // above before this point — and the migration's `actor` CTE
+        // fail-closes to an empty set anyway, so the predicate is safe
+        // even for a degenerate user id.)
+        const { data: visRows, error: visErr } = await this.supabase.admin.rpc(
+          'work_order_visibility_ids',
+          { p_user_id: ctx.user_id, p_tenant_id: tenant.id },
+        );
+        if (visErr) throw mapRpcErrorToAppError(visErr);
+        visibleWoIds =
+          (visRows as Array<string | { id: string }> | null)?.map((r) =>
+            typeof r === 'string' ? r : r.id,
+          ) ?? [];
+      }
     }
 
-    const { data, error } = await this.supabase.admin
+    let childQuery = this.supabase.admin
       .from('work_orders')
       .select(childCols)
       .eq('parent_ticket_id', parentTicketId)
-      .eq('tenant_id', tenant.id)
-      .order('created_at');
+      .eq('tenant_id', tenant.id);
+    if (visibleWoIds !== null) {
+      // Empty set → `.in('id', [])` matches no rows: the actor can see
+      // the parent case but none of its children individually. Correct.
+      childQuery = childQuery.in('id', visibleWoIds);
+    }
+    const { data, error } = await childQuery.order('created_at');
 
     if (error) throw error;
     // Step 1c.10c: synthesize ticket_kind='work_order' for frontend
@@ -1593,14 +1703,66 @@ export class TicketService {
     return (data ?? []).map((row) => ({ ...row, ticket_kind: 'work_order' as const }));
   }
 
+  /**
+   * Audit 02 / P0-1 + P2-5: bulk update is no longer a raw
+   * `.from('tickets').update(dto).in('id', ids)` back door. Every id is
+   * routed through the canonical single-path `update()`, which owns the
+   * full B.2.A guarantee set: per-action permission gates
+   * (`tickets.change_priority` / `tickets.assign`), watcher/assignee
+   * tenant validation, `sla_id` immutability, parent-close-while-children
+   * -open guard, cost float-normalisation, the `update_entity_combined`
+   * RPC with `command_operations` idempotency + audit/activity + domain
+   * event, and the satisfaction fold. There is no separate validation to
+   * keep in sync — bulk == N× the hardened path.
+   *
+   * Idempotency (Slice-1 review fix, code-reviewer C1): the per-id
+   * `update()` key is `patch:case:<id>:<crid>`. A bulk "fix the failures
+   * and resubmit" UX commonly reuses the same client-request-id with a
+   * *corrected* payload — with a bare crid that would raise
+   * `command_operations.payload_mismatch` on every already-succeeded id
+   * (bricking them). We therefore fold a stable fingerprint of the patch
+   * payload into the effective crid (`<crid>:<fp>`): a genuine network
+   * retry (same dto) replays each id exactly once; a corrected resubmit
+   * (different dto) gets a fresh key set instead of false 409s. Mirrors
+   * the EditBookingOp discriminator pattern (idempotency.ts) that closed
+   * the identical cross-attempt-collision class for booking edits.
+   *
+   * Partial success: per the error-handling spec (CLAUDE.md "Bulk ops use
+   * results[] + partialSuccess") + spec §3.1 line 88 — one bad id never
+   * aborts the batch; the controller maps the outcome to HTTP status
+   * (all ok → 200 · mixed → 207 · all failed → 422), `results[]` always
+   * present. Per-id `error` carries ONLY the neutral registered `code`
+   * (review fix: never raw `err.message` — that re-leaked server prose +
+   * cross-scope child UUIDs the single-path keeps server-side).
+   *
+   * DEFERRED (tracked, audit-02 ledger 2026-05-16): a true
+   * `bulk_update_entity_combined` batch RPC giving cross-id atomicity
+   * (one tx, all-or-nothing) is the integrator-verdict Week-1 follow-up.
+   * This loop is per-id atomic + per-id idempotent; a mid-batch crash
+   * leaves each id individually consistent and replay-safe, but the batch
+   * is not all-or-nothing. The FE bulk wire envelope + 207 handling +
+   * "Show me" list are owned by the error-handling workstream (spec §3.1,
+   * not yet built); this slice ships the forward-compatible server side.
+   */
   async bulkUpdate(
     ids: string[],
     dto: UpdateTicketDto,
     actorAuthUid: string = SYSTEM_ACTOR,
-  ) {
-    const tenant = TenantContext.current();
-
-    if (!Array.isArray(ids) || ids.length === 0) return [];
+    clientRequestId?: string,
+  ): Promise<{
+    results: Array<{
+      id: string;
+      status: 'ok' | 'error';
+      data?: unknown;
+      error?: { code: string };
+    }>;
+    okCount: number;
+    errorCount: number;
+    partialSuccess: boolean;
+  }> {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return { results: [], okCount: 0, errorCount: 0, partialSuccess: false };
+    }
     // Cap blast radius. The desk UI never selects more than a screenful at a
     // time; an unbounded list here is almost certainly an abuse signal.
     if (ids.length > 200) {
@@ -1608,43 +1770,68 @@ export class TicketService {
         detail: 'bulk update is capped at 200 ids per call',
       });
     }
+    // De-dupe: the same id twice in one batch maps to the same per-id
+    // idempotency key — the second would replay the first's cached result,
+    // but emitting two result rows for one id is confusing. Collapse first.
+    // (insertion order preserved; consumers must key results[] by `id`, not
+    // by position — `results.length` may be < `ids.length`.)
+    const uniqueIds = Array.from(new Set(ids));
 
-    // Visibility gate: only update tickets the actor can write. We narrow the
-    // id set to the visible (write-eligible) subset rather than rejecting the
-    // whole request — matches how the desk surfaces partial-permission cases.
-    if (actorAuthUid !== SYSTEM_ACTOR) {
-      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
-      if (!ctx.has_write_all) {
-        const allowedIds: string[] = [];
-        for (const id of ids) {
-          try {
-            await this.visibility.assertVisible(id, ctx, 'write');
-            allowedIds.push(id);
-          } catch {
-            // Skip silently — the desk lists the result and surfaces partial
-            // outcomes; throwing on the first denied id would surprise users
-            // who selected a mix.
-          }
-        }
-        if (allowedIds.length === 0) {
-          throw AppErrors.forbidden(
-            'ticket.no_writable_in_selection',
-            'No tickets in selection are writable for this user',
-          );
-        }
-        ids = allowedIds;
+    // Stable fingerprint of the *effective* patch payload, folded into the
+    // effective crid so a corrected resubmit reusing the batch crid does not
+    // payload_mismatch already-succeeded ids; an identical genuine retry
+    // hashes the same → idempotent replay. canonicalJson sorts keys
+    // recursively (codex P3: the JSON.stringify replacer-array form is not a
+    // canonicaliser). `cost` is rounded to mirror update()'s float
+    // normalisation (codex P2) so `0.30000000000000004` and `0.3` — the same
+    // persisted patch — collapse to one key instead of diverging.
+    const fingerprintInput =
+      typeof dto.cost === 'number'
+        ? { ...dto, cost: Math.round(dto.cost * 100) / 100 }
+        : dto;
+    const effectiveClientRequestId = clientRequestId
+      ? `${clientRequestId}:${createHash('sha1')
+          .update(canonicalJson(fingerprintInput))
+          .digest('hex')
+          .slice(0, 12)}`
+      : clientRequestId;
+
+    const results: Array<{
+      id: string;
+      status: 'ok' | 'error';
+      data?: unknown;
+      error?: { code: string };
+    }> = [];
+
+    for (const id of uniqueIds) {
+      try {
+        const data = await this.update(
+          id,
+          dto,
+          actorAuthUid,
+          effectiveClientRequestId,
+        );
+        results.push({ id, status: 'ok', data });
+      } catch (err) {
+        // Neutral registered code only. AppError → its own code; anything
+        // else (raw Postgrest/PG) → mapRpcErrorToAppError, which fails
+        // closed to `unknown.server_error`. No prose ever leaves here.
+        const code =
+          err instanceof AppError
+            ? err.code
+            : mapRpcErrorToAppError(err as Error).code;
+        results.push({ id, status: 'error', error: { code } });
       }
     }
 
-    const { data, error } = await this.supabase.admin
-      .from('tickets')
-      .update(dto as Record<string, unknown>)
-      .in('id', ids)
-      .eq('tenant_id', tenant.id)
-      .select();
-
-    if (error) throw error;
-    return data;
+    const okCount = results.filter((r) => r.status === 'ok').length;
+    const errorCount = results.length - okCount;
+    return {
+      results,
+      okCount,
+      errorCount,
+      partialSuccess: okCount > 0 && errorCount > 0,
+    };
   }
 
   private async logDomainEvent(entityId: string, eventType: string, payload: Record<string, unknown>) {

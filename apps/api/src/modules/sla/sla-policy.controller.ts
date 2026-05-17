@@ -1,7 +1,8 @@
-import { Controller, Get, Post, Patch, Param, Body } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Body, UseGuards } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { AppErrors } from '../../common/errors';
+import { AdminGuard } from '../auth/admin.guard';
 import type { EscalationThreshold, ThresholdTimerScope, ThresholdAction, ThresholdTargetType } from './sla-threshold.types';
 
 const TIMER_SCOPES: readonly ThresholdTimerScope[] = ['response', 'resolution', 'both'];
@@ -60,6 +61,7 @@ export function validateEscalationThresholds(input: unknown): EscalationThreshol
   return out;
 }
 
+@UseGuards(AdminGuard)
 @Controller('sla-policies')
 export class SlaPolicyController {
   constructor(private readonly supabase: SupabaseService) {}

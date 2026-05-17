@@ -3,10 +3,12 @@ import {
   Controller,
   Get,
   Param,
-  Post} from '@nestjs/common';
+  Post,
+  UseGuards} from '@nestjs/common';
 import { ROUTING_STUDIO_SCHEMAS, type RoutingStudioConfigType } from './policy-validators';
 import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
+import { AdminGuard } from '../auth/admin.guard';
 import { PolicyStoreService } from './policy-store.service';
 
 /**
@@ -22,6 +24,7 @@ import { PolicyStoreService } from './policy-store.service';
  *   POST   /admin/routing/policies/:config_type/:entity_id/versions   — create draft version
  *   POST   /admin/routing/policies/versions/:version_id/publish       — publish draft → published
  */
+@UseGuards(AdminGuard)
 @Controller('admin/routing/policies')
 export class RoutingPoliciesController {
   constructor(private readonly store: PolicyStoreService) {}

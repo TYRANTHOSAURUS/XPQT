@@ -1,9 +1,11 @@
-import { Controller, Get, Post, Patch, Param, Body } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Body, UseGuards } from '@nestjs/common';
 import { TenantContext } from '../../common/tenant-context';
+import { AdminGuard } from '../auth/admin.guard';
 import { WorkflowService } from './workflow.service';
 import { WorkflowEngineService } from './workflow-engine.service';
 import { WorkflowSimulatorService } from './workflow-simulator.service';
 
+@UseGuards(AdminGuard)
 @Controller('workflows')
 export class WorkflowController {
   constructor(

@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 import { TenantModule } from '../tenant/tenant.module';
 import { TicketModule } from '../ticket/ticket.module';
 import { WorkflowModule } from '../workflow/workflow.module';
+import { AuthModule } from '../auth/auth.module';
 import { WebhookAdminController } from './webhook-admin.controller';
 import { WebhookAdminService } from './webhook-admin.service';
 import { WebhookAuthService } from './webhook-auth.service';
@@ -11,7 +12,7 @@ import { WebhookIngestService } from './webhook-ingest.service';
 import { WebhookMappingService } from './webhook-mapping.service';
 
 @Module({
-  imports: [TenantModule, forwardRef(() => TicketModule), forwardRef(() => WorkflowModule)],
+  imports: [TenantModule, forwardRef(() => TicketModule), forwardRef(() => WorkflowModule), AuthModule],
   providers: [
     WebhookAdminService,
     WebhookAuthService,

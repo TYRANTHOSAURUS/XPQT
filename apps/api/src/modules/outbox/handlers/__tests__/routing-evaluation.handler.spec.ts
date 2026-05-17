@@ -18,9 +18,14 @@ import type { OutboxEvent } from '../../outbox.types';
  *   2. Re-read tickets row (terminal no-op on missing)
  *   3. Load request_type.domain
  *   4. Call RoutingService.evaluate
- *   5. Optional set_entity_assignment when target differs from current
- *   6. Always insert routing_decisions audit row
- *   7. tickets.routing_status='idle' on success / 'failed' on error
+ *   5. set_entity_assignment ALWAYS called on non-failure paths
+ *      (audit-02 P1-2): assignee keys included only when a new target
+ *      applies; clear_routing_status:true always — the routing_status
+ *      clear is folded into the RPC's atomic tx (no raw post-RPC update)
+ *   6. Always insert routing_decisions audit row (entity_kind/case_id
+ *      set explicitly — P2-2 tail, handler is case-only)
+ *   7. tickets.routing_status='failed' on error (markRoutingFailure);
+ *      the 'idle' clear is inside the RPC, not a separate update
  */
 
 const TENANT_ID = 'e1111111-1111-4111-8111-111111111111';
@@ -199,7 +204,7 @@ function baseTicket(overrides: Partial<TicketRow> = {}): TicketRow {
 
 describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
   describe('happy paths', () => {
-    it('routes to a new team: calls set_entity_assignment + writes routing_decisions + sets routing_status=idle', async () => {
+    it('routes to a new team: calls set_entity_assignment (clear_routing_status folded in) + writes routing_decisions, NO raw tickets.update', async () => {
       const supabase = makeSupabase({
         ticketRow: baseTicket(),
         requestTypeRow: { domain: 'facilities' },
@@ -233,11 +238,15 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
       expect(args.p_payload.assigned_vendor_id).toBeNull();
       // codex-S11-I2 remediation: handler does NOT pass `reason` —
       // doing so would trigger set_entity_assignment's manual-reassign
-      // audit branch (00327_v2:258) and write a duplicate routing_decisions
-      // row classified as `manual_reassign`. The handler writes its own
+      // audit branch and write a duplicate routing_decisions row
+      // classified as `manual_reassign`. The handler writes its own
       // resolver-audit row at step 6 with `chosen_by='rule'` (or whatever
       // the evaluation produced).
       expect(args.p_payload.reason).toBeUndefined();
+      // audit-02 P1-2: routing_status clear is folded INTO the RPC tx via
+      // the v3 opt-in flag — atomic with the assignment, no separate raw
+      // post-RPC tickets.update.
+      expect(args.p_payload.clear_routing_status).toBe(true);
 
       // routing_decisions row inserted.
       const decisionInserts = supabase.captured.inserts.filter(
@@ -252,14 +261,22 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
       expect(decision.chosen_team_id).toBe(TEAM_ID);
       expect(decision.chosen_by).toBe('rule');
       expect(decision.context.outbox_event_id).toBe(EVENT_ID);
+      // P2-2 tail: entity_kind/case_id set explicitly (no derive-trigger
+      // reliance at this case-only site).
+      const decisionRow = decisionInserts[0].row as {
+        entity_kind: string;
+        case_id: string;
+      };
+      expect(decisionRow.entity_kind).toBe('case');
+      expect(decisionRow.case_id).toBe(TICKET_ID);
 
-      // routing_status flipped to idle.
+      // audit-02 P1-2: NO raw post-RPC tickets.update — the clear is
+      // folded into the atomic RPC tx (asserted via the payload flag).
       const ticketUpdates = supabase.captured.updates.filter((u) => u.table === 'tickets');
-      expect(ticketUpdates).toHaveLength(1);
-      expect((ticketUpdates[0].patch as { routing_status: string }).routing_status).toBe('idle');
+      expect(ticketUpdates).toHaveLength(0);
     });
 
-    it('unassigned outcome: no set_entity_assignment, routing_decisions row written, routing_status=idle (v5/I4)', async () => {
+    it('unassigned outcome: set_entity_assignment STILL called (clear_routing_status, assignee keys omitted so standing assignment preserved), routing_decisions row written (v5/I4)', async () => {
       const supabase = makeSupabase({
         ticketRow: baseTicket(),
         requestTypeRow: { domain: 'facilities' },
@@ -269,18 +286,29 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
 
       await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
 
-      expect(
-        supabase.captured.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
-      ).toHaveLength(0);
+      // audit-02 P1-2: RPC is now ALWAYS called so routing_status clear is
+      // atomic. Assignee keys are OMITTED (key-absent = "no change" in the
+      // RPC) — an unassigned outcome must not wipe a standing assignee.
+      const calls = supabase.captured.rpcCalls.filter(
+        (c) => c.fn === 'set_entity_assignment',
+      );
+      expect(calls).toHaveLength(1);
+      const payload = (calls[0].args as { p_payload: Record<string, unknown> })
+        .p_payload;
+      expect(payload.clear_routing_status).toBe(true);
+      expect(payload).not.toHaveProperty('assigned_team_id');
+      expect(payload).not.toHaveProperty('assigned_user_id');
+      expect(payload).not.toHaveProperty('assigned_vendor_id');
       expect(
         supabase.captured.inserts.filter((i) => i.table === 'routing_decisions'),
       ).toHaveLength(1);
-      const ticketUpdates = supabase.captured.updates.filter((u) => u.table === 'tickets');
-      expect(ticketUpdates).toHaveLength(1);
-      expect((ticketUpdates[0].patch as { routing_status: string }).routing_status).toBe('idle');
+      // No raw tickets.update — clear folded into the RPC.
+      expect(
+        supabase.captured.updates.filter((u) => u.table === 'tickets'),
+      ).toHaveLength(0);
     });
 
-    it('target matches current assignee: skip set_entity_assignment, still write routing_decisions', async () => {
+    it('target matches current assignee: set_entity_assignment STILL called (assignee keys omitted) so routing_status clear stays atomic, routing_decisions written', async () => {
       const supabase = makeSupabase({
         ticketRow: baseTicket({ assigned_team_id: TEAM_ID }),
         requestTypeRow: { domain: 'facilities' },
@@ -293,12 +321,25 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
 
       await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
 
-      expect(
-        supabase.captured.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
-      ).toHaveLength(0);
+      // audit-02 P1-2: previously this path skipped the RPC and did a raw
+      // tickets.update. Now the RPC is called WITHOUT assignee keys
+      // (key-absent = no change) + clear_routing_status — the RPC's v3
+      // no-op fast path is skipped because the flag is set, so the
+      // routing_status clear is atomic even when assignees are unchanged.
+      const calls = supabase.captured.rpcCalls.filter(
+        (c) => c.fn === 'set_entity_assignment',
+      );
+      expect(calls).toHaveLength(1);
+      const payload = (calls[0].args as { p_payload: Record<string, unknown> })
+        .p_payload;
+      expect(payload.clear_routing_status).toBe(true);
+      expect(payload).not.toHaveProperty('assigned_team_id');
       expect(
         supabase.captured.inserts.filter((i) => i.table === 'routing_decisions'),
       ).toHaveLength(1);
+      expect(
+        supabase.captured.updates.filter((u) => u.table === 'tickets'),
+      ).toHaveLength(0);
     });
 
     it('target differs from current (different team): set_entity_assignment fires', async () => {
