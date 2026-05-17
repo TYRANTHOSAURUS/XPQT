@@ -1657,6 +1657,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon niet bijwerken',
     detail: 'Server kan routing niet opnieuw draaien — interne fout: een orchestratiestap is overgeslagen.',
   },
+  'set_entity_assignment.routing_status_unsupported_for_work_order': {
+    title: 'Kon niet bijwerken',
+    detail: 'Routingstatus geldt voor cases, niet voor werkorders.',
+  },
   // B.2.A §3.3 update_entity_sla RPC (00328)
   'update_entity_sla.unknown_kind': { title: 'Kon SLA niet bijwerken', detail: 'Onbekend entiteitstype.' },
   'update_entity_sla.not_found': { title: 'Ticket niet gevonden' },
@@ -1699,6 +1703,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'update_entity_combined.invalid_source': {
     title: 'Kon niet bijwerken',
     detail: 'Bron van planwijziging moet board, detail of generator zijn.',
+  },
+  'update_entity_combined.satisfaction_unsupported_for_work_order': {
+    title: 'Kon niet bijwerken',
+    detail: 'Tevredenheidsbeoordelingen gelden voor cases, niet voor werkorders.',
   },
 
   // B.2.A §3.4 dispatch_child_work_order RPC (00338 / 00339)
