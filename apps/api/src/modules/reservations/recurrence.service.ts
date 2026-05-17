@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { AppErrors } from '../../common/errors';
@@ -7,11 +7,6 @@ import { TenantService } from '../tenant/tenant.service';
 import { ConflictGuardService } from './conflict-guard.service';
 import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
 import { buildSplitSeriesIdempotencyKey } from '@prequest/shared';
-import {
-  BOOKING_TX_BOUNDARY,
-  type BookingTransactionBoundary,
-} from './booking-transaction-boundary';
-import { BookingCompensationService } from './booking-compensation.service';
 import type { ActorContext, RecurrenceRule, RecurrenceScope } from './dto/types';
 import type { BookingFlowService } from './booking-flow.service';
 import {
@@ -42,6 +37,17 @@ import {
 const DAY_MAP: Record<string, number> = {
   SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6,
 };
+
+/**
+ * Booking-audit Slice 7 (audit 03 P2-1) — audit-event types ported
+ * VERBATIM from the retired BookingCompensationService
+ * (booking-compensation.service.ts:13-14). Emitted to `audit_events`
+ * by `deleteOrphanOccurrence` so ops have a discoverable surface for
+ * orphaned occurrence bookings. Naming follows the `booking.<verb>`
+ * convention so compensation events sort with their siblings.
+ */
+const AUDIT_COMPENSATION_FAILED = 'booking.compensation_failed';
+const AUDIT_COMPENSATION_PARTIAL = 'booking.compensation_partial_failure';
 
 @Injectable()
 export class RecurrenceService {
@@ -121,19 +127,17 @@ export class RecurrenceService {
   // materialize / splitSeries / cron. Passed via constructor when the module
   // wires the service; tests using `new RecurrenceService()` keep working.
   //
-  // /full-review v3 closure I4 — compensation boundary + service injected so
-  // each occurrence's clone-orders step is wrapped in runWithCompensation.
-  // If the clone throws, the boundary deletes the orphan occurrence booking
-  // (or surfaces partial_failure when a sub-series blocks deletion).
-  // Both Optional so tests using `new RecurrenceService()` keep working — the
-  // wrapper short-circuits to direct invocation when neither is provided.
+  // Booking-audit Slice 7 (audit 03 P2-1) — the legacy
+  // BookingTransactionBoundary + BookingCompensationService injects were
+  // retired. The occurrence-clone compensation is now a focused private
+  // direct-delete helper (`deleteOrphanOccurrence`) that calls the
+  // `delete_booking_with_guard` RPC (00292 / 00373) directly and reproduces
+  // the audit-emit + don't-advance-materialized_through semantics the
+  // materialize() loop keys on.
   constructor(
     @Optional() private readonly supabase?: SupabaseService,
     @Optional() private readonly conflict?: ConflictGuardService,
     @Optional() private readonly tenants?: TenantService,
-    @Optional() @Inject(BOOKING_TX_BOUNDARY)
-    private readonly txBoundary?: BookingTransactionBoundary,
-    @Optional() private readonly compensation?: BookingCompensationService,
   ) {}
 
   /** Wire the booking flow lazily to break the circular dep. */
@@ -510,27 +514,51 @@ export class RecurrenceService {
         // as the `bundleId` so the cloned orders attach to the new
         // occurrence's booking — not the master's.
         //
-        // /full-review v3 closure I4 — wrap the clone step in
-        // BookingTransactionBoundary.runWithCompensation. Pre-fix:
-        // bookingFlow.create(...) ran with services=[] (atomic on its
-        // own; the compensation boundary in BookingFlowService gates on
-        // input.services.length > 0 and skips when empty). Then the
-        // separate cloneBundleOrdersToOccurrence call ran AFTER the
-        // booking was committed. If the clone threw, the orphan
-        // occurrence booking persisted; the catch block below incremented
-        // `skipped += 1` but the room stayed reserved indefinitely.
+        // Booking-audit Slice 7 (audit 03 P2-1) — clone-with-compensation,
+        // direct (no BookingTransactionBoundary / BookingCompensationService).
         //
-        // Wrapping the clone in runWithCompensation means: clone throws →
-        // boundary calls compensation.deleteBooking(occurrence.id) which
-        // invokes the delete_booking_with_guard RPC (00292) → orphan
-        // booking + slots are removed. The boundary then re-throws the
-        // original error, which our outer catch handles below.
+        // Pre-Slice-7: the clone step was wrapped in
+        // `BookingTransactionBoundary.runWithCompensation(occId, clone,
+        // (id) => compensation.deleteBooking(id))` (booking-transaction-
+        // boundary.ts:77-149 + booking-compensation.service.ts:58-126).
+        // Both legacy classes are retired. Their behaviour is reproduced
+        // VERBATIM inline here:
         //
-        // Fallback: if either txBoundary or compensation isn't injected
-        // (lightweight tests), fall back to direct invocation. Tests
-        // covering the wrapped path pass both. The fallback is the
-        // pre-fix behaviour and preserves backward compatibility for
-        // callers that haven't wired the boundary.
+        //   1. run `cloneBundleOrdersToOccurrence` (UNCHANGED — it
+        //      legitimately needs the TS JSONLogic rule resolver via
+        //      OrderService.cloneOrderForOccurrence; stays in TS).
+        //   2. on throw → `deleteOrphanOccurrence(occId, tenantId)` which
+        //      calls `delete_booking_with_guard` (00292/00373) DIRECTLY
+        //      and reproduces BookingCompensationService.deleteBooking's
+        //      structured outcome + audit_events emission:
+        //        - RPC error / malformed → emit booking.compensation_failed
+        //          audit (booking-compensation.service.ts:73-82,99-106)
+        //          then return {kind:'compensation_failed'}.
+        //        - {kind:'rolled_back'} → no audit (clean rollback;
+        //          booking-compensation.service.ts:108-112).
+        //        - {kind:'partial_failure'} → emit
+        //          booking.compensation_partial_failure audit
+        //          (booking-compensation.service.ts:114-125).
+        //   3. map the outcome to the SAME throw the boundary raised
+        //      (booking-transaction-boundary.ts:91-148) so the existing
+        //      catch below behaves byte-identically:
+        //        - compensate threw / compensation_failed → throw
+        //          AppErrors.server('booking.compensation_failed',
+        //          {cause:originalErr}) (boundary.ts:106-116).
+        //        - rolled_back → re-throw the ORIGINAL clone error
+        //          (boundary.ts:118-128) — preserves the existing
+        //          "original 23P01 → conflict skip + advance" path.
+        //        - partial_failure → throw
+        //          AppErrors.server('booking.partial_failure',
+        //          {cause:originalErr}) (boundary.ts:130-147).
+        //
+        // The catch below is UNCHANGED — every reproduced throw lands on
+        // the same branch it did with the boundary (AppError has no
+        // `.response`, so booking.compensation_failed / .partial_failure
+        // fall to the catch-all `sawUnexpectedFailure=true` →
+        // materialized_through is NOT advanced; an original 23P01 on the
+        // rolled_back path matches `conflict.isExclusionViolation` →
+        // skip + advance, exactly as before).
         if (this.orders && this.supabase) {
           const cloneArgs = {
             masterReservationId: master.id,             // = master booking id
@@ -545,22 +573,57 @@ export class RecurrenceService {
             },
             requesterPersonId: master.requester_person_id,
           };
-          if (this.txBoundary && this.compensation) {
-            const comp = this.compensation;
-            await this.txBoundary.runWithCompensation(
-              created_row.id,
-              () => this.cloneBundleOrdersToOccurrence(cloneArgs),
-              (id) => comp.deleteBooking(id),
-            );
-          } else {
+          try {
             await this.cloneBundleOrdersToOccurrence(cloneArgs);
+          } catch (cloneErr) {
+            // Reproduces InProcessBookingTransactionBoundary.
+            // runWithCompensation (booking-transaction-boundary.ts:82-148).
+            const outcome = await this.deleteOrphanOccurrence(
+              created_row.id,
+              tenantId,
+            );
+            if (outcome.kind === 'compensation_failed') {
+              // boundary.ts:106-116 — compensate() blew up. Server-class.
+              this.log.error(
+                `compensation RPC failed for booking ${created_row.id}: ${
+                  (cloneErr as Error).message
+                }`,
+              );
+              throw AppErrors.server('booking.compensation_failed', {
+                cause: cloneErr,
+              });
+            }
+            if (outcome.kind === 'rolled_back') {
+              // boundary.ts:118-128 — booking + cascades gone; re-throw
+              // the ORIGINAL clone error so the existing catch keys on it
+              // (e.g. an original 23P01 → conflict skip + advance).
+              this.log.warn(
+                `booking ${created_row.id} rolled back after clone failed: ${
+                  (cloneErr as Error).message
+                }`,
+              );
+              throw cloneErr;
+            }
+            // boundary.ts:130-147 — partial_failure: booking still alive
+            // (recurrence_series blocker). Server-class; ops must clear
+            // the blocker. The audit_events row was already emitted by
+            // deleteOrphanOccurrence.
+            this.log.warn(
+              `booking ${created_row.id} partial_failure on compensation: ` +
+                `blocked_by=${outcome.blockedBy.join(',')}; original error: ${
+                  (cloneErr as Error).message
+                }`,
+            );
+            throw AppErrors.server('booking.partial_failure', {
+              cause: cloneErr,
+            });
           }
         }
-        // /full-review v3 closure I4 — push only AFTER the clone (and
-        // any boundary rollback) committed. On the rollback path the
-        // booking was deleted by compensation; pushing here would lie
-        // about the surviving set. Order: create → clone (boundary-
-        // wrapped) → push to `created`.
+        // /full-review v3 closure I4 — push only AFTER the clone (and any
+        // compensation rollback) committed. On the rollback path the
+        // booking was deleted by deleteOrphanOccurrence; pushing here
+        // would lie about the surviving set. Order: create → clone →
+        // (compensate on failure) → push to `created`.
         created.push(created_row.id);
       } catch (err) {
         // /full-review v3 closure I4 — categorise the failure.
@@ -658,8 +721,9 @@ export class RecurrenceService {
    * services on later orders that didn't get cloned.
    *
    * Post-fix: errors propagate to the caller. The caller in materialize
-   * wraps this in BookingTransactionBoundary.runWithCompensation, which
-   * deletes the occurrence's booking on any throw. That's the correct
+   * deletes the occurrence's booking on any throw (Slice 7:
+   * `deleteOrphanOccurrence` — replaces the retired
+   * BookingTransactionBoundary.runWithCompensation). That's the correct
    * trade-off: better to compensate (delete + re-try next tick) than to
    * leave the user with a half-cloned occurrence and no recovery path.
    *
@@ -708,6 +772,149 @@ export class RecurrenceService {
         recurrenceSeriesId: args.seriesId,
         requesterPersonId: args.requesterPersonId,
       });
+    }
+  }
+
+  /**
+   * Booking-audit Slice 7 (audit 03 P2-1) — direct orphan-occurrence
+   * compensation. PORT of `BookingCompensationService.deleteBooking`
+   * (booking-compensation.service.ts:58-126) — the legacy class is
+   * retired. This is intentionally a focused private method on
+   * RecurrenceService (no new injectable, no boundary abstraction), called
+   * from materialize()'s clone catch.
+   *
+   * Calls the `delete_booking_with_guard` RPC (00292:54-56 /
+   * 00373:68-70 — signature `(p_booking_id uuid, p_tenant_id uuid)`,
+   * returns jsonb `{kind:'rolled_back'}` or `{kind:'partial_failure',
+   * blocked_by:[...]}`) DIRECTLY with the SAME arg object
+   * BookingCompensationService.deleteBooking passed
+   * (booking-compensation.service.ts:61-64:
+   * `{ p_booking_id: bookingId, p_tenant_id: tenantId }`).
+   *
+   * Reproduces the audit_events emission VERBATIM
+   * (booking-compensation.service.ts:13-14 event_type constants +
+   * :135-161 tryAudit best-effort insert shape):
+   *   - RPC error → `booking.compensation_failed`, details
+   *     `{ rpc_error: <msg> }` (booking-compensation.service.ts:73-75).
+   *   - malformed payload → `booking.compensation_failed`, details
+   *     `{ rpc_error:'malformed_payload', rpc_data:<data> }`
+   *     (booking-compensation.service.ts:99-102).
+   *   - rolled_back → NO audit (clean rollback;
+   *     booking-compensation.service.ts:108-112).
+   *   - partial_failure → `booking.compensation_partial_failure`, details
+   *     `{ blocked_by:[...] }` (booking-compensation.service.ts:118-120).
+   * Every audit row carries `tenant_id`, `entity_type:'booking'`,
+   * `entity_id:<bookingId>` exactly as
+   * booking-compensation.service.ts:142-148.
+   *
+   * Returns the structured outcome the materialize() clone-catch maps to
+   * the boundary's throws (boundary.ts:91-148): `compensation_failed`
+   * (RPC error / malformed — the boundary's `compensate threw` path) ·
+   * `rolled_back` · `partial_failure`. Tenant is passed explicitly (the
+   * admin client bypasses RLS; the RPC is tenant-scoped on p_tenant_id —
+   * same convention as the ported method,
+   * booking-compensation.service.ts:53-56).
+   */
+  private async deleteOrphanOccurrence(
+    bookingId: string,
+    tenantId: string,
+  ): Promise<
+    | { kind: 'rolled_back' }
+    | { kind: 'partial_failure'; blockedBy: string[] }
+    | { kind: 'compensation_failed' }
+  > {
+    if (!this.supabase) return { kind: 'compensation_failed' };
+
+    const { data, error } = await this.supabase.admin.rpc(
+      'delete_booking_with_guard',
+      { p_booking_id: bookingId, p_tenant_id: tenantId },
+    );
+
+    if (error) {
+      // booking-compensation.service.ts:66-83 — emit audit BEFORE the
+      // server-class failure so ops have a discoverable orphan signal.
+      this.log.error(
+        `delete_booking_with_guard RPC failed for booking ${bookingId}: ${error.message}`,
+      );
+      await this.tryAudit(
+        tenantId,
+        bookingId,
+        AUDIT_COMPENSATION_FAILED,
+        { rpc_error: error.message },
+      );
+      return { kind: 'compensation_failed' };
+    }
+
+    // booking-compensation.service.ts:86-106 — supabase-js surfaces a
+    // `returns jsonb` function as a parsed object.
+    const parsed = data as
+      | { kind: 'rolled_back' }
+      | { kind: 'partial_failure'; blocked_by: string[] }
+      | null;
+
+    if (!parsed || typeof parsed !== 'object' || !('kind' in parsed)) {
+      this.log.error(
+        `delete_booking_with_guard returned malformed payload for booking ${bookingId}: ${JSON.stringify(
+          data,
+        )}`,
+      );
+      await this.tryAudit(tenantId, bookingId, AUDIT_COMPENSATION_FAILED, {
+        rpc_error: 'malformed_payload',
+        rpc_data: data,
+      });
+      return { kind: 'compensation_failed' };
+    }
+
+    if (parsed.kind === 'rolled_back') {
+      // booking-compensation.service.ts:108-112 — clean rollback, no audit.
+      return { kind: 'rolled_back' };
+    }
+
+    // booking-compensation.service.ts:114-125 — partial_failure: emit the
+    // discoverable audit row, then return the blockers.
+    const blockedBy = Array.isArray(parsed.blocked_by)
+      ? parsed.blocked_by
+      : [];
+    await this.tryAudit(tenantId, bookingId, AUDIT_COMPENSATION_PARTIAL, {
+      blocked_by: blockedBy,
+    });
+    return { kind: 'partial_failure', blockedBy };
+  }
+
+  /**
+   * Best-effort audit emit — PORT of
+   * BookingCompensationService.tryAudit (booking-compensation.service.ts:
+   * 135-161). A failed audit insert must NOT mask the underlying
+   * compensation problem: log and proceed.
+   */
+  private async tryAudit(
+    tenantId: string,
+    bookingId: string,
+    eventType: string,
+    details: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.supabase) return;
+    try {
+      const { error } = await this.supabase.admin
+        .from('audit_events')
+        .insert({
+          tenant_id: tenantId,
+          event_type: eventType,
+          entity_type: 'booking',
+          entity_id: bookingId,
+          details,
+        });
+      if (error) {
+        this.log.error(
+          `audit_events insert failed for ${eventType} on booking ${bookingId}: ${error.message}`,
+        );
+      }
+    } catch (err) {
+      this.log.error(
+        `audit_events insert threw for ${eventType} on booking ${bookingId}: ${
+          (err as Error).message
+        }`,
+      );
     }
   }
 

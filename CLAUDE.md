@@ -28,7 +28,7 @@ XPQT/
 - `pnpm db:start` — start local Supabase
 - `pnpm db:reset` — reset database and re-run migrations **(local only!)**
 - `pnpm db:push` — push migrations to the **remote** Supabase project
-- `pnpm smoke:work-orders` / `pnpm smoke:edit-booking-scope` / `pnpm smoke:edit-booking` / `pnpm smoke:cancel-booking` / `pnpm smoke:create-multi-room` / `pnpm smoke:attach-services` / `pnpm smoke:cancel-order-line` / `pnpm smoke:floor-plans` / `pnpm smoke:visual-approval` / `pnpm smoke:cross-tenant` — live-API smoke probes (see Smoke gates below)
+- `pnpm smoke:work-orders` / `pnpm smoke:edit-booking-scope` / `pnpm smoke:edit-booking` / `pnpm smoke:cancel-booking` / `pnpm smoke:create-multi-room` / `pnpm smoke:attach-services` / `pnpm smoke:cancel-order-line` / `pnpm smoke:recurrence-clone` / `pnpm smoke:floor-plans` / `pnpm smoke:visual-approval` / `pnpm smoke:cross-tenant` — live-API smoke probes (see Smoke gates below)
 
 ## Smoke gates (mandatory before claiming ship)
 
@@ -44,6 +44,7 @@ Run the gate before claiming complete:
 - `MultiRoomBookingService.createGroup` / `POST /reservations/multi-room` / `create_booking_with_attach_plan` RPC (00309/00315) multi-slot consumer / multi-room room-rule approval fan-out → `pnpm smoke:create-multi-room`
 - `BundleService.attachServicesToBooking` / `POST /reservations/:id/services` / `attach_services_to_existing_booking` RPC (00412/00413) / `attach_operations` idempotency / `BundleService.buildAttachPlan`+`hydrateLines` / `buildAttachServicesIdempotencyKey` / `mapAttachRpcError` → `pnpm smoke:attach-services`
 - `BundleCascadeService.cancelLine` / `cancelBundle` / `DELETE /reservations/:id/services/:lineId` / `DELETE /reservations/:id/bundle` / `cancel_order_lines_with_cascade` RPC (00414) / `bundle-services-cancelled-cascade.handler.ts` / `BundleCascadeAdapter.handleBundleCancelled` / `buildCancelOrderLinesIdempotencyKey` / `mapCancelOrderLinesRpcError` → `pnpm smoke:cancel-order-line`
+- `RecurrenceService.materialize` / `cloneBundleOrdersToOccurrence` / `OrderService.cloneOrderForOccurrence` / `BookingFlowService.startSeries` / `recurrence_series` creation / `deleteOrphanOccurrence` + `delete_booking_with_guard` (recurrence compensation primitive) / `booked-by-user-id.util.ts` (`bookedByUserIdForRpc`) / synthetic `SYSTEM_ACTOR` or Outlook system actor / any re-introduction of an in-process compensation boundary → `pnpm smoke:recurrence-clone`
 - `FloorPlanService` / `publish_floor_plan_draft` RPC / floor-plan editor → `pnpm smoke:floor-plans`
 - `BookingFlowService` consumer cutover / `ApprovalConfigCompilerService` / `grant_booking_approval` v2 / `ensure_room_booking_rule_workflow_definition` / `cancel_workflow_instance_with_approvals` (Phase 1.5 visual approval workflow) → `pnpm smoke:visual-approval`
 - `AuthGuard` / `AdminGuard` / `PermissionGuard` / global tenant binding / any admin/config controller using `TenantContext.current()` → `pnpm smoke:cross-tenant`

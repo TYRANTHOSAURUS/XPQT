@@ -177,6 +177,28 @@ This is the **P1-4 regression gate** (audit `docs/follow-ups/audits/03-booking-r
 
 ---
 
+## `pnpm smoke:recurrence-clone`
+
+**Required before claiming complete:** any work touching `RecurrenceService.materialize` / `cloneBundleOrdersToOccurrence` / `OrderService.cloneOrderForOccurrence` / `BookingFlowService.startSeries` (the recurring-create → series → materialize → occurrence-clone path) / `recurrence_series` creation / `delete_booking_with_guard` as the recurrence compensation primitive / `booked-by-user-id.util.ts` (`bookedByUserIdForRpc`) / the synthetic `SYSTEM_ACTOR` (recurrence) or Outlook-sync system actor / any future re-introduction of an in-process compensation boundary.
+
+Script: `apps/api/scripts/smoke-recurrence-clone.mjs`. Run via `pnpm --filter @prequest/api smoke:recurrence-clone`.
+
+This is the **P2-1 regression gate** (audit `docs/follow-ups/audits/03-booking-reservation.md`). It proves the recurrence occurrence-clone path still works end-to-end AFTER `BookingTransactionBoundary` + `InProcessBookingTransactionBoundary` + `BookingCompensationService` were retired (Slice 7) — i.e. `materialize()`'s clone is now a plain try/catch + a direct `delete_booking_with_guard` (the audit-mandated compensation primitive), with NO in-process boundary abstraction. It also gates discovered finding **D-8** (the synthetic `system:*`-actor → `uuid` create-RPC booker-bind 500 that silently produced ZERO materialised occurrences via HTTP from 2026-04-25 until Slice 7; the shared `bookedByUserIdForRpc` guard fixes it). Decision + the 6-iteration honest fix-cycle: `docs/follow-ups/slice7-retire-tx-boundary-plan.md`.
+
+**Fixtures (psql-seeded, `session_replication_role='replica'`):** a dedicated reservable room + catering/AV catalog + a seeded asset, anchored at `FIXTURE_DAYS=30` snapped to the next **Monday at 10:00 UTC**. The anchor is load-bearing and deterministic: it MUST be (a) within the rolling 90-day materialisation horizon (`startSeries` calls `materialize` with `horizon = now+90d`; `materialize`'s `passes(d)` rejects `d > materialized_through`), AND (b) a Europe/Amsterdam business-hours weekday so tenant-001's 00133 "Off-hours bookings need approval" `room_booking_rule` does NOT route the booking to `pending_approval` (which would suppress `startSeries` by design). Dedicated room ⇒ no sibling-smoke collision (the far-future window other smokes use is unnecessary here).
+
+**Probes (14 assertions):**
+- pre-flight: `delete_booking_with_guard` present on remote.
+- `POST /api/reservations` (daily ×3, services mixed `repeats_with_series`) → 2xx; master booking row present.
+- **master booking is `confirmed`** (self-diagnosing: if `pending_approval` the fixture tripped the off-hours rule → fails LOUDLY with the remediation hint, because `startSeries` is suppressed for pending bookings by design — booking-flow.service.ts:622-627).
+- `recurrence_series` row created + anchored at the master (bounded ≤40s poll — `startSeries` is `void`-fired + `.catch()`-swallowed, so a never-appearing row is a REAL failure, not a timing artefact).
+- ≥2 occurrence bookings materialised; all tenant-scoped (#0 invariant).
+- per occurrence ×2: catering line (`repeats_with_series=true`) cloned; AV line (`repeats_with_series=false`) NOT cloned (`order.service.ts:206` filter); cloned order tagged `recurrence_series_id`; cloned service window time-shifted onto the occurrence day (NOT the master day).
+
+**Honest coverage boundary (printed, NOT skip-as-pass, NOT a counted probe):** the forced-clone-failure → `deleteOrphanOccurrence` → `delete_booking_with_guard` + `booking.compensation_*` audit + don't-advance-`materialized_through` branch is NOT deterministically drivable through the live POST entrypoint — the only AR-conflict lever is *caught* at `order.service.ts:275-281` (`assetConflicted=true`, no throw) before reaching compensation, and the failure-injection points live inside the void+catch-swallowed `materialize`. That branch is covered against the REAL `deleteOrphanOccurrence` + REAL `delete_booking_with_guard` arg shape by the 7 rewritten jest tests in `apps/api/src/modules/reservations/recurrence-materialize.service.spec.ts` (Slice 7). Asserting an HTTP failure here would be a constructed-to-pass fixture — deliberately not done.
+
+---
+
 ## `pnpm smoke:floor-plans`
 
 **Required before claiming complete:** any work touching `FloorPlanService` / `FloorPlanDraftService` / `publish_floor_plan_draft` RPC / the floor-plan editor.

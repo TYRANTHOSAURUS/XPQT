@@ -20,11 +20,6 @@ import { RankingService } from './ranking.service';
 import { MultiRoomBookingService } from './multi-room-booking.service';
 import { MultiAttendeeFinder } from './multi-attendee.service';
 import { BookingNotificationsService } from './booking-notifications.service';
-import {
-  BOOKING_TX_BOUNDARY,
-  InProcessBookingTransactionBoundary,
-} from './booking-transaction-boundary';
-import { BookingCompensationService } from './booking-compensation.service';
 import { AssembleEditPlanService } from './assemble-edit-plan.service';
 import { RoomBookingRulesModule } from '../room-booking-rules/room-booking-rules.module';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
@@ -65,17 +60,9 @@ import type { ActorContext, CreateReservationInput } from './dto/types';
     MultiRoomBookingService,
     MultiAttendeeFinder,
     BookingNotificationsService,
-    // Phase 1.3 — atomic compensation primitives. The boundary is provided
-    // via the BOOKING_TX_BOUNDARY token so Phase 6 can swap the in-process
-    // impl for a durable-outbox runner without touching call sites.
-    BookingCompensationService,
     // B.4 step 2D-C — TS-side EditPlan builder for the edit_booking RPC.
     // Step 2D-D will wire it into the editSlot controller path.
     AssembleEditPlanService,
-    {
-      provide: BOOKING_TX_BOUNDARY,
-      useClass: InProcessBookingTransactionBoundary,
-    },
   ],
   controllers: [ReservationController],
   exports: [
@@ -90,9 +77,7 @@ import type { ActorContext, CreateReservationInput } from './dto/types';
     MultiRoomBookingService,
     MultiAttendeeFinder,
     BookingNotificationsService,
-    BookingCompensationService,
     AssembleEditPlanService,
-    BOOKING_TX_BOUNDARY,
   ],
 })
 export class ReservationsModule implements OnModuleInit {
@@ -235,8 +220,9 @@ export class ReservationsModule implements OnModuleInit {
           return { outcome: 'conflict' };
         }
       }
-      // Legacy code paths (BookingTransactionBoundary etc.) may still throw
-      // Nest exceptions; keep the old class checks as a fallback.
+      // Some legacy code paths may still throw raw Nest exceptions
+      // (ForbiddenException / ConflictException); keep the class checks
+      // as a fallback alongside the AppError-code dispatch above.
       if (err instanceof ForbiddenException) {
         const e = err.getResponse() as { code?: string; message?: string };
         return { outcome: 'denied', denialMessage: e?.message ?? 'Booking denied by rules.' };

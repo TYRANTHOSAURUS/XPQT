@@ -10,11 +10,6 @@ import { RecurrenceService } from './recurrence.service';
 import { BookingNotificationsService } from './booking-notifications.service';
 import { BundleService } from '../booking-bundles/bundle.service';
 import { ListBookableRoomsService } from './list-bookable-rooms.service';
-import {
-  BOOKING_TX_BOUNDARY,
-  type BookingTransactionBoundary,
-} from './booking-transaction-boundary';
-import { BookingCompensationService } from './booking-compensation.service';
 import type {
   ActorContext, Booking, CreateReservationInput, PolicySnapshot,
   Reservation,
@@ -26,6 +21,12 @@ import type {
 } from '../booking-bundles/attach-plan.types';
 import { planUuid } from '../booking-bundles/plan-uuid';
 import { comparePlanSlots } from '../booking-bundles/plan-sort';
+
+// Booking-audit Slice 7 — discovered finding D-8 (pre-existing P1, NOT
+// Slice-7-caused). System/Outlook synthetic actors carry a non-uuid
+// `system:*` sentinel user_id that 500'd the create-RPC uuid booker bind.
+// Single shared guard (full rationale + git-blame in the util):
+import { bookedByUserIdForRpc } from './booked-by-user-id.util';
 
 /**
  * BookingFlowService — the canonical create-a-booking pipeline.
@@ -70,23 +71,14 @@ export class BookingFlowService {
      *  the whole reservation. Optional to keep specs that mock booking-flow
      *  without needing the full picker pipeline. */
     @Optional() private readonly picker?: ListBookableRoomsService,
-    /** Phase 1.3 — wraps `attachServicesToBooking` so a failure rolls back
-     *  the booking via `delete_booking_with_guard` (00292). Optional only
-     *  to keep older booking-flow specs (no service attach) constructible
-     *  without the new collaborators; the create path enforces presence
-     *  when services are non-empty. */
-    /**
-     * B.0.D.2 cutover: the combined RPC `create_booking_with_attach_plan`
-     * is atomic, so the post-create attach + compensation pattern is no
-     * longer used by `create()`. These properties remain in the
-     * constructor signature so existing tests + DI wiring keep working
-     * unchanged, and so the legacy compensation primitive stays
-     * available if any future caller (e.g. a recovery script, the
-     * standalone-order flow) needs it. Marked `Optional` for the same
-     * reason.
-     */
-    @Optional() @Inject(BOOKING_TX_BOUNDARY) private readonly txBoundary?: BookingTransactionBoundary,
-    @Optional() private readonly compensation?: BookingCompensationService,
+    // Booking-audit Slice 7 (audit 03 P2-1): the dead `@Optional()`
+    // txBoundary / compensation injects (BookingTransactionBoundary +
+    // BookingCompensationService) were removed. They were already a
+    // verified no-op here since P1-1 (B.0.D.2 made `create()` atomic via
+    // `create_booking_with_attach_plan`; the only remaining boundary
+    // caller was the recurrence occurrence-clone, now ported to a direct
+    // `delete_booking_with_guard` call in RecurrenceService). Both legacy
+    // classes are deleted.
     /**
      * Phase 1.5 sub-step 6.E — when a matched rule carries a populated
      * `workflow_definition_id`, start a workflow_instance via
@@ -98,12 +90,7 @@ export class BookingFlowService {
      */
     @Optional() @Inject(forwardRef(() => WorkflowService))
     private readonly workflowService?: WorkflowService,
-  ) {
-    // Reference unused fields so the strict `noUnusedLocals` check passes.
-    // These are kept on the class for the reasons documented above.
-    void this.txBoundary;
-    void this.compensation;
-  }
+  ) {}
 
   /**
    * Run the full pipeline and atomically create one Booking + one BookingSlot
@@ -284,7 +271,7 @@ export class BookingFlowService {
       p_title: input.title ?? null,
       p_description: input.description ?? null,
       p_timezone: input.timezone ?? 'UTC',
-      p_booked_by_user_id: actor.user_id,
+      p_booked_by_user_id: bookedByUserIdForRpc(actor), // D-8 (Slice 7): system:* sentinel → null (uuid bind)
       p_cost_center_id: input.bundle?.cost_center_id ?? null,
       p_cost_amount_snapshot: costAmount,
       p_policy_snapshot: policySnapshot,
@@ -438,7 +425,7 @@ export class BookingFlowService {
 
     // B.0.D.2: services attach is now handled by `createWithAttachPlan`
     // (the with-services path returns early at the top of `create`).
-    // The post-create attach + txBoundary compensation has been retired
+    // The post-create attach + in-process compensation has been retired
     // for the canonical create path; the legacy `attachServicesToBooking`
     // method stays callable for `addLinesToBundle` (post-create line
     // additions on an existing booking) and the deprecated
@@ -474,7 +461,7 @@ export class BookingFlowService {
    * `buildAttachPlan` to produce `{ bookingInput, attachPlan }`, then
    * invokes `create_booking_with_attach_plan` (00309 / spec §7.6) which
    * commits booking + slots + orders + asset_reservations + OLIs +
-   * approvals + outbox emissions in one transaction. No `txBoundary`
+   * approvals + outbox emissions in one transaction. No in-process
    * compensation needed — the RPC is atomic; if any insert fails the
    * whole transaction rolls back and `attach_operations` doesn't persist.
    *
@@ -933,7 +920,7 @@ export class BookingFlowService {
       slot_ids: slotIds,
       requester_person_id: input.requester_person_id,
       host_person_id: input.host_person_id ?? null,
-      booked_by_user_id: actor.user_id,
+      booked_by_user_id: bookedByUserIdForRpc(actor), // D-8 (Slice 7): system:* sentinel → null (uuid bind)
       location_id: input.space_id,
       start_at: input.start_at,
       end_at: input.end_at,
