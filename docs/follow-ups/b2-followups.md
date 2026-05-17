@@ -62,7 +62,7 @@ were intentionally not folded into the Commit-B remediation pass
 
 - **Case-side satisfaction_rating + satisfaction_comment atomicity
   gap (plan-review I4, 2026-05-11).** ✅ **CLOSED** — audit-02 P1-3,
-  `update_entity_combined` **v7** (migration `00407`). Both fields are
+  `update_entity_combined` **v7** (migration `00410`). Both fields are
   now folded into the metadata branch of the §3.0 RPC: the SAME row
   UPDATE that writes title/description/cost/tags/watchers, and the
   SAME `metadata_changed` activity row. The post-RPC
@@ -483,7 +483,7 @@ they should be updated or the field demand pushed up to Product.
 - `satisfaction_rating` / `satisfaction_comment` / `form_data` — still
   deferred from the workflow `update_ticket` allowlist until a
   user-driven satisfaction workflow exists. NOTE (audit-02 P1-3,
-  00407 v7): `satisfaction_rating` / `satisfaction_comment` are NO
+  00410 v7): `satisfaction_rating` / `satisfaction_comment` are NO
   LONGER applied via a side-write — they are now folded into the
   metadata branch of `update_entity_combined` (atomic + audited +
   idempotent; see the CLOSED "Case-side satisfaction_rating +

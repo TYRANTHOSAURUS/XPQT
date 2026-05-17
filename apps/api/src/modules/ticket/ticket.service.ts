@@ -1101,7 +1101,7 @@ export class TicketService {
     // "valid object, zero recognised branches" — it would just return a
     // noop result. Save the round-trip + idempotency-cache pollution.
     //
-    // audit-02 P1-3 (00407 v7): satisfaction is now folded into
+    // audit-02 P1-3 (00410 v7): satisfaction is now folded into
     // `patches.metadata` by buildPatchesPayloadForCase, so a
     // satisfaction-only dto produces a non-empty `patches` and correctly
     // flows through the RPC below (no separate side-write). A truly
@@ -1141,13 +1141,13 @@ export class TicketService {
       if (error) throw mapRpcErrorToAppError(error);
     }
 
-    // audit-02 P1-3 (00407 v7): the pre-fix post-RPC
+    // audit-02 P1-3 (00410 v7): the pre-fix post-RPC
     // `.from('tickets').update({satisfaction_rating, satisfaction_comment})`
     // side-write — non-atomic with the orchestrated write, no audit row,
     // no idempotency — has been REMOVED. satisfaction_rating /
     // satisfaction_comment are now folded into `patches.metadata` by
     // buildPatchesPayloadForCase and committed inside the
-    // `update_entity_combined` RPC's metadata branch (00407): atomic
+    // `update_entity_combined` RPC's metadata branch (00410): atomic
     // with every other branch, emits the `metadata_changed` activity
     // row, idempotent through command_operations. Satisfaction-only
     // updates now flow through the RPC and therefore require
@@ -1223,7 +1223,7 @@ export class TicketService {
     if (has('cost')) metadata.cost = dto.cost;
     if (has('tags')) metadata.tags = dto.tags;
     if (has('watchers')) metadata.watchers = dto.watchers;
-    // audit-02 P1-3 (00407 v7): satisfaction folded into the metadata
+    // audit-02 P1-3 (00410 v7): satisfaction folded into the metadata
     // branch so it commits atomically inside `update_entity_combined`
     // (was a separate non-atomic post-RPC side-write). Same key-presence
     // semantics as title/cost/tags/watchers — absent ⇒ untouched,
