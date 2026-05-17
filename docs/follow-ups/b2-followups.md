@@ -61,16 +61,27 @@ were intentionally not folded into the Commit-B remediation pass
   documented below.
 
 - **Case-side satisfaction_rating + satisfaction_comment atomicity
-  gap (plan-review I4, 2026-05-11).** These fields are not in the
-  metadata branch of §3.0 RPC; case-side update() preserves the API
-  surface via a direct `.from('tickets').update({satisfaction_rating,
-  satisfaction_comment})` call AFTER the orchestrator commits. This
-  means satisfaction write can succeed while RPC fails (or vice
-  versa) — no audit row, no idempotency. Fix is to fold these into
-  the metadata branch of a future orchestrator version OR accept the
-  gap and document it on the satisfaction-survey workflow page. Not
-  P0 because satisfaction submissions are infrequent + non-critical
-  for SLA correctness.
+  gap (plan-review I4, 2026-05-11).** ✅ **CLOSED** — audit-02 P1-3,
+  `update_entity_combined` **v7** (migration `00407`). Both fields are
+  now folded into the metadata branch of the §3.0 RPC: the SAME row
+  UPDATE that writes title/description/cost/tags/watchers, and the
+  SAME `metadata_changed` activity row. The post-RPC
+  `.from('tickets').update({satisfaction_rating, satisfaction_comment})`
+  side-write in `ticket.service.ts` `update()` has been removed.
+  satisfaction is now **atomic** with every other branch, **audited**
+  (metadata_changed activity row), and **idempotent** (command_operations
+  payload-hash). Handled symmetrically in both the `case`
+  (public.tickets) and `work_order` (public.work_orders) arms —
+  both tables carry identical `satisfaction_rating smallint
+  CHECK(between 1 and 5)` + `satisfaction_comment text` columns; the
+  column CHECK is the authoritative range gate (the app enforces no
+  range, so the RPC doesn't invent one). **Contract nuance:** a
+  satisfaction-only update now produces a non-empty `patches.metadata`,
+  so it flows through the RPC and **requires X-Client-Request-Id**
+  (`PATCH /tickets/:id` is already behind `RequireClientRequestIdGuard`;
+  no internal/SYSTEM satisfaction caller exists in the codebase). Keys
+  absent ⇒ v7 is byte-identical to 00384 v6, so every existing
+  non-satisfaction caller is unaffected.
 
 - **clientRequestId un-underscoring consistency (plan-review I1,
   2026-05-11).** Commit B un-underscored 2 of 8 Step-2 params (the
@@ -453,11 +464,19 @@ they should be updated or the field demand pushed up to Product.
   is case-targeted by data model. If a workflow needs to set a child
   WO's plan, the path is `create_child_tasks` (which dispatches the WO
   with the plan as part of the dispatch payload) — not update_ticket.
-- `satisfaction_rating` / `satisfaction_comment` / `form_data` — defer
-  until user-driven satisfaction workflow exists. Today these are
-  applied via a direct side-write in `TicketService.update` after the
-  RPC commits (plan-review I4 — see "Case-side satisfaction_rating +
-  satisfaction_comment atomicity gap" entry above).
+- `satisfaction_rating` / `satisfaction_comment` / `form_data` — still
+  deferred from the workflow `update_ticket` allowlist until a
+  user-driven satisfaction workflow exists. NOTE (audit-02 P1-3,
+  00407 v7): `satisfaction_rating` / `satisfaction_comment` are NO
+  LONGER applied via a side-write — they are now folded into the
+  metadata branch of `update_entity_combined` (atomic + audited +
+  idempotent; see the CLOSED "Case-side satisfaction_rating +
+  satisfaction_comment atomicity gap" entry above). The workflow
+  engine still does not expose them via `update_ticket`
+  (`UPDATE_TICKET_ALLOWED_FIELDS` unchanged); the orchestrator branch
+  itself now accepts them, so a future workflow extension is a
+  one-line allowlist add (no RPC change needed). `form_data` remains
+  fully deferred (no orchestrator branch).
 
 The 12-field allowlist itself is in
 `apps/api/src/modules/workflow/workflow-engine.service.ts` under

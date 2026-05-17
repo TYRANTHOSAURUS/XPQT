@@ -1100,13 +1100,15 @@ export class TicketService {
     // The RPC's `update_entity_combined.invalid_patches` does NOT cover
     // "valid object, zero recognised branches" — it would just return a
     // noop result. Save the round-trip + idempotency-cache pollution.
+    //
+    // audit-02 P1-3 (00407 v7): satisfaction is now folded into
+    // `patches.metadata` by buildPatchesPayloadForCase, so a
+    // satisfaction-only dto produces a non-empty `patches` and correctly
+    // flows through the RPC below (no separate side-write). A truly
+    // empty dto (no branch keys, no satisfaction) still early-returns
+    // `current` here, unchanged.
     if (Object.keys(patches).length === 0) {
-      // satisfaction_* fall through to the side-write below; if neither
-      // is set, return the current row unchanged.
-      const wantsSatisfaction =
-        Object.prototype.hasOwnProperty.call(dto, 'satisfaction_rating') ||
-        Object.prototype.hasOwnProperty.call(dto, 'satisfaction_comment');
-      if (!wantsSatisfaction) return current;
+      return current;
     }
 
     if (Object.keys(patches).length > 0) {
@@ -1139,32 +1141,19 @@ export class TicketService {
       if (error) throw mapRpcErrorToAppError(error);
     }
 
-    // satisfaction_rating + satisfaction_comment are not part of the
-    // §3.0 RPC patches schema (00333 supports status / priority /
-    // assignment / sla / plan / metadata only). They have no audit-row
-    // or domain-event side effects — the legacy write path applied them
-    // via the catch-all `Object.entries` block with no activity emission.
-    // Preserve the API surface here as a direct UPDATE (gated by the
-    // same preflight permission/visibility checks above). Used by the
-    // satisfaction-survey workflow; not exercised by the desk UI today.
-    if (
-      Object.prototype.hasOwnProperty.call(dto, 'satisfaction_rating') ||
-      Object.prototype.hasOwnProperty.call(dto, 'satisfaction_comment')
-    ) {
-      const satPatch: Record<string, unknown> = {};
-      if (Object.prototype.hasOwnProperty.call(dto, 'satisfaction_rating')) {
-        satPatch.satisfaction_rating = dto.satisfaction_rating;
-      }
-      if (Object.prototype.hasOwnProperty.call(dto, 'satisfaction_comment')) {
-        satPatch.satisfaction_comment = dto.satisfaction_comment;
-      }
-      const { error: satErr } = await this.supabase.admin
-        .from('tickets')
-        .update(satPatch)
-        .eq('id', id)
-        .eq('tenant_id', tenant.id);
-      if (satErr) throw satErr;
-    }
+    // audit-02 P1-3 (00407 v7): the pre-fix post-RPC
+    // `.from('tickets').update({satisfaction_rating, satisfaction_comment})`
+    // side-write — non-atomic with the orchestrated write, no audit row,
+    // no idempotency — has been REMOVED. satisfaction_rating /
+    // satisfaction_comment are now folded into `patches.metadata` by
+    // buildPatchesPayloadForCase and committed inside the
+    // `update_entity_combined` RPC's metadata branch (00407): atomic
+    // with every other branch, emits the `metadata_changed` activity
+    // row, idempotent through command_operations. Satisfaction-only
+    // updates now flow through the RPC and therefore require
+    // X-Client-Request-Id (PATCH /tickets/:id is already guarded by
+    // RequireClientRequestIdGuard; no internal/SYSTEM satisfaction
+    // caller exists in the codebase).
 
     // Refetch so the response shape matches today's API contract
     // (joined requester / location / asset / assigned_* / request_type).
@@ -1234,6 +1223,17 @@ export class TicketService {
     if (has('cost')) metadata.cost = dto.cost;
     if (has('tags')) metadata.tags = dto.tags;
     if (has('watchers')) metadata.watchers = dto.watchers;
+    // audit-02 P1-3 (00407 v7): satisfaction folded into the metadata
+    // branch so it commits atomically inside `update_entity_combined`
+    // (was a separate non-atomic post-RPC side-write). Same key-presence
+    // semantics as title/cost/tags/watchers — absent ⇒ untouched,
+    // present-with-null ⇒ explicit clear. `hasOwnDefined` so a caller
+    // passing `{ satisfaction_rating: undefined }` does not spuriously
+    // trigger the metadata branch.
+    if (has('satisfaction_rating'))
+      metadata.satisfaction_rating = dto.satisfaction_rating;
+    if (has('satisfaction_comment'))
+      metadata.satisfaction_comment = dto.satisfaction_comment;
     if (Object.keys(metadata).length > 0) {
       patches.metadata = metadata;
     }
