@@ -70,18 +70,34 @@ were intentionally not folded into the Commit-B remediation pass
   side-write in `ticket.service.ts` `update()` has been removed.
   satisfaction is now **atomic** with every other branch, **audited**
   (metadata_changed activity row), and **idempotent** (command_operations
-  payload-hash). Handled symmetrically in both the `case`
-  (public.tickets) and `work_order` (public.work_orders) arms —
-  both tables carry identical `satisfaction_rating smallint
-  CHECK(between 1 and 5)` + `satisfaction_comment text` columns; the
-  column CHECK is the authoritative range gate (the app enforces no
-  range, so the RPC doesn't invent one). **Contract nuance:** a
+  payload-hash). **Case-only** (review Plan-2): the side-write this
+  replaced only ever wrote `.from('tickets')`. `work_orders` carries
+  `satisfaction_*` columns (00213) but they are **vestigial**;
+  `p_entity_kind='work_order'` + a satisfaction key now raises
+  `update_entity_combined.satisfaction_unsupported_for_work_order`
+  (mirrors 00406 D5) so v7 does NOT widen the writable surface beyond
+  the case-only side-write. The `tickets` column
+  `CHECK(satisfaction_rating between 1 and 5)` is the authoritative
+  range gate (the app enforces no range, so the RPC doesn't invent one).
+  Keys absent ⇒ v7 is byte-identical to 00384 v6, so every existing
+  non-satisfaction caller is unaffected.
+  **Contract nuance + accuracy correction (review Plan-1):** a
   satisfaction-only update now produces a non-empty `patches.metadata`,
   so it flows through the RPC and **requires X-Client-Request-Id**
   (`PATCH /tickets/:id` is already behind `RequireClientRequestIdGuard`;
-  no internal/SYSTEM satisfaction caller exists in the codebase). Keys
-  absent ⇒ v7 is byte-identical to 00384 v6, so every existing
-  non-satisfaction caller is unaffected.
+  no satisfaction caller exists anywhere in the codebase today). Do NOT
+  read this as "the future rating feature wires through here": the
+  shipped requester-rating design
+  (`docs/superpowers/specs/2026-04-27-requester-rating-design.md`)
+  persists ratings to a **dedicated `requester_ratings` table** via a
+  **public single-use-token endpoint** (`/rate/:token`, anonymous by
+  spec), architecturally **decoupled** from `tickets.satisfaction_rating`
+  and from `update_entity_combined`. `tickets.satisfaction_rating` is
+  therefore effectively **legacy** w.r.t. the shipped rating product.
+  This fold is still correct + audit-mandated: it closes a real
+  non-atomic two-write divergence for any *direct* `PATCH /tickets/:id`
+  satisfaction write — atomicity hardening, not over-engineering — but
+  the next engineer implementing requester-rating must NOT wire it here.
 
 - **clientRequestId un-underscoring consistency (plan-review I1,
   2026-05-11).** Commit B un-underscored 2 of 8 Step-2 params (the

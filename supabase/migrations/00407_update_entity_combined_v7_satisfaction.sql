@@ -572,6 +572,23 @@ begin
     v_has_sat_rating_key  := v_metadata ? 'satisfaction_rating';
     v_has_sat_comment_key := v_metadata ? 'satisfaction_comment';
 
+    -- 00407 v7 (review Plan-2): satisfaction is CASE-ONLY. The non-atomic
+    -- side-write this slice replaces only ever wrote `.from('tickets')`
+    -- (audit-02 P1-3); satisfaction is a requester-of-the-case concept and
+    -- the shipped requester-rating system persists to its own table, not
+    -- here (`docs/superpowers/specs/2026-04-27-requester-rating-design.md`).
+    -- `work_orders.satisfaction_rating` exists in schema (00213) but is
+    -- vestigial — folding satisfaction symmetrically would WIDEN the
+    -- writable surface beyond what the side-write did. Reject the
+    -- combination loudly (mirror 00406 D5). Unreachable today (no caller
+    -- sends satisfaction; the WO `update()` path never set it).
+    if p_entity_kind = 'work_order'
+       and (v_has_sat_rating_key or v_has_sat_comment_key) then
+      raise exception 'update_entity_combined.satisfaction_unsupported_for_work_order'
+        using errcode = 'P0001',
+              hint = 'satisfaction_rating/comment is case-only (requester rating); work_orders.satisfaction_* is vestigial schema';
+    end if;
+
     if v_has_title_key then
       v_new_title := v_metadata->>'title';
       if v_new_title is null or length(v_new_title) = 0 then
