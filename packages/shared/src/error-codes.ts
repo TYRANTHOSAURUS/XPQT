@@ -175,6 +175,7 @@ export type KnownErrorCode =
   | 'ticket.assign_forbidden'
   | 'ticket.cannot_reclassify_child'
   | 'ticket.terminal_cannot_reclassify'
+  | 'ticket.work_order_id_on_case_endpoint'
 
   // ─── reclassify codes ────────────────────────────────────────────────────
   | 'reclassify.target_not_found'

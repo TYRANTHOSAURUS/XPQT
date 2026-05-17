@@ -346,6 +346,9 @@ export const ERROR_MESSAGES_NL: Record<string, ErrorMessage> = {
   'reclassify.work_order_target': {
     title: 'Kon niet herclassificeren — kies het hoofdticket',
   },
+  'ticket.work_order_id_on_case_endpoint': {
+    title: 'Kon niet bijwerken — dit is een werkorder',
+  },
   'reclassify.actor_not_resolvable': {
     title: 'Kon niet herclassificeren — gebruiker niet in deze werkruimte',
   },

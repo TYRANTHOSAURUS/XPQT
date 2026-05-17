@@ -820,6 +820,9 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'reclassify.work_order_target': {
     title: "Couldn't reclassify — pick the parent ticket",
   },
+  'ticket.work_order_id_on_case_endpoint': {
+    title: "Couldn't update — that's a work order",
+  },
   'reclassify.actor_not_resolvable': {
     title: "Couldn't reclassify — actor not in this workspace",
   },

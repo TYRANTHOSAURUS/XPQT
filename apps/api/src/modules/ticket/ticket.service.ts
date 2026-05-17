@@ -1034,6 +1034,17 @@ export class TicketService {
     // Get current state for change tracking
     const current = await this.getById(id, SYSTEM_ACTOR);
 
+    // P2-1 (audit-02): case-vs-WO service split deferred; explicitly reject a
+    // work_order id on the case endpoint rather than letting it fail as a
+    // misleading generic not_found inside update_entity_combined (p_entity_kind='case').
+    // Mirrors reclassify.service.ts assertReclassifiable.
+    if ((current as { ticket_kind?: string }).ticket_kind === 'work_order') {
+      throw AppErrors.badRequest(
+        'ticket.work_order_id_on_case_endpoint',
+        'This id is a work order; use PATCH /work-orders/:id instead.',
+      );
+    }
+
     // Step 1c.10c: tickets is case-only. The previous ticket_kind='case' guards
     // are now unconditional — every ticket here IS a case. SLA-on-case is locked.
     if (dto.sla_id !== undefined) {
