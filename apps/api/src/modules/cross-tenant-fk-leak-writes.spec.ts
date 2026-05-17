@@ -155,26 +155,34 @@ describe('Cross-tenant FK leak regression — WRITE side', () => {
     expect(captures[0].filters.tenant_id).toBe(TENANT_A);
   });
 
-  it('site 8: bundle-cascade cancelLine — asset_reservations.update filters by tenant_id', async () => {
-    const captures: FilterCapture[] = [];
-    const client = buildWriteCaptureClient(captures);
-    await (client as any)
-      .from('asset_reservations')
-      .update({ status: 'cancelled' })
-      .eq('id', SHARED_ID)
-      .eq('tenant_id', TENANT_A);
-    expect(captures[0].filters.tenant_id).toBe(TENANT_A);
-  });
-
-  it('site 9: bundle-cascade cancelLine — order_line_items.update filters by tenant_id', async () => {
-    const captures: FilterCapture[] = [];
-    const client = buildWriteCaptureClient(captures);
-    await (client as any)
-      .from('order_line_items')
-      .update({ fulfillment_status: 'cancelled', pending_setup_trigger_args: null })
-      .eq('id', SHARED_ID)
-      .eq('tenant_id', TENANT_A);
-    expect(captures[0].filters.tenant_id).toBe(TENANT_A);
+  // Sites 8 + 9 — RETIRED by booking-audit Slice 6 (audit 03 P1-4).
+  //
+  // The cancelLine `asset_reservations.update` + `order_line_items.update`
+  // TS-side supabase-js writes are GONE: cancelLine/cancelBundle are now
+  // thin wrappers over the atomic `cancel_order_lines_with_cascade` RPC
+  // (supabase/migrations/00414_cancel_order_lines_with_cascade.sql). The
+  // cross-tenant defense moved INTO the SQL — every cascade UPDATE in the
+  // RPC carries `tenant_id = p_tenant_id` (00414 steps 6-9, mirroring
+  // 00408), and the RPC's booking SELECT … FOR UPDATE is tenant-scoped.
+  // A TS-level `.eq('tenant_id')` assertion is therefore moot — there is
+  // no supabase-js write left to capture. The tenant gate is verified at
+  // the RPC layer + by the live smoke gate `pnpm smoke:cancel-order-line`
+  // (apps/api/scripts/smoke-cancel-order-line.mjs). Probe 8 seeds a REAL
+  // booking + cancellable line under a DIFFERENT tenant, then — as the
+  // caller's real-tenant Admin JWT — attempts the per-line cancel on it
+  // and asserts HTTP 404 (controller `findOne` visibility gate /
+  // 00414's tenant-scoped booking SELECT … FOR UPDATE) PLUS zero writes
+  // on the foreign booking's OLI / asset_reservation / work_order /
+  // command_operations. (Not the old X-Tenant-Id header-override
+  // framing — a JWT-claim tenant can't be overridden by a header, so
+  // that proved nothing; the real foreign-tenant-booking attempt is the
+  // load-bearing cross-tenant proof.) Kept as one honest skipped
+  // placeholder so the site numbering stays stable and the reason for
+  // the gap is auditable here (not silently deleted).
+  it.skip('sites 8+9: bundle-cascade cancelLine writes — moved into 00414 RPC (tenant gate now SQL + smoke:cancel-order-line probe 8: real foreign-tenant booking → 404 + zero writes)', () => {
+    // Intentionally empty — see the block comment above. The defense is
+    // exercised by apps/api/scripts/smoke-cancel-order-line.mjs probe 8
+    // (real foreign-tenant booking rejected with zero cross-tenant writes).
   });
 
   it('site 10: order.service StandaloneCleanup — order_line_items.delete filters by tenant_id', async () => {
