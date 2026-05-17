@@ -58,6 +58,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -2663,6 +2664,422 @@ async function runPmGeneratorProbes(adminHeaders) {
   }
 }
 
+// ═════════════════════════════════════════════════════════════════════
+// audit-02 Slice-8 remediation probes (work-order side)
+//
+// Gate for: docs/follow-ups/audits/02-tickets-work-orders.md remediation
+// (P1-1 WO reassign · vendor-assignment e2e · WO cross-tenant sibling ·
+//  dispatch idempotency-replay).
+//
+// PER-RUN ISOLATED FIXTURES (unique uuids; isolated parent case seeded
+// via psql session_replication_role='replica' to bypass drifted
+// triggers; TENANT_B reused via the same idiom as smoke-cross-tenant;
+// torn down in `finally`) so the SHARED remote DB never collides with
+// the concurrent :3001 session. The running API is the worktree-
+// isolated server at API_BASE (:3010).
+//
+// Citations:
+//   - apps/api/src/modules/work-orders/work-order.service.ts:887-1001 (reassign P1-1)
+//   - apps/api/src/modules/work-orders/work-order.controller.ts:253-276 (reassign route)
+//   - apps/api/src/modules/ticket/dispatch.service.ts:71-354 (dispatch idempotency)
+//   - packages/shared/src/idempotency.ts:83-102 (DISPATCH key) / :400-420 (REASSIGN key)
+//   - supabase/migrations/00327_set_entity_assignment_v2.sql (audit RPC)
+// ═════════════════════════════════════════════════════════════════════
+
+const A2_DB_URL =
+  env.SUPABASE_DB_URL ||
+  'postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres';
+const A2_REAL_TEAM = '94000000-0000-0000-0000-000000000002';
+const A2_ALT_TEAM = '94000000-0000-0000-0000-000000000005';
+const A2_REAL_VENDOR = '97000000-0000-0000-0000-000000000001'; // BrightClean Services
+// Mirror smoke-cross-tenant.mjs:81 — TENANT_B fixture seed shape.
+const A2_TENANT_B_ID = '00000000-0000-0000-0000-0000000000b1';
+
+function a2Psql(sql) {
+  const dbPass = env.SUPABASE_DB_PASS;
+  if (!dbPass) throw new Error('audit-02: SUPABASE_DB_PASS missing from .env');
+  return execFileSync('psql', [A2_DB_URL, '-v', 'ON_ERROR_STOP=1', '-c', sql], {
+    env: { ...process.env, PGPASSWORD: dbPass },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function a2ReassignKey(kind, entityId, crid) {
+  // Lockstep with packages/shared/src/idempotency.ts:400-420.
+  return `reassign:${kind}:${entityId}:${crid}`;
+}
+function a2DispatchKey(parentId, crid) {
+  // Lockstep with packages/shared/src/idempotency.ts:83-102.
+  return `dispatch:${parentId}:${crid}`;
+}
+
+// Isolated parent case seed (bypasses drifted triggers). module_number
+// is per-tenant unique + not-null with no default — high constant clear
+// of seeded data + the smoke-tickets audit-02 range.
+async function a2SeedCase(caseId, moduleNumber) {
+  a2Psql(`
+    set session_replication_role = 'replica';
+    insert into public.tickets
+      (id, tenant_id, title, status, status_category, module_number)
+      values ('${caseId}', '${TENANT_ID}', 'audit-02 WO parent case',
+              'in_progress', 'in_progress', ${moduleNumber})
+      on conflict (id) do update set status='in_progress',
+        status_category='in_progress', updated_at=now();
+    set session_replication_role = 'origin';
+  `);
+}
+
+async function a2DropCase(caseId) {
+  try {
+    a2Psql(`
+      set session_replication_role = 'replica';
+      -- Scoped to THIS case's keys only (shared concurrent DB — never
+      -- wildcard-delete another session's command_operations).
+      -- reassign:work_order:<woId>:* + dispatch:<caseId>:* rows are
+      -- left as harmless id-unique orphans (their woId/crid won't recur).
+      delete from public.command_operations
+        where tenant_id='${TENANT_ID}'
+          and idempotency_key like 'dispatch:${caseId}:%';
+      delete from public.routing_decisions where case_id='${caseId}';
+      delete from public.routing_decisions where ticket_id='${caseId}';
+      delete from public.domain_events where entity_id='${caseId}';
+      delete from public.work_orders where parent_ticket_id='${caseId}';
+      delete from public.ticket_activities where ticket_id='${caseId}';
+      delete from public.tickets where id='${caseId}';
+      set session_replication_role = 'origin';
+    `);
+  } catch (e) {
+    console.log(`  ! audit-02 WO cleanup warn (${caseId.slice(0, 8)}): ${e.message}`);
+  }
+}
+
+// Mirrors smoke-cross-tenant.mjs:87-119 — idempotent TENANT_B seed.
+async function a2EnsureTenantB() {
+  a2Psql(`
+    set session_replication_role = 'replica';
+    insert into public.tenants (id, name, slug, status)
+      values ('${A2_TENANT_B_ID}', 'Smoke Tenant B (xtenant probes)', 'smoke-tenant-b', 'active')
+      on conflict (id) do nothing;
+    set session_replication_role = 'origin';
+  `);
+}
+
+async function a2CmdOp(name, key, { wantOutcome = 'success' } = {}) {
+  const { data, error } = await supa()
+    .from('command_operations')
+    .select('outcome')
+    .eq('tenant_id', TENANT_ID)
+    .eq('idempotency_key', key)
+    .maybeSingle();
+  if (error || !data) {
+    results.fail += 1;
+    results.failed.push(`${name} (cmd_op ${error ? 'query err' : 'no row'})`);
+    console.log(`  ✗ ${name} (cmd_op) — ${error ? error.message : `no row key=${key.slice(0, 60)}…`}`);
+    return false;
+  }
+  if (data.outcome !== wantOutcome) {
+    results.fail += 1;
+    results.failed.push(`${name} (cmd_op outcome=${data.outcome})`);
+    console.log(`  ✗ ${name} (cmd_op) — outcome=${data.outcome}, want ${wantOutcome}`);
+    return false;
+  }
+  results.pass += 1;
+  console.log(`  ✓ ${name} (cmd_op outcome=${wantOutcome})`);
+  return true;
+}
+
+async function a2DispatchChild(parentCaseId, headers, body, crid) {
+  const r = await fetch(`${API_BASE}/api/tickets/${parentCaseId}/dispatch`, {
+    method: 'POST',
+    headers: { ...headers, 'X-Client-Request-Id': crid ?? crypto.randomUUID() },
+    body: JSON.stringify(body),
+  });
+  const txt = await r.text();
+  let json = null;
+  try {
+    json = JSON.parse(txt);
+  } catch {
+    /* non-json */
+  }
+  return { status: r.status, json, txt };
+}
+
+async function a2GetTicket(headers, id) {
+  const r = await fetch(`${API_BASE}/api/tickets/${id}`, { headers });
+  return { status: r.status, json: r.ok ? await r.json() : null };
+}
+
+// ── Probe 2 (WO side) + 6: WO reassign + vendor-assignment e2e ──────
+async function a2ProbeWoReassignAndVendor(headers) {
+  console.log('\n— audit-02 P1-1: POST /work-orders/:id/reassign + vendor e2e');
+  const parent = '0a020000-0000-4000-8000-00000000c001';
+  let woId = null;
+  try {
+    await a2SeedCase(parent, 997001);
+    const d = await a2DispatchChild(parent, headers, {
+      title: `a2-wo-reassign-${Date.now()}`,
+      assigned_team_id: A2_REAL_TEAM,
+    });
+    if (d.status !== 200 && d.status !== 201) {
+      results.fail += 1;
+      results.failed.push('audit-02 WO reassign dispatch seed');
+      console.log(`  ✗ seed child WO → HTTP ${d.status} ${d.txt.slice(0, 200)}`);
+      return;
+    }
+    woId = d.json?.id;
+    results.pass += 1;
+    console.log(`  ✓ seeded child WO ${woId?.slice(0, 8)}…`);
+
+    // (a) WO reassign — explicit TEAM, with reason. set_entity_assignment
+    //     (p_entity_kind='work_order') writes command_operations
+    //     (reassign:work_order:<id>:<crid>) + routing_decisions
+    //     (entity_kind=work_order, strategy=manual, chosen_by=
+    //     manual_reassign) + reassigned activity + ticket_assigned event;
+    //     assignee actually changes.
+    const crid = crypto.randomUUID();
+    const rr = await fetch(`${API_BASE}/api/work-orders/${woId}/reassign`, {
+      method: 'POST',
+      headers: { ...headers, 'X-Client-Request-Id': crid },
+      body: JSON.stringify({ assigned_team_id: A2_ALT_TEAM, reason: 'a2 WO reassign' }),
+    });
+    if (rr.status >= 200 && rr.status < 300) {
+      results.pass += 1;
+      console.log(`  ✓ WO reassign (team) → HTTP ${rr.status}`);
+    } else {
+      results.fail += 1;
+      results.failed.push('audit-02 WO reassign team');
+      console.log(`  ✗ WO reassign → HTTP ${rr.status} ${(await rr.text()).slice(0, 200)}`);
+    }
+    await a2CmdOp('WO reassign', a2ReassignKey('work_order', woId, crid));
+    const { data: woRow } = await supa()
+      .from('work_orders')
+      .select('assigned_team_id, assigned_vendor_id')
+      .eq('id', woId)
+      .eq('tenant_id', TENANT_ID)
+      .maybeSingle();
+    if (woRow?.assigned_team_id === A2_ALT_TEAM) {
+      results.pass += 1;
+      console.log('  ✓ WO reassign — assigned_team_id changed to target');
+    } else {
+      results.fail += 1;
+      results.failed.push('audit-02 WO reassign assignee');
+      console.log(`  ✗ WO reassign assignee=${woRow?.assigned_team_id}, want ${A2_ALT_TEAM}`);
+    }
+    const { data: rd } = await supa()
+      .from('routing_decisions')
+      .select('entity_kind, work_order_id, strategy, chosen_by')
+      .eq('tenant_id', TENANT_ID)
+      .eq('work_order_id', woId);
+    if (
+      (rd ?? []).some(
+        (x) =>
+          x.entity_kind === 'work_order' &&
+          x.work_order_id === woId &&
+          x.strategy === 'manual' &&
+          x.chosen_by === 'manual_reassign',
+      )
+    ) {
+      results.pass += 1;
+      console.log('  ✓ WO reassign — routing_decisions (work_order/manual/manual_reassign)');
+    } else {
+      results.fail += 1;
+      results.failed.push('audit-02 WO reassign routing_decisions');
+      console.log(`  ✗ WO reassign routing_decisions: ${JSON.stringify(rd)?.slice(0, 200)}`);
+    }
+
+    // (b) vendor-assignment e2e — reassign the same WO to a VENDOR.
+    //     assigned_vendor_id set + set_entity_assignment audit row.
+    const cridV = crypto.randomUUID();
+    const rv = await fetch(`${API_BASE}/api/work-orders/${woId}/reassign`, {
+      method: 'POST',
+      headers: { ...headers, 'X-Client-Request-Id': cridV },
+      body: JSON.stringify({ assigned_vendor_id: A2_REAL_VENDOR, reason: 'a2 vendor assign' }),
+    });
+    if (rv.status >= 200 && rv.status < 300) {
+      results.pass += 1;
+      console.log(`  ✓ WO vendor reassign → HTTP ${rv.status}`);
+    } else {
+      results.fail += 1;
+      results.failed.push('audit-02 WO vendor reassign');
+      console.log(`  ✗ WO vendor reassign → HTTP ${rv.status} ${(await rv.text()).slice(0, 200)}`);
+    }
+    await a2CmdOp('WO vendor reassign', a2ReassignKey('work_order', woId, cridV));
+    const { data: woV } = await supa()
+      .from('work_orders')
+      .select('assigned_vendor_id, assigned_team_id')
+      .eq('id', woId)
+      .eq('tenant_id', TENANT_ID)
+      .maybeSingle();
+    if (woV?.assigned_vendor_id === A2_REAL_VENDOR && woV?.assigned_team_id === null) {
+      results.pass += 1;
+      console.log('  ✓ WO vendor reassign — assigned_vendor_id set, team cleared');
+    } else {
+      results.fail += 1;
+      results.failed.push('audit-02 WO vendor assignee');
+      console.log(`  ✗ WO vendor reassign → ${JSON.stringify(woV)}`);
+    }
+
+    // (c) WO-side rerun_resolver is EXPLICITLY unsupported
+    //     (work-order.service.ts:910-921 → work_order.rerun_resolver_unsupported,
+    //     400). Documented behaviour — assert the clean 400, not a regression.
+    const ru = await fetch(`${API_BASE}/api/work-orders/${woId}/reassign`, {
+      method: 'POST',
+      headers: { ...headers, 'X-Client-Request-Id': crypto.randomUUID() },
+      body: JSON.stringify({ rerun_resolver: true, reason: 'a2 unsupported' }),
+    });
+    const ruTxt = await ru.text();
+    let ruCode = null;
+    try {
+      ruCode = JSON.parse(ruTxt).code;
+    } catch {
+      /* ignore */
+    }
+    if (ru.status === 400 && ruCode === 'work_order.rerun_resolver_unsupported') {
+      results.pass += 1;
+      console.log('  ✓ WO rerun_resolver → 400 work_order.rerun_resolver_unsupported (documented)');
+    } else {
+      results.fail += 1;
+      results.failed.push('audit-02 WO rerun_resolver unsupported');
+      console.log(`  ✗ WO rerun_resolver → HTTP ${ru.status} code=${ruCode} ${ruTxt.slice(0, 160)}`);
+    }
+  } finally {
+    if (woId) await supa().from('work_orders').delete().eq('id', woId);
+    await a2DropCase(parent);
+  }
+}
+
+// ── Probe 8: dispatch idempotency-replay ─────────────────────────────
+async function a2ProbeDispatchReplay(headers) {
+  console.log('\n— audit-02: POST /tickets/:id/dispatch idempotency-replay');
+  const parent = '0a020000-0000-4000-8000-00000000c008';
+  let woId = null;
+  try {
+    await a2SeedCase(parent, 997008);
+    const crid = crypto.randomUUID();
+    const body = { title: `a2-dispatch-replay-${Date.now()}`, assigned_team_id: A2_REAL_TEAM };
+    const d1 = await a2DispatchChild(parent, headers, body, crid);
+    const d2 = await a2DispatchChild(parent, headers, body, crid);
+    if (
+      (d1.status === 200 || d1.status === 201) &&
+      (d2.status === 200 || d2.status === 201) &&
+      d1.json?.id &&
+      d1.json.id === d2.json?.id
+    ) {
+      woId = d1.json.id;
+      results.pass += 1;
+      console.log(`  ✓ dispatch replay — same WO id both calls (${woId.slice(0, 8)}…)`);
+    } else {
+      results.fail += 1;
+      results.failed.push('audit-02 dispatch replay id');
+      console.log(`  ✗ dispatch replay → d1=${d1.status}/${d1.json?.id?.slice(0, 8)} d2=${d2.status}/${d2.json?.id?.slice(0, 8)}`);
+      woId = d1.json?.id ?? d2.json?.id ?? null;
+    }
+    await a2CmdOp('dispatch replay', a2DispatchKey(parent, crid));
+    // No duplicate work_order row for this parent.
+    const { count } = await supa()
+      .from('work_orders')
+      .select('id', { count: 'exact', head: true })
+      .eq('tenant_id', TENANT_ID)
+      .eq('parent_ticket_id', parent);
+    if (count === 1) {
+      results.pass += 1;
+      console.log('  ✓ dispatch replay — exactly ONE work_order row (no duplicate)');
+    } else {
+      results.fail += 1;
+      results.failed.push('audit-02 dispatch replay duplicate');
+      console.log(`  ✗ dispatch replay — ${count} work_order rows for parent, want 1`);
+    }
+  } finally {
+    if (woId) await supa().from('work_orders').delete().eq('id', woId);
+    await a2DropCase(parent);
+  }
+}
+
+// ── Probe 7: WO cross-tenant sibling ─────────────────────────────────
+async function a2ProbeWoCrossTenant(adminTokenHeaders, accessToken) {
+  console.log('\n— audit-02: WO cross-tenant isolation (Tenant-A WO not reachable w/ Tenant-B ctx)');
+  const parent = '0a020000-0000-4000-8000-00000000c007';
+  let woId = null;
+  try {
+    await a2EnsureTenantB();
+    await a2SeedCase(parent, 997007);
+    const d = await a2DispatchChild(parent, adminTokenHeaders, {
+      title: `a2-xtenant-wo-${Date.now()}`,
+      assigned_team_id: A2_REAL_TEAM,
+    });
+    if (d.status !== 200 && d.status !== 201) {
+      results.fail += 1;
+      results.failed.push('audit-02 WO xtenant seed');
+      console.log(`  ✗ seed WO → HTTP ${d.status} ${d.txt.slice(0, 200)}`);
+      return;
+    }
+    woId = d.json?.id;
+    results.pass += 1;
+    console.log(`  ✓ seeded Tenant-A WO ${woId?.slice(0, 8)}…`);
+
+    // Same Tenant-A admin JWT, but X-Tenant-Id flipped to Tenant B. The
+    // global AuthGuard binding rejects the cross-tenant header with 403
+    // auth.user_not_in_tenant BEFORE the controller sees the WO id — so
+    // the Tenant-A WO is structurally unreachable cross-tenant. (Mirrors
+    // smoke-cross-tenant.mjs's fail-before/pass-after gate idiom.)
+    const tenantBHeaders = {
+      Authorization: `Bearer ${accessToken}`,
+      'X-Tenant-Id': A2_TENANT_B_ID,
+      'Content-Type': 'application/json',
+    };
+    // (a) READ the WO via GET /api/tickets/:id (getById falls through to
+    //     work_orders) with Tenant-B ctx → must be rejected (403/404).
+    const gr = await fetch(`${API_BASE}/api/tickets/${woId}`, { headers: tenantBHeaders });
+    if (gr.status === 403 || gr.status === 404) {
+      results.pass += 1;
+      console.log(`  ✓ cross-tenant READ of Tenant-A WO rejected → HTTP ${gr.status}`);
+    } else {
+      results.fail += 1;
+      results.failed.push('audit-02 WO xtenant read leak');
+      console.log(`  ✗ cross-tenant READ → HTTP ${gr.status} ${(await gr.text()).slice(0, 200)} (LEAK)`);
+    }
+    // (b) MUTATE the WO via PATCH /api/work-orders/:id with Tenant-B ctx
+    //     → must be rejected (403/404), never a 2xx write.
+    const pr = await fetch(`${API_BASE}/api/work-orders/${woId}`, {
+      method: 'PATCH',
+      headers: { ...tenantBHeaders, 'X-Client-Request-Id': crypto.randomUUID() },
+      body: JSON.stringify({ priority: 'high' }),
+    });
+    if (pr.status === 403 || pr.status === 404) {
+      results.pass += 1;
+      console.log(`  ✓ cross-tenant MUTATE of Tenant-A WO rejected → HTTP ${pr.status}`);
+    } else {
+      results.fail += 1;
+      results.failed.push('audit-02 WO xtenant mutate leak');
+      console.log(`  ✗ cross-tenant MUTATE → HTTP ${pr.status} ${(await pr.text()).slice(0, 200)} (LEAK)`);
+    }
+    // Defense: WO row unchanged (priority not flipped by the rejected PATCH).
+    const { data: woRow } = await supa()
+      .from('work_orders')
+      .select('priority, tenant_id')
+      .eq('id', woId)
+      .maybeSingle();
+    if (woRow?.tenant_id === TENANT_ID) {
+      results.pass += 1;
+      console.log('  ✓ cross-tenant — Tenant-A WO row intact (tenant_id unchanged)');
+    } else {
+      results.fail += 1;
+      results.failed.push('audit-02 WO xtenant row tamper');
+      console.log(`  ✗ cross-tenant — WO row tampered: ${JSON.stringify(woRow)}`);
+    }
+  } finally {
+    if (woId) await supa().from('work_orders').delete().eq('id', woId);
+    await a2DropCase(parent);
+  }
+}
+
+async function runAudit02WoProbes(headers, accessToken) {
+  console.log('\n══════ audit-02 Slice-8 remediation probes (work-orders) ══════');
+  await a2ProbeWoReassignAndVendor(headers);
+  await a2ProbeDispatchReplay(headers);
+  await a2ProbeWoCrossTenant(headers, accessToken);
+}
+
 async function runDispatchProbe(headers, probe) {
   console.log('\n=== Dispatch (creating a child WO) ===');
 
@@ -2733,6 +3150,7 @@ async function main() {
   await runPlanningRequesterProbe(headers);
   await runPmGeneratorProbes(headers);
   await runDispatchProbe(headers, probe);
+  await runAudit02WoProbes(headers, accessToken);
 
   console.log(`\n${'='.repeat(60)}`);
   console.log(`${results.pass} pass / ${results.fail} fail`);

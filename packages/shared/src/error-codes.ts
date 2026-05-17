@@ -175,6 +175,7 @@ export type KnownErrorCode =
   | 'ticket.assign_forbidden'
   | 'ticket.cannot_reclassify_child'
   | 'ticket.terminal_cannot_reclassify'
+  | 'ticket.work_order_id_on_case_endpoint'
 
   // ─── reclassify codes ────────────────────────────────────────────────────
   | 'reclassify.target_not_found'
@@ -581,6 +582,11 @@ export type KnownErrorCode =
   | 'set_entity_assignment.unknown_kind'
   | 'set_entity_assignment.not_found'
   | 'set_entity_assignment.resolver_rerun_not_supported_at_rpc'
+  // audit-02 Q1 (codex NIT): 00406 v3 raises this when a caller passes
+  // clear_routing_status with p_entity_kind='work_order' (WO has no
+  // routing_status column). Unreachable by current callers; registered so a
+  // future non-HTTP caller renders a real message, not unknown.server_error.
+  | 'set_entity_assignment.routing_status_unsupported_for_work_order'
 
   // ─── B.2.A §3.3 update_entity_sla RPC (00328) ────────────────────────────
   | 'update_entity_sla.unknown_kind'
@@ -601,6 +607,11 @@ export type KnownErrorCode =
   | 'update_entity_combined.invalid_watcher'
   | 'update_entity_combined.invalid_plan'
   | 'update_entity_combined.invalid_source'
+  // audit-02 Q2 (codex NIT): 00410 v7 raises this when a caller sends a
+  // satisfaction_rating/comment key with p_entity_kind='work_order'.
+  // Unreachable by current callers (WO metadata is title/description/cost/
+  // tags/watchers only); registered for forward-safety.
+  | 'update_entity_combined.satisfaction_unsupported_for_work_order'
 
   // ─── B.2.A §3.4 dispatch_child_work_order RPC (00338 / 00339 — v2) ───────
   // `parent_not_case` removed in remediation pass: post step1c.10c
@@ -1580,6 +1591,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'set_entity_assignment.unknown_kind',
   'set_entity_assignment.not_found',
   'set_entity_assignment.resolver_rerun_not_supported_at_rpc',
+  'set_entity_assignment.routing_status_unsupported_for_work_order',
   'update_entity_sla.unknown_kind',
   'update_entity_sla.not_found',
   'update_entity_sla.timers_required',
@@ -1596,6 +1608,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'update_entity_combined.invalid_watcher',
   'update_entity_combined.invalid_plan',
   'update_entity_combined.invalid_source',
+  'update_entity_combined.satisfaction_unsupported_for_work_order',
   'dispatch_child_work_order.parent_not_found',
   'dispatch_child_work_order.parent_not_dispatchable',
   'dispatch_child_work_order.invalid_payload',

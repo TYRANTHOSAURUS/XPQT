@@ -98,6 +98,13 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // in-depth for non-HTTP callers; TS plan-build mints these via a Zod
   // schema.
   'edit_booking_scope.invalid_plans': 400,
+  // audit-02 (codex NIT Q1/Q2). 00406 v3 / 00410 v7 raise these when a
+  // caller passes a case-only payload key (clear_routing_status /
+  // satisfaction_*) with p_entity_kind='work_order'. Unreachable by current
+  // callers; 400 defense-in-depth for a future non-HTTP caller — same shape
+  // as edit_booking.invalid_plan_shape.
+  'set_entity_assignment.routing_status_unsupported_for_work_order': 400,
+  'update_entity_combined.satisfaction_unsupported_for_work_order': 400,
 
   // ── 404 not_found ────────────────────────────────────────────────
   'transition_entity_status.not_found': 404,

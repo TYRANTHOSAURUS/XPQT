@@ -367,6 +367,9 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
   'reclassify.work_order_target': {
     title: "Couldn't reclassify — pick the parent ticket",
   },
+  'ticket.work_order_id_on_case_endpoint': {
+    title: "Couldn't update — that's a work order",
+  },
   'reclassify.actor_not_resolvable': {
     title: "Couldn't reclassify — actor not in this workspace",
   },
@@ -1539,6 +1542,10 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
     title: "Couldn't update",
     detail: "Server can't rerun routing — this is an internal-only signal that an orchestration step was skipped.",
   },
+  'set_entity_assignment.routing_status_unsupported_for_work_order': {
+    title: "Couldn't update",
+    detail: 'Routing status applies to cases, not work orders.',
+  },
 
   // ─── B.2.A §3.3 update_entity_sla RPC (00328) ──────────────────────────
   'update_entity_sla.unknown_kind': {
@@ -1592,6 +1599,10 @@ export const ERROR_MESSAGES_EN: Record<string, ErrorMessage> = {
   'update_entity_combined.invalid_source': {
     title: "Couldn't update",
     detail: 'Plan change source must be one of board, detail, or generator.',
+  },
+  'update_entity_combined.satisfaction_unsupported_for_work_order': {
+    title: "Couldn't update",
+    detail: 'Satisfaction ratings apply to cases, not work orders.',
   },
 
   // B.2.A §3.4 dispatch_child_work_order RPC (00338 / 00339)

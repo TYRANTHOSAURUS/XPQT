@@ -820,6 +820,9 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'reclassify.work_order_target': {
     title: "Couldn't reclassify — pick the parent ticket",
   },
+  'ticket.work_order_id_on_case_endpoint': {
+    title: "Couldn't update — that's a work order",
+  },
   'reclassify.actor_not_resolvable': {
     title: "Couldn't reclassify — actor not in this workspace",
   },
@@ -1664,6 +1667,11 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't update",
     detail: "Server can't rerun routing — this is an internal-only signal that an orchestration step was skipped.",
   },
+  // audit-02 Q1 (codex NIT): 00406 v3 — clear_routing_status on a work order.
+  'set_entity_assignment.routing_status_unsupported_for_work_order': {
+    title: "Couldn't update",
+    detail: 'Routing status applies to cases, not work orders.',
+  },
   // B.2.A §3.3 update_entity_sla RPC (00328)
   'update_entity_sla.unknown_kind': { title: "Couldn't update SLA", detail: 'Unknown entity kind.' },
   'update_entity_sla.not_found': { title: "Couldn't find that ticket" },
@@ -1698,6 +1706,11 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'update_entity_combined.invalid_watcher': {
     title: "Couldn't update",
     detail: 'One or more watchers are not part of this tenant.',
+  },
+  // audit-02 Q2 (codex NIT): 00410 v7 — satisfaction key on a work order.
+  'update_entity_combined.satisfaction_unsupported_for_work_order': {
+    title: "Couldn't update",
+    detail: 'Satisfaction ratings apply to cases, not work orders.',
   },
   'update_entity_combined.invalid_plan': {
     title: "Couldn't update",
