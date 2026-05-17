@@ -154,6 +154,29 @@ This is the **P1-3 regression gate** (audit `docs/follow-ups/audits/03-booking-r
 
 ---
 
+## `pnpm smoke:cancel-order-line`
+
+**Required before claiming complete:** any work touching `BundleCascadeService.cancelLine` / `cancelBundle` / the `DELETE /reservations/:id/services/:lineId` + `DELETE /reservations/:id/bundle` routes / `cancel_order_lines_with_cascade` RPC (migration **00414**) / its `command_operations` idempotency gate / the approval rescope-vs-expire-all branch / `bundle-services-cancelled-cascade.handler.ts` / `BundleCascadeAdapter.handleBundleCancelled` / `buildCancelOrderLinesIdempotencyKey` / `mapCancelOrderLinesRpcError`.
+
+Script: `apps/api/scripts/smoke-cancel-order-line.mjs`. Run via `pnpm --filter @prequest/api smoke:cancel-order-line`.
+
+This is the **P1-4 regression gate** (audit `docs/follow-ups/audits/03-booking-reservation.md`). It proves per-line + bundle-services cancel is now ONE atomic `cancel_order_lines_with_cascade` transaction (OLI → asset_reservations → work_orders → orders → approvals rescope/expire → conditional booking/slot close → in-tx audit/domain + durable `bundle.services_cancelled` outbox on the bundle path) — replacing the pre-Slice-6 non-atomic TS choreography + lossy in-process `BundleEventBus` emit. Decision + residuals: `docs/follow-ups/slice6-cancel-order-line-plan.md`. The Slice-2 equivalence checklist had explicitly deferred P1-4 out of `smoke:cancel-booking` — this gate closes that coverage gap.
+
+**Fixtures (psql-seeded, `session_replication_role='replica'`):** dedicated per-probe booking + cancellable OLI(s) + linked asset_reservation + work_order (+ a pending booking-targeted approval for the rescope/poison probes); a foreign-tenant variant under `OTHER_TENANT_ID` for probe 8. Every assertion is a baseline→after delta keyed to that run's `booking_id` (multi-session-safe; outbox via `payload->>'booking_id'`, never a global count).
+
+**Probes (55 assertions):**
+- (1) per-line cancel atomic deltas — OLI `fulfillment_status='cancelled'` + linked asset_reservation cancelled + linked work_order closed + approval rescoped; exactly 1 `command_operations` success row.
+- (2) idempotency replay (same `X-Client-Request-Id`) → counts unchanged, still 1 success row.
+- (3) same CRID, different line set → 409 payload_mismatch; zero new writes.
+- (4) fulfilled-line protection → 422 `line_already_fulfilled`; zero writes.
+- (5) approval rescope correctness — multi-entity approval: cancel one line ⇒ `scope_breakdown` shrinks, approval still `pending`; cancel the last in scope ⇒ approval `expired`.
+- (6) bundle cancel (`p_line_ids` NULL) — BOTH weak-close branches: pure-services booking ⇒ booking + slots cancelled; a kept/fulfilled line ⇒ booking stays; `bundle.services_cancelled` outbox present for the booking.
+- (7) **load-bearing atomicity** — a `status='pending'` booking-targeted approval with `scope_breakdown = '{"order_line_item_ids":"POISON_NOT_AN_ARRAY"}'::jsonb` makes the per-line rescope loop run `jsonb_array_elements_text(<scalar>)` → real Postgres 22023 mid-tx → 5 strict assertions prove the request did NOT 2xx AND OLI/asset_reservation/work_order are UNCHANGED AND ZERO `command_operations` success (the in_progress insert rolled back with the tx). `expect:'error'` (any non-2xx) — a forced raw-PG raise is UNMAPPED → correctly 500/`unknown.server_error`, not a user-actionable 422; the proof is the 5 zero-partial-row assertions, not the status (mirrors `smoke:attach-services` probe 6).
+- (8) cross-tenant — a REAL booking+OLI+asset_reservation+work_order seeded under `OTHER_TENANT_ID`; per-line cancel as the real tenant → 404 + ZERO writes on the foreign rows (defense-in-depth: controller `findOne` visibility 404 in front of the RPC's `where tenant_id` FOR UPDATE) + a ghost-uuid sub-probe.
+- (9) missing `X-Client-Request-Id` → 400 (RequireClientRequestIdGuard).
+
+---
+
 ## `pnpm smoke:floor-plans`
 
 **Required before claiming complete:** any work touching `FloorPlanService` / `FloorPlanDraftService` / `publish_floor_plan_draft` RPC / the floor-plan editor.

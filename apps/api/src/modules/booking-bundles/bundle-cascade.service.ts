@@ -1,8 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { buildCancelOrderLinesIdempotencyKey } from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { AppErrors } from '../../common/errors';
+import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
 import { TenantContext } from '../../common/tenant-context';
-import { BundleEventBus, type BundleEvent } from './bundle-event-bus';
 import { BundleVisibilityService, type BundleVisibilityContext } from './bundle-visibility.service';
 
 /**
@@ -35,6 +36,26 @@ export interface CancelLineArgs {
   line_id: string;
   /** Caller-supplied for audit trail. Optional. */
   reason?: string;
+  /**
+   * Booking-audit Slice 6 (audit 03 P1-4): the X-Client-Request-Id, the
+   * command_operations idempotency boundary for cancel_order_lines_with_
+   * cascade (00414). The controller's RequireClientRequestIdGuard enforces
+   * presence at the HTTP boundary; the service-layer hard-fail enforces it
+   * for internal callers (mirrors BundleService.attachServicesToBooking:266
+   * + ReservationService.cancelOne:487).
+   */
+  client_request_id?: string;
+  /**
+   * Booking-audit Slice 6 fix-cycle (Fix C): the caller's auth_uid (the JWT
+   * subject — `req.user.id`, NOT users.id). Threaded to the 00414 RPC as
+   * `p_actor_user_id`; F-CRIT-1 (00414:192-205) resolves it to
+   * `users.id` for `audit_events.actor_user_id`. Cancel-family-consistent
+   * with `ReservationService.cancelOne` → `cancel_booking_with_cascade`
+   * (reservation.service.ts:505 passes `actor.auth_uid`). `null` for
+   * internal/system callers with no actor — F-CRIT-1 skips resolution on
+   * null and records a system-attributed audit row.
+   */
+  actor_auth_uid?: string | null;
 }
 
 export interface CancelBundleArgs {
@@ -55,23 +76,58 @@ export interface CancelBundleArgs {
   reservation_id?: string;
   recurrence_scope?: CancelScope;
   reason?: string;
+  /** Booking-audit Slice 6: X-Client-Request-Id (00414 idempotency key). */
+  client_request_id?: string;
+  /**
+   * Booking-audit Slice 6 fix-cycle (Fix C): the caller's auth_uid (JWT
+   * subject), threaded to the 00414 RPC as `p_actor_user_id`. See
+   * `CancelLineArgs.actor_auth_uid` for the full F-CRIT-1 rationale.
+   */
+  actor_auth_uid?: string | null;
+}
+
+/**
+ * Shape of the `cancel_order_lines_with_cascade` (00414) jsonb return.
+ * Mirrors the migration's step-13 result envelope.
+ */
+interface CancelOrderLinesRpcResult {
+  cancelled_line_ids: string[];
+  cascaded: { ticket_ids: string[]; asset_reservation_ids: string[] };
+  rescoped_approval_ids: string[];
+  expired_approval_ids: string[];
+  booking_cancelled: boolean;
+  fulfilled_line_ids: string[];
+  kept_line_ids: string[];
 }
 
 @Injectable()
 export class BundleCascadeService {
-  private readonly log = new Logger(BundleCascadeService.name);
-
   constructor(
     private readonly supabase: SupabaseService,
     private readonly visibility: BundleVisibilityService,
-    private readonly eventBus: BundleEventBus,
   ) {}
 
   /**
-   * Cancel a single line item + downstream work-order ticket + asset
-   * reservation. Updates approvals' scope_breakdown by removing the line
-   * from each row's `order_line_item_ids`; if a row's full scope drops to
-   * empty, mark it as cancelled.
+   * Cancel a single service line + its downstream work-order + asset
+   * reservation, re-scoping pending approvals.
+   *
+   * Booking-audit remediation Slice 6 (audit 03 P1-4): this is now a THIN
+   * wrapper over the atomic `cancel_order_lines_with_cascade` RPC (00414).
+   * The legacy multi-write choreography (asset_reservations → work_orders
+   * → order_line_items → rescopeApprovalsAfterLineCancel → swallowed
+   * audit) + the lossy in-process `bundle.line.cancelled` BundleEventBus
+   * emit are GONE. They are replaced by ONE Postgres transaction. The
+   * per-line in-process emit was a VERIFIED visitor no-op
+   * (bundle-cascade.adapter.ts:235 `if (event.line_kind !== 'visitor')
+   * return;`; lineKindForOli never returned 'visitor' for OLI lines —
+   * old bundle-cascade.service.ts:652-655), so it is dropped with NO
+   * replacement event/handler (plan remediation C2).
+   *
+   * The line/bundle pre-checks (tenant 404 + bundle visibility assert) are
+   * preserved so a non-visible / cross-tenant caller still 404s/403s
+   * before the RPC; the RPC then re-validates line_not_found /
+   * line_not_in_bundle / line_already_fulfilled tenant-side as
+   * defense-in-depth (mirroring the live cancelLine validation order).
    */
   async cancelLine(args: CancelLineArgs, ctx: BundleVisibilityContext): Promise<{
     line_id: string;
@@ -81,10 +137,8 @@ export class BundleCascadeService {
     const tenantId = TenantContext.current().id;
     const line = await this.loadLine(args.line_id, tenantId);
     if (!line) throw AppErrors.notFoundWithCode('line_not_found', `Line ${args.line_id} not found.`);
-    // Sub-project 2 only owns bundle-linked lines. A pre-bundle order line
-    // (legacy /orders flow) routes through OrderService.cancel, not this
-    // path — refuse so we don't silently let a tenant-mate cancel each
-    // other's lines.
+    // Sub-project 2 only owns bundle-linked lines (mirrors the live
+    // pre-rewrite guard at bundle-cascade.service.ts:88).
     if (!line.bundle_id) {
       throw AppErrors.notFoundWithCode('bundle.line_not_in_bundle', `Line ${args.line_id} is not part of a bundle.`);
     }
@@ -94,133 +148,61 @@ export class BundleCascadeService {
     }
     await this.visibility.assertVisible(bundle, ctx);
 
-    // Fulfilled-line protection.
-    if (FULFILLED_STATUSES.has(line.fulfillment_status ?? '')) {
-      throw AppErrors.forbidden('line_already_fulfilled', 'This line has been fulfilled and cannot be cancelled. Contact the fulfillment team.');
+    // X-Client-Request-Id is the command_operations idempotency boundary.
+    // RequireClientRequestIdGuard enforces presence at the HTTP boundary;
+    // this service-layer hard-fail enforces it for internal callers
+    // (mirrors BundleService.attachServicesToBooking:266-273).
+    const clientRequestId = args.client_request_id;
+    if (!clientRequestId) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail:
+          'cancelLine reached the RPC layer with no client_request_id ' +
+          'despite RequireClientRequestIdGuard (booking-audit Slice 6).',
+      });
     }
 
-    // Capture policy snapshot before mutating — needed for the bundle-event
-    // emission below. Looked up here (not via loadLine) to keep that helper
-    // narrow; Supabase round-trip cost is negligible vs. the cancel cascade.
-    const lineKind = await this.lineKindForOli(args.line_id, tenantId);
-
-    // Cancel asset reservation, work-order ticket, then the line.
-    // Cross-tenant write fix (codex post-fix review 2026-05-08): every
-    // .update().eq('id', X) below adds .eq('tenant_id', tenantId) for
-    // defense-in-depth. The line/bundle were already proven in-tenant via
-    // loadLine/loadBundle reads above; supabase.admin still bypasses RLS
-    // so an unfiltered update would mutate any row sharing the id.
-    const cascaded = { ticket_ids: [] as string[], asset_reservation_ids: [] as string[] };
-    if (line.linked_asset_reservation_id) {
-      await this.supabase.admin
-        .from('asset_reservations')
-        .update({ status: 'cancelled' })
-        .eq('id', line.linked_asset_reservation_id)
-        .eq('tenant_id', tenantId);
-      cascaded.asset_reservation_ids.push(line.linked_asset_reservation_id);
-    }
-    // Cascade-cancel any booking-origin work orders linked TO this line via
-    // tickets.linked_order_line_item_id (00145). Wave 2 Slice 2 enabled this:
-    // the auto-creation flow (BundleService.maybeCreateSetupWorkOrder) now
-    // populates linked_order_line_item_id at creation time, so the inverse
-    // cascade has real data to act on. Filter NON-terminal status with an
-    // explicit whitelist so already-closed tickets don't get their
-    // closed_at re-stamped.
-    // Non-terminal status whitelist mirrors the schema check constraints:
-    //   00011 added: new, assigned, in_progress, waiting, resolved, closed
-    //   00028 added: pending_approval
-    // Booking-origin work orders bypass the approval gate today (no
-    // request_type), so pending_approval is unreachable in practice — but
-    // include defensively so a future code path that DOES land them there
-    // doesn't silently bypass the cascade.
-    const NON_TERMINAL_STATUSES = ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval'];
-    // Step 1c.4 cutover: target work_orders directly. The reverse shadow
-    // trigger keeps tickets in sync. Removes the ticket_kind filter
-    // (work_orders is single-kind).
-    const { data: linkedTickets } = await this.supabase.admin
-      .from('work_orders')
-      .update({ status_category: 'closed', closed_at: new Date().toISOString() })
-      .eq('linked_order_line_item_id', args.line_id)
-      .eq('tenant_id', tenantId)
-      .in('status_category', NON_TERMINAL_STATUSES)
-      .select('id');
-    if (linkedTickets) {
-      for (const t of linkedTickets as Array<{ id: string }>) {
-        cascaded.ticket_ids.push(t.id);
-      }
-    }
-
-    // Clearing pending_setup_trigger_args (00197) alongside the cancel is
-    // important: the line might be cancelled while approval-deferred. Without
-    // this, a later approval grant on a SIBLING line on the same bundle
-    // would re-fire the trigger for the cancelled line via
-    // BundleService.onApprovalDecided.
-    await this.supabase.admin
-      .from('order_line_items')
-      .update({
-        fulfillment_status: 'cancelled',
-        pending_setup_trigger_args: null,
-      })
-      .eq('id', args.line_id)
-      .eq('tenant_id', tenantId);
-
-    // Re-scope approvals: drop the cancelled line + its linked ticket + its
-    // linked asset reservation from scope_breakdown. Otherwise an approval
-    // scoped to (oli, ticket, asset) would stay pending pointing at the now
-    // dead ticket/asset even though the underlying work is gone.
-    const closedApprovalIds = await this.rescopeApprovalsAfterLineCancel(
-      line.bundle_id,
-      args.line_id,
-      cascaded.ticket_ids,
-      cascaded.asset_reservation_ids,
-    );
-
-    void this.audit(tenantId, 'order.line_cancelled', 'order_line_item', args.line_id, {
-      line_id: args.line_id,
-      bundle_id: line.bundle_id,
-      ticket_ids: cascaded.ticket_ids,
-      asset_reservation_ids: cascaded.asset_reservation_ids,
-      closed_approval_ids: closedApprovalIds,
-      reason: args.reason ?? null,
+    const result = await this.callCancelOrderLinesRpc({
+      bookingId: line.bundle_id,
+      lineIds: [args.line_id],
+      keepLineIds: null,
+      tenantId,
+      clientRequestId,
+      reason: args.reason,
+      actorAuthUid: args.actor_auth_uid ?? null,
     });
 
-    // Slice 4: notify cross-module subscribers (today: visitor cascade adapter
-    // in VisitorsModule). Emit AFTER all DB writes succeed; subscriber failures
-    // are absorbed inside BundleEventBus listeners — see bundle-cascade.adapter
-    // for the rationale.
-    this.emitEvent({
-      kind: 'bundle.line.cancelled',
-      tenant_id: tenantId,
-      bundle_id: line.bundle_id,
+    // Preserve the legacy cancelLine return shape (the RPC's per-line
+    // path expires — not "rescopes" — approvals that drop to empty; both
+    // map onto the legacy `closed_approval_ids` field).
+    return {
       line_id: args.line_id,
-      line_kind: lineKind,
-      occurred_at: new Date().toISOString(),
-    });
-
-    return { line_id: args.line_id, cascaded, closed_approval_ids: closedApprovalIds };
+      cascaded: {
+        ticket_ids: result.cascaded.ticket_ids,
+        asset_reservation_ids: result.cascaded.asset_reservation_ids,
+      },
+      closed_approval_ids: result.expired_approval_ids,
+    };
   }
+
 
   /**
-   * Full bundle cancel with optional opt-out via `keep_line_ids`. The bundle
-   * row stays put for audit/history — its derived `status_rollup` becomes
-   * 'cancelled' or 'partially_cancelled' once the underlying entities flip.
+   * Full bundle / services cancel with optional opt-out via
+   * `keep_line_ids`. The booking row + slots go cancelled IFF nothing
+   * stays alive (no fulfilled line AND no kept line) — the live weak
+   * condition is reproduced VERBATIM inside the 00414 RPC.
+   *
+   * Booking-audit remediation Slice 6 (audit 03 P1-4): a THIN wrapper
+   * over the atomic `cancel_order_lines_with_cascade` RPC (00414),
+   * `p_line_ids = NULL` (= all cancellable under p_keep_line_ids). The
+   * legacy multi-write choreography + cancelPendingApprovalsForBundle +
+   * swallowed audit + the lossy in-process `bundle.cancelled`
+   * BundleEventBus emit are GONE. The bundle path now emits a DURABLE
+   * `bundle.services_cancelled` outbox event in-tx; the visitor cascade
+   * runs behind BundleServicesCancelledCascadeHandler →
+   * BundleCascadeAdapter.handleBundleCancelled (the durable replacement
+   * for the in-process bus path).
    */
   async cancelBundle(args: CancelBundleArgs, ctx: BundleVisibilityContext): Promise<{
-    bundle_id: string;
-    cancelled_line_ids: string[];
-    cancelled_reservation_ids: string[];
-    cancelled_ticket_ids: string[];
-    cancelled_asset_reservation_ids: string[];
-    closed_approval_ids: string[];
-    fulfilled_line_ids: string[];
-  }> {
-    return this.cancelBundleImpl(args, { ctx });
-  }
-
-  private async cancelBundleImpl(
-    args: CancelBundleArgs,
-    auth: { ctx?: BundleVisibilityContext; skipVisibility?: boolean },
-  ): Promise<{
     bundle_id: string;
     cancelled_line_ids: string[];
     cancelled_reservation_ids: string[];
@@ -232,182 +214,117 @@ export class BundleCascadeService {
     const tenantId = TenantContext.current().id;
     const bundle = await this.loadBundle(args.bundle_id, tenantId);
     if (!bundle) throw AppErrors.notFound('bundle', args.bundle_id);
-    if (!auth.skipVisibility && auth.ctx) {
-      await this.visibility.assertVisible(bundle, auth.ctx);
-    }
+    await this.visibility.assertVisible(bundle, ctx);
 
-    const keep = new Set(args.keep_line_ids ?? []);
-
-    // Pull every linked line; partition into fulfilled (untouched) +
-    // kept (untouched per opt-out) + cancellable.
-    const orderIds = await this.orderIdsForBundle(args.bundle_id, tenantId);
-    const { data: lines, error: linesErr } = orderIds.length === 0
-      ? { data: [], error: null }
-      : await this.supabase.admin
-          .from('order_line_items')
-          .select(`
-            id,
-            fulfillment_status,
-            linked_asset_reservation_id,
-            linked_ticket_id,
-            order_id
-          `)
-          .in('order_id', orderIds)
-          .eq('tenant_id', tenantId);
-    if (linesErr) throw linesErr;
-
-    const fulfilledLineIds: string[] = [];
-    const cancellableLines: Array<{
-      id: string;
-      linked_asset_reservation_id: string | null;
-      linked_ticket_id: string | null;
-    }> = [];
-    for (const row of (lines ?? []) as Array<{
-      id: string;
-      fulfillment_status: string | null;
-      linked_asset_reservation_id: string | null;
-      linked_ticket_id: string | null;
-    }>) {
-      if (FULFILLED_STATUSES.has(row.fulfillment_status ?? '')) {
-        fulfilledLineIds.push(row.id);
-        continue;
-      }
-      if (keep.has(row.id)) continue;
-      cancellableLines.push(row);
-    }
-
-    const cancelledLineIds = cancellableLines.map((l) => l.id);
-    const cancelledAssetReservationIds = cancellableLines
-      .map((l) => l.linked_asset_reservation_id)
-      .filter((id): id is string => Boolean(id));
-
-    if (cancelledAssetReservationIds.length > 0) {
-      await this.supabase.admin
-        .from('asset_reservations')
-        .update({ status: 'cancelled' })
-        .eq('tenant_id', tenantId)
-        .in('id', cancelledAssetReservationIds);
-    }
-
-    // Cascade-cancel booking-origin work orders linked to any of the
-    // cancelled lines (via tickets.linked_order_line_item_id, 00145).
-    // Whitelist non-terminal statuses so already-closed tickets don't
-    // get closed_at re-stamped. Bulk form mirrors cancelLine() above.
-    // Same whitelist as cancelLine() above — kept inline since the bulk path
-    // shouldn't import a constant from the per-line block (separate scopes).
-    const NON_TERMINAL_STATUSES = ['new', 'assigned', 'in_progress', 'waiting', 'pending_approval'];
-    let cancelledTicketIds: string[] = [];
-    if (cancelledLineIds.length > 0) {
-      // Step 1c.4 cutover: target work_orders directly.
-      const { data: linkedTickets } = await this.supabase.admin
-        .from('work_orders')
-        .update({ status_category: 'closed', closed_at: new Date().toISOString() })
-        .in('linked_order_line_item_id', cancelledLineIds)
-        .eq('tenant_id', tenantId)
-        .in('status_category', NON_TERMINAL_STATUSES)
-        .select('id');
-      cancelledTicketIds = (linkedTickets as Array<{ id: string }> | null)?.map((t) => t.id) ?? [];
-    }
-    if (cancelledLineIds.length > 0) {
-      // Also clear pending_setup_trigger_args (00197) so a later approval
-      // grant doesn't re-fire the trigger for cancelled lines. See the
-      // single-line cancel path above for rationale.
-      await this.supabase.admin
-        .from('order_line_items')
-        .update({
-          fulfillment_status: 'cancelled',
-          pending_setup_trigger_args: null,
-        })
-        .eq('tenant_id', tenantId)
-        .in('id', cancelledLineIds);
-    }
-
-    // Cancel the booking row + its slots only when nothing remains alive
-    // (no fulfilled lines AND no kept lines). Otherwise the room stays
-    // booked for the lines that are still going.
-    //
-    // Post-canonicalisation (2026-05-02): the booking IS the bundle (00277:27).
-    // The pre-rewrite indirection through `bundle.primary_reservation_id`
-    // is gone — we cancel the booking and its slots directly using
-    // `args.bundle_id` (= the booking id). The `args.reservation_id` opt-out
-    // is now a no-op (see CancelBundleArgs comment).
-    const cancelledReservationIds: string[] = [];
-    const everythingCancelled = fulfilledLineIds.length === 0 && keep.size === 0;
-    if (everythingCancelled && !args.reservation_id) {
-      await this.supabase.admin
-        .from('booking_slots')
-        .update({ status: 'cancelled' })
-        .eq('tenant_id', tenantId)
-        .eq('booking_id', args.bundle_id)
-        .in('status', ['confirmed', 'checked_in', 'pending_approval']);
-      await this.supabase.admin
-        .from('bookings')
-        .update({ status: 'cancelled' })
-        .eq('tenant_id', tenantId)
-        .eq('id', args.bundle_id);
-      cancelledReservationIds.push(args.bundle_id);
-    }
-
-    // Approvals: if we're scoped to a single occurrence, rescope per
-    // line — full cancel would void approvals that still cover other
-    // occurrences in the bundle. Otherwise, cancel all pending approvals
-    // (this is a whole-bundle cancel).
-    let closedApprovalIds: string[] = [];
-    if (args.reservation_id) {
-      for (const line of cancellableLines) {
-        const closed = await this.rescopeApprovalsAfterLineCancel(
-          args.bundle_id,
-          line.id,
-          line.linked_ticket_id ? [line.linked_ticket_id] : [],
-          line.linked_asset_reservation_id ? [line.linked_asset_reservation_id] : [],
-        );
-        closedApprovalIds.push(...closed);
-      }
-    } else {
-      closedApprovalIds = await this.cancelPendingApprovalsForBundle(args.bundle_id);
-    }
-
-    void this.audit(tenantId, 'bundle.cancelled', 'booking_bundle', args.bundle_id, {
-      bundle_id: args.bundle_id,
-      cancelled_line_ids: cancelledLineIds,
-      cancelled_reservation_ids: cancelledReservationIds,
-      cancelled_ticket_ids: cancelledTicketIds,
-      cancelled_asset_reservation_ids: cancelledAssetReservationIds,
-      closed_approval_ids: closedApprovalIds,
-      fulfilled_line_ids: fulfilledLineIds,
-      reason: args.reason ?? null,
-      recurrence_scope: args.recurrence_scope ?? 'this',
-    });
-
-    // Slice 4: emit cross-module event for the visitor cascade adapter.
-    // Skip when the cancel was scoped to a single recurrence occurrence
-    // (`reservation_id` set) AND nothing was actually cancelled — the cascade
-    // walked but everything was fulfilled/kept; nothing for downstream
-    // subscribers to react to. Otherwise emit so the visitors module can
-    // cancel/alert the linked visitor invites per spec §10.2.
-    const somethingCancelled =
-      cancelledLineIds.length > 0 ||
-      cancelledReservationIds.length > 0 ||
-      cancelledTicketIds.length > 0 ||
-      cancelledAssetReservationIds.length > 0;
-    if (somethingCancelled) {
-      this.emitEvent({
-        kind: 'bundle.cancelled',
-        tenant_id: tenantId,
-        bundle_id: args.bundle_id,
-        occurred_at: new Date().toISOString(),
+    // X-Client-Request-Id is the command_operations idempotency boundary
+    // (mirrors cancelLine above + BundleService.attachServicesToBooking:266).
+    const clientRequestId = args.client_request_id;
+    if (!clientRequestId) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail:
+          'cancelBundle reached the RPC layer with no client_request_id ' +
+          'despite RequireClientRequestIdGuard (booking-audit Slice 6).',
       });
     }
 
+    const result = await this.callCancelOrderLinesRpc({
+      bookingId: args.bundle_id,
+      lineIds: null,
+      keepLineIds: args.keep_line_ids ?? null,
+      tenantId,
+      clientRequestId,
+      reason: args.reason,
+      actorAuthUid: args.actor_auth_uid ?? null,
+    });
+
+    // Preserve the legacy cancelBundle return shape. The RPC closes the
+    // booking + slots itself (booking_cancelled); the legacy
+    // `cancelled_reservation_ids` carried the booking id when the booking
+    // was cancelled (old cancelBundleImpl pushed args.bundle_id).
     return {
       bundle_id: args.bundle_id,
-      cancelled_line_ids: cancelledLineIds,
-      cancelled_reservation_ids: cancelledReservationIds,
-      cancelled_ticket_ids: cancelledTicketIds,
-      cancelled_asset_reservation_ids: cancelledAssetReservationIds,
-      closed_approval_ids: closedApprovalIds,
-      fulfilled_line_ids: fulfilledLineIds,
+      cancelled_line_ids: result.cancelled_line_ids,
+      cancelled_reservation_ids: result.booking_cancelled ? [args.bundle_id] : [],
+      cancelled_ticket_ids: result.cascaded.ticket_ids,
+      cancelled_asset_reservation_ids: result.cascaded.asset_reservation_ids,
+      closed_approval_ids: result.expired_approval_ids,
+      fulfilled_line_ids: result.fulfilled_line_ids,
     };
+  }
+
+  /**
+   * Shared thin-RPC dispatcher for cancelLine + cancelBundle. Mirrors the
+   * attach/cancel error-mapping pattern (BundleService.mapAttachRpcError
+   * bundle.service.ts:389-434 + ReservationService.cancelOne:512-523
+   * which routes recognised raises through mapRpcErrorToAppError with a
+   * booking-scoped 500 fallback).
+   */
+  private async callCancelOrderLinesRpc(args: {
+    bookingId: string;
+    lineIds: string[] | null;
+    keepLineIds: string[] | null;
+    tenantId: string;
+    clientRequestId: string;
+    reason?: string;
+    actorAuthUid: string | null;
+  }): Promise<CancelOrderLinesRpcResult> {
+    const idempotencyKey = buildCancelOrderLinesIdempotencyKey(
+      args.bookingId,
+      args.clientRequestId,
+    );
+    const { data: rpcData, error: rpcErr } = await this.supabase.admin.rpc(
+      'cancel_order_lines_with_cascade',
+      {
+        p_booking_id: args.bookingId,
+        p_line_ids: args.lineIds,
+        p_keep_line_ids: args.keepLineIds,
+        p_tenant_id: args.tenantId,
+        // F-CRIT-1: the RPC resolves this via `where u.auth_uid =
+        // p_actor_user_id and u.tenant_id = p_tenant_id` (00414:192-205).
+        // Booking-audit Slice 6 fix-cycle (Fix C): the controller threads
+        // its in-scope `authUid` (req.user.id = JWT subject = auth_uid, the
+        // SAME value `ReservationService.cancelOne` passes to
+        // `cancel_booking_with_cascade` at reservation.service.ts:505) so
+        // `audit_events.actor_user_id` gets the real `users.id` and
+        // `cancel_order_lines_with_cascade.actor_not_found` is correctly
+        // reachable for an unregistered actor. `null` for internal/system
+        // callers — F-CRIT-1 already skips resolution on null and records a
+        // system-attributed audit row (00414:192).
+        p_actor_user_id: args.actorAuthUid,
+        p_reason: args.reason ?? null,
+        p_idempotency_key: idempotencyKey,
+      },
+    );
+    if (rpcErr) {
+      throw this.mapCancelOrderLinesRpcError(rpcErr);
+    }
+    const result = (rpcData ?? null) as CancelOrderLinesRpcResult | null;
+    if (!result || !Array.isArray(result.cancelled_line_ids)) {
+      throw AppErrors.server('booking.unexpected_error', {
+        detail: 'cancel_order_lines_with_cascade returned an unexpected shape',
+      });
+    }
+    return result;
+  }
+
+  /**
+   * Map a PostgREST `cancel_order_lines_with_cascade` RPC error to the
+   * appropriate AppError. The recognised dotted codes
+   * (cancel_order_lines_with_cascade.{actor_not_found, booking_not_found,
+   * line_not_found, line_not_in_bundle, line_already_fulfilled,
+   * invalid_args} + command_operations.payload_mismatch) are all
+   * registered (STATUS_BY_CODE in common/errors/map-rpc-error.ts + the
+   * KnownErrorCode union/registry in packages/shared/src/error-codes.ts +
+   * EN/NL messages). `booking.cancel_failed` is the booking-scoped 500
+   * fallback for any unrecognised raise — identical posture to
+   * ReservationService.cancelOne:522.
+   */
+  private mapCancelOrderLinesRpcError(
+    rpcError: { code?: string; message?: string },
+  ): Error {
+    return mapRpcErrorToAppError(rpcError as Error, {
+      fallbackCode: 'booking.cancel_failed',
+    });
   }
 
   // ── Internals ──────────────────────────────────────────────────────────
@@ -478,210 +395,5 @@ export class BundleCascadeService {
       location_id: string;
     } | null) ?? null;
   }
-
-  private async orderIdsForBundle(
-    bundleId: string,
-    tenantId: string,
-  ): Promise<string[]> {
-    // Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
-    const { data, error } = await this.supabase.admin
-      .from('orders')
-      .select('id')
-      .eq('booking_id', bundleId)
-      .eq('tenant_id', tenantId);
-    if (error) throw error;
-    return ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
-  }
-
-  /**
-   * Cascade-cancel orders that belong to a booking. Used by
-   * ReservationService.cancelOne and RecurrenceService.cancelForward — both
-   * already validated the booking cancel; this is the orders cleanup.
-   *
-   * Post-canonicalisation (2026-05-02): the booking IS the bundle, so the
-   * caller's `reservation_id` is already the bundle id. Pre-rewrite this
-   * walked `orders.linked_reservation_id` to find the parent bundle; under
-   * the new schema there's no walk — `args.reservation_id` IS the booking id
-   * (Slice A return-shape contract). The argument is named `reservation_id`
-   * for caller-signature stability through the rewrite.
-   *
-   * No-op when the booking has no orders attached (the bundle-impl filters
-   * `orders` by `booking_id` and short-circuits an empty list).
-   */
-  async cancelOrdersForReservation(args: {
-    reservation_id: string;
-    reason?: string;
-  }): Promise<void> {
-    try {
-      await this.cancelBundleImpl(
-        { bundle_id: args.reservation_id, reason: args.reason },
-        { skipVisibility: true },
-      );
-    } catch (err) {
-      this.log.warn(
-        `cancelOrdersForReservation ${args.reservation_id} failed: ${(err as Error).message}`,
-      );
-    }
-  }
-
-  private async rescopeApprovalsAfterLineCancel(
-    bundleId: string,
-    cancelledLineId: string,
-    cancelledTicketIds: string[] = [],
-    cancelledAssetReservationIds: string[] = [],
-  ): Promise<string[]> {
-    const tenantId = TenantContext.current().id;
-    const { data, error } = await this.supabase.admin
-      .from('approvals')
-      .select('id, scope_breakdown')
-      .eq('tenant_id', tenantId)
-      .eq('target_entity_id', bundleId)
-      .eq('status', 'pending');
-    if (error) throw error;
-
-    const ticketSet = new Set(cancelledTicketIds);
-    const assetSet = new Set(cancelledAssetReservationIds);
-    const closed: string[] = [];
-    for (const row of (data ?? []) as Array<{ id: string; scope_breakdown: Record<string, unknown> }>) {
-      const scope = (row.scope_breakdown ?? {}) as {
-        order_line_item_ids?: string[];
-        ticket_ids?: string[];
-        asset_reservation_ids?: string[];
-        reasons?: unknown;
-      };
-      const newLines = (scope.order_line_item_ids ?? []).filter((id) => id !== cancelledLineId);
-      const newTickets = (scope.ticket_ids ?? []).filter((id) => !ticketSet.has(id));
-      const newAssets = (scope.asset_reservation_ids ?? []).filter(
-        (id) => !assetSet.has(id),
-      );
-      const updated: Record<string, unknown> = {
-        ...scope,
-        order_line_item_ids: newLines,
-        ticket_ids: newTickets,
-        asset_reservation_ids: newAssets,
-      };
-
-      // If the entire scope (across all entity arrays) is empty, the approval
-      // covers nothing — close it.
-      const stillCovers = ENTITY_KEYS.some((key) => {
-        const arr = (updated[key] as string[] | undefined) ?? [];
-        return arr.length > 0;
-      });
-      // Cross-tenant write fix (codex post-fix review 2026-05-08): the
-      // approvals row was already loaded under tenantId above, but writes
-      // by id alone bypass RLS via supabase.admin. Add explicit tenant
-      // filter for defense-in-depth.
-      if (!stillCovers) {
-        await this.supabase.admin
-          .from('approvals')
-          .update({ status: 'expired', responded_at: new Date().toISOString(), comments: 'Auto-closed after scope drop' })
-          .eq('id', row.id)
-          .eq('tenant_id', tenantId);
-        closed.push(row.id);
-      } else {
-        await this.supabase.admin
-          .from('approvals')
-          .update({ scope_breakdown: updated })
-          .eq('id', row.id)
-          .eq('tenant_id', tenantId);
-      }
-    }
-    return closed;
-  }
-
-  private async cancelPendingApprovalsForBundle(bundleId: string): Promise<string[]> {
-    const tenantId = TenantContext.current().id;
-    const { data, error } = await this.supabase.admin
-      .from('approvals')
-      .select('id')
-      .eq('tenant_id', tenantId)
-      .eq('target_entity_id', bundleId)
-      .eq('status', 'pending');
-    if (error) throw error;
-    const ids = ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
-    if (ids.length === 0) return [];
-    // Cross-tenant write fix: bulk update by id list — add tenant filter.
-    await this.supabase.admin
-      .from('approvals')
-      .update({ status: 'expired', responded_at: new Date().toISOString(), comments: 'Bundle cancelled; voiding approval' })
-      .eq('tenant_id', tenantId)
-      .in('id', ids);
-    return ids;
-  }
-
-  /**
-   * Best-effort emit. Subscriber failures are isolated by the bus; an
-   * unexpected throw (e.g. someone subscribed synchronously and threw)
-   * is logged but never propagated — cancelLine/cancelBundle have already
-   * mutated state, and re-throwing would mislead the caller into thinking
-   * the cancel itself failed.
-   */
-  private emitEvent(event: BundleEvent): void {
-    try {
-      this.eventBus.emit(event);
-    } catch (err) {
-      this.log.warn(
-        `bundle event emit failed for ${event.kind}: ${(err as Error).message}`,
-      );
-    }
-  }
-
-  /**
-   * Map an order_line_items row to its bundle-event line_kind. Falls back to
-   * 'other' on lookup failure — emit shape is fixed, so an unknown kind is
-   * safer than dropping the event.
-   */
-  private async lineKindForOli(
-    oliId: string,
-    tenantId: string,
-  ): Promise<'visitor' | 'room' | 'catering' | 'av' | 'other'> {
-    try {
-      const { data } = await this.supabase.admin
-        .from('order_line_items')
-        .select('policy_snapshot')
-        .eq('id', oliId)
-        .eq('tenant_id', tenantId)
-        .maybeSingle();
-      const snapshot = (data as { policy_snapshot: Record<string, unknown> | null } | null)
-        ?.policy_snapshot ?? null;
-      const serviceType = (snapshot && typeof snapshot === 'object'
-        ? (snapshot as { service_type?: string }).service_type
-        : null) ?? null;
-      if (serviceType === 'catering') return 'catering';
-      if (serviceType === 'av' || serviceType === 'audiovisual') return 'av';
-      // visitors aren't order_line_items in v1, so we never expect 'visitor' here.
-      return 'other';
-    } catch {
-      return 'other';
-    }
-  }
-
-  private async audit(
-    tenantId: string,
-    eventType: string,
-    entityType: string,
-    entityId: string | null,
-    details: Record<string, unknown>,
-  ) {
-    try {
-      await this.supabase.admin.from('audit_events').insert({
-        tenant_id: tenantId,
-        event_type: eventType,
-        entity_type: entityType,
-        entity_id: entityId,
-        details,
-      });
-    } catch (err) {
-      this.log.warn(`audit insert failed for ${eventType}: ${(err as Error).message}`);
-    }
-  }
 }
 
-const FULFILLED_STATUSES = new Set(['confirmed', 'preparing', 'delivered']);
-const ENTITY_KEYS = [
-  'reservation_ids',
-  'order_ids',
-  'order_line_item_ids',
-  'ticket_ids',
-  'asset_reservation_ids',
-] as const;

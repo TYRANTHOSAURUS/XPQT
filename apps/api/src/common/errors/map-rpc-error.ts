@@ -183,6 +183,15 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // shape as cancel_booking_with_cascade.* (this family's convention).
   'split_recurrence_series.actor_not_found': 404,
   'split_recurrence_series.not_found': 404,
+  // Booking-audit remediation Slice 6 — cancel_order_lines_with_cascade
+  // RPC (00414). actor_not_found: F-CRIT-1 auth_uid resolution miss.
+  // booking_not_found: the booking row is missing / in a different
+  // tenant. line_not_found: a named p_line_ids entry doesn't exist in
+  // this tenant. Same 404 shape as the cancel_booking_with_cascade.*
+  // family (this family's convention).
+  'cancel_order_lines_with_cascade.actor_not_found': 404,
+  'cancel_order_lines_with_cascade.booking_not_found': 404,
+  'cancel_order_lines_with_cascade.line_not_found': 404,
 
   // ── 409 conflict ─────────────────────────────────────────────────
   // payload_mismatch: the client reused the same X-Client-Request-Id
@@ -298,6 +307,18 @@ const STATUS_BY_CODE: Partial<Record<KnownErrorCode, number>> = {
   // valid jsonb, the booking state blocks the action. Mirrors
   // cancel_booking_with_cascade.not_recurring's shape.
   'split_recurrence_series.not_recurring': 422,
+  // Booking-audit remediation Slice 6 — cancel_order_lines_with_cascade
+  // RPC (00414). line_not_in_bundle: a named line exists but hangs off no
+  // order linked to this booking. line_already_fulfilled: a named line is
+  // in the protected fulfilled set (confirmed|preparing|delivered) — the
+  // live cancelLine surfaces a 403, but under the RPC family this is a
+  // 422 (payload valid, booking-line STATE blocks the action; same shape
+  // as cancel_booking_with_cascade.not_recurring). invalid_args:
+  // p_line_ids supplied as an empty array. All 422 — payload is valid
+  // jsonb, the arg/booking-line state blocks the action.
+  'cancel_order_lines_with_cascade.line_not_in_bundle': 422,
+  'cancel_order_lines_with_cascade.line_already_fulfilled': 422,
+  'cancel_order_lines_with_cascade.invalid_args': 422,
   // B.2.A semantic re-derivation gates — RPCs raise these when the
   // TS-side plan disagrees with the server's recomputation at write time
   // (workflow/SLA/scope-override changed, effective location resolved

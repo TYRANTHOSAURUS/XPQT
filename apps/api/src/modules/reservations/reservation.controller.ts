@@ -646,7 +646,15 @@ export class ReservationController {
    * parent bundle and checks `BundleVisibilityService.assertVisible` against
    * the supplied context).
    */
+  /**
+   * Booking-audit Slice 6 (audit 03 P1-4) — producer route. The
+   * `cancel_order_lines_with_cascade` RPC (00414) is command_operations-
+   * idempotent; without the guard a network blip mid-cascade would
+   * silently re-run the cancel. Mirrors the cancel/edit/attach producer
+   * routes (:391 /:440 /:513).
+   */
   @Delete(':id/services/:lineId')
+  @UseGuards(RequireClientRequestIdGuard)
   async cancelServiceLine(
     @Req() request: Request,
     @Param('id') id: string,
@@ -664,13 +672,36 @@ export class ReservationController {
     };
     this.assertReservationWritable(r, ctx);
 
+    // Slice 6: thread the X-Client-Request-Id (RequireClientRequestIdGuard
+    // above guarantees it is present) into the 00414 RPC's
+    // command_operations idempotency key. Defense-in-depth null check
+    // mirrors the editOne/cancelOne/attachServices sibling routes
+    // (:309-318 / :398-406 / :531-537).
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    if (!clientRequestId) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail:
+          'cancelServiceLine reached the service layer with no clientRequestId despite RequireClientRequestIdGuard.',
+      });
+    }
+
     // Build the bundle visibility context from the same authUid; the
     // cascade service uses `rooms.{read_all,write_all,admin}` permissions
     // off this. We've already passed the reservation write-gate above —
     // this assert is the cascade service's own defence-in-depth.
     const bundleCtx = await this.bundleVisibility.loadContext(authUid, tenantId);
+    // Slice 6 fix-cycle (Fix C): thread the in-scope authUid (req.user.id
+    // = JWT subject = auth_uid) so F-CRIT-1 (00414:192-205) resolves it to
+    // users.id for audit_events.actor_user_id. Cancel-family-consistent
+    // with ReservationService.cancelOne → cancel_booking_with_cascade
+    // (reservation.service.ts:505 passes actor.auth_uid).
     return this.bundleCascade.cancelLine(
-      { line_id: lineId, reason: body?.reason },
+      {
+        line_id: lineId,
+        reason: body?.reason,
+        client_request_id: clientRequestId,
+        actor_auth_uid: authUid,
+      },
       bundleCtx,
     );
   }
@@ -689,7 +720,13 @@ export class ReservationController {
    *
    * Same write-gate as `editServiceLine` / `cancelServiceLine`.
    */
+  /**
+   * Booking-audit Slice 6 (audit 03 P1-4) — producer route (same
+   * rationale as `cancelServiceLine` above; the 00414 RPC is
+   * command_operations-idempotent on the bundle path too).
+   */
   @Delete(':id/bundle')
+  @UseGuards(RequireClientRequestIdGuard)
   async cancelBundle(
     @Req() request: Request,
     @Param('id') id: string,
@@ -710,13 +747,28 @@ export class ReservationController {
     };
     this.assertReservationWritable(r, ctx);
 
+    // Slice 6: thread the X-Client-Request-Id (guard guarantees presence)
+    // into the 00414 RPC's command_operations key. Defense-in-depth null
+    // check mirrors the sibling producer routes.
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    if (!clientRequestId) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail:
+          'cancelBundle reached the service layer with no clientRequestId despite RequireClientRequestIdGuard.',
+      });
+    }
+
     const bundleCtx = await this.bundleVisibility.loadContext(authUid, tenantId);
+    // Slice 6 fix-cycle (Fix C): thread authUid as actor_auth_uid (same
+    // rationale as cancelServiceLine above; cancel-family-consistent).
     return this.bundleCascade.cancelBundle(
       {
         bundle_id: id,
         keep_line_ids: body?.keep_line_ids,
         recurrence_scope: body?.recurrence_scope,
         reason: body?.reason,
+        client_request_id: clientRequestId,
+        actor_auth_uid: authUid,
       },
       bundleCtx,
     );

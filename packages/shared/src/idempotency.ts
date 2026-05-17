@@ -519,3 +519,42 @@ export function buildAttachServicesIdempotencyKey(
  * identical; redeclared here so `@prequest/shared` has no app dependency).
  */
 export type RecurrenceCancelScope = 'this' | 'this_and_following' | 'series';
+
+/**
+ * Prefix for the `cancel_order_lines_with_cascade` outer idempotency key.
+ * Booking-audit remediation Slice 6 (audit 03 P1-4). Paired with the
+ * `cancel_order_lines_with_cascade(...)` RPC (migration 00414), which
+ * gates on `command_operations` (mirroring the cancel-family
+ * `cancel_booking_with_cascade` 00408). Namespaced separately from every
+ * other prefix (including `booking:cancel`) so a per-line / bundle
+ * service-cancel retry can never collide with a booking-cancel / edit /
+ * split / attach / dispatch / patch call on the same booking.
+ *
+ * Citations:
+ *   - supabase/migrations/00414_cancel_order_lines_with_cascade.sql
+ *     (RPC accepts `p_idempotency_key text`, gates on command_operations)
+ *   - apps/api/src/modules/booking-bundles/bundle-cascade.service.ts
+ *     (BundleCascadeService.cancelLine / cancelBundle — thin RPC wrappers)
+ */
+export const CANCEL_ORDER_LINES_IDEMPOTENCY_KEY_PREFIX = 'booking:lines:cancel';
+
+/**
+ * Build the outer idempotency key for `cancel_order_lines_with_cascade`.
+ * Shape: `booking:lines:cancel:<booking_id>:<clientRequestId>`
+ *
+ * Same booking + same clientRequestId ⇒ same key ⇒ command_operations
+ * short-circuits the second call and returns the cached result (no
+ * re-cascade). **No actor in the key** per F-CRIT-2 / plan-C1 (dispatch
+ * RPC): clientRequestId is the deduplication boundary. No scope/op
+ * discriminator — the RPC's INTENT-hashed payload gate detects "same key,
+ * different line set" and raises command_operations.payload_mismatch
+ * (so a per-line cancel and a bundle cancel of the same booking under the
+ * same reused clientRequestId surface as a 409, never a silent
+ * cached_result of the wrong op).
+ */
+export function buildCancelOrderLinesIdempotencyKey(
+  bookingId: string,
+  clientRequestId: string,
+): string {
+  return `${CANCEL_ORDER_LINES_IDEMPOTENCY_KEY_PREFIX}:${bookingId}:${clientRequestId}`;
+}

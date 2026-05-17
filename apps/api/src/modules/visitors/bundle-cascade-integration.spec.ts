@@ -1,27 +1,37 @@
 /**
- * Slice 4 — end-to-end integration of:
- *   - emit side: BundleCascadeService.cancelBundle, ReservationService.editOne
- *   - bus: BundleEventBus (slice 2c)
- *   - subscriber: BundleCascadeAdapter (slice 2c)
+ * Slice 4 + Booking-audit Slice 6 (audit 03 P1-4) — re-pointed.
  *
- * This wires REAL emit + REAL bus + REAL adapter to a mock DbService /
+ * MOVE / ROOM-CHANGE path (ReservationService.editOne): UNCHANGED — still
+ * the in-process BundleEventBus → BundleCascadeAdapter path (editOne's
+ * visitor cascade emit is NOT in Slice 6 scope; Slice 6 only touched
+ * cancelLine/cancelBundle).
+ *
+ * CANCEL path (BundleCascadeService.cancelBundle): RE-POINTED. The
+ * in-process bus emit is GONE — cancelBundle is now a thin wrapper over
+ * the atomic `cancel_order_lines_with_cascade` RPC (00414), which emits a
+ * DURABLE `bundle.services_cancelled` outbox event in-tx. The visitor
+ * cascade runs behind the new durable BundleServicesCancelledCascadeHandler
+ * → BundleCascadeAdapter.handleBundleCancelled. The cancel tests therefore:
+ *   1. Mock the RPC (supabase.admin.rpc).
+ *   2. Call cancelBundle (asserts the wrapper called the RPC).
+ *   3. Synthesize the `bundle.services_cancelled` outbox event the RPC
+ *      would have emitted in-tx and feed it to the REAL durable handler →
+ *      REAL adapter (the production drain path), then assert the same
+ *      §10.2 visitor cascade outcomes.
+ *
+ * This wires REAL emit/handler + REAL adapter to a mock DbService /
  * VisitorService so we can exercise the full §10.2 cascade matrix without
- * a database. Each test:
- *   1. Set up bundle + visitor row(s) with a chosen status.
- *   2. Trigger a bundle change (move / cancel / room).
- *   3. Drain the microtask queue (the adapter handler is async).
- *   4. Assert the visitor-side action: transitionStatus call OR an
- *      `update public.visitors` SQL OR a domain_events intent insert.
+ * a database.
  *
  * Spec: docs/superpowers/specs/2026-05-01-visitor-management-v1-design.md §10
- * Plan task 4.3 — verify each cascade-matrix cell end-to-end.
  */
 
 import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
-import { AppError } from '../../common/errors';
 import { BundleEventBus } from '../booking-bundles/bundle-event-bus';
 import { ReservationService } from '../reservations/reservation.service';
 import { TenantContext } from '../../common/tenant-context';
+import { BundleServicesCancelledCascadeHandler } from '../outbox/handlers/bundle-services-cancelled-cascade.handler';
+import type { OutboxEvent } from '../outbox/outbox.types';
 import { BundleCascadeAdapter } from './bundle-cascade.adapter';
 import type { VisitorStatus } from './dto/transition-status.dto';
 
@@ -66,6 +76,9 @@ function buildHarness(opts: {
   const transitionCalls: Array<{ visitor_id: string; to: VisitorStatus }> = [];
   const visitorUpdates: Array<{ sql: string; params: unknown[] }> = [];
   const intentInserts: Array<{ event_type: string; payload: Record<string, unknown> }> = [];
+  // Booking-audit Slice 6: records cancel_order_lines_with_cascade RPC
+  // invocations (cancelBundle is now a thin wrapper over the RPC).
+  const cancelRpcCalls: Array<{ args: { p_booking_id?: string; p_line_ids?: string[] | null } }> = [];
 
   // === DbService mock for the visitor adapter ===
   // Adapter now reads visitor under FOR SHARE inside `db.tx` (full-review
@@ -206,7 +219,30 @@ function buildHarness(opts: {
       // recomputes booking-level mirrors atomically.
       // Mock applies the FIRST slot_patch from the assembled plan to
       // slotRow + bookingRow so post-RPC reads reflect the new state.
-      rpc: jest.fn((fn: string, args: { p_plan?: { slot_patches?: Array<{ space_id?: string; start_at?: string; end_at?: string }> } }) => {
+      rpc: jest.fn((fn: string, args: {
+        p_plan?: { slot_patches?: Array<{ space_id?: string; start_at?: string; end_at?: string }> };
+        p_booking_id?: string;
+        p_line_ids?: string[] | null;
+      }) => {
+        // Booking-audit Slice 6 — cancelBundle is now a thin wrapper over
+        // this RPC. Record the call so the test can synthesize the
+        // `bundle.services_cancelled` outbox event the RPC emits in-tx,
+        // then drive the durable handler → adapter (production path).
+        if (fn === 'cancel_order_lines_with_cascade') {
+          cancelRpcCalls.push({ args });
+          return Promise.resolve({
+            data: {
+              cancelled_line_ids: opts.bundleLines?.map((l) => l.id) ?? [],
+              cascaded: { ticket_ids: [], asset_reservation_ids: [] },
+              rescoped_approval_ids: [],
+              expired_approval_ids: [],
+              booking_cancelled: true,
+              fulfilled_line_ids: [],
+              kept_line_ids: [],
+            },
+            error: null,
+          });
+        }
         if (fn === 'edit_booking') {
           const slotPatch = args.p_plan?.slot_patches?.[0] ?? {};
           if (slotPatch.start_at !== undefined) {
@@ -451,7 +487,47 @@ function buildHarness(opts: {
   const adapter = new BundleCascadeAdapter(db as never, visitors as never, bus as never);
   adapter.resubscribe();
 
-  const cascadeService = new BundleCascadeService(supabase as never, visibility as never, bus);
+  // Booking-audit Slice 6: BundleCascadeService no longer takes the bus
+  // (cancelLine/cancelBundle are thin RPC wrappers).
+  const cascadeService = new BundleCascadeService(supabase as never, visibility as never);
+
+  // The REAL durable handler that drains `bundle.services_cancelled` and
+  // drives BundleCascadeAdapter.handleBundleCancelled (production path).
+  const servicesCancelledHandler = new BundleServicesCancelledCascadeHandler(
+    adapter as never,
+  );
+
+  // Synthesize the `bundle.services_cancelled` outbox event the 00414 RPC
+  // emits in-tx for a bundle cancel + feed it to the real handler. The
+  // handler runs the adapter inside its own TenantContext.run (the
+  // production worker path), so the cascade fires exactly as it would
+  // after the outbox worker drains the event.
+  const driveBundleServicesCancelled = async (
+    tenantId: string,
+    bookingId: string,
+  ): Promise<void> => {
+    const event: OutboxEvent = {
+      id: 'evt-bundle-services-cancelled',
+      tenant_id: tenantId,
+      event_type: 'bundle.services_cancelled',
+      event_version: 1,
+      aggregate_type: 'booking',
+      aggregate_id: bookingId,
+      payload: {
+        tenant_id: tenantId,
+        booking_id: bookingId,
+        cancelled_line_ids: [],
+        booking_cancelled: true,
+      },
+      payload_hash: 'h',
+      idempotency_key: `bundle.services_cancelled:${bookingId}:k`,
+      available_at: new Date().toISOString(),
+      attempts: 0,
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    } as unknown as OutboxEvent;
+    await servicesCancelledHandler.handle(event);
+  };
   const reservationVisibility = {
     loadContextByUserId: jest.fn(async () => ({})),
     assertVisible: () => {},
@@ -521,6 +597,8 @@ function buildHarness(opts: {
     transitionCalls,
     visitorUpdates,
     intentInserts,
+    cancelRpcCalls,
+    driveBundleServicesCancelled,
     teardown: () => adapter.unsubscribe() };
 }
 
@@ -648,13 +726,10 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
     }
   });
 
-  it('cancel whole bundle → all linked visitors transition to cancelled', async () => {
-    const V_OTHER = 'vvvv0002-2222-4222-8222-vvvvvvvvvvvv';
+  it('cancel whole bundle (Slice 6) → RPC called + durable handler cascades visitors to cancelled', async () => {
     const h = buildHarness({
       visitor: { id: VISITOR, tenant_id: TENANT, status: 'expected' },
-      visitorIdsForBundle: [VISITOR, V_OTHER],
-      // cancel cascade walks bundle lines; harness returns one ordered line so
-      // somethingCancelled = true and the bundle.cancelled event fires.
+      visitorIdsForBundle: [VISITOR],
       bundleLines: [
         {
           id: 'oli-1',
@@ -663,29 +738,31 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
           linked_ticket_id: null,
           order_id: ORDER },
       ] });
-    // Visitor V_OTHER read uses the same loadVisitor row. To keep the harness
-    // simple, mirror the status onto the queryOne lookup for V_OTHER too.
-    (h as unknown as {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      visitors: any;
-    }).visitors.transitionStatus = jest.fn(async (visitor_id: string, to: VisitorStatus) => {
-      h.transitionCalls.push({ visitor_id, to });
-    });
-
     try {
+      // 1. cancelBundle is now a thin wrapper over the 00414 RPC.
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
         () =>
-          h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
-            user_id: USER,
-            person_id: PERSON,
-            has_override: false } as never),
+          h.cascadeService.cancelBundle(
+            { bundle_id: BUNDLE, client_request_id: CLIENT_REQUEST_ID },
+            {
+              user_id: USER,
+              person_id: PERSON,
+              has_override: false } as never),
       );
+      // The wrapper called the RPC with p_line_ids=null (cancel-all).
+      expect(h.cancelRpcCalls).toHaveLength(1);
+      expect(h.cancelRpcCalls[0]!.args.p_booking_id).toBe(BUNDLE);
+      expect(h.cancelRpcCalls[0]!.args.p_line_ids).toBeNull();
+      // No in-process cascade yet (the bus emit is GONE).
+      expect(h.transitionCalls).toHaveLength(0);
+
+      // 2. The RPC emits `bundle.services_cancelled` in-tx; the durable
+      // handler drains it → adapter.handleBundleCancelled.
+      await h.driveBundleServicesCancelled(TENANT, BUNDLE);
       await drainMicrotasks();
 
       // VISITOR was status=expected — adapter cascades to cancelled.
-      // V_OTHER returns null from queryOne (only VISITOR is registered) —
-      // adapter no-ops on missing row. Verify VISITOR was cancelled.
       const visitorTransitions = h.transitionCalls.filter((c) => c.visitor_id === VISITOR);
       expect(visitorTransitions).toHaveLength(1);
       expect(visitorTransitions[0]!.to).toBe('cancelled');
@@ -694,9 +771,10 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
     }
   });
 
-  it('cancel whole bundle → host alert (not cancellation) when visitor already arrived', async () => {
+  it('cancel whole bundle (Slice 6) → host alert (not cancellation) when visitor already arrived', async () => {
     const h = buildHarness({
       visitor: { id: VISITOR, tenant_id: TENANT, status: 'arrived' },
+      visitorIdsForBundle: [VISITOR],
       bundleLines: [
         {
           id: 'oli-1',
@@ -709,16 +787,20 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
       await TenantContext.run(
         { id: TENANT, slug: 'test', tier: 'standard' },
         () =>
-          h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
-            user_id: USER,
-            person_id: PERSON,
-            has_override: false } as never),
+          h.cascadeService.cancelBundle(
+            { bundle_id: BUNDLE, client_request_id: CLIENT_REQUEST_ID },
+            {
+              user_id: USER,
+              person_id: PERSON,
+              has_override: false } as never),
       );
+      await h.driveBundleServicesCancelled(TENANT, BUNDLE);
       await drainMicrotasks();
 
       // Visitor already on-site — must NOT auto-transition.
       expect(h.transitionCalls).toHaveLength(0);
-      // Host alert intent fired instead.
+      // Host alert intent fired instead (adapter synthesizes a per-visitor
+      // bundle.line.cancelled internally — reason stays bundle.line.cancelled).
       const hostAlert = h.intentInserts.filter(
         (i) => i.event_type === 'visitor.cascade.host_alert',
       );
@@ -729,22 +811,15 @@ describe('Bundle cascade — end-to-end (slice 4 emit + slice 2c adapter)', () =
     }
   });
 
-  it('cross-tenant: events from tenant B do not affect tenant A visitor', async () => {
+  it('cross-tenant (Slice 6): a bundle.services_cancelled event for tenant B does not affect tenant A visitor', async () => {
     const OTHER = '99999999-9999-4999-8999-999999999999';
     const h = buildHarness({
       visitor: { id: VISITOR, tenant_id: TENANT, status: 'expected' } });
     try {
-      // Run the cancelBundle in OTHER tenant context — the cascade emits an
-      // event whose tenant_id=OTHER, and the adapter's loadVisitor query
-      // filters on `tenant_id = $2 = OTHER`, finding nothing for VISITOR.
-      await TenantContext.run(
-        { id: OTHER, slug: 'other', tier: 'standard' },
-        () =>
-          h.cascadeService.cancelBundle({ bundle_id: BUNDLE }, {
-            user_id: USER,
-            person_id: PERSON,
-            has_override: false } as never),
-      );
+      // Drive the durable handler for OTHER tenant. The adapter resolves
+      // visitors by `tenant_id = $1 = OTHER`, finding nothing for the
+      // tenant-A VISITOR row → no leakage.
+      await h.driveBundleServicesCancelled(OTHER, BUNDLE);
       await drainMicrotasks();
 
       // Visitor untouched.

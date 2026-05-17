@@ -2021,6 +2021,34 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon de reeks niet bijwerken',
     detail: 'Deze reservering hoort niet bij een terugkerende reeks. Bewerk in plaats daarvan de losse reservering.',
   },
+  // ─── Booking-audit remediation Slice 6 — cancel_order_lines_with_cascade ─
+  // NL-vertaling van de api en-tabel; audit 03 P1-4. Voice in lijn met de
+  // cancel_booking_with_cascade.*-familie met "de reservering" → "deze
+  // service" waar het de service-/regelannulering betreft.
+  'cancel_order_lines_with_cascade.actor_not_found': {
+    title: 'Kon deze service niet annuleren',
+    detail: 'Je account is niet geregistreerd in deze tenant. Meld je opnieuw aan of neem contact op met een beheerder.',
+  },
+  'cancel_order_lines_with_cascade.booking_not_found': {
+    title: 'Kon deze service niet annuleren — niet gevonden',
+    detail: 'Deze reservering bestaat niet meer, of je hebt er geen toegang toe.',
+  },
+  'cancel_order_lines_with_cascade.line_not_found': {
+    title: 'Kon deze service niet annuleren — niet gevonden',
+    detail: 'Deze serviceregel bestaat niet meer, of je hebt er geen toegang toe.',
+  },
+  'cancel_order_lines_with_cascade.line_not_in_bundle': {
+    title: 'Kon deze service niet annuleren',
+    detail: 'Deze serviceregel hoort niet bij deze reservering. Vernieuw de pagina en probeer het opnieuw.',
+  },
+  'cancel_order_lines_with_cascade.line_already_fulfilled': {
+    title: 'Kon deze service niet annuleren',
+    detail: 'Deze service is al uitgevoerd en kan niet worden geannuleerd. Neem contact op met het uitvoeringsteam.',
+  },
+  'cancel_order_lines_with_cascade.invalid_args': {
+    title: 'Kon deze service niet annuleren',
+    detail: 'De annuleringsaanvraag was ongeldig. Vernieuw de pagina en probeer het opnieuw.',
+  },
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // NL-vertaling van de api en-tabel; spec §3.6 + §3.12.
   'spawn_link.parent_terminated': {

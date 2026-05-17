@@ -2074,6 +2074,36 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't update the series",
     detail: 'This booking is not part of a recurring series. Edit the single occurrence instead.',
   },
+  // ─── Booking-audit remediation Slice 6 — cancel_order_lines_with_cascade ─
+  // RPC 00414 (audit 03 P1-4). Voice mirrors the cancel_booking_with_
+  // cascade.* family exactly with "the booking" → "this service" where the
+  // surface is the per-line / services cancel. actor_not_found /
+  // booking_not_found = the cancel_booking_with_cascade.* wording;
+  // line_* / invalid_args = the same shape scoped to the service line.
+  'cancel_order_lines_with_cascade.actor_not_found': {
+    title: "Couldn't cancel this service",
+    detail: 'Your account is not registered in this tenant. Sign in again or contact an administrator.',
+  },
+  'cancel_order_lines_with_cascade.booking_not_found': {
+    title: "Couldn't cancel this service — not found",
+    detail: "This booking no longer exists, or you don't have access to it.",
+  },
+  'cancel_order_lines_with_cascade.line_not_found': {
+    title: "Couldn't cancel this service — not found",
+    detail: "This service line no longer exists, or you don't have access to it.",
+  },
+  'cancel_order_lines_with_cascade.line_not_in_bundle': {
+    title: "Couldn't cancel this service",
+    detail: 'This service line is not part of this booking. Refresh the page and try again.',
+  },
+  'cancel_order_lines_with_cascade.line_already_fulfilled': {
+    title: "Couldn't cancel this service",
+    detail: 'This service has been fulfilled and cannot be cancelled. Contact the fulfilment team.',
+  },
+  'cancel_order_lines_with_cascade.invalid_args': {
+    title: "Couldn't cancel this service",
+    detail: 'The cancellation request was invalid. Refresh the page and try again.',
+  },
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // Spec §3.6 + §3.12. Three guards that block invalid spawn-link writes
   // before the engine commits. 422 surfaces as inline editor copy — the
