@@ -1,7 +1,7 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { AppError, AppErrors } from '../../common/errors';
 import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
-import { buildEditBookingIdempotencyKey } from '@prequest/shared';
+import { buildCancelBookingIdempotencyKey, buildEditBookingIdempotencyKey } from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { assertTenantOwned, assertTenantOwnedAll, UUID_RE } from '../../common/tenant-validation';
@@ -57,6 +57,14 @@ export class ReservationService {
     private readonly visibility: ReservationVisibilityService,
     @Optional() private readonly recurrence?: RecurrenceService,
     @Optional() private readonly notifications?: BookingNotificationsService,
+    // Booking-audit Slice 2 (audit 03 P0-1/P1-5): the cancelOne
+    // bundle-cascade path is RETIRED — the atomic
+    // cancel_booking_with_cascade RPC (00408) owns the whole cascade in
+    // one transaction. This injection is kept ONLY to preserve the
+    // positional constructor shape (DI + the many `new ReservationService(
+    // a,b,c,undefined,undefined,undefined,...)` unit-test constructions);
+    // it is intentionally never read. `void`-referenced below so
+    // noUnusedLocals stays satisfied without rippling ~6 spec files.
     @Optional() private readonly bundleCascade?: BundleCascadeService,
     @Optional() private readonly bundleEventBus?: BundleEventBus,
     // B.4 step 2D-D — `editSlot` cuts over to `assembleEditPlan` +
@@ -65,7 +73,11 @@ export class ReservationService {
     // editSlot path asserts non-null at call time and surfaces a 500
     // if an instance lands in that path without the dependency wired.
     @Optional() private readonly assembleEditPlan?: AssembleEditPlanService,
-  ) {}
+  ) {
+    // Retired dependency (see bundleCascade above) — referenced so
+    // noUnusedLocals doesn't flag the positional-stability injection.
+    void this.bundleCascade;
+  }
 
   // === Reads ===
 
@@ -429,11 +441,21 @@ export class ReservationService {
    * Soft cancel. status='cancelled'. Sets cancellation_grace_until so a
    * follow-up restore can revert within the grace window.
    *
-   * Post-canonicalisation: per-slot status (00277:142-144) is the
-   * authoritative cancel signal. We update the booking's slots; the
-   * booking-level status mirror is left in sync with the primary slot's
-   * state for v1 single-slot bookings — multi-slot booking-level rollup
-   * is a separate concern (a future view will compute it).
+   * Booking-audit remediation Slice 2 (audit 03 P0-1 / P1-5): this is
+   * now a ONE-CALL wrapper over the atomic `cancel_booking_with_cascade`
+   * RPC (00408). The four choreographed writes (booking_slots, bookings,
+   * audit_events, swallowed bundleCascade) + the in-process onCancelled
+   * notification are GONE — replaced by the single transaction in the
+   * RPC + the durable BookingCancelledCascadeHandler (consumes the
+   * `booking.cancel_cascade_required` event the RPC emits). `recurrence
+   * .cancelForward` is no longer called from here; the RPC handles all
+   * three scopes via p_scope (the forward/series set is resolved + locked
+   * + capped inside the tx). Equivalence contract:
+   * docs/follow-ups/cancel-booking-equivalence-checklist.md.
+   *
+   * Caller signature + controller response shape are preserved:
+   *   - scope 'this'                → Reservation (post-cancel projection)
+   *   - 'this_and_following'/'series' → { scope, cancelled, pivot }
    */
   async cancelOne(id: string, actor: ActorContext, opts: {
     reason?: string;
@@ -445,82 +467,80 @@ export class ReservationService {
     const r = await this.findByIdOrThrow(id, tenantId);
     this.visibility.assertVisible(r, ctx);
     if (!this.visibility.canEdit(r, ctx)) throw AppErrors.forbidden('booking_not_editable', 'You cannot edit this booking.');
-    if (r.status === 'cancelled') return r;
+    // Already-cancelled fast return preserved (matches the RPC's
+    // already-cancelled short-circuit; avoids a redundant RPC round-trip
+    // for the scope='this' case). For recurrence scopes we still call the
+    // RPC so siblings that are NOT cancelled get cancelled.
+    if (r.status === 'cancelled' && (!opts.scope || opts.scope === 'this')) return r;
     if (r.status === 'completed') throw AppErrors.validationFailed('booking_completed', { detail: 'Booking is completed.' });
 
-    // Recurrence-scoped cancel: fan-out cancel for this and following / series.
-    if (opts.scope && opts.scope !== 'this') {
-      if (!this.recurrence) {
-        throw AppErrors.validationFailed('recurrence_unavailable', { detail: 'Recurrence service not configured.' });
-      }
-      if (!r.recurrence_series_id) {
-        throw AppErrors.validationFailed('not_a_recurring_occurrence', { detail: 'Booking is not a recurring occurrence.' });
-      }
-      const result = await this.recurrence.cancelForward(id, opts.scope, { reason: opts.reason });
-      if (this.notifications) void this.notifications.onCancelled(r, opts.reason);
-      try {
-        await this.supabase.admin.from('audit_events').insert({
-          tenant_id: tenantId,
-          event_type: 'booking.cancelled',
-          entity_type: 'booking',
-          entity_id: id,
-          details: {
-            booking_id: id, scope: opts.scope, cancelled_count: result.cancelled,
-            reason: opts.reason ?? null,
-          },
-        });
-      } catch { /* best-effort */ }
-      return { scope: opts.scope, cancelled: result.cancelled, pivot: r };
+    const scope: RecurrenceScope = opts.scope ?? 'this';
+    if (scope !== 'this' && !r.recurrence_series_id) {
+      throw AppErrors.validationFailed('not_a_recurring_occurrence', { detail: 'Booking is not a recurring occurrence.' });
     }
 
-    const grace = opts.grace_minutes ?? 5;
-    const cancellationGraceUntil = new Date(Date.now() + grace * 60 * 1000).toISOString();
-
-    // Update every slot on this booking. For single-slot v1 there's just
-    // one row; for multi-slot bookings we cancel the whole atomic group
-    // (legacy behaviour preserved). Per-slot cancel within a multi-slot
-    // booking is a future endpoint (separate slice).
-    const { error: slotsErr } = await this.supabase.admin
-      .from('booking_slots')
-      .update({ status: 'cancelled', cancellation_grace_until: cancellationGraceUntil })
-      .eq('tenant_id', tenantId)
-      .eq('booking_id', id);
-    // C3+I4: DB-side write failure → server-class, no pgErr.message interpolation.
-    if (slotsErr) throw AppErrors.server('cancel_failed');
-
-    // Mirror to booking-level status so /desk/bookings sees the cancel
-    // immediately. Best-effort — the source-of-truth for cell rendering
-    // is the slot status, but the booking-level status is what listMine /
-    // listForOperator filter on today.
-    await this.supabase.admin
-      .from('bookings')
-      .update({ status: 'cancelled' })
-      .eq('tenant_id', tenantId)
-      .eq('id', id);
-
-    const updated = await this.findByIdOrThrow(id, tenantId);
-    if (this.notifications) void this.notifications.onCancelled(updated, opts.reason);
-    try {
-      await this.supabase.admin.from('audit_events').insert({
-        tenant_id: tenantId,
-        event_type: 'booking.cancelled',
-        entity_type: 'booking',
-        entity_id: id,
-        details: { booking_id: id, scope: 'this', reason: opts.reason ?? null },
-      });
-    } catch { /* best-effort */ }
-
-    // Sub-project 2 cascade: cancel orders linked to this booking. The
-    // helper now resolves orders via orders.booking_id (00278:109);
-    // best-effort — a failure here doesn't undo the booking cancel.
-    if (this.bundleCascade) {
-      await this.bundleCascade.cancelOrdersForReservation({
-        reservation_id: updated.id,                   // = booking id under canonicalisation
-        reason: opts.reason ?? 'booking_cancelled',
+    // The cancel route is a producer route guarded by
+    // RequireClientRequestIdGuard (controller :cancel). The middleware
+    // always sets actor.client_request_id on real HTTP requests; a
+    // missing value here is a guard-wiring bug (server-class), mirroring
+    // editOne's defense-in-depth at :310-317.
+    const clientRequestId = actor.client_request_id;
+    if (!clientRequestId) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail: 'cancelOne reached the RPC layer with no client_request_id despite RequireClientRequestIdGuard.',
       });
     }
 
-    return updated;
+    const idempotencyKey = buildCancelBookingIdempotencyKey(id, clientRequestId, scope);
+
+    const { data: rpcData, error: rpcErr } = await this.supabase.admin.rpc(
+      'cancel_booking_with_cascade',
+      {
+        p_booking_id: id,
+        p_tenant_id: tenantId,
+        // F-CRIT-1: the RPC resolves this via `where u.auth_uid =
+        // p_actor_user_id` (00408 step 1). Must be the JWT subject
+        // (auth_uid), NOT users.id, or every cancel fails with
+        // cancel_booking_with_cascade.actor_not_found (Slice-1 D-1 lesson).
+        p_actor_user_id: actor.auth_uid,
+        p_scope: scope,
+        p_reason: opts.reason ?? 'user_cancel',
+        p_grace_minutes: opts.grace_minutes ?? null,
+        p_idempotency_key: idempotencyKey,
+      },
+    );
+    if (rpcErr) {
+      // Recognised RPC raises (cancel_booking_with_cascade.actor_not_found
+      // 404, .not_found 404, .invalid_scope 422, .not_recurring 422,
+      // command_operations.payload_mismatch 409) route through
+      // mapRpcErrorToAppError exactly like the edit paths (:1039 / :1361).
+      // All 4 dotted codes + the 409 are registered: STATUS_BY_CODE in
+      // common/errors/map-rpc-error.ts + the KnownErrorCode union/registry
+      // in packages/shared/src/error-codes.ts + EN/NL messages.
+      // booking.cancel_failed is the booking-scoped 500 fallback for any
+      // unrecognised raise (already registered in packages/shared).
+      throw mapRpcErrorToAppError(rpcErr, { fallbackCode: 'booking.cancel_failed' });
+    }
+
+    const result = (rpcData ?? {}) as {
+      booking_ids?: string[];
+      pivot?: string;
+    };
+
+    if (scope === 'this') {
+      // Re-project the post-cancel booking so callers see the cancelled
+      // Reservation (same shape today's path returned via findByIdOrThrow).
+      return this.findByIdOrThrow(id, tenantId);
+    }
+    // Recurrence scopes preserve the { scope, cancelled, pivot } shape the
+    // controller + frontend expect. `cancelled` = number of bookings the
+    // RPC moved to cancelled (booking_ids.length); pivot = the pre-cancel
+    // projection captured above.
+    return {
+      scope,
+      cancelled: result.booking_ids?.length ?? 0,
+      pivot: r,
+    };
   }
 
   /**

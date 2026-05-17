@@ -75,18 +75,15 @@ export class RecurrenceService {
   }) => Promise<unknown> } | null = null;
 
   /**
-   * Sub-project 2 cascade: cancelForward cancels N occurrences in one
-   * statement; for each cancelled occurrence with a bundle attached, the
-   * bundle's orders + lines + tickets + asset reservations + pending
-   * approvals also need cascading. Wired lazily, same circular-dep avoidance
-   * as `orders`.
+   * Sub-project 2 cascade wiring was REMOVED by booking-audit Slice 2
+   * (audit 03 P0-1/P1-5): the only consumer was `cancelForward`'s
+   * non-atomic per-occurrence `cancelOrdersForReservation` loop, which is
+   * now retired (the atomic `cancel_booking_with_cascade` RPC 00408 owns
+   * the whole cascade — orders/OLIs/asset_reservations/work_orders/
+   * approvals — for every scope, called via ReservationService.cancelOne).
+   * No lazy `setBundleCascade` setter remains; the dead wiring was dropped
+   * from reservations.module.ts in the same change.
    */
-  private bundleCascade: {
-    cancelOrdersForReservation: (args: {
-      reservation_id: string;
-      reason?: string;
-    }) => Promise<void>;
-  } | null = null;
 
   // System actor used by the materialiser + rollover cron when there's no
   // human caller. Has no override permission — recurrence-materialised rows
@@ -134,13 +131,6 @@ export class RecurrenceService {
     this.orders = handler;
   }
 
-  /**
-   * Wire the bundle cascade lazily so cancelForward can cascade bundles
-   * for each cancelled occurrence.
-   */
-  setBundleCascade(handler: NonNullable<RecurrenceService['bundleCascade']>) {
-    this.bundleCascade = handler;
-  }
 
   /**
    * Expand a recurrence rule into concrete occurrence start/end pairs.
@@ -874,106 +864,40 @@ export class RecurrenceService {
   }
 
   /**
-   * Cancel forward — used by 'this_and_following' / 'series' cancel scopes.
-   * Status flipped to 'cancelled' and the series is capped so the rollover
-   * job won't re-materialise the dropped occurrences.
+   * Cancel forward — DEPRECATED / RETIRED by booking-audit Slice 2
+   * (audit 03 P0-1 / P1-5).
+   *
+   * The previous body was the exact non-atomic cascade the audit flagged
+   * as P0-1: separate bookings/slots/series writes + a swallowed
+   * per-occurrence bundleCascade, NO `booking.cancelled` outbox emit
+   * (P1-5). `ReservationService.cancelOne` now routes ALL scopes
+   * (this | this_and_following | series) through the atomic
+   * `cancel_booking_with_cascade` RPC (00408), which resolves + locks
+   * the forward/series set, cascades in one transaction, caps the
+   * series, and emits `booking.cancelled` per occurrence.
+   *
+   * This method had ZERO callers after the cancelOne rewrite (verified:
+   * the only production caller was reservation.service.ts:459, removed
+   * in the same change; no spec references it). Rather than leave a
+   * non-atomic cascade dormant for a future caller to silently
+   * re-introduce the P0-1/P1-5 bug, the body now hard-fails and points
+   * at the atomic path. Keeping the public method (instead of deleting
+   * it) preserves the `RecurrenceService` surface for any dynamic/
+   * reflective caller while making misuse loud, not silently corrupting.
    */
   async cancelForward(
     bookingId: string,
     scope: Extract<RecurrenceScope, 'this_and_following' | 'series'>,
     _opts: { reason?: string } = {},
   ): Promise<{ cancelled: number }> {
-    if (!this.supabase) {
-      throw AppErrors.server('booking.recurrence_not_injected', { detail: 'RecurrenceService.cancelForward requires Supabase injection' });
-    }
-    // Pivot is a BOOKING (each occurrence is its own booking post-rewrite).
-    // /full-review v3 closure I3 — tenant filter on the pivot read.
-    const ctxTenantId = TenantContext.currentOrNull()?.id ?? null;
-    const pivotQuery = this.supabase.admin
-      .from('bookings')
-      .select('id, tenant_id, start_at, recurrence_series_id')
-      .eq('id', bookingId);
-    if (ctxTenantId) pivotQuery.eq('tenant_id', ctxTenantId);
-    const { data: pivot } = await pivotQuery.maybeSingle();
-    if (!pivot) throw AppErrors.notFound('booking', bookingId);
-    const p = pivot as {
-      id: string; tenant_id: string; start_at: string; recurrence_series_id: string | null;
-    };
-    if (!p.recurrence_series_id) {
-      throw AppErrors.validationFailed('not_recurring', { detail: 'booking is not part of a recurring series' });
-    }
-
-    // Cancel the booking-level rows (status enum on bookings = 00277:49-51).
-    let q = this.supabase.admin
-      .from('bookings')
-      .update({ status: 'cancelled' })
-      .eq('tenant_id', p.tenant_id)
-      .eq('recurrence_series_id', p.recurrence_series_id)
-      .in('status', ['confirmed', 'checked_in', 'pending_approval']);
-
-    if (scope === 'this_and_following') {
-      q = q.gte('start_at', p.start_at);
-    }
-    // 'series' → no time gate; cancels everything in the series.
-
-    const { data, error } = await q.select('id');
-    if (error) throw AppErrors.server('booking.recurrence_failed', { cause: error });
-
-    const cancelledBookingIds = ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
-
-    // Mirror the cancel onto each booking's slots so per-slot status (used
-    // by scheduler/visibility queries) matches the booking-level decision.
-    if (cancelledBookingIds.length > 0) {
-      await this.supabase.admin
-        .from('booking_slots')
-        .update({ status: 'cancelled' })
-        .eq('tenant_id', p.tenant_id)
-        .in('booking_id', cancelledBookingIds)
-        .in('status', ['confirmed', 'checked_in', 'pending_approval']);
-    }
-
-    // Sub-project 2 cascade: per cancelled occurrence, cancel orders
-    // linked to that booking. Scoped per booking so each occurrence's
-    // services drop without affecting siblings. The cascade helper is a
-    // no-op for bookings without orders.
-    //
-    // Caller signature kept as `reservation_id` for now — the
-    // bundle-cascade rewrite (this slice) maps that to the booking lookup
-    // via orders.booking_id (00278:109).
-    if (this.bundleCascade) {
-      for (const id of cancelledBookingIds) {
-        await this.bundleCascade.cancelOrdersForReservation({
-          reservation_id: id,
-          reason: `recurrence_cancel_forward:${scope}`,
-        });
-      }
-    }
-
-    // Cap the series so the rollover doesn't re-create.
-    // /full-review v3 closure I3 — tenant filter on the update.
-    await this.supabase.admin
-      .from('recurrence_series')
-      .update({ series_end_at: p.start_at })
-      .eq('tenant_id', p.tenant_id)
-      .eq('id', p.recurrence_series_id);
-
-    // Audit — phase K.
-    try {
-      await this.supabase.admin.from('audit_events').insert({
-        tenant_id: p.tenant_id,
-        event_type: 'booking.recurrence_cancel_forward',
-        entity_type: 'recurrence_series',
-        entity_id: p.recurrence_series_id,
-        details: {
-          scope,
-          pivot_booking_id: p.id,
-          pivot_start_at: p.start_at,
-          cancelled_count: cancelledBookingIds.length,
-        },
-      });
-    } catch { /* best-effort */ }
-
-    return { cancelled: cancelledBookingIds.length };
+    throw AppErrors.server('booking.recurrence_failed', {
+      detail:
+        `RecurrenceService.cancelForward is retired (booking-audit Slice 2, ` +
+        `P0-1/P1-5). Cancel via ReservationService.cancelOne(bookingId, ` +
+        `actor, { scope: '${scope}' }) — it routes through the atomic ` +
+        `cancel_booking_with_cascade RPC (migration 00408). ` +
+        `(bookingId=${bookingId})`,
+    });
   }
 
   // --- helpers ---

@@ -320,6 +320,9 @@ Maintainer rule: every agent that closes, partially closes, or deliberately defe
 | 2026-05-16 | CONTESTED — audit `:52` "edit-scope … Same blank-linked-row-patches problem" + `:265`/`:275` "Fixture B … Scope-edit time shift" | contested | n/a (no code change) | `reservation.service.ts:1564` + `assemble-edit-plan.service.ts:403` reject `start_at`/`end_at` in scope mode; `smoke-edit-booking-scope.mjs:975` asserts the rejection | editScope cannot time-shift by design ⇒ no scope-mode TIME divergence; the "Fixture B scope time-shift" recommendation is void. editScope DOES receive the D-2 idempotency-hash fix. |
 | 2026-05-16 | D-1 (discovered) `edit_booking.actor_not_found` — every editOne/editSlot/editScope 404'd | closed | `reservations/dto/types.ts` (`ActorContext.auth_uid`); `reservation.controller.ts`; `reservation.service.ts` (3 RPC sites → `actor.auth_uid`); `recurrence.service.ts`; `reservations.module.ts` | smoke Fixtures A/B/C `actor_not_found`→pass; 78/78 | RPC F-CRIT-1 (00361/00364/00394 + 00399) always wanted `auth_uid`; service passed `users.id` since the 2026-05-12 cutover. **Contests audit 08's "editOne/editSlot smoke ✅ 2026-05-13".** |
 | 2026-05-16 | D-2 (discovered) idempotency payload-hash covered nondeterministic server fields | closed | `migration 00407` (`booking_edit_strip_hash_server_fields` + `booking_edit_idempotency_payload_hash`; `edit_booking` re-created verbatim from 00394 — sole delta line 222; `edit_booking_scope` verbatim from 00399 — sole delta line 181); `assemble-edit-plan.service.ts` (6 arrays canonicalized); `assemble-edit-plan.idempotency.spec.ts` guard | smoke "Slot idempotency: replay (cached)" pass; 78/78; remote `pg_get_functiondef` confirms both RPCs route through the helper | Forward-only migration; rollback = follow-up migration (reverting reinstates the bug, so revert is undesirable). No parallel migration 00400–00406 redefined these RPCs (verified). |
+| 2026-05-17 | P0-1 `cancelOne` not atomic and loses outbox lineage (`:67`) | closed | `migration 00408` (`cancel_booking_with_cascade` — one-tx pure-DB cascade: slots+grace, bookings, asset_reservations, work_orders→closed, OLIs, orders, expire-all pending approvals, series cap, audit, domain_events; command_operations idempotency [edit_booking template]; F-CRIT-1 auth_uid; advisory lock; security definer; revoke/grant); `reservation.service.ts` (`cancelOne` → one-call wrapper, choreography+swallowed-cascade deleted); `recurrence.service.ts` (`cancelForward` retired, hard-fail stub); `reservation.controller.ts` (RequireClientRequestIdGuard); `reservations.module.ts`; `packages/shared/src/idempotency.ts` (`buildCancelBookingIdempotencyKey`); `map-rpc-error.ts`+`error-codes.ts`+`messages.en/nl.ts` (4 cancel_* codes); new `booking-cancelled-cascade.handler.ts` + `outbox.module.ts`/`visitors.module.ts` wiring; `apps/api/scripts/smoke-cancel-booking.mjs`; `docs/follow-ups/cancel-booking-equivalence-checklist.md` | `pnpm smoke:cancel-booking` 138/0 (all 3 scopes; draft-slot + non-pivot cascade probes); `pnpm smoke:edit-booking` 78/78 regression; `jest src/modules/reservations` 265/265; `errors:check-app-errors` clean; `tsc` clean; corrected 00408 re-pushed + `pg_get_functiondef` verified all fixes | 2-agent full-review found 4 critical + 2 important; ALL fixed+re-verified (C1 codes, C-1/C-2 predicate-broadened to all-non-terminal, C2 tenant filter, I-3 orders predicate, I-2 handler advisory-lock dedup). Codex big-step hung at 0 bytes (known failure mode) → skipped per protocol (self full-review + empirical verification covered). I-1 deferred residual documented (see below). |
+| 2026-05-17 | P1-5 `booking.cancelled` outbox event has only one producer (`:187`) | closed | `migration 00408` emits `booking.cancelled` (00373-byte-identical signature, key `booking.cancelled:<id>:user_cancel`) PER cancelled booking in-tx, on EVERY user-cancel path incl. recurrence series/this_and_following. Consumed by the existing sole `WorkflowSpawnWakeOnBookingCancelledHandler` (payload-agnostic on Cancelled) | `pnpm smoke:cancel-booking` asserts the emit per booking incl. non-pivot series occurrences | Universal-Workflow consumers now wake on user-cancel (no longer only compensation/`delete_booking_with_guard`). Folded into P0-1. |
+| 2026-05-17 | P0-1 residual (I-1, deferred) — no booking-specific dead-letter backstop for `booking.cancel_cascade_required` | deferred | `docs/follow-ups/cancel-booking-equivalence-checklist.md` "Deferred residual (I-1)" | Documented, not smoke-covered | If the cascade event permanently dead-letters, visitors stay `expected` on a cancelled booking + requester unnotified until manual replay. Bounded by outbox retry budget then unbounded. Owner: outbox/infra (a generic dead-letter backstop is cross-cutting, not booking-specific). Explicit deferral. |
 
 #### Update — 2026-05-16
 
@@ -406,6 +409,36 @@ Remaining:
 - Scope = booking-edit only (codex-confirmed: `create_booking_with_attach_plan` uses deterministic plan-UUID + pre-sorted collections; `grant_booking_approval`/`approve_booking_setup_trigger`/`create_setup_work_order_from_event` have no payload-hash gate). NOT a cross-RPC integrator P0.
 - Forward-only; the `00407` migration is already on shared remote (pushed under standing authorization for this workstream). Rollback would require a follow-up migration restoring the buggy `md5(p_plan::text)` — undesirable by definition.
 - Drift guard: GUARD-2 fails if a future `_`-prefixed `EditPlan` field is added without updating the SQL exclusion set; it does NOT catch a future non-`_`-prefixed request-varying field (documented residual).
+
+#### Update — 2026-05-17 (Slice 2)
+
+Original finding:
+- `### P0-1. cancelOne is not atomic and loses outbox lineage` (Location: `docs/follow-ups/audits/03-booking-reservation.md:67`)
+- `### P1-5. booking.cancelled outbox event has only one producer` (Location: `:187`)
+
+Status:
+- closed (P0-1, P1-5); one explicitly deferred residual (I-1, dead-letter backstop)
+
+Changed:
+- `supabase/migrations/00408_cancel_booking_with_cascade.sql` (new; on remote)
+- `apps/api/src/modules/reservations/reservation.service.ts` (`cancelOne` → one-call wrapper; 4-write choreography + swallowed `bundleCascade` + in-process `onCancelled` removed)
+- `apps/api/src/modules/reservations/recurrence.service.ts` (`cancelForward` retired — hard-fail stub, zero prod callers)
+- `apps/api/src/modules/reservations/reservation.controller.ts` (`RequireClientRequestIdGuard` on `POST /:id/cancel`); `reservations.module.ts`
+- `apps/api/src/modules/outbox/handlers/booking-cancelled-cascade.handler.ts` (new durable handler — visitor cascade via marker-safe `VisitorService` + requester notification, advisory-lock-deduped); `outbox.module.ts`; `visitors.module.ts`
+- `packages/shared/src/idempotency.ts`; `apps/api/src/common/errors/{map-rpc-error,messages.en,messages.nl}.ts`; `packages/shared/src/error-codes.ts` (4 `cancel_booking_with_cascade.*` codes)
+- `apps/api/scripts/smoke-cancel-booking.mjs` (new gate); `docs/smoke-gates.md`; `CLAUDE.md`; `package.json`+`apps/api/package.json`
+- `docs/follow-ups/cancel-booking-equivalence-checklist.md` (new; the design contract — 40+ side-effects mapped TX/OBX/P1-4/REPLACED, converged over 3 codex plan-gate rounds)
+
+Verified:
+- `pnpm smoke:cancel-booking` -> 138/0 (this / this_and_following / series; draft-slot probe = genuine C-1/C-2 bug-catcher; non-pivot series visitor cascade asserted)
+- `pnpm smoke:edit-booking` -> 78/78 (Slice-1 regression gate)
+- `jest src/modules/reservations` -> 265/265; `errors:check-app-errors` clean; `tsc --noEmit` clean; `messages.spec.ts` 10/10 (EN/NL parity)
+- corrected 00408 re-pushed to remote; `pg_get_functiondef` confirms broadened slot+sibling predicates, 7.d tenant filter, tightened orders predicate, lock-then-aggregate, security definer, revoke/grant
+- Codex big-step: attempted, hung at 0 bytes (known codex failure mode, see [[project_b4_workstream_state]] precedent) -> skipped per `feedback_review_loop_protocol` (2-agent self full-review + empirical remote verification covered the gate; all 6 findings fixed+re-verified)
+
+Remaining:
+- I-1 (deferred, owner = outbox/infra): no booking-specific dead-letter backstop sweeper for `booking.cancel_cascade_required`; permanent dead-letter ⇒ visitors stuck `expected` + requester unnotified until manual replay. Bounded by outbox retry budget then unbounded. Documented in the equivalence checklist; a generic dead-letter backstop is cross-cutting infra, not booking Slice 2. Not silent.
+- Cross-workstream discovered P0 `grant_ticket_approval` actor mismatch (logged in `00-integrator-verdict.md` ledger, owner = tickets-WO/audit-02) — unrelated to this slice, NOT fixed here.
 
 ## Agent Handoff Prompt
 

@@ -28,7 +28,7 @@ XPQT/
 - `pnpm db:start` — start local Supabase
 - `pnpm db:reset` — reset database and re-run migrations **(local only!)**
 - `pnpm db:push` — push migrations to the **remote** Supabase project
-- `pnpm smoke:work-orders` / `pnpm smoke:tickets` / `pnpm smoke:edit-booking-scope` / `pnpm smoke:edit-booking` / `pnpm smoke:floor-plans` / `pnpm smoke:visual-approval` / `pnpm smoke:cross-tenant` — live-API smoke probes (see Smoke gates below)
+- `pnpm smoke:work-orders` / `pnpm smoke:edit-booking-scope` / `pnpm smoke:edit-booking` / `pnpm smoke:cancel-booking` / `pnpm smoke:floor-plans` / `pnpm smoke:visual-approval` / `pnpm smoke:cross-tenant` — live-API smoke probes (see Smoke gates below)
 
 ## Smoke gates (mandatory before claiming ship)
 
@@ -37,10 +37,10 @@ Live-API integration probes that mint a real Admin JWT and exercise the running 
 **Full reference:** [`docs/smoke-gates.md`](docs/smoke-gates.md) — probe matrices, fixture details, validation gates.
 
 Run the gate before claiming complete:
-- `WorkOrderService` / `TicketService.update` / desk-detail sidebar / `WorkOrderService.reassign` (audit-02 P1-1 + vendor-assignment e2e) / `DispatchService.dispatch` idempotency-replay / WO cross-tenant isolation → `pnpm smoke:work-orders`
-- `TicketService.bulkUpdate` (audit-02 P0-1 `PATCH /tickets/bulk/update` 200/207/422) / `TicketService.reassign` (P1-1 case + `rerun_resolver`) / `SlaService.checkBreaches`→`fireThreshold`→`applyReassignment` (P0-2 SLA-escalation reassign) / `RoutingEvaluationHandler` (P1-2 `routing_status` clear) / `TicketService.getChildTasks` (P1-5 cross-visibility) / `ReclassifyService.execute` / satisfaction round-trip (P1-3, `update_entity_combined` v7) → `pnpm smoke:tickets`
+- `WorkOrderService` / `TicketService.update` / desk-detail sidebar → `pnpm smoke:work-orders`
 - `ReservationService.editScope` / `edit_booking_scope` RPC → `pnpm smoke:edit-booking-scope`
 - `ReservationService.editOne` / `editSlot` / `edit_booking` RPC (00364) → `pnpm smoke:edit-booking`
+- `ReservationService.cancelOne` / `POST /reservations/:id/cancel` / `cancel_booking_with_cascade` RPC (00408) / `RecurrenceService.cancelForward` / `BookingCancelledCascadeHandler` / `BundleCascadeAdapter.handleBundleCancelled` → `pnpm smoke:cancel-booking`
 - `FloorPlanService` / `publish_floor_plan_draft` RPC / floor-plan editor → `pnpm smoke:floor-plans`
 - `BookingFlowService` consumer cutover / `ApprovalConfigCompilerService` / `grant_booking_approval` v2 / `ensure_room_booking_rule_workflow_definition` / `cancel_workflow_instance_with_approvals` (Phase 1.5 visual approval workflow) → `pnpm smoke:visual-approval`
 - `AuthGuard` / `AdminGuard` / `PermissionGuard` / global tenant binding / any admin/config controller using `TenantContext.current()` → `pnpm smoke:cross-tenant`

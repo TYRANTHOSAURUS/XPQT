@@ -420,3 +420,46 @@ export function buildReassignIdempotencyKey(
 ): string {
   return `${REASSIGN_IDEMPOTENCY_KEY_PREFIX}:${kind}:${entityId}:${clientRequestId}`;
 }
+ * Prefix for the `cancel_booking_with_cascade` outer idempotency key.
+ * Booking-audit remediation Slice 2 (audit 03 P0-1 / P1-5). Paired with
+ * the `cancel_booking_with_cascade(...)` RPC (migration 00408).
+ * Namespaced separately from every other prefix (including
+ * `booking:edit`) so a cancel retry against a booking can never collide
+ * with an edit / dispatch / patch / approval call on the same booking.
+ *
+ * Citations:
+ *   - supabase/migrations/00408_cancel_booking_with_cascade.sql
+ *     (RPC accepts `p_idempotency_key text`, gates on command_operations)
+ *   - docs/follow-ups/cancel-booking-equivalence-checklist.md (row 6.2 —
+ *     the cancel route gains RequireClientRequestIdGuard + this key)
+ */
+export const CANCEL_BOOKING_IDEMPOTENCY_KEY_PREFIX = 'booking:cancel';
+
+/**
+ * Build the outer idempotency key for `cancel_booking_with_cascade`.
+ * Shape: `booking:cancel:<scope>:<booking_id>:<clientRequestId>`
+ *
+ * `scope` is the discriminator (mirrors `op` on the edit family at
+ * `buildEditBookingIdempotencyKey`): a buggy frontend reusing the same
+ * clientRequestId across a `this` cancel and a `series` cancel of the
+ * same booking would otherwise collapse onto one `command_operations`
+ * row and the second call would surface the first's cached_result.
+ * Distinct scope ⇒ distinct key. **No actor in the key** per
+ * F-CRIT-2 / plan-C1 (dispatch RPC): clientRequestId is the
+ * deduplication boundary.
+ */
+export function buildCancelBookingIdempotencyKey(
+  bookingId: string,
+  clientRequestId: string,
+  scope: RecurrenceCancelScope,
+): string {
+  return `${CANCEL_BOOKING_IDEMPOTENCY_KEY_PREFIX}:${scope}:${bookingId}:${clientRequestId}`;
+}
+
+/**
+ * The three recurrence scopes the cancel RPC dispatches on. Mirrors the
+ * `RecurrenceScope` union in
+ * `apps/api/src/modules/reservations/dto/types.ts:378` (kept structurally
+ * identical; redeclared here so `@prequest/shared` has no app dependency).
+ */
+export type RecurrenceCancelScope = 'this' | 'this_and_following' | 'series';

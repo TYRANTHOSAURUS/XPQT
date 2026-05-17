@@ -379,13 +379,31 @@ export class ReservationController {
     });
   }
 
+  // Booking-audit remediation Slice 2 (audit 03 P0-1 / P1-5) — cancel is
+  // now a command_operations-idempotent producer route backed by the
+  // atomic `cancel_booking_with_cascade` RPC (00408). It requires a
+  // CLIENT-supplied `X-Client-Request-Id` so retries collapse on the
+  // command_operations idempotency gate instead of re-running the
+  // cascade. Mirrors the editOne gate at reservation.controller.ts:
+  // 301-320 + the create/multi-room/services/edit routes at :106 / :151
+  // / :302 / :357 / :423 / :495. Equivalence checklist row 6.2.
   @Post(':id/cancel')
+  @UseGuards(RequireClientRequestIdGuard)
   async cancel(
     @Req() request: Request,
     @Param('id') id: string,
     @Body() dto: CancelReservationDto,
   ) {
     const actor = await this.actorFromRequest(request);
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    if (!clientRequestId) {
+      // Defense-in-depth — the guard already rejected the missing-header
+      // case, so reaching this branch means a programming error in the
+      // guard wiring, not a user mistake. Mirrors editOne at :310-317.
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail: 'cancelOne reached service layer with no clientRequestId despite RequireClientRequestIdGuard.',
+      });
+    }
     return this.service.cancelOne(id, actor, {
       reason: dto.reason,
       grace_minutes: dto.grace_minutes,

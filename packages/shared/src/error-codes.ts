@@ -1001,6 +1001,29 @@ export type KnownErrorCode =
   // toast (retry + traceId + contact-support) instead of an inline
   // validation surface that the operator can't action.
   | 'edit_booking_scope.update_failed'
+  // ─── Booking-audit remediation Slice 2 — cancel_booking_with_cascade ────
+  // RPC 00408 (audit 03 P0-1 + P1-5). The atomic user-cancel cascade.
+  // - actor_not_found (404): the JWT's auth_uid has no public.users row in
+  //   the tenant (F-CRIT-1 resolution miss). Defense-in-depth — the TS
+  //   auth guard normally rejects this earlier. Mirrors
+  //   edit_booking.actor_not_found.
+  // - not_found (404): the booking row is missing or in a different
+  //   tenant. Mirrors edit_booking.not_found / edit_booking_scope.
+  //   booking_not_found shape.
+  // - invalid_scope (422): p_scope is not this|this_and_following|series.
+  //   Request payload is valid jsonb; the scope value is unprocessable.
+  // - not_recurring (422): a recurrence scope was requested on a booking
+  //   with no recurrence_series_id. Mirrors edit_booking_scope.
+  //   not_recurring (same domain, same voice). 422 — payload valid,
+  //   booking state blocks the action.
+  // The 3 generic arg-shape raises ('cancel_booking_with_cascade:
+  // p_*_id required') intentionally have NO dotted code — they route to
+  // the booking.cancel_failed 500 fallback (server-class; a non-HTTP
+  // caller passed a malformed tuple, not an actionable client error).
+  | 'cancel_booking_with_cascade.actor_not_found'
+  | 'cancel_booking_with_cascade.not_found'
+  | 'cancel_booking_with_cascade.invalid_scope'
+  | 'cancel_booking_with_cascade.not_recurring'
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.12
   // (Phase 1 codes — three spawn-link safety guards raised by
@@ -1697,6 +1720,14 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   // B.4 Step 2F.3 self-review remediation (I1) — see KnownErrorCode union
   // for rationale (500 server-class fallback for unknown RPC errors).
   'edit_booking_scope.update_failed',
+  // Booking-audit remediation Slice 2 — cancel_booking_with_cascade RPC
+  // (00408, audit 03 P0-1 + P1-5). See KnownErrorCode union for per-code
+  // rationale (actor_not_found/not_found 404; invalid_scope/not_recurring
+  // 422 — STATUS_BY_CODE in map-rpc-error.ts).
+  'cancel_booking_with_cascade.actor_not_found',
+  'cancel_booking_with_cascade.not_found',
+  'cancel_booking_with_cascade.invalid_scope',
+  'cancel_booking_with_cascade.not_recurring',
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // See KnownErrorCode union for per-code rationale. All 422.
   'spawn_link.parent_terminated',

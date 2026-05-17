@@ -2049,6 +2049,28 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save the series edit",
     detail: "Something went wrong saving this series edit. Try again in a moment; contact support if this persists.",
   },
+  // ─── Booking-audit remediation Slice 2 — cancel_booking_with_cascade ────
+  // RPC 00408 (audit 03 P0-1 + P1-5). Voice mirrors the edit_booking.*
+  // family: same "Couldn't cancel the booking" title shape, actionable
+  // recovery in the detail. actor_not_found / not_found = the
+  // edit_booking.* wording with "cancel" swapped in; invalid_scope /
+  // not_recurring = the edit_booking_scope.not_recurring shape.
+  'cancel_booking_with_cascade.actor_not_found': {
+    title: "Couldn't cancel the booking",
+    detail: 'Your account is not registered in this tenant. Sign in again or contact an administrator.',
+  },
+  'cancel_booking_with_cascade.not_found': {
+    title: "Couldn't cancel the booking — not found",
+    detail: "This booking no longer exists, or you don't have access to it.",
+  },
+  'cancel_booking_with_cascade.invalid_scope': {
+    title: "Couldn't cancel the booking",
+    detail: 'The cancellation scope was invalid. Refresh the page and pick the scope again.',
+  },
+  'cancel_booking_with_cascade.not_recurring': {
+    title: "Couldn't cancel the series",
+    detail: 'This booking is not part of a recurring series. Cancel the single occurrence instead.',
+  },
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // Spec §3.6 + §3.12. Three guards that block invalid spawn-link writes
   // before the engine commits. 422 surfaces as inline editor copy — the
