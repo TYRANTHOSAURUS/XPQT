@@ -18,6 +18,11 @@
     "smoke:floor-plans": "node scripts/smoke-floor-plans.mjs",
     "smoke:edit-booking-scope": "node scripts/smoke-edit-booking-scope.mjs",
     "smoke:edit-booking": "node scripts/smoke-edit-booking.mjs",
+    "smoke:cancel-booking": "node scripts/smoke-cancel-booking.mjs",
+    "smoke:create-multi-room": "node scripts/smoke-create-multi-room.mjs",
+    "smoke:attach-services": "node scripts/smoke-attach-services.mjs",
+    "smoke:cancel-order-line": "node scripts/smoke-cancel-order-line.mjs",
+    "smoke:recurrence-clone": "node scripts/smoke-recurrence-clone.mjs",
     "smoke:visual-approval": "node scripts/smoke-visual-approval.mjs",
     "smoke:cross-tenant": "node scripts/smoke-cross-tenant.mjs"
   },

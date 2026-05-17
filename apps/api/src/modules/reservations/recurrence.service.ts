@@ -1,15 +1,12 @@
-import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import { TenantService } from '../tenant/tenant.service';
 import { ConflictGuardService } from './conflict-guard.service';
-import {
-  BOOKING_TX_BOUNDARY,
-  type BookingTransactionBoundary,
-} from './booking-transaction-boundary';
-import { BookingCompensationService } from './booking-compensation.service';
+import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
+import { buildSplitSeriesIdempotencyKey } from '@prequest/shared';
 import type { ActorContext, RecurrenceRule, RecurrenceScope } from './dto/types';
 import type { BookingFlowService } from './booking-flow.service';
 import {
@@ -40,6 +37,17 @@ import {
 const DAY_MAP: Record<string, number> = {
   SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6,
 };
+
+/**
+ * Booking-audit Slice 7 (audit 03 P2-1) — audit-event types ported
+ * VERBATIM from the retired BookingCompensationService
+ * (booking-compensation.service.ts:13-14). Emitted to `audit_events`
+ * by `deleteOrphanOccurrence` so ops have a discoverable surface for
+ * orphaned occurrence bookings. Naming follows the `booking.<verb>`
+ * convention so compensation events sort with their siblings.
+ */
+const AUDIT_COMPENSATION_FAILED = 'booking.compensation_failed';
+const AUDIT_COMPENSATION_PARTIAL = 'booking.compensation_partial_failure';
 
 @Injectable()
 export class RecurrenceService {
@@ -75,46 +83,61 @@ export class RecurrenceService {
   }) => Promise<unknown> } | null = null;
 
   /**
-   * Sub-project 2 cascade: cancelForward cancels N occurrences in one
-   * statement; for each cancelled occurrence with a bundle attached, the
-   * bundle's orders + lines + tickets + asset reservations + pending
-   * approvals also need cascading. Wired lazily, same circular-dep avoidance
-   * as `orders`.
+   * Sub-project 2 cascade wiring was REMOVED by booking-audit Slice 2
+   * (audit 03 P0-1/P1-5): the only consumer was `cancelForward`'s
+   * non-atomic per-occurrence `cancelOrdersForReservation` loop, which is
+   * now retired (the atomic `cancel_booking_with_cascade` RPC 00408 owns
+   * the whole cascade — orders/OLIs/asset_reservations/work_orders/
+   * approvals — for every scope, called via ReservationService.cancelOne).
+   * No lazy `setBundleCascade` setter remains; the dead wiring was dropped
+   * from reservations.module.ts in the same change.
    */
-  private bundleCascade: {
-    cancelOrdersForReservation: (args: {
-      reservation_id: string;
-      reason?: string;
-    }) => Promise<void>;
-  } | null = null;
 
   // System actor used by the materialiser + rollover cron when there's no
   // human caller. Has no override permission — recurrence-materialised rows
   // only ever land if the rules + conflict guard allow them.
   private static readonly SYSTEM_ACTOR: ActorContext = {
     user_id: 'system:recurrence',
+    // Synthetic — the materialiser only calls bookingFlow.create, never
+    // the F-CRIT-1 edit RPCs. Mirror user_id so the required field is set.
+    auth_uid: 'system:recurrence',
     person_id: null,
     is_service_desk: false,
     has_override_rules: false,
   };
 
+  // F-CRIT-1 landmine guard (I1): split_recurrence_series.p_actor_user_id
+  // is `uuid`-typed (00411:97). A non-uuid string (e.g. the synthetic
+  // SYSTEM_ACTOR.auth_uid = 'system:recurrence', line above) sent to a
+  // uuid bind 500s on supabase-js/PostgREST BEFORE the SQL runs — the
+  // RPC's null-actor branch (00411:135) never gets the chance to handle
+  // it. Coerce any absent OR synthetic `system:*` sentinel auth_uid to
+  // null so the RPC takes its null-actor path (audit actor_user_id =
+  // null) instead of crashing. A genuine JWT uuid passes through. Only
+  // the editScope-commit caller (a real JWT) reaches splitSeries today,
+  // so this is currently latent — but every splitSeries-class caller
+  // that could pass a synthetic actor must route auth_uid through here.
+  private static actorAuthUidForRpc(actor: ActorContext): string | null {
+    const uid = actor.auth_uid;
+    if (!uid || uid.startsWith('system:')) return null;
+    return uid;
+  }
+
   // The optional Supabase service is only required when calling
   // materialize / splitSeries / cron. Passed via constructor when the module
   // wires the service; tests using `new RecurrenceService()` keep working.
   //
-  // /full-review v3 closure I4 — compensation boundary + service injected so
-  // each occurrence's clone-orders step is wrapped in runWithCompensation.
-  // If the clone throws, the boundary deletes the orphan occurrence booking
-  // (or surfaces partial_failure when a sub-series blocks deletion).
-  // Both Optional so tests using `new RecurrenceService()` keep working — the
-  // wrapper short-circuits to direct invocation when neither is provided.
+  // Booking-audit Slice 7 (audit 03 P2-1) — the legacy
+  // BookingTransactionBoundary + BookingCompensationService injects were
+  // retired. The occurrence-clone compensation is now a focused private
+  // direct-delete helper (`deleteOrphanOccurrence`) that calls the
+  // `delete_booking_with_guard` RPC (00292 / 00373) directly and reproduces
+  // the audit-emit + don't-advance-materialized_through semantics the
+  // materialize() loop keys on.
   constructor(
     @Optional() private readonly supabase?: SupabaseService,
     @Optional() private readonly conflict?: ConflictGuardService,
     @Optional() private readonly tenants?: TenantService,
-    @Optional() @Inject(BOOKING_TX_BOUNDARY)
-    private readonly txBoundary?: BookingTransactionBoundary,
-    @Optional() private readonly compensation?: BookingCompensationService,
   ) {}
 
   /** Wire the booking flow lazily to break the circular dep. */
@@ -131,13 +154,6 @@ export class RecurrenceService {
     this.orders = handler;
   }
 
-  /**
-   * Wire the bundle cascade lazily so cancelForward can cascade bundles
-   * for each cancelled occurrence.
-   */
-  setBundleCascade(handler: NonNullable<RecurrenceService['bundleCascade']>) {
-    this.bundleCascade = handler;
-  }
 
   /**
    * Expand a recurrence rule into concrete occurrence start/end pairs.
@@ -290,8 +306,10 @@ export class RecurrenceService {
    * Materialise additional occurrences for an existing series. Per spec §G:
    * for each occurrence the expander returns *past the current
    * materialized_through* (and not already on disk), call
-   * BookingFlowService.create with `source='auto'`. Conflict-guard 23P01 is
-   * caught and counted as a skip rather than aborting the run.
+   * BookingFlowService.create with `source='recurrence'` (Slice 8 P2-2 —
+   * the resolved value; was `'auto'` until the shim was removed).
+   * Conflict-guard 23P01 is caught and counted as a skip rather than
+   * aborting the run.
    *
    * Caller passes a master row (the first reservation of the series) to seed
    * the schema (space, requester, attendees, duration, buffers).
@@ -485,7 +503,14 @@ export class RecurrenceService {
             // → bookings is one-direction (00277). The series row's
             // parent_booking_id (00278:179-181) is the only link.
             recurrence_index: occ.index,
-            source: 'auto',
+            // Booking-audit Slice 8 (audit 03 P2-2) — was `source:'auto'`;
+            // resolution is now hoisted to this producer. The recurrence
+            // materialiser is ALWAYS the recurrence actor
+            // (RecurrenceService.SYSTEM_ACTOR.user_id = 'system:recurrence',
+            // recurrence.service.ts:100) so the resolved value is always
+            // `'recurrence'` — pass it directly instead of emitting the
+            // removed `'auto'` shim and letting the consumer re-derive it.
+            source: 'recurrence',
           },
           RecurrenceService.SYSTEM_ACTOR,
         );
@@ -498,27 +523,51 @@ export class RecurrenceService {
         // as the `bundleId` so the cloned orders attach to the new
         // occurrence's booking — not the master's.
         //
-        // /full-review v3 closure I4 — wrap the clone step in
-        // BookingTransactionBoundary.runWithCompensation. Pre-fix:
-        // bookingFlow.create(...) ran with services=[] (atomic on its
-        // own; the compensation boundary in BookingFlowService gates on
-        // input.services.length > 0 and skips when empty). Then the
-        // separate cloneBundleOrdersToOccurrence call ran AFTER the
-        // booking was committed. If the clone threw, the orphan
-        // occurrence booking persisted; the catch block below incremented
-        // `skipped += 1` but the room stayed reserved indefinitely.
+        // Booking-audit Slice 7 (audit 03 P2-1) — clone-with-compensation,
+        // direct (no BookingTransactionBoundary / BookingCompensationService).
         //
-        // Wrapping the clone in runWithCompensation means: clone throws →
-        // boundary calls compensation.deleteBooking(occurrence.id) which
-        // invokes the delete_booking_with_guard RPC (00292) → orphan
-        // booking + slots are removed. The boundary then re-throws the
-        // original error, which our outer catch handles below.
+        // Pre-Slice-7: the clone step was wrapped in
+        // `BookingTransactionBoundary.runWithCompensation(occId, clone,
+        // (id) => compensation.deleteBooking(id))` (booking-transaction-
+        // boundary.ts:77-149 + booking-compensation.service.ts:58-126).
+        // Both legacy classes are retired. Their behaviour is reproduced
+        // VERBATIM inline here:
         //
-        // Fallback: if either txBoundary or compensation isn't injected
-        // (lightweight tests), fall back to direct invocation. Tests
-        // covering the wrapped path pass both. The fallback is the
-        // pre-fix behaviour and preserves backward compatibility for
-        // callers that haven't wired the boundary.
+        //   1. run `cloneBundleOrdersToOccurrence` (UNCHANGED — it
+        //      legitimately needs the TS JSONLogic rule resolver via
+        //      OrderService.cloneOrderForOccurrence; stays in TS).
+        //   2. on throw → `deleteOrphanOccurrence(occId, tenantId)` which
+        //      calls `delete_booking_with_guard` (00292/00373) DIRECTLY
+        //      and reproduces BookingCompensationService.deleteBooking's
+        //      structured outcome + audit_events emission:
+        //        - RPC error / malformed → emit booking.compensation_failed
+        //          audit (booking-compensation.service.ts:73-82,99-106)
+        //          then return {kind:'compensation_failed'}.
+        //        - {kind:'rolled_back'} → no audit (clean rollback;
+        //          booking-compensation.service.ts:108-112).
+        //        - {kind:'partial_failure'} → emit
+        //          booking.compensation_partial_failure audit
+        //          (booking-compensation.service.ts:114-125).
+        //   3. map the outcome to the SAME throw the boundary raised
+        //      (booking-transaction-boundary.ts:91-148) so the existing
+        //      catch below behaves byte-identically:
+        //        - compensate threw / compensation_failed → throw
+        //          AppErrors.server('booking.compensation_failed',
+        //          {cause:originalErr}) (boundary.ts:106-116).
+        //        - rolled_back → re-throw the ORIGINAL clone error
+        //          (boundary.ts:118-128) — preserves the existing
+        //          "original 23P01 → conflict skip + advance" path.
+        //        - partial_failure → throw
+        //          AppErrors.server('booking.partial_failure',
+        //          {cause:originalErr}) (boundary.ts:130-147).
+        //
+        // The catch below is UNCHANGED — every reproduced throw lands on
+        // the same branch it did with the boundary (AppError has no
+        // `.response`, so booking.compensation_failed / .partial_failure
+        // fall to the catch-all `sawUnexpectedFailure=true` →
+        // materialized_through is NOT advanced; an original 23P01 on the
+        // rolled_back path matches `conflict.isExclusionViolation` →
+        // skip + advance, exactly as before).
         if (this.orders && this.supabase) {
           const cloneArgs = {
             masterReservationId: master.id,             // = master booking id
@@ -533,22 +582,57 @@ export class RecurrenceService {
             },
             requesterPersonId: master.requester_person_id,
           };
-          if (this.txBoundary && this.compensation) {
-            const comp = this.compensation;
-            await this.txBoundary.runWithCompensation(
-              created_row.id,
-              () => this.cloneBundleOrdersToOccurrence(cloneArgs),
-              (id) => comp.deleteBooking(id),
-            );
-          } else {
+          try {
             await this.cloneBundleOrdersToOccurrence(cloneArgs);
+          } catch (cloneErr) {
+            // Reproduces InProcessBookingTransactionBoundary.
+            // runWithCompensation (booking-transaction-boundary.ts:82-148).
+            const outcome = await this.deleteOrphanOccurrence(
+              created_row.id,
+              tenantId,
+            );
+            if (outcome.kind === 'compensation_failed') {
+              // boundary.ts:106-116 — compensate() blew up. Server-class.
+              this.log.error(
+                `compensation RPC failed for booking ${created_row.id}: ${
+                  (cloneErr as Error).message
+                }`,
+              );
+              throw AppErrors.server('booking.compensation_failed', {
+                cause: cloneErr,
+              });
+            }
+            if (outcome.kind === 'rolled_back') {
+              // boundary.ts:118-128 — booking + cascades gone; re-throw
+              // the ORIGINAL clone error so the existing catch keys on it
+              // (e.g. an original 23P01 → conflict skip + advance).
+              this.log.warn(
+                `booking ${created_row.id} rolled back after clone failed: ${
+                  (cloneErr as Error).message
+                }`,
+              );
+              throw cloneErr;
+            }
+            // boundary.ts:130-147 — partial_failure: booking still alive
+            // (recurrence_series blocker). Server-class; ops must clear
+            // the blocker. The audit_events row was already emitted by
+            // deleteOrphanOccurrence.
+            this.log.warn(
+              `booking ${created_row.id} partial_failure on compensation: ` +
+                `blocked_by=${outcome.blockedBy.join(',')}; original error: ${
+                  (cloneErr as Error).message
+                }`,
+            );
+            throw AppErrors.server('booking.partial_failure', {
+              cause: cloneErr,
+            });
           }
         }
-        // /full-review v3 closure I4 — push only AFTER the clone (and
-        // any boundary rollback) committed. On the rollback path the
-        // booking was deleted by compensation; pushing here would lie
-        // about the surviving set. Order: create → clone (boundary-
-        // wrapped) → push to `created`.
+        // /full-review v3 closure I4 — push only AFTER the clone (and any
+        // compensation rollback) committed. On the rollback path the
+        // booking was deleted by deleteOrphanOccurrence; pushing here
+        // would lie about the surviving set. Order: create → clone →
+        // (compensate on failure) → push to `created`.
         created.push(created_row.id);
       } catch (err) {
         // /full-review v3 closure I4 — categorise the failure.
@@ -646,8 +730,9 @@ export class RecurrenceService {
    * services on later orders that didn't get cloned.
    *
    * Post-fix: errors propagate to the caller. The caller in materialize
-   * wraps this in BookingTransactionBoundary.runWithCompensation, which
-   * deletes the occurrence's booking on any throw. That's the correct
+   * deletes the occurrence's booking on any throw (Slice 7:
+   * `deleteOrphanOccurrence` — replaces the retired
+   * BookingTransactionBoundary.runWithCompensation). That's the correct
    * trade-off: better to compensate (delete + re-try next tick) than to
    * leave the user with a half-cloned occurrence and no recovery path.
    *
@@ -696,6 +781,149 @@ export class RecurrenceService {
         recurrenceSeriesId: args.seriesId,
         requesterPersonId: args.requesterPersonId,
       });
+    }
+  }
+
+  /**
+   * Booking-audit Slice 7 (audit 03 P2-1) — direct orphan-occurrence
+   * compensation. PORT of `BookingCompensationService.deleteBooking`
+   * (booking-compensation.service.ts:58-126) — the legacy class is
+   * retired. This is intentionally a focused private method on
+   * RecurrenceService (no new injectable, no boundary abstraction), called
+   * from materialize()'s clone catch.
+   *
+   * Calls the `delete_booking_with_guard` RPC (00292:54-56 /
+   * 00373:68-70 — signature `(p_booking_id uuid, p_tenant_id uuid)`,
+   * returns jsonb `{kind:'rolled_back'}` or `{kind:'partial_failure',
+   * blocked_by:[...]}`) DIRECTLY with the SAME arg object
+   * BookingCompensationService.deleteBooking passed
+   * (booking-compensation.service.ts:61-64:
+   * `{ p_booking_id: bookingId, p_tenant_id: tenantId }`).
+   *
+   * Reproduces the audit_events emission VERBATIM
+   * (booking-compensation.service.ts:13-14 event_type constants +
+   * :135-161 tryAudit best-effort insert shape):
+   *   - RPC error → `booking.compensation_failed`, details
+   *     `{ rpc_error: <msg> }` (booking-compensation.service.ts:73-75).
+   *   - malformed payload → `booking.compensation_failed`, details
+   *     `{ rpc_error:'malformed_payload', rpc_data:<data> }`
+   *     (booking-compensation.service.ts:99-102).
+   *   - rolled_back → NO audit (clean rollback;
+   *     booking-compensation.service.ts:108-112).
+   *   - partial_failure → `booking.compensation_partial_failure`, details
+   *     `{ blocked_by:[...] }` (booking-compensation.service.ts:118-120).
+   * Every audit row carries `tenant_id`, `entity_type:'booking'`,
+   * `entity_id:<bookingId>` exactly as
+   * booking-compensation.service.ts:142-148.
+   *
+   * Returns the structured outcome the materialize() clone-catch maps to
+   * the boundary's throws (boundary.ts:91-148): `compensation_failed`
+   * (RPC error / malformed — the boundary's `compensate threw` path) ·
+   * `rolled_back` · `partial_failure`. Tenant is passed explicitly (the
+   * admin client bypasses RLS; the RPC is tenant-scoped on p_tenant_id —
+   * same convention as the ported method,
+   * booking-compensation.service.ts:53-56).
+   */
+  private async deleteOrphanOccurrence(
+    bookingId: string,
+    tenantId: string,
+  ): Promise<
+    | { kind: 'rolled_back' }
+    | { kind: 'partial_failure'; blockedBy: string[] }
+    | { kind: 'compensation_failed' }
+  > {
+    if (!this.supabase) return { kind: 'compensation_failed' };
+
+    const { data, error } = await this.supabase.admin.rpc(
+      'delete_booking_with_guard',
+      { p_booking_id: bookingId, p_tenant_id: tenantId },
+    );
+
+    if (error) {
+      // booking-compensation.service.ts:66-83 — emit audit BEFORE the
+      // server-class failure so ops have a discoverable orphan signal.
+      this.log.error(
+        `delete_booking_with_guard RPC failed for booking ${bookingId}: ${error.message}`,
+      );
+      await this.tryAudit(
+        tenantId,
+        bookingId,
+        AUDIT_COMPENSATION_FAILED,
+        { rpc_error: error.message },
+      );
+      return { kind: 'compensation_failed' };
+    }
+
+    // booking-compensation.service.ts:86-106 — supabase-js surfaces a
+    // `returns jsonb` function as a parsed object.
+    const parsed = data as
+      | { kind: 'rolled_back' }
+      | { kind: 'partial_failure'; blocked_by: string[] }
+      | null;
+
+    if (!parsed || typeof parsed !== 'object' || !('kind' in parsed)) {
+      this.log.error(
+        `delete_booking_with_guard returned malformed payload for booking ${bookingId}: ${JSON.stringify(
+          data,
+        )}`,
+      );
+      await this.tryAudit(tenantId, bookingId, AUDIT_COMPENSATION_FAILED, {
+        rpc_error: 'malformed_payload',
+        rpc_data: data,
+      });
+      return { kind: 'compensation_failed' };
+    }
+
+    if (parsed.kind === 'rolled_back') {
+      // booking-compensation.service.ts:108-112 — clean rollback, no audit.
+      return { kind: 'rolled_back' };
+    }
+
+    // booking-compensation.service.ts:114-125 — partial_failure: emit the
+    // discoverable audit row, then return the blockers.
+    const blockedBy = Array.isArray(parsed.blocked_by)
+      ? parsed.blocked_by
+      : [];
+    await this.tryAudit(tenantId, bookingId, AUDIT_COMPENSATION_PARTIAL, {
+      blocked_by: blockedBy,
+    });
+    return { kind: 'partial_failure', blockedBy };
+  }
+
+  /**
+   * Best-effort audit emit — PORT of
+   * BookingCompensationService.tryAudit (booking-compensation.service.ts:
+   * 135-161). A failed audit insert must NOT mask the underlying
+   * compensation problem: log and proceed.
+   */
+  private async tryAudit(
+    tenantId: string,
+    bookingId: string,
+    eventType: string,
+    details: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.supabase) return;
+    try {
+      const { error } = await this.supabase.admin
+        .from('audit_events')
+        .insert({
+          tenant_id: tenantId,
+          event_type: eventType,
+          entity_type: 'booking',
+          entity_id: bookingId,
+          details,
+        });
+      if (error) {
+        this.log.error(
+          `audit_events insert failed for ${eventType} on booking ${bookingId}: ${error.message}`,
+        );
+      }
+    } catch (err) {
+      this.log.error(
+        `audit_events insert threw for ${eventType} on booking ${bookingId}: ${
+          (err as Error).message
+        }`,
+      );
     }
   }
 
@@ -754,223 +982,141 @@ export class RecurrenceService {
   }
 
   /**
-   * Split a recurrence series at `reservationId` and on. The given occurrence
-   * + every subsequent occurrence move to a fresh series_id (new
-   * recurrence_series row, cloned from the source). Returns the new series id.
+   * Split a recurrence series at `bookingId` and on. The given occurrence
+   * + every subsequent occurrence move to a fresh series id (new
+   * recurrence_series row, cloned from the source). Returns the new
+   * series id.
+   *
+   * Booking-audit remediation Slice 4 (audit 03 P1-2): this is now a
+   * THIN one-call wrapper over the atomic, idempotent
+   * `split_recurrence_series` RPC (migration 00411). The legacy body was
+   * the exact non-atomic, non-idempotent choreography the audit flagged
+   * as P1-2: (1) INSERT recurrence_series, (2) UPDATE forward bookings,
+   * (3) UPDATE source series, plus a swallowed best-effort audit_events
+   * insert, with NO actor + NO idempotency. A crash between writes 1 and
+   * 2 left an orphan recurrence_series; a retry of the surrounding
+   * editScope minted a SECOND orphan series (the brittle TS
+   * `skipSplitSeries` pre-check papered over the non-idempotency). All
+   * 3 writes + the audit are now ONE PL/pgSQL transaction, gated on
+   * command_operations keyed on (bookingId, clientRequestId). A retry
+   * of the same editScope re-calls this RPC with the SAME key → the
+   * RPC returns the SAME new_series_id, no orphan series — which is
+   * what made the TS pre-check obsolete (removed in the same change,
+   * see ReservationService.editScope).
+   *
+   * F-CRIT-1: p_actor_user_id is the JWT subject (auth_uid), NOT
+   * users.id — the RPC resolves `where u.auth_uid = p_actor_user_id`
+   * (Slice-1 D-1 lesson). p_actor_user_id is `uuid`-typed (00411:97);
+   * synthetic `system:*` sentinels (e.g. SYSTEM_ACTOR.auth_uid =
+   * 'system:recurrence', recurrence.service.ts:97) are NOT valid uuids
+   * and would 500 on the supabase-js/PostgREST uuid bind before reaching
+   * the SQL. They are coerced to null by `actorAuthUidForRpc` below; the
+   * RPC handles a null actor (00411:135 skips the lookup, audit
+   * actor_user_id = null). Real JWT callers (the only production caller
+   * is editScope-commit) pass a genuine uuid auth_uid through unchanged.
    */
-  async splitSeries(bookingId: string): Promise<string> {
+  async splitSeries(
+    bookingId: string,
+    actor: ActorContext,
+    clientRequestId: string,
+  ): Promise<string> {
     if (!this.supabase) {
-      throw AppErrors.server('booking.recurrence_not_injected', { detail: 'RecurrenceService.splitSeries requires Supabase injection' });
-    }
-
-    // /full-review v3 closure I3 — tenant_id filter on every read/write.
-    // The pivot is a BOOKING row (00277:74-77). Recurrence linkage lives on
-    // bookings, not slots.
-    const ctxTenantId = TenantContext.currentOrNull()?.id ?? null;
-    const pivotQuery = this.supabase.admin
-      .from('bookings')
-      .select('id, tenant_id, start_at, recurrence_series_id, recurrence_index')
-      .eq('id', bookingId);
-    if (ctxTenantId) pivotQuery.eq('tenant_id', ctxTenantId);
-    const { data: pivot } = await pivotQuery.maybeSingle();
-    if (!pivot) throw AppErrors.notFound('booking', bookingId);
-    const p = pivot as {
-      id: string;
-      tenant_id: string;
-      start_at: string;
-      recurrence_series_id: string | null;
-      recurrence_index: number | null;
-    };
-    if (!p.recurrence_series_id) {
-      throw AppErrors.validationFailed('not_recurring', { detail: 'booking is not part of a recurring series' });
-    }
-
-    // Tenant scope authoritative source: the pivot's tenant_id (already
-    // matched against ctxTenantId by the eq above when context exists).
-    const tenantId = p.tenant_id;
-
-    const seriesQuery = this.supabase.admin
-      .from('recurrence_series')
-      .select('*')
-      .eq('id', p.recurrence_series_id)
-      .eq('tenant_id', tenantId);
-    const { data: srcSeriesRow } = await seriesQuery.maybeSingle();
-    if (!srcSeriesRow) {
-      throw AppErrors.server('booking.recurrence_series_not_found', { detail: `recurrence_series ${p.recurrence_series_id} not found` });
-    }
-    const srcSeries = srcSeriesRow as {
-      id: string;
-      tenant_id: string;
-      recurrence_rule: RecurrenceRule;
-      series_start_at: string;
-      series_end_at: string | null;
-      max_occurrences: number;
-      holiday_calendar_id: string | null;
-      materialized_through: string;
-      // Renamed from parent_reservation_id (00278:179-181).
-      parent_booking_id: string | null;
-    };
-
-    // Create the new series row anchored at this occurrence's booking.
-    const { data: newSeriesRow, error: seriesErr } = await this.supabase.admin
-      .from('recurrence_series')
-      .insert({
-        tenant_id: srcSeries.tenant_id,
-        recurrence_rule: srcSeries.recurrence_rule,
-        series_start_at: p.start_at,
-        series_end_at: srcSeries.series_end_at,
-        max_occurrences: srcSeries.max_occurrences,
-        holiday_calendar_id: srcSeries.holiday_calendar_id,
-        materialized_through: srcSeries.materialized_through,
-        parent_booking_id: p.id,                  // renamed 00278:179-181
-      })
-      .select('id')
-      .single();
-    if (seriesErr || !newSeriesRow) {
-      throw AppErrors.server('booking.recurrence_failed', { cause: seriesErr });
-    }
-    const newSeriesId = (newSeriesRow as { id: string }).id;
-
-    // Move this occurrence + all later occurrence BOOKINGS onto the new
-    // series_id. recurrence_master_id was dropped from the canonical
-    // schema — the only link is recurrence_series_id.
-    const { error: updErr } = await this.supabase.admin
-      .from('bookings')
-      .update({ recurrence_series_id: newSeriesId })
-      .eq('tenant_id', srcSeries.tenant_id)
-      .eq('recurrence_series_id', srcSeries.id)
-      .gte('start_at', p.start_at);
-    if (updErr) throw AppErrors.server('booking.recurrence_failed', { cause: updErr });
-
-    // Cap the source series so no more occurrences materialise past the pivot.
-    // /full-review v3 closure I3 — tenant filter on the update.
-    await this.supabase.admin
-      .from('recurrence_series')
-      .update({ series_end_at: p.start_at })
-      .eq('tenant_id', tenantId)
-      .eq('id', srcSeries.id);
-
-    // Audit — phase K. The split changes the canonical series_id of every
-    // occurrence at-or-after the pivot, which downstream consumers
-    // (calendar sync, notifications, reporting) need to reconcile against.
-    try {
-      await this.supabase.admin.from('audit_events').insert({
-        tenant_id: srcSeries.tenant_id,
-        event_type: 'booking.recurrence_split',
-        entity_type: 'recurrence_series',
-        entity_id: srcSeries.id,
-        details: {
-          pivot_booking_id: p.id,
-          pivot_start_at: p.start_at,
-          new_series_id: newSeriesId,
-        },
+      throw AppErrors.server('booking.recurrence_not_injected', {
+        detail: 'RecurrenceService.splitSeries requires Supabase injection',
       });
-    } catch { /* best-effort */ }
+    }
 
-    return newSeriesId;
+    // Tenant scope: the active TenantContext. editScope (the sole
+    // production caller) always runs inside a resolved tenant; the
+    // recurrence cron sets TenantContext.run per series before any
+    // materialise/split (recurrence.service.ts recurrenceRollover).
+    const tenantId = TenantContext.current().id;
+
+    const idempotencyKey = buildSplitSeriesIdempotencyKey(
+      bookingId,
+      clientRequestId,
+    );
+
+    const { data: rpcData, error: rpcErr } = await this.supabase.admin.rpc(
+      'split_recurrence_series',
+      {
+        p_booking_id: bookingId,
+        p_tenant_id: tenantId,
+        // F-CRIT-1: the RPC resolves this via `where u.auth_uid =
+        // p_actor_user_id` (00411:140). Must be the JWT subject
+        // (auth_uid), NOT users.id, or every split fails with
+        // split_recurrence_series.actor_not_found (Slice-1 D-1 lesson).
+        // p_actor_user_id is uuid-typed (00411:97); synthetic system:*
+        // sentinels are coerced to null (the RPC permits a null actor —
+        // 00411:135), NOT passed as a non-uuid string that would 500 on
+        // the uuid bind. See RecurrenceService.actorAuthUidForRpc.
+        p_actor_user_id: RecurrenceService.actorAuthUidForRpc(actor),
+        p_idempotency_key: idempotencyKey,
+      },
+    );
+    if (rpcErr) {
+      // Recognised RPC raises (split_recurrence_series.actor_not_found
+      // 404, .not_found 404, .not_recurring 422,
+      // command_operations.payload_mismatch 409,
+      // command_operations.unexpected_state 500) route through
+      // mapRpcErrorToAppError exactly like the cancel + edit wrappers
+      // (reservation.service.ts:522 / :1059 / :1871). All 3 dotted
+      // codes are registered: STATUS_BY_CODE in map-rpc-error.ts + the
+      // KnownErrorCode union/registry in packages/shared/src/error-codes.ts
+      // + EN/NL messages. booking.recurrence_failed is the booking-scoped
+      // 500 fallback for any unrecognised raise (already registered).
+      throw mapRpcErrorToAppError(rpcErr, {
+        fallbackCode: 'booking.recurrence_failed',
+      });
+    }
+
+    const result = (rpcData ?? {}) as { new_series_id?: string };
+    if (!result.new_series_id) {
+      // The RPC always returns { new_series_id, ... } on success (and
+      // returns its cached_result verbatim on replay, same shape). A
+      // missing field is a contract break, not a client error.
+      throw AppErrors.server('booking.recurrence_failed', {
+        detail: 'split_recurrence_series returned no new_series_id',
+      });
+    }
+    return result.new_series_id;
   }
 
   /**
-   * Cancel forward — used by 'this_and_following' / 'series' cancel scopes.
-   * Status flipped to 'cancelled' and the series is capped so the rollover
-   * job won't re-materialise the dropped occurrences.
+   * Cancel forward — DEPRECATED / RETIRED by booking-audit Slice 2
+   * (audit 03 P0-1 / P1-5).
+   *
+   * The previous body was the exact non-atomic cascade the audit flagged
+   * as P0-1: separate bookings/slots/series writes + a swallowed
+   * per-occurrence bundleCascade, NO `booking.cancelled` outbox emit
+   * (P1-5). `ReservationService.cancelOne` now routes ALL scopes
+   * (this | this_and_following | series) through the atomic
+   * `cancel_booking_with_cascade` RPC (00408), which resolves + locks
+   * the forward/series set, cascades in one transaction, caps the
+   * series, and emits `booking.cancelled` per occurrence.
+   *
+   * This method had ZERO callers after the cancelOne rewrite (verified:
+   * the only production caller was reservation.service.ts:459, removed
+   * in the same change; no spec references it). Rather than leave a
+   * non-atomic cascade dormant for a future caller to silently
+   * re-introduce the P0-1/P1-5 bug, the body now hard-fails and points
+   * at the atomic path. Keeping the public method (instead of deleting
+   * it) preserves the `RecurrenceService` surface for any dynamic/
+   * reflective caller while making misuse loud, not silently corrupting.
    */
   async cancelForward(
     bookingId: string,
     scope: Extract<RecurrenceScope, 'this_and_following' | 'series'>,
     _opts: { reason?: string } = {},
   ): Promise<{ cancelled: number }> {
-    if (!this.supabase) {
-      throw AppErrors.server('booking.recurrence_not_injected', { detail: 'RecurrenceService.cancelForward requires Supabase injection' });
-    }
-    // Pivot is a BOOKING (each occurrence is its own booking post-rewrite).
-    // /full-review v3 closure I3 — tenant filter on the pivot read.
-    const ctxTenantId = TenantContext.currentOrNull()?.id ?? null;
-    const pivotQuery = this.supabase.admin
-      .from('bookings')
-      .select('id, tenant_id, start_at, recurrence_series_id')
-      .eq('id', bookingId);
-    if (ctxTenantId) pivotQuery.eq('tenant_id', ctxTenantId);
-    const { data: pivot } = await pivotQuery.maybeSingle();
-    if (!pivot) throw AppErrors.notFound('booking', bookingId);
-    const p = pivot as {
-      id: string; tenant_id: string; start_at: string; recurrence_series_id: string | null;
-    };
-    if (!p.recurrence_series_id) {
-      throw AppErrors.validationFailed('not_recurring', { detail: 'booking is not part of a recurring series' });
-    }
-
-    // Cancel the booking-level rows (status enum on bookings = 00277:49-51).
-    let q = this.supabase.admin
-      .from('bookings')
-      .update({ status: 'cancelled' })
-      .eq('tenant_id', p.tenant_id)
-      .eq('recurrence_series_id', p.recurrence_series_id)
-      .in('status', ['confirmed', 'checked_in', 'pending_approval']);
-
-    if (scope === 'this_and_following') {
-      q = q.gte('start_at', p.start_at);
-    }
-    // 'series' → no time gate; cancels everything in the series.
-
-    const { data, error } = await q.select('id');
-    if (error) throw AppErrors.server('booking.recurrence_failed', { cause: error });
-
-    const cancelledBookingIds = ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
-
-    // Mirror the cancel onto each booking's slots so per-slot status (used
-    // by scheduler/visibility queries) matches the booking-level decision.
-    if (cancelledBookingIds.length > 0) {
-      await this.supabase.admin
-        .from('booking_slots')
-        .update({ status: 'cancelled' })
-        .eq('tenant_id', p.tenant_id)
-        .in('booking_id', cancelledBookingIds)
-        .in('status', ['confirmed', 'checked_in', 'pending_approval']);
-    }
-
-    // Sub-project 2 cascade: per cancelled occurrence, cancel orders
-    // linked to that booking. Scoped per booking so each occurrence's
-    // services drop without affecting siblings. The cascade helper is a
-    // no-op for bookings without orders.
-    //
-    // Caller signature kept as `reservation_id` for now — the
-    // bundle-cascade rewrite (this slice) maps that to the booking lookup
-    // via orders.booking_id (00278:109).
-    if (this.bundleCascade) {
-      for (const id of cancelledBookingIds) {
-        await this.bundleCascade.cancelOrdersForReservation({
-          reservation_id: id,
-          reason: `recurrence_cancel_forward:${scope}`,
-        });
-      }
-    }
-
-    // Cap the series so the rollover doesn't re-create.
-    // /full-review v3 closure I3 — tenant filter on the update.
-    await this.supabase.admin
-      .from('recurrence_series')
-      .update({ series_end_at: p.start_at })
-      .eq('tenant_id', p.tenant_id)
-      .eq('id', p.recurrence_series_id);
-
-    // Audit — phase K.
-    try {
-      await this.supabase.admin.from('audit_events').insert({
-        tenant_id: p.tenant_id,
-        event_type: 'booking.recurrence_cancel_forward',
-        entity_type: 'recurrence_series',
-        entity_id: p.recurrence_series_id,
-        details: {
-          scope,
-          pivot_booking_id: p.id,
-          pivot_start_at: p.start_at,
-          cancelled_count: cancelledBookingIds.length,
-        },
-      });
-    } catch { /* best-effort */ }
-
-    return { cancelled: cancelledBookingIds.length };
+    throw AppErrors.server('booking.recurrence_failed', {
+      detail:
+        `RecurrenceService.cancelForward is retired (booking-audit Slice 2, ` +
+        `P0-1/P1-5). Cancel via ReservationService.cancelOne(bookingId, ` +
+        `actor, { scope: '${scope}' }) — it routes through the atomic ` +
+        `cancel_booking_with_cascade RPC (migration 00408). ` +
+        `(bookingId=${bookingId})`,
+    });
   }
 
   // --- helpers ---

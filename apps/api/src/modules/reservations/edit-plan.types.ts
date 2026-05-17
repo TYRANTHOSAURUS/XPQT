@@ -84,6 +84,34 @@ export interface EditPlanBookingPatch {
   config_release_id?: string | null;
 }
 
+/**
+ * Booking-audit Slice 8 (audit 03 P2-4, 2026-05-17) — scope-narrowed
+ * booking patch. Scope-mode recurrence edits (`edit_booking_scope`,
+ * assemble-edit-plan.service.ts:assembleScopeEditPlan) MUST NOT carry
+ * `recurrence_overridden`: it is a per-occurrence concept and the
+ * `edit_booking_scope` RPC guard-rejects the key's presence at runtime
+ * (00395:218-222). The shared `buildSingleSlotPlan` core (returning the
+ * full `EditPlan`) already never sets it on scope
+ * (`auto_set_recurrence_overridden: false`,
+ * assemble-edit-plan.service.ts:576); this `Omit<>` narrow makes that
+ * un-representable at the TYPE level too — tsc now proves a scope plan
+ * cannot carry the key, and the runtime RPC guard stays as
+ * defense-in-depth (unchanged). Pure type-level; zero runtime / payload
+ * change (the projection at the scope boundary is destructure +
+ * reconstruct → identical supabase-js rpc serialization). */
+export type ScopeEditPlanBookingPatch = Omit<EditPlanBookingPatch, 'recurrence_overridden'>;
+
+/** Booking-audit Slice 8 (audit 03 P2-4) — `EditPlan` variant for
+ * scope-mode plans: identical to `EditPlan` except its booking patch is
+ * the `recurrence_overridden`-stripped `ScopeEditPlanBookingPatch`. Used
+ * for `AssembleScopeEditPlanResult.rpc_plans[].plan`. The per-occurrence
+ * (`kind:'one'`/`kind:'slot'`) path + the shared `buildSingleSlotPlan`
+ * return the full `EditPlan` unchanged — the narrow is applied ONLY as a
+ * projection at the scope-assembly boundary. */
+export interface ScopeEditPlan extends Omit<EditPlan, 'booking'> {
+  booking: ScopeEditPlanBookingPatch;
+}
+
 /** Per-slot patch (00364:792-821). slot_id identifies the row to update. */
 export interface EditPlanSlotPatch {
   slot_id: string;

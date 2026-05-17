@@ -1,6 +1,5 @@
 import { AppError } from "../../common/errors";
 import { BookingFlowService } from './booking-flow.service';
-import { InProcessBookingTransactionBoundary } from './booking-transaction-boundary';
 import { TenantContext } from '../../common/tenant-context';
 import type { ActorContext, CreateReservationInput } from './dto/types';
 
@@ -214,6 +213,7 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
   function makeActor(overrides: Partial<ActorContext> = {}): ActorContext {
     return {
       user_id: 'U',
+      auth_uid: 'U',
       person_id: 'P',
       is_service_desk: false,
       has_override_rules: false,
@@ -240,7 +240,11 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     const rules = makeRules();
     const bundle = makeBundle();
 
-    const boundary = new InProcessBookingTransactionBoundary();
+    // Booking-audit Slice 7 (audit 03 P2-1): the BookingTransactionBoundary
+    // + BookingCompensationService positional args (old ctor positions 8/9)
+    // were removed — both classes are retired. The no-services path never
+    // used them anyway (it goes straight to the atomic `create_booking`
+    // RPC); this test still asserts that.
     const svc = new BookingFlowService(
       supabase as never,
       conflict as never,
@@ -248,9 +252,6 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
       undefined,
       undefined,
       bundle as never,
-      undefined,
-      boundary,
-      { deleteBooking: jest.fn() } as never,
     );
 
     const result = await TenantContext.run(TENANT, () => svc.create(baseInput(), makeActor()));
@@ -268,7 +269,8 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     const rules = makeRules();
     const bundle = makeBundle();
 
-    const boundary = new InProcessBookingTransactionBoundary();
+    // Slice 7: retired boundary/compensation positional args removed
+    // (same rationale as the empty-services test above).
     const svc = new BookingFlowService(
       supabase as never,
       conflict as never,
@@ -276,9 +278,6 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
       undefined,
       undefined,
       bundle as never,
-      undefined,
-      boundary,
-      { deleteBooking: jest.fn() } as never,
     );
 
     const input = baseInput();

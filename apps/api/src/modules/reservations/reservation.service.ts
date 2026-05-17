@@ -1,7 +1,7 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { AppError, AppErrors } from '../../common/errors';
 import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
-import { buildEditBookingIdempotencyKey } from '@prequest/shared';
+import { buildCancelBookingIdempotencyKey, buildEditBookingIdempotencyKey } from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { assertTenantOwned, assertTenantOwnedAll, UUID_RE } from '../../common/tenant-validation';
@@ -57,6 +57,14 @@ export class ReservationService {
     private readonly visibility: ReservationVisibilityService,
     @Optional() private readonly recurrence?: RecurrenceService,
     @Optional() private readonly notifications?: BookingNotificationsService,
+    // Booking-audit Slice 2 (audit 03 P0-1/P1-5): the cancelOne
+    // bundle-cascade path is RETIRED — the atomic
+    // cancel_booking_with_cascade RPC (00408) owns the whole cascade in
+    // one transaction. This injection is kept ONLY to preserve the
+    // positional constructor shape (DI + the many `new ReservationService(
+    // a,b,c,undefined,undefined,undefined,...)` unit-test constructions);
+    // it is intentionally never read. `void`-referenced below so
+    // noUnusedLocals stays satisfied without rippling ~6 spec files.
     @Optional() private readonly bundleCascade?: BundleCascadeService,
     @Optional() private readonly bundleEventBus?: BundleEventBus,
     // B.4 step 2D-D — `editSlot` cuts over to `assembleEditPlan` +
@@ -65,7 +73,11 @@ export class ReservationService {
     // editSlot path asserts non-null at call time and surfaces a 500
     // if an instance lands in that path without the dependency wired.
     @Optional() private readonly assembleEditPlan?: AssembleEditPlanService,
-  ) {}
+  ) {
+    // Retired dependency (see bundleCascade above) — referenced so
+    // noUnusedLocals doesn't flag the positional-stability injection.
+    void this.bundleCascade;
+  }
 
   // === Reads ===
 
@@ -429,11 +441,21 @@ export class ReservationService {
    * Soft cancel. status='cancelled'. Sets cancellation_grace_until so a
    * follow-up restore can revert within the grace window.
    *
-   * Post-canonicalisation: per-slot status (00277:142-144) is the
-   * authoritative cancel signal. We update the booking's slots; the
-   * booking-level status mirror is left in sync with the primary slot's
-   * state for v1 single-slot bookings — multi-slot booking-level rollup
-   * is a separate concern (a future view will compute it).
+   * Booking-audit remediation Slice 2 (audit 03 P0-1 / P1-5): this is
+   * now a ONE-CALL wrapper over the atomic `cancel_booking_with_cascade`
+   * RPC (00408). The four choreographed writes (booking_slots, bookings,
+   * audit_events, swallowed bundleCascade) + the in-process onCancelled
+   * notification are GONE — replaced by the single transaction in the
+   * RPC + the durable BookingCancelledCascadeHandler (consumes the
+   * `booking.cancel_cascade_required` event the RPC emits). `recurrence
+   * .cancelForward` is no longer called from here; the RPC handles all
+   * three scopes via p_scope (the forward/series set is resolved + locked
+   * + capped inside the tx). Equivalence contract:
+   * docs/follow-ups/cancel-booking-equivalence-checklist.md.
+   *
+   * Caller signature + controller response shape are preserved:
+   *   - scope 'this'                → Reservation (post-cancel projection)
+   *   - 'this_and_following'/'series' → { scope, cancelled, pivot }
    */
   async cancelOne(id: string, actor: ActorContext, opts: {
     reason?: string;
@@ -445,82 +467,80 @@ export class ReservationService {
     const r = await this.findByIdOrThrow(id, tenantId);
     this.visibility.assertVisible(r, ctx);
     if (!this.visibility.canEdit(r, ctx)) throw AppErrors.forbidden('booking_not_editable', 'You cannot edit this booking.');
-    if (r.status === 'cancelled') return r;
+    // Already-cancelled fast return preserved (matches the RPC's
+    // already-cancelled short-circuit; avoids a redundant RPC round-trip
+    // for the scope='this' case). For recurrence scopes we still call the
+    // RPC so siblings that are NOT cancelled get cancelled.
+    if (r.status === 'cancelled' && (!opts.scope || opts.scope === 'this')) return r;
     if (r.status === 'completed') throw AppErrors.validationFailed('booking_completed', { detail: 'Booking is completed.' });
 
-    // Recurrence-scoped cancel: fan-out cancel for this and following / series.
-    if (opts.scope && opts.scope !== 'this') {
-      if (!this.recurrence) {
-        throw AppErrors.validationFailed('recurrence_unavailable', { detail: 'Recurrence service not configured.' });
-      }
-      if (!r.recurrence_series_id) {
-        throw AppErrors.validationFailed('not_a_recurring_occurrence', { detail: 'Booking is not a recurring occurrence.' });
-      }
-      const result = await this.recurrence.cancelForward(id, opts.scope, { reason: opts.reason });
-      if (this.notifications) void this.notifications.onCancelled(r, opts.reason);
-      try {
-        await this.supabase.admin.from('audit_events').insert({
-          tenant_id: tenantId,
-          event_type: 'booking.cancelled',
-          entity_type: 'booking',
-          entity_id: id,
-          details: {
-            booking_id: id, scope: opts.scope, cancelled_count: result.cancelled,
-            reason: opts.reason ?? null,
-          },
-        });
-      } catch { /* best-effort */ }
-      return { scope: opts.scope, cancelled: result.cancelled, pivot: r };
+    const scope: RecurrenceScope = opts.scope ?? 'this';
+    if (scope !== 'this' && !r.recurrence_series_id) {
+      throw AppErrors.validationFailed('not_a_recurring_occurrence', { detail: 'Booking is not a recurring occurrence.' });
     }
 
-    const grace = opts.grace_minutes ?? 5;
-    const cancellationGraceUntil = new Date(Date.now() + grace * 60 * 1000).toISOString();
-
-    // Update every slot on this booking. For single-slot v1 there's just
-    // one row; for multi-slot bookings we cancel the whole atomic group
-    // (legacy behaviour preserved). Per-slot cancel within a multi-slot
-    // booking is a future endpoint (separate slice).
-    const { error: slotsErr } = await this.supabase.admin
-      .from('booking_slots')
-      .update({ status: 'cancelled', cancellation_grace_until: cancellationGraceUntil })
-      .eq('tenant_id', tenantId)
-      .eq('booking_id', id);
-    // C3+I4: DB-side write failure → server-class, no pgErr.message interpolation.
-    if (slotsErr) throw AppErrors.server('cancel_failed');
-
-    // Mirror to booking-level status so /desk/bookings sees the cancel
-    // immediately. Best-effort — the source-of-truth for cell rendering
-    // is the slot status, but the booking-level status is what listMine /
-    // listForOperator filter on today.
-    await this.supabase.admin
-      .from('bookings')
-      .update({ status: 'cancelled' })
-      .eq('tenant_id', tenantId)
-      .eq('id', id);
-
-    const updated = await this.findByIdOrThrow(id, tenantId);
-    if (this.notifications) void this.notifications.onCancelled(updated, opts.reason);
-    try {
-      await this.supabase.admin.from('audit_events').insert({
-        tenant_id: tenantId,
-        event_type: 'booking.cancelled',
-        entity_type: 'booking',
-        entity_id: id,
-        details: { booking_id: id, scope: 'this', reason: opts.reason ?? null },
-      });
-    } catch { /* best-effort */ }
-
-    // Sub-project 2 cascade: cancel orders linked to this booking. The
-    // helper now resolves orders via orders.booking_id (00278:109);
-    // best-effort — a failure here doesn't undo the booking cancel.
-    if (this.bundleCascade) {
-      await this.bundleCascade.cancelOrdersForReservation({
-        reservation_id: updated.id,                   // = booking id under canonicalisation
-        reason: opts.reason ?? 'booking_cancelled',
+    // The cancel route is a producer route guarded by
+    // RequireClientRequestIdGuard (controller :cancel). The middleware
+    // always sets actor.client_request_id on real HTTP requests; a
+    // missing value here is a guard-wiring bug (server-class), mirroring
+    // editOne's defense-in-depth at :310-317.
+    const clientRequestId = actor.client_request_id;
+    if (!clientRequestId) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail: 'cancelOne reached the RPC layer with no client_request_id despite RequireClientRequestIdGuard.',
       });
     }
 
-    return updated;
+    const idempotencyKey = buildCancelBookingIdempotencyKey(id, clientRequestId, scope);
+
+    const { data: rpcData, error: rpcErr } = await this.supabase.admin.rpc(
+      'cancel_booking_with_cascade',
+      {
+        p_booking_id: id,
+        p_tenant_id: tenantId,
+        // F-CRIT-1: the RPC resolves this via `where u.auth_uid =
+        // p_actor_user_id` (00408 step 1). Must be the JWT subject
+        // (auth_uid), NOT users.id, or every cancel fails with
+        // cancel_booking_with_cascade.actor_not_found (Slice-1 D-1 lesson).
+        p_actor_user_id: actor.auth_uid,
+        p_scope: scope,
+        p_reason: opts.reason ?? 'user_cancel',
+        p_grace_minutes: opts.grace_minutes ?? null,
+        p_idempotency_key: idempotencyKey,
+      },
+    );
+    if (rpcErr) {
+      // Recognised RPC raises (cancel_booking_with_cascade.actor_not_found
+      // 404, .not_found 404, .invalid_scope 422, .not_recurring 422,
+      // command_operations.payload_mismatch 409) route through
+      // mapRpcErrorToAppError exactly like the edit paths (:1039 / :1361).
+      // All 4 dotted codes + the 409 are registered: STATUS_BY_CODE in
+      // common/errors/map-rpc-error.ts + the KnownErrorCode union/registry
+      // in packages/shared/src/error-codes.ts + EN/NL messages.
+      // booking.cancel_failed is the booking-scoped 500 fallback for any
+      // unrecognised raise (already registered in packages/shared).
+      throw mapRpcErrorToAppError(rpcErr, { fallbackCode: 'booking.cancel_failed' });
+    }
+
+    const result = (rpcData ?? {}) as {
+      booking_ids?: string[];
+      pivot?: string;
+    };
+
+    if (scope === 'this') {
+      // Re-project the post-cancel booking so callers see the cancelled
+      // Reservation (same shape today's path returned via findByIdOrThrow).
+      return this.findByIdOrThrow(id, tenantId);
+    }
+    // Recurrence scopes preserve the { scope, cancelled, pivot } shape the
+    // controller + frontend expect. `cancelled` = number of bookings the
+    // RPC moved to cancelled (booking_ids.length); pivot = the pre-cancel
+    // projection captured above.
+    return {
+      scope,
+      cancelled: result.booking_ids?.length ?? 0,
+      pivot: r,
+    };
   }
 
   /**
@@ -1012,7 +1032,11 @@ export class ReservationService {
       p_booking_id: id,
       p_plan: plan as unknown as Record<string, unknown>,
       p_tenant_id: tenantId,
-      p_actor_user_id: actor.user_id,
+      // F-CRIT-1: the RPC resolves this via `where u.auth_uid = p_actor_
+      // user_id` (00364:357-371, unchanged in 00394 v5). Must be the JWT
+      // subject (auth_uid), NOT users.id, or every edit fails with
+      // edit_booking.actor_not_found.
+      p_actor_user_id: actor.auth_uid,
       p_idempotency_key: idempotencyKey,
     });
     if (rpcErr) {
@@ -1329,7 +1353,9 @@ export class ReservationService {
       p_booking_id: bookingId,
       p_plan: plan as unknown as Record<string, unknown>,
       p_tenant_id: tenantId,
-      p_actor_user_id: actor.user_id,
+      // F-CRIT-1: RPC resolves via `where u.auth_uid = p_actor_user_id`
+      // (00364:357-371). Must be the JWT subject, not users.id.
+      p_actor_user_id: actor.auth_uid,
       p_idempotency_key: idempotencyKey,
     });
     if (rpcErr) {
@@ -1428,50 +1454,46 @@ export class ReservationService {
    * invariant. This cutover closes that.
    *
    * `scope='this_and_following'` semantics differ for commit vs. dry-run:
-   *   - commit: call `RecurrenceService.splitSeries(pivot)` first (writes
-   *     a new recurrence_series row + UPDATEs forward bookings'
-   *     recurrence_series_id). Then `effectiveSeriesId = newSeriesId` and
-   *     the scope-rows read sees only forward occurrences by construction.
-   *   - dry-run: splitSeries is non-idempotent (a retry mints a new
-   *     series). For a preview we keep the current series_id and pass
-   *     `forwardOnlyFromStartAt = pivot.start_at` to the assembler so the
-   *     scope-rows query filters to the forward subset. Zero side effects.
+   *   - commit: call `RecurrenceService.splitSeries(pivot, actor, crid)`
+   *     first — now the atomic, idempotent `split_recurrence_series` RPC
+   *     (00411): in ONE tx it INSERTs a new recurrence_series row +
+   *     UPDATEs forward bookings' recurrence_series_id + caps the source
+   *     series + writes an in-tx audit row. Then `effectiveSeriesId =
+   *     newSeriesId` and the scope-rows read sees only forward
+   *     occurrences by construction.
+   *   - dry-run: NO split (a preview commits nothing). We keep the
+   *     current series_id and pass `forwardOnlyFromStartAt =
+   *     pivot.start_at` to the assembler so the scope-rows query filters
+   *     to the forward subset. Zero side effects.
    *
    * `scope='series'` is symmetric: preview/commit both use the pivot's
    * current `recurrence_series_id`; no split needed.
    *
    * Idempotency: key is built from (bookingId, clientRequestId, 'scope'),
-   * NOT from (newSeriesId, clientRequestId). Rationale: splitSeries is
-   * non-idempotent on retry (a network failure between splitSeries and
-   * the RPC mints a fresh series each time), and the pivot bookingId is
-   * stable across retries. Keying on the pivot lets the RPC's
-   * `command_operations` cached_result short-circuit a retry to the same
-   * response, even if a second splitSeries would otherwise mint a second
-   * series. The dry-run + commit paths can share an idempotency key
-   * (00371 v2 contract — dry-run does NOT touch command_operations).
+   * NOT from (newSeriesId, clientRequestId). The pivot bookingId is
+   * stable across retries; keying on it lets the edit_booking_scope
+   * RPC's `command_operations` cached_result short-circuit a retry to
+   * the same response. The dry-run + commit paths can share an
+   * idempotency key (00371 v2 contract — dry-run does NOT touch
+   * command_operations).
    *
-   * IDEMPOTENCY MITIGATION (C1 fix, Step 2F.3 self-review remediation,
-   * codex-revised 2026-05-12): the retry hazard from splitSeries non-
-   * idempotency is mitigated by a `command_operations` cached_result
-   * pre-check that sets a `skipSplitSeries` flag — it does NOT short-
-   * circuit return. The full assembler + RPC flow still runs; the RPC
-   * owns the cached_result return (00371:266-267) AND the payload_hash
-   * vs. payload_mismatch check (00371:268-274). The TS pre-check's only
-   * job is to prevent `splitSeries` from re-firing on a retry — that
-   * function commits side effects OUTSIDE the RPC transaction (new
-   * recurrence_series row + UPDATEs forward bookings' series_id) and
-   * is non-idempotent.
-   *
-   * The pre-check is GATED on commit mode (`if (!dryRun)`). Dry-run is
-   * a stateless preview per the 00371 v2 contract (00371:247-258) and
-   * MUST NOT read or write command_operations — a previous codex
-   * remediation (CRITICAL C1) caught a bug where dry-run replayed a
-   * prior commit's cached envelope; this revision fixes it. A second
-   * codex finding (CRITICAL C2) caught that the old short-circuit
-   * bypassed the RPC's payload_hash check, allowing a same-crid /
-   * different-body retry to silently return the FIRST attempt's
-   * response. Both are resolved by delegating cache-return + mismatch
-   * detection to the RPC; the TS layer only suppresses splitSeries.
+   * SPLIT IDEMPOTENCY (Booking-audit Slice 4, audit 03 P1-2): the
+   * commit-mode split is now ATOMIC + IDEMPOTENT. `splitSeries` is a
+   * thin wrapper over the `split_recurrence_series` RPC (migration
+   * 00411) which gates on its own `command_operations` row keyed on
+   * `booking:recurrence:split:<bookingId>:<clientRequestId>` (the SAME
+   * crid this editScope uses). The 3 writes (INSERT new series, UPDATE
+   * forward bookings, UPDATE source series) + the audit are ONE
+   * transaction. A retry of the same editScope re-calls the split with
+   * the same key → the RPC cache-hits → returns the SAME new_series_id,
+   * no orphan series minted. This RETIRES the brittle TS
+   * `skipSplitSeries` command_operations pre-check (the codex C1/C2
+   * 2026-05-12 mitigation) — its entire job was to suppress the
+   * non-idempotent legacy splitSeries on retry, and the RPC now owns
+   * that end-to-end. The edit_booking_scope RPC still owns its own
+   * cached_result return (00371:266-267) + payload_mismatch detection
+   * (00371:268-274) on the surrounding edit; the split RPC owns the
+   * same for the series-split write.
    *
    * Visitor cascade emission: walks the RPC's `per_occurrence[]` return
    * shape (`00371:1114-1125` — each row carries `space_id_before/after` +
@@ -1641,80 +1663,46 @@ export class ReservationService {
       aggregated_follow_ups: string[];
     };
 
-    // Idempotency key — built EARLY (before the optional pre-check + before
-    // splitSeries) so the codex C1+C2 fix below can reuse it for the
-    // commit-mode pre-check AND we pass the same value to the RPC. Keyed
-    // on (pivot bookingId, crid, 'scope') because the pivot id is stable
-    // across retries; dry_run is NOT in the key (00371 v2 contract).
+    // Idempotency key — built EARLY (before splitSeries) so the same
+    // value is passed to the edit_booking_scope RPC. Keyed on (pivot
+    // bookingId, crid, 'scope') because the pivot id is stable across
+    // retries; dry_run is NOT in the key (00371 v2 contract). The split
+    // RPC builds its OWN key from the same (bookingId, crid) — see
+    // RecurrenceService.splitSeries — so an editScope retry replays
+    // both the split and the scope edit deterministically.
     const idempotencyKey = buildEditBookingIdempotencyKey(
       bookingId,
       clientRequestId,
       'scope',
     );
 
-    // Codex C1+C2 remediation (2026-05-12) — pre-check command_operations
-    // to detect a successful prior attempt, but ONLY to suppress the
-    // non-idempotent splitSeries call. We do NOT short-circuit return.
+    // Booking-audit remediation Slice 4 (audit 03 P1-2): the codex
+    // C1+C2 `skipSplitSeries` command_operations pre-check (a brittle
+    // hack that read the cached row purely to suppress the
+    // non-idempotent legacy splitSeries) is GONE. splitSeries is now a
+    // thin wrapper over the atomic, idempotent `split_recurrence_series`
+    // RPC (migration 00411) keyed on the SAME (bookingId,
+    // clientRequestId) this editScope uses. A retry of the same
+    // editScope re-calls splitSeries with the same key → the RPC's own
+    // command_operations gate returns the SAME new_series_id, no orphan
+    // series minted. The TS layer no longer has to pre-detect the retry
+    // and skip the side effect — the RPC owns idempotency end-to-end
+    // (same posture as the cancel_booking_with_cascade Slice-2 cutover).
     //
-    // The original (now reverted) implementation read the cached row,
-    // returned its `cached_result` verbatim, and skipped the rest of the
-    // flow. That had two bugs codex flagged as CRITICAL:
-    //
-    //   C1 (dry-run replays a commit cache): the pre-check fired on
-    //       every call. A dry-run preview made after a successful commit
-    //       with the same crid would hit the cached row and return the
-    //       commit envelope — violating the 00371 v2 contract that
-    //       dry-run is stateless (00371:247-258).
-    //
-    //   C2 (payload_mismatch bypass): the pre-check returned the cached
-    //       envelope WITHOUT comparing the request's assembled-plans
-    //       payload_hash to the cached row's payload_hash. A retry that
-    //       reused the same crid but carried a DIFFERENT body silently
-    //       returned the FIRST attempt's response — the operator believed
-    //       their second edit landed, but it never did. The RPC owns the
-    //       payload_hash check (00371:268-274 raises
-    //       command_operations.payload_mismatch); short-circuiting in TS
-    //       bypassed it.
-    //
-    // The fix: the pre-check is gated on commit mode AND only sets a
-    // flag. The full assembler + RPC pipeline runs. On retry the RPC
-    // itself returns cached_result (00371:266-267) verbatim, or raises
-    // payload_mismatch if the assembled plans differ. The TS layer is
-    // responsible only for the side effect the RPC cannot undo:
-    // RecurrenceService.splitSeries commits a new recurrence_series row
-    // + UPDATEs forward bookings OUTSIDE the RPC transaction. A second
-    // splitSeries on retry would mint an orphan series whose id never
-    // appears in the cached_result the RPC replays.
-    //
-    // Schema reference: 00316_command_operations_table.sql — columns are
-    // (tenant_id, idempotency_key, payload_hash, outcome, cached_result).
-    // outcome is enum('in_progress', 'success'). RLS uses
-    // current_tenant_id(); we use supabase.admin to bypass and tenant-
-    // scope explicitly.
-    let skipSplitSeries = false;
-    if (!dryRun) {
-      const { data: cachedRow, error: cachedErr } = await this.supabase.admin
-        .from('command_operations')
-        .select('outcome')
-        .eq('tenant_id', tenantId)
-        .eq('idempotency_key', idempotencyKey)
-        .maybeSingle();
-      if (cachedErr) {
-        // A DB error reading command_operations is itself server-class.
-        // Bail before splitSeries fires — we'd otherwise risk a second
-        // splitSeries if the cached row exists but the read transiently
-        // failed (orphan-series hazard).
-        throw AppErrors.server('command_operations.unexpected_state', {
-          detail: `editScope retry-detection read failed for tenant=${tenantId}.`,
-        });
-      }
-      if (
-        cachedRow !== null &&
-        (cachedRow as { outcome: string }).outcome === 'success'
-      ) {
-        skipSplitSeries = true;
-      }
-    }
+    // Retry-replay correctness (traced):
+    //   First attempt  — splitSeries → RPC mints new series under
+    //     `booking:recurrence:split:<bid>:<crid>`, moves the pivot +
+    //     forward bookings, returns new_series_id. effectiveSeriesId =
+    //     new_series_id. edit_booking_scope RPC commits + caches under
+    //     `booking:edit:scope:<bid>:<crid>`.
+    //   Retry (same crid) — splitSeries → same split key → RPC
+    //     cache-hits → returns the SAME new_series_id (no second series;
+    //     the pivot is already on it). effectiveSeriesId = the SAME
+    //     new_series_id. The assembler walks the post-split series (the
+    //     pivot is already there) and re-derives the same plans; the
+    //     edit_booking_scope RPC then returns its own cached_result
+    //     (00371:266-267) or raises payload_mismatch if the body
+    //     differed. No orphan series, no double-apply.
 
     // Load pivot booking. `findByIdOrThrow` enforces tenant scope +
     // returns the legacy Reservation projection (primary-slot embed).
@@ -1750,30 +1738,27 @@ export class ReservationService {
         // Filter scope-rows to the forward subset of the CURRENT series.
         effectiveSeriesId = pivot.recurrence_series_id;
         forwardOnlyFromStartAt = pivot.start_at;
-      } else if (skipSplitSeries) {
-        // Retry path (codex C1+C2 fix): the FIRST attempt's splitSeries
-        // already ran and moved the pivot to the new series. The pivot
-        // we just loaded therefore sits on the post-split series id —
-        // pivot.recurrence_series_id IS the new series id. Using it as
-        // both `effectiveSeriesId` AND `newSeriesId` lets the assembler
-        // re-derive the same plans the first attempt assembled, and the
-        // RPC then returns cached_result (matching payload_hash) or
-        // raises payload_mismatch (differing payload). No
-        // forwardOnlyFromStartAt: the post-split series only contains
-        // forward occurrences by construction (splitSeries put them
-        // there), so no extra filter is needed.
-        effectiveSeriesId = pivot.recurrence_series_id;
-        newSeriesId = pivot.recurrence_series_id;
       } else {
-        // Commit, first attempt: split the series at the pivot. Forward
-        // occurrences move to a fresh recurrence_series_id; the assembler
-        // then sees only forward rows by construction (no filter needed).
-        newSeriesId = await this.recurrence.splitSeries(bookingId);
+        // Commit: split the series at the pivot. Slice 4 — splitSeries
+        // is now the atomic, idempotent `split_recurrence_series` RPC
+        // (00411) keyed on (bookingId, clientRequestId). First attempt
+        // mints the new series + moves the pivot/forward bookings;
+        // RETRY (same crid) re-calls it, the RPC cache-hits and returns
+        // the SAME new_series_id (no orphan series — the pivot is
+        // already on it). Either way the assembler then sees only
+        // forward rows on the new series by construction (no filter
+        // needed) and the edit_booking_scope RPC owns its own
+        // cached_result / payload_mismatch on replay.
+        newSeriesId = await this.recurrence.splitSeries(
+          bookingId,
+          actor,
+          clientRequestId,
+        );
         effectiveSeriesId = newSeriesId;
       }
     } else {
       // scope='series' — preview + commit both walk the current series.
-      // skipSplitSeries is irrelevant here (no split was ever called).
+      // No split is ever called for the full-series scope.
       effectiveSeriesId = pivot.recurrence_series_id;
     }
 
@@ -1794,14 +1779,13 @@ export class ReservationService {
       forwardOnlyFromStartAt,
     });
 
-    // Idempotency key was built earlier (before the commit-mode pre-check
-    // + splitSeries) so the pre-check could detect a retry and set
-    // skipSplitSeries without re-firing the non-idempotent splitSeries
-    // side effect. We reuse the same key here so the RPC's own
-    // command_operations advisory-lock + cached_result path is keyed
-    // consistently across attempts. The RPC owns cached return (00371:
-    // 266-267) and payload_mismatch detection (00371:268-274) — TS does
-    // NOT short-circuit on the pre-check.
+    // Idempotency key was built earlier (before splitSeries) and reused
+    // here so the edit_booking_scope RPC's own command_operations
+    // advisory-lock + cached_result path is keyed consistently across
+    // attempts. The RPC owns cached return (00371:266-267) and
+    // payload_mismatch detection (00371:268-274). The split write has
+    // its OWN command_operations gate (Slice 4 / 00411) keyed on the
+    // same crid — both RPCs are independently idempotent on replay.
     //
     // Cascade re-emission on retry: this loop is fire-and-forget through
     // BundleEventBus (in-process Subject). On retry the RPC replays the
@@ -1816,7 +1800,10 @@ export class ReservationService {
       {
         p_plans: rpc_plans as unknown as Record<string, unknown>[],
         p_tenant_id: tenantId,
-        p_actor_user_id: actor.user_id,
+        // F-CRIT-1: RPC resolves via `where u.auth_uid = p_actor_user_id`
+        // (00371:227-238, mirrors 00364:357-371). Must be the JWT subject,
+        // not users.id, or every scope edit fails actor_not_found.
+        p_actor_user_id: actor.auth_uid,
         p_idempotency_key: idempotencyKey,
         p_dry_run: dryRun,
       },

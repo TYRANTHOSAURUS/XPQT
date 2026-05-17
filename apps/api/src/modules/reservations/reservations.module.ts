@@ -20,11 +20,6 @@ import { RankingService } from './ranking.service';
 import { MultiRoomBookingService } from './multi-room-booking.service';
 import { MultiAttendeeFinder } from './multi-attendee.service';
 import { BookingNotificationsService } from './booking-notifications.service';
-import {
-  BOOKING_TX_BOUNDARY,
-  InProcessBookingTransactionBoundary,
-} from './booking-transaction-boundary';
-import { BookingCompensationService } from './booking-compensation.service';
 import { AssembleEditPlanService } from './assemble-edit-plan.service';
 import { RoomBookingRulesModule } from '../room-booking-rules/room-booking-rules.module';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
@@ -32,7 +27,6 @@ import { NotificationModule } from '../notification/notification.module';
 import { BookingBundlesModule } from '../booking-bundles/booking-bundles.module';
 import { OrdersModule } from '../orders/orders.module';
 import { OrderService } from '../orders/order.service';
-import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
 import { RoomMailboxService } from '../calendar-sync/room-mailbox.service';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -66,17 +60,9 @@ import type { ActorContext, CreateReservationInput } from './dto/types';
     MultiRoomBookingService,
     MultiAttendeeFinder,
     BookingNotificationsService,
-    // Phase 1.3 — atomic compensation primitives. The boundary is provided
-    // via the BOOKING_TX_BOUNDARY token so Phase 6 can swap the in-process
-    // impl for a durable-outbox runner without touching call sites.
-    BookingCompensationService,
     // B.4 step 2D-C — TS-side EditPlan builder for the edit_booking RPC.
     // Step 2D-D will wire it into the editSlot controller path.
     AssembleEditPlanService,
-    {
-      provide: BOOKING_TX_BOUNDARY,
-      useClass: InProcessBookingTransactionBoundary,
-    },
   ],
   controllers: [ReservationController],
   exports: [
@@ -91,9 +77,7 @@ import type { ActorContext, CreateReservationInput } from './dto/types';
     MultiRoomBookingService,
     MultiAttendeeFinder,
     BookingNotificationsService,
-    BookingCompensationService,
     AssembleEditPlanService,
-    BOOKING_TX_BOUNDARY,
   ],
 })
 export class ReservationsModule implements OnModuleInit {
@@ -106,7 +90,6 @@ export class ReservationsModule implements OnModuleInit {
     private readonly supabase: SupabaseService,
     private readonly tenants: TenantService,
     private readonly orders: OrderService,
-    private readonly bundleCascade: BundleCascadeService,
   ) {}
 
   onModuleInit() {
@@ -120,13 +103,12 @@ export class ReservationsModule implements OnModuleInit {
     this.recurrence.setOrdersFanOut({
       cloneOrderForOccurrence: (args) => this.orders.cloneOrderForOccurrence(args),
     });
-    // Same cascade wiring for cancelForward — every cancelled occurrence's
-    // bundle-linked orders need to cascade. Scoped per reservation so a
-    // single occurrence cancel doesn't take down sibling occurrences sharing
-    // the bundle.
-    this.recurrence.setBundleCascade({
-      cancelOrdersForReservation: (args) => this.bundleCascade.cancelOrdersForReservation(args),
-    });
+    // Booking-audit Slice 2 (audit 03 P0-1/P1-5): the recurrence
+    // cancelForward bundle-cascade wiring was REMOVED. cancelForward is
+    // retired; ReservationService.cancelOne now routes every scope
+    // (this | this_and_following | series) through the atomic
+    // cancel_booking_with_cascade RPC (00408) which owns the whole
+    // cascade in one transaction. No setBundleCascade call remains.
 
     // Wire the calendar-sync intercept handler. When a Pattern-A room mailbox
     // receives an Outlook invite, room-mailbox.service translates it to a
@@ -206,6 +188,9 @@ export class ReservationsModule implements OnModuleInit {
     // guard run as for any portal booking.
     const actor: ActorContext = {
       user_id: `system:outlook:${draft.external_event_id}`,
+      // Synthetic — Outlook sync only calls bookingFlow.create, never the
+      // F-CRIT-1 edit RPCs. Mirror user_id so the required field is set.
+      auth_uid: `system:outlook:${draft.external_event_id}`,
       person_id: organizer.id,
       is_service_desk: false,
       has_override_rules: false,
@@ -235,8 +220,9 @@ export class ReservationsModule implements OnModuleInit {
           return { outcome: 'conflict' };
         }
       }
-      // Legacy code paths (BookingTransactionBoundary etc.) may still throw
-      // Nest exceptions; keep the old class checks as a fallback.
+      // Some legacy code paths may still throw raw Nest exceptions
+      // (ForbiddenException / ConflictException); keep the class checks
+      // as a fallback alongside the AppError-code dispatch above.
       if (err instanceof ForbiddenException) {
         const e = err.getResponse() as { code?: string; message?: string };
         return { outcome: 'denied', denialMessage: e?.message ?? 'Booking denied by rules.' };

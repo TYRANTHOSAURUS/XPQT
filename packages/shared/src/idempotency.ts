@@ -420,3 +420,181 @@ export function buildReassignIdempotencyKey(
 ): string {
   return `${REASSIGN_IDEMPOTENCY_KEY_PREFIX}:${kind}:${entityId}:${clientRequestId}`;
 }
+
+/**
+ * Prefix for the `cancel_booking_with_cascade` outer idempotency key.
+ * Booking-audit remediation Slice 2 (audit 03 P0-1 / P1-5). Paired with
+ * the `cancel_booking_with_cascade(...)` RPC (migration 00408).
+ * Namespaced separately from every other prefix (including
+ * `booking:edit`) so a cancel retry against a booking can never collide
+ * with an edit / dispatch / patch / approval call on the same booking.
+ *
+ * Citations:
+ *   - supabase/migrations/00408_cancel_booking_with_cascade.sql
+ *     (RPC accepts `p_idempotency_key text`, gates on command_operations)
+ *   - docs/follow-ups/cancel-booking-equivalence-checklist.md (row 6.2 —
+ *     the cancel route gains RequireClientRequestIdGuard + this key)
+ */
+export const CANCEL_BOOKING_IDEMPOTENCY_KEY_PREFIX = 'booking:cancel';
+
+/**
+ * Build the outer idempotency key for `cancel_booking_with_cascade`.
+ * Shape: `booking:cancel:<scope>:<booking_id>:<clientRequestId>`
+ *
+ * `scope` is the discriminator (mirrors `op` on the edit family at
+ * `buildEditBookingIdempotencyKey`): a buggy frontend reusing the same
+ * clientRequestId across a `this` cancel and a `series` cancel of the
+ * same booking would otherwise collapse onto one `command_operations`
+ * row and the second call would surface the first's cached_result.
+ * Distinct scope ⇒ distinct key. **No actor in the key** per
+ * F-CRIT-2 / plan-C1 (dispatch RPC): clientRequestId is the
+ * deduplication boundary.
+ */
+export function buildCancelBookingIdempotencyKey(
+  bookingId: string,
+  clientRequestId: string,
+  scope: RecurrenceCancelScope,
+): string {
+  return `${CANCEL_BOOKING_IDEMPOTENCY_KEY_PREFIX}:${scope}:${bookingId}:${clientRequestId}`;
+}
+
+/**
+ * Prefix for the `split_recurrence_series` outer idempotency key.
+ * Booking-audit remediation Slice 4 (audit 03 P1-2). Paired with the
+ * `split_recurrence_series(...)` RPC (migration 00411). Namespaced
+ * separately from every other prefix (including `booking:edit` and
+ * `booking:cancel`) so a recurrence-split retry can never collide with
+ * an edit / cancel / dispatch / patch call on the same booking.
+ *
+ * The split runs INSIDE `ReservationService.editScope` for
+ * `scope='this_and_following'` commits. It is keyed on the SAME
+ * (bookingId, clientRequestId) the surrounding editScope uses so a
+ * retry of the same editScope re-calls the split with the same key →
+ * the RPC's command_operations gate returns the cached new_series_id,
+ * no orphan series minted. This is what makes the legacy TS
+ * `skipSplitSeries` pre-check obsolete.
+ *
+ * Citations:
+ *   - supabase/migrations/00411_split_recurrence_series.sql
+ *     (RPC accepts `p_idempotency_key text`, gates on command_operations)
+ *   - apps/api/src/modules/reservations/recurrence.service.ts
+ *     (RecurrenceService.splitSeries — the thin RPC wrapper)
+ */
+export const SPLIT_RECURRENCE_SERIES_IDEMPOTENCY_KEY_PREFIX =
+  'booking:recurrence:split';
+
+/**
+ * Build the outer idempotency key for `split_recurrence_series`.
+ * Shape: `booking:recurrence:split:<booking_id>:<clientRequestId>`
+ *
+ * Same booking + same clientRequestId ⇒ same key ⇒ command_operations
+ * short-circuits the second call and returns the same new_series_id.
+ * **No actor in the key** per F-CRIT-2 / plan-C1 (dispatch RPC):
+ * clientRequestId is the deduplication boundary. No scope/op
+ * discriminator — split is only ever invoked on the
+ * `this_and_following` commit leg of editScope, so the pair
+ * (bookingId, clientRequestId) is the natural retry boundary (and it
+ * MUST match the editScope crid so a single editScope retry replays
+ * both the split and the edit_booking_scope RPC against the same
+ * post-split series — see the retry-replay trace in
+ * docs/follow-ups/slice4-split-recurrence-decision.md).
+ */
+export function buildSplitSeriesIdempotencyKey(
+  bookingId: string,
+  clientRequestId: string,
+): string {
+  return `${SPLIT_RECURRENCE_SERIES_IDEMPOTENCY_KEY_PREFIX}:${bookingId}:${clientRequestId}`;
+}
+
+/**
+ * Prefix for the `attach_services_to_existing_booking` outer idempotency
+ * key. Booking-audit remediation Slice 5 (audit 03 P1-3). Paired with the
+ * `attach_services_to_existing_booking(...)` RPC (migration 00412), which
+ * gates on `public.attach_operations` (the attach-family idempotency table —
+ * NOT `command_operations`, mirroring the LIVE create_booking_with_attach_plan
+ * which also uses attach_operations). Namespaced separately from every
+ * other prefix (including `booking:edit`, `booking:cancel`,
+ * `booking:recurrence:split`) so a post-booking service-attach retry can
+ * never collide with an edit / cancel / split / dispatch / patch call on
+ * the same booking.
+ *
+ * The attach runs from `POST /reservations/:id/services`
+ * (RequireClientRequestIdGuard-gated). It is keyed on
+ * (bookingId, clientRequestId): a retry of the same attach click re-calls
+ * the RPC with the same key → the RPC's attach_operations gate returns the
+ * cached result, ZERO duplicate orders/OLIs/asset_reservations/approvals.
+ * This is what makes the legacy TS `Cleanup` reverse-order undo-queue
+ * obsolete — Postgres transaction atomicity replaces it.
+ *
+ * Citations:
+ *   - supabase/migrations/00412_attach_services_to_existing_booking_rpc.sql
+ *     (RPC accepts `p_idempotency_key text`, gates on attach_operations)
+ *   - apps/api/src/modules/booking-bundles/bundle.service.ts
+ *     (BundleService.attachServicesToBooking — the thin RPC wrapper)
+ */
+export const ATTACH_SERVICES_IDEMPOTENCY_KEY_PREFIX = 'booking:attach';
+
+/**
+ * Build the outer idempotency key for `attach_services_to_existing_booking`.
+ * Shape: `booking:attach:<booking_id>:<clientRequestId>`
+ *
+ * Same booking + same clientRequestId ⇒ same key ⇒ attach_operations
+ * short-circuits the second call and returns the cached result (no
+ * duplicate rows). **No actor in the key** per F-CRIT-2 / plan-C1
+ * (dispatch RPC): clientRequestId is the deduplication boundary. No
+ * scope/op discriminator — attach is a single operation kind per booking;
+ * the pair (bookingId, clientRequestId) is the natural retry boundary.
+ */
+export function buildAttachServicesIdempotencyKey(
+  bookingId: string,
+  clientRequestId: string,
+): string {
+  return `${ATTACH_SERVICES_IDEMPOTENCY_KEY_PREFIX}:${bookingId}:${clientRequestId}`;
+}
+
+/**
+ * The three recurrence scopes the cancel RPC dispatches on. Mirrors the
+ * `RecurrenceScope` union in
+ * `apps/api/src/modules/reservations/dto/types.ts:378` (kept structurally
+ * identical; redeclared here so `@prequest/shared` has no app dependency).
+ */
+export type RecurrenceCancelScope = 'this' | 'this_and_following' | 'series';
+
+/**
+ * Prefix for the `cancel_order_lines_with_cascade` outer idempotency key.
+ * Booking-audit remediation Slice 6 (audit 03 P1-4). Paired with the
+ * `cancel_order_lines_with_cascade(...)` RPC (migration 00414), which
+ * gates on `command_operations` (mirroring the cancel-family
+ * `cancel_booking_with_cascade` 00408). Namespaced separately from every
+ * other prefix (including `booking:cancel`) so a per-line / bundle
+ * service-cancel retry can never collide with a booking-cancel / edit /
+ * split / attach / dispatch / patch call on the same booking.
+ *
+ * Citations:
+ *   - supabase/migrations/00414_cancel_order_lines_with_cascade.sql
+ *     (RPC accepts `p_idempotency_key text`, gates on command_operations)
+ *   - apps/api/src/modules/booking-bundles/bundle-cascade.service.ts
+ *     (BundleCascadeService.cancelLine / cancelBundle — thin RPC wrappers)
+ */
+export const CANCEL_ORDER_LINES_IDEMPOTENCY_KEY_PREFIX = 'booking:lines:cancel';
+
+/**
+ * Build the outer idempotency key for `cancel_order_lines_with_cascade`.
+ * Shape: `booking:lines:cancel:<booking_id>:<clientRequestId>`
+ *
+ * Same booking + same clientRequestId ⇒ same key ⇒ command_operations
+ * short-circuits the second call and returns the cached result (no
+ * re-cascade). **No actor in the key** per F-CRIT-2 / plan-C1 (dispatch
+ * RPC): clientRequestId is the deduplication boundary. No scope/op
+ * discriminator — the RPC's INTENT-hashed payload gate detects "same key,
+ * different line set" and raises command_operations.payload_mismatch
+ * (so a per-line cancel and a bundle cancel of the same booking under the
+ * same reused clientRequestId surface as a 409, never a silent
+ * cached_result of the wrong op).
+ */
+export function buildCancelOrderLinesIdempotencyKey(
+  bookingId: string,
+  clientRequestId: string,
+): string {
+  return `${CANCEL_ORDER_LINES_IDEMPOTENCY_KEY_PREFIX}:${bookingId}:${clientRequestId}`;
+}

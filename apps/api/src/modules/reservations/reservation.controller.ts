@@ -174,7 +174,7 @@ export class ReservationController {
         end_at: dto.end_at,
         attendee_count: dto.attendee_count,
         attendee_person_ids: dto.attendee_person_ids,
-        source: dto.source as 'portal' | 'desk' | 'api' | 'calendar_sync' | 'auto' | undefined,
+        source: dto.source as 'portal' | 'desk' | 'api' | 'calendar_sync' | undefined,
         services: dto.services,
         bundle: dto.bundle,
       },
@@ -379,13 +379,31 @@ export class ReservationController {
     });
   }
 
+  // Booking-audit remediation Slice 2 (audit 03 P0-1 / P1-5) — cancel is
+  // now a command_operations-idempotent producer route backed by the
+  // atomic `cancel_booking_with_cascade` RPC (00408). It requires a
+  // CLIENT-supplied `X-Client-Request-Id` so retries collapse on the
+  // command_operations idempotency gate instead of re-running the
+  // cascade. Mirrors the editOne gate at reservation.controller.ts:
+  // 301-320 + the create/multi-room/services/edit routes at :106 / :151
+  // / :302 / :357 / :423 / :495. Equivalence checklist row 6.2.
   @Post(':id/cancel')
+  @UseGuards(RequireClientRequestIdGuard)
   async cancel(
     @Req() request: Request,
     @Param('id') id: string,
     @Body() dto: CancelReservationDto,
   ) {
     const actor = await this.actorFromRequest(request);
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    if (!clientRequestId) {
+      // Defense-in-depth — the guard already rejected the missing-header
+      // case, so reaching this branch means a programming error in the
+      // guard wiring, not a user mistake. Mirrors editOne at :310-317.
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail: 'cancelOne reached service layer with no clientRequestId despite RequireClientRequestIdGuard.',
+      });
+    }
     return this.service.cancelOne(id, actor, {
       reason: dto.reason,
       grace_minutes: dto.grace_minutes,
@@ -507,6 +525,17 @@ export class ReservationController {
     const r = reservation as { requester_person_id: string; host_person_id?: string | null; booked_by_user_id?: string | null };
     this.assertReservationWritable(r, ctx);
 
+    // Slice 5: thread the X-Client-Request-Id (RequireClientRequestIdGuard
+    // above guarantees it is present) into the attach RPC's
+    // attach_operations idempotency key. Mirror editScope/cancelOne.
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    if (!clientRequestId) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail:
+          'attachServices reached the service layer with no clientRequestId despite RequireClientRequestIdGuard.',
+      });
+    }
+
     // Post-canonicalisation (2026-05-02 + Slice A): the URL `:id` is a
     // BOOKING id (what `findOne` returns now). Call the new canonical
     // `attachServicesToBooking` directly instead of the deprecated
@@ -515,6 +544,7 @@ export class ReservationController {
       booking_id: id,
       requester_person_id: r.requester_person_id,
       services: body?.services ?? [],
+      client_request_id: clientRequestId,
     });
   }
 
@@ -616,7 +646,15 @@ export class ReservationController {
    * parent bundle and checks `BundleVisibilityService.assertVisible` against
    * the supplied context).
    */
+  /**
+   * Booking-audit Slice 6 (audit 03 P1-4) — producer route. The
+   * `cancel_order_lines_with_cascade` RPC (00414) is command_operations-
+   * idempotent; without the guard a network blip mid-cascade would
+   * silently re-run the cancel. Mirrors the cancel/edit/attach producer
+   * routes (:391 /:440 /:513).
+   */
   @Delete(':id/services/:lineId')
+  @UseGuards(RequireClientRequestIdGuard)
   async cancelServiceLine(
     @Req() request: Request,
     @Param('id') id: string,
@@ -634,13 +672,36 @@ export class ReservationController {
     };
     this.assertReservationWritable(r, ctx);
 
+    // Slice 6: thread the X-Client-Request-Id (RequireClientRequestIdGuard
+    // above guarantees it is present) into the 00414 RPC's
+    // command_operations idempotency key. Defense-in-depth null check
+    // mirrors the editOne/cancelOne/attachServices sibling routes
+    // (:309-318 / :398-406 / :531-537).
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    if (!clientRequestId) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail:
+          'cancelServiceLine reached the service layer with no clientRequestId despite RequireClientRequestIdGuard.',
+      });
+    }
+
     // Build the bundle visibility context from the same authUid; the
     // cascade service uses `rooms.{read_all,write_all,admin}` permissions
     // off this. We've already passed the reservation write-gate above —
     // this assert is the cascade service's own defence-in-depth.
     const bundleCtx = await this.bundleVisibility.loadContext(authUid, tenantId);
+    // Slice 6 fix-cycle (Fix C): thread the in-scope authUid (req.user.id
+    // = JWT subject = auth_uid) so F-CRIT-1 (00414:192-205) resolves it to
+    // users.id for audit_events.actor_user_id. Cancel-family-consistent
+    // with ReservationService.cancelOne → cancel_booking_with_cascade
+    // (reservation.service.ts:505 passes actor.auth_uid).
     return this.bundleCascade.cancelLine(
-      { line_id: lineId, reason: body?.reason },
+      {
+        line_id: lineId,
+        reason: body?.reason,
+        client_request_id: clientRequestId,
+        actor_auth_uid: authUid,
+      },
       bundleCtx,
     );
   }
@@ -659,7 +720,13 @@ export class ReservationController {
    *
    * Same write-gate as `editServiceLine` / `cancelServiceLine`.
    */
+  /**
+   * Booking-audit Slice 6 (audit 03 P1-4) — producer route (same
+   * rationale as `cancelServiceLine` above; the 00414 RPC is
+   * command_operations-idempotent on the bundle path too).
+   */
   @Delete(':id/bundle')
+  @UseGuards(RequireClientRequestIdGuard)
   async cancelBundle(
     @Req() request: Request,
     @Param('id') id: string,
@@ -680,13 +747,28 @@ export class ReservationController {
     };
     this.assertReservationWritable(r, ctx);
 
+    // Slice 6: thread the X-Client-Request-Id (guard guarantees presence)
+    // into the 00414 RPC's command_operations key. Defense-in-depth null
+    // check mirrors the sibling producer routes.
+    const clientRequestId = (request as { clientRequestId?: string }).clientRequestId;
+    if (!clientRequestId) {
+      throw AppErrors.server('command_operations.unexpected_state', {
+        detail:
+          'cancelBundle reached the service layer with no clientRequestId despite RequireClientRequestIdGuard.',
+      });
+    }
+
     const bundleCtx = await this.bundleVisibility.loadContext(authUid, tenantId);
+    // Slice 6 fix-cycle (Fix C): thread authUid as actor_auth_uid (same
+    // rationale as cancelServiceLine above; cancel-family-consistent).
     return this.bundleCascade.cancelBundle(
       {
         bundle_id: id,
         keep_line_ids: body?.keep_line_ids,
         recurrence_scope: body?.recurrence_scope,
         reason: body?.reason,
+        client_request_id: clientRequestId,
+        actor_auth_uid: authUid,
       },
       bundleCtx,
     );
@@ -791,6 +873,11 @@ export class ReservationController {
 
     return {
       user_id: ctx.user_id,
+      // The JWT subject — the combined edit RPCs (edit_booking 00364/00394,
+      // edit_booking_scope 00371) resolve p_actor_user_id via
+      // `where u.auth_uid = p_actor_user_id` (F-CRIT-1). Passing user_id
+      // there fails every edit with edit_booking.actor_not_found.
+      auth_uid: authUid,
       person_id: ctx.person_id,
       is_service_desk: !!bookOnBehalfRes.data,
       has_override_rules: !!overrideRes.data,

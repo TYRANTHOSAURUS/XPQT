@@ -1001,6 +1001,85 @@ export type KnownErrorCode =
   // toast (retry + traceId + contact-support) instead of an inline
   // validation surface that the operator can't action.
   | 'edit_booking_scope.update_failed'
+  // ─── Booking-audit remediation Slice 2 — cancel_booking_with_cascade ────
+  // RPC 00408 (audit 03 P0-1 + P1-5). The atomic user-cancel cascade.
+  // - actor_not_found (404): the JWT's auth_uid has no public.users row in
+  //   the tenant (F-CRIT-1 resolution miss). Defense-in-depth — the TS
+  //   auth guard normally rejects this earlier. Mirrors
+  //   edit_booking.actor_not_found.
+  // - not_found (404): the booking row is missing or in a different
+  //   tenant. Mirrors edit_booking.not_found / edit_booking_scope.
+  //   booking_not_found shape.
+  // - invalid_scope (422): p_scope is not this|this_and_following|series.
+  //   Request payload is valid jsonb; the scope value is unprocessable.
+  // - not_recurring (422): a recurrence scope was requested on a booking
+  //   with no recurrence_series_id. Mirrors edit_booking_scope.
+  //   not_recurring (same domain, same voice). 422 — payload valid,
+  //   booking state blocks the action.
+  // The 3 generic arg-shape raises ('cancel_booking_with_cascade:
+  // p_*_id required') intentionally have NO dotted code — they route to
+  // the booking.cancel_failed 500 fallback (server-class; a non-HTTP
+  // caller passed a malformed tuple, not an actionable client error).
+  | 'cancel_booking_with_cascade.actor_not_found'
+  | 'cancel_booking_with_cascade.not_found'
+  | 'cancel_booking_with_cascade.invalid_scope'
+  | 'cancel_booking_with_cascade.not_recurring'
+  // ─── Booking-audit remediation Slice 4 — split_recurrence_series ────────
+  // RPC 00411 (audit 03 P1-2). The atomic, idempotent recurrence split.
+  // - actor_not_found (404): the JWT's auth_uid has no public.users row in
+  //   the tenant (F-CRIT-1 resolution miss). Defense-in-depth — the TS
+  //   auth guard normally rejects this earlier. Mirrors
+  //   cancel_booking_with_cascade.actor_not_found.
+  // - not_found (404): the pivot booking OR the source recurrence_series
+  //   row is missing / in a different tenant. Mirrors
+  //   cancel_booking_with_cascade.not_found shape.
+  // - not_recurring (422): a split was requested on a booking with no
+  //   recurrence_series_id. Mirrors cancel_booking_with_cascade.
+  //   not_recurring (same domain, same voice). 422 — payload valid,
+  //   booking state blocks the action.
+  // The 3 generic arg-shape raises ('split_recurrence_series:
+  // p_*_id required') intentionally have NO dotted code — they route to
+  // the booking.recurrence_failed 500 fallback (server-class; a non-HTTP
+  // caller passed a malformed tuple, not an actionable client error).
+  // command_operations.payload_mismatch / .unexpected_state are already
+  // registered (shared cross-RPC codes).
+  | 'split_recurrence_series.actor_not_found'
+  | 'split_recurrence_series.not_found'
+  | 'split_recurrence_series.not_recurring'
+  // ─── Booking-audit remediation Slice 6 — cancel_order_lines_with_cascade ─
+  // RPC 00414 (audit 03 P1-4). Atomic order-line / bundle-services cancel.
+  // - actor_not_found (404): the JWT's auth_uid has no public.users row in
+  //   the tenant (F-CRIT-1 resolution miss). Defense-in-depth. Mirrors
+  //   cancel_booking_with_cascade.actor_not_found.
+  // - booking_not_found (404): the booking row is missing / in a different
+  //   tenant. Mirrors cancel_booking_with_cascade.not_found shape.
+  // - line_not_found (404): a named p_line_ids entry doesn't exist in this
+  //   tenant. Reproduces the live cancelLine line_not_found (404).
+  // - line_not_in_bundle (422): a named line exists but hangs off no order
+  //   linked to this booking. Reproduces the live bundle.line_not_in_bundle
+  //   (the bundle.* code is reused for the wrapper pre-check; the RPC raise
+  //   is the defense-in-depth path). 422 — payload valid, the targeted line
+  //   isn't part of this booking.
+  // - line_already_fulfilled (422): a named line is in the protected
+  //   fulfilled set (confirmed|preparing|delivered). The live cancelLine
+  //   surfaces this as a 403 forbidden; under the RPC family it is a 422
+  //   (payload valid, booking-line STATE blocks the action — same family
+  //   as cancel_booking_with_cascade.not_recurring; the wrapper no longer
+  //   pre-checks fulfilled status).
+  // - invalid_args (422): p_line_ids supplied as an empty array (NULL is
+  //   the distinct cancel-all intent). Payload valid jsonb, arg shape is
+  //   unprocessable.
+  // The 3 generic arg-shape raises ('cancel_order_lines_with_cascade:
+  // p_*_id required') intentionally have NO dotted code — they route to
+  // the booking.cancel_failed 500 fallback (server-class; a non-HTTP
+  // caller passed a malformed tuple). command_operations.payload_mismatch
+  // / .unexpected_state are already registered (shared cross-RPC codes).
+  | 'cancel_order_lines_with_cascade.actor_not_found'
+  | 'cancel_order_lines_with_cascade.booking_not_found'
+  | 'cancel_order_lines_with_cascade.line_not_found'
+  | 'cancel_order_lines_with_cascade.line_not_in_bundle'
+  | 'cancel_order_lines_with_cascade.line_already_fulfilled'
+  | 'cancel_order_lines_with_cascade.invalid_args'
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // Spec: docs/superpowers/specs/2026-05-12-universal-workflow-architecture-design.md §3.12
   // (Phase 1 codes — three spawn-link safety guards raised by
@@ -1697,6 +1776,32 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   // B.4 Step 2F.3 self-review remediation (I1) — see KnownErrorCode union
   // for rationale (500 server-class fallback for unknown RPC errors).
   'edit_booking_scope.update_failed',
+  // Booking-audit remediation Slice 2 — cancel_booking_with_cascade RPC
+  // (00408, audit 03 P0-1 + P1-5). See KnownErrorCode union for per-code
+  // rationale (actor_not_found/not_found 404; invalid_scope/not_recurring
+  // 422 — STATUS_BY_CODE in map-rpc-error.ts).
+  'cancel_booking_with_cascade.actor_not_found',
+  'cancel_booking_with_cascade.not_found',
+  'cancel_booking_with_cascade.invalid_scope',
+  'cancel_booking_with_cascade.not_recurring',
+  // Booking-audit remediation Slice 4 — split_recurrence_series RPC
+  // (00411, audit 03 P1-2). See KnownErrorCode union for per-code
+  // rationale (actor_not_found/not_found 404; not_recurring 422 —
+  // STATUS_BY_CODE in map-rpc-error.ts).
+  'split_recurrence_series.actor_not_found',
+  'split_recurrence_series.not_found',
+  'split_recurrence_series.not_recurring',
+  // Booking-audit remediation Slice 6 — cancel_order_lines_with_cascade
+  // RPC (00414, audit 03 P1-4). See KnownErrorCode union for per-code
+  // rationale (actor_not_found/booking_not_found/line_not_found 404;
+  // line_not_in_bundle/line_already_fulfilled/invalid_args 422 —
+  // STATUS_BY_CODE in map-rpc-error.ts).
+  'cancel_order_lines_with_cascade.actor_not_found',
+  'cancel_order_lines_with_cascade.booking_not_found',
+  'cancel_order_lines_with_cascade.line_not_found',
+  'cancel_order_lines_with_cascade.line_not_in_bundle',
+  'cancel_order_lines_with_cascade.line_already_fulfilled',
+  'cancel_order_lines_with_cascade.invalid_args',
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // See KnownErrorCode union for per-code rationale. All 422.
   'spawn_link.parent_terminated',

@@ -108,6 +108,11 @@ import { VisitorsController } from './visitors.controller';
     EodSweepWorker,
     VisitorEmailWorker,
     VisitorReminderWorker,
+    // Booking-audit Slice 2 (audit 03 P0-1/P1-5): exported so the
+    // OutboxModule's BookingCancelledCascadeHandler can reuse
+    // handleBundleCancelled for the durable user-cancel visitor cascade
+    // (no logic duplication — see booking-cancelled-cascade.handler.ts).
+    BundleCascadeAdapter,
   ],
 })
 export class VisitorsModule {}

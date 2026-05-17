@@ -2049,6 +2049,74 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save the series edit",
     detail: "Something went wrong saving this series edit. Try again in a moment; contact support if this persists.",
   },
+  // ─── Booking-audit remediation Slice 2 — cancel_booking_with_cascade ────
+  // RPC 00408 (audit 03 P0-1 + P1-5). Voice mirrors the edit_booking.*
+  // family: same "Couldn't cancel the booking" title shape, actionable
+  // recovery in the detail. actor_not_found / not_found = the
+  // edit_booking.* wording with "cancel" swapped in; invalid_scope /
+  // not_recurring = the edit_booking_scope.not_recurring shape.
+  'cancel_booking_with_cascade.actor_not_found': {
+    title: "Couldn't cancel the booking",
+    detail: 'Your account is not registered in this tenant. Sign in again or contact an administrator.',
+  },
+  'cancel_booking_with_cascade.not_found': {
+    title: "Couldn't cancel the booking — not found",
+    detail: "This booking no longer exists, or you don't have access to it.",
+  },
+  'cancel_booking_with_cascade.invalid_scope': {
+    title: "Couldn't cancel the booking",
+    detail: 'The cancellation scope was invalid. Refresh the page and pick the scope again.',
+  },
+  'cancel_booking_with_cascade.not_recurring': {
+    title: "Couldn't cancel the series",
+    detail: 'This booking is not part of a recurring series. Cancel the single occurrence instead.',
+  },
+  // ─── Booking-audit remediation Slice 4 — split_recurrence_series ────────
+  // RPC 00411 (audit 03 P1-2). Voice mirrors the cancel_booking_with_
+  // cascade.* family: same "Couldn't update the recurrence" shape with
+  // actionable recovery in the detail.
+  'split_recurrence_series.actor_not_found': {
+    title: "Couldn't update the recurrence",
+    detail: 'Your account is not registered in this tenant. Sign in again or contact an administrator.',
+  },
+  'split_recurrence_series.not_found': {
+    title: "Couldn't update the recurrence — not found",
+    detail: "This booking no longer exists, or you don't have access to it.",
+  },
+  'split_recurrence_series.not_recurring': {
+    title: "Couldn't update the series",
+    detail: 'This booking is not part of a recurring series. Edit the single occurrence instead.',
+  },
+  // ─── Booking-audit remediation Slice 6 — cancel_order_lines_with_cascade ─
+  // RPC 00414 (audit 03 P1-4). Voice mirrors the cancel_booking_with_
+  // cascade.* family exactly with "the booking" → "this service" where the
+  // surface is the per-line / services cancel. actor_not_found /
+  // booking_not_found = the cancel_booking_with_cascade.* wording;
+  // line_* / invalid_args = the same shape scoped to the service line.
+  'cancel_order_lines_with_cascade.actor_not_found': {
+    title: "Couldn't cancel this service",
+    detail: 'Your account is not registered in this tenant. Sign in again or contact an administrator.',
+  },
+  'cancel_order_lines_with_cascade.booking_not_found': {
+    title: "Couldn't cancel this service — not found",
+    detail: "This booking no longer exists, or you don't have access to it.",
+  },
+  'cancel_order_lines_with_cascade.line_not_found': {
+    title: "Couldn't cancel this service — not found",
+    detail: "This service line no longer exists, or you don't have access to it.",
+  },
+  'cancel_order_lines_with_cascade.line_not_in_bundle': {
+    title: "Couldn't cancel this service",
+    detail: 'This service line is not part of this booking. Refresh the page and try again.',
+  },
+  'cancel_order_lines_with_cascade.line_already_fulfilled': {
+    title: "Couldn't cancel this service",
+    detail: 'This service has been fulfilled and cannot be cancelled. Contact the fulfilment team.',
+  },
+  'cancel_order_lines_with_cascade.invalid_args': {
+    title: "Couldn't cancel this service",
+    detail: 'The cancellation request was invalid. Refresh the page and try again.',
+  },
   // ─── Phase 1.B universal workflow ───────────────────────────────────────
   // Spec §3.6 + §3.12. Three guards that block invalid spawn-link writes
   // before the engine commits. 422 surfaces as inline editor copy — the

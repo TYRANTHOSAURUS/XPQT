@@ -8,6 +8,7 @@ describe('resolveRequesterForActor', () => {
 
   const actor = (overrides: Partial<ActorContext> = {}): ActorContext => ({
     user_id: 'u-self',
+    auth_uid: 'u-self',
     person_id: SELF,
     is_service_desk: false,
     has_override_rules: false,
