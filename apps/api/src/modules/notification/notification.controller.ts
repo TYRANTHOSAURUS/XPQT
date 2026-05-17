@@ -1,6 +1,6 @@
-import { Controller, Get, Post, Patch, Param, Query, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Query, Body } from '@nestjs/common';
 import { NotificationService, CreateNotificationTemplateDto } from './notification.service';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 
 // docs/follow-ups/audits/04-rls-security.md Slice 10 (2026-05-16).
 // Notification TEMPLATE mutations are tenant-wide comms config →
@@ -46,13 +46,13 @@ export class NotificationController {
   }
 
   @Post('templates')
-  @UseGuards(AdminGuard)
+  @RequirePermission('notifications.manage_templates')
   async createTemplate(@Body() dto: CreateNotificationTemplateDto) {
     return this.notificationService.createTemplate(dto);
   }
 
   @Patch('templates/:id')
-  @UseGuards(AdminGuard)
+  @RequirePermission('notifications.manage_templates')
   async updateTemplate(
     @Param('id') id: string,
     @Body() dto: Partial<CreateNotificationTemplateDto>,
@@ -71,13 +71,13 @@ export class NotificationTemplateController {
   }
 
   @Post()
-  @UseGuards(AdminGuard)
+  @RequirePermission('notifications.manage_templates')
   async create(@Body() dto: CreateNotificationTemplateDto) {
     return this.notificationService.createTemplate(dto);
   }
 
   @Patch(':id')
-  @UseGuards(AdminGuard)
+  @RequirePermission('notifications.manage_templates')
   async update(
     @Param('id') id: string,
     @Body() dto: Partial<CreateNotificationTemplateDto>,
