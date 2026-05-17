@@ -215,639 +215,455 @@ describe('RecurrenceService.materialize', () => {
   });
 });
 
-// /full-review v3 closure I4 — wrap clone in compensation boundary.
+// Booking-audit Slice 7 (audit 03 P2-1) — the clone step is no longer
+// wrapped in BookingTransactionBoundary.runWithCompensation. Both
+// BookingTransactionBoundary + BookingCompensationService are RETIRED.
+// On a clone throw, materialize() calls the new focused private helper
+// `RecurrenceService.deleteOrphanOccurrence` which:
+//   - calls `delete_booking_with_guard` (00292/00373) DIRECTLY with
+//     `{ p_booking_id: <occurrence booking id>, p_tenant_id }`
+//   - emits the `booking.compensation_failed` /
+//     `booking.compensation_partial_failure` audit_events rows VERBATIM
+//     from the retired BookingCompensationService
+//   - returns an outcome the clone-catch maps to the SAME throws the
+//     boundary raised, so the existing materialize() catch behaves
+//     byte-identically (unexpected/partial → sawUnexpectedFailure →
+//     materialized_through NOT advanced; an original 23P01 on the
+//     rolled_back path → conflict skip + advance).
 //
-// Pre-fix: bookingFlow.create(...) was called with services=[] (skipping
-// the BookingFlowService-internal compensation), then a separate
-// cloneBundleOrdersToOccurrence call ran AFTER the booking committed.
-// If the clone threw, the orphan occurrence booking persisted and the
-// catch block silently bumped `skipped += 1`.
-//
-// Post-fix: the clone step is wrapped in
-// BookingTransactionBoundary.runWithCompensation. On a throw, the
-// boundary calls compensation.deleteBooking(occurrence.id) which invokes
-// delete_booking_with_guard (00292) to atomically delete the orphan.
-describe('RecurrenceService.materialize — clone wraps in compensation boundary (I4)', () => {
-  function buildSupabase(opts: {
-    series: Record<string, unknown>;
-    masterBooking: ReturnType<typeof masterBooking>;
-    existing: Array<{ recurrence_index: number | null }>;
-    masterOrders: Array<{ id: string }>;
-  }) {
-    const masterSlotEmbed = {
-      id: 'MASTER-SLOT',
-      tenant_id: 'T',
-      booking_id: opts.masterBooking.id,
-      slot_type: 'room',
-      space_id: 'S',
-      start_at: opts.masterBooking.start_at,
-      end_at: opts.masterBooking.end_at,
-      setup_buffer_minutes: 0,
-      teardown_buffer_minutes: 0,
-      effective_start_at: opts.masterBooking.start_at,
-      effective_end_at: opts.masterBooking.end_at,
-      attendee_count: 2,
-      attendee_person_ids: [],
-      status: opts.masterBooking.status,
-      check_in_required: false,
-      check_in_grace_minutes: 15,
-      checked_in_at: null,
-      released_at: null,
-      cancellation_grace_until: null,
-      display_order: 0,
-      created_at: opts.masterBooking.created_at,
-      updated_at: opts.masterBooking.updated_at,
-      bookings: opts.masterBooking,
-    };
-    return {
-      admin: {
-        from: (table: string) => {
-          if (table === 'recurrence_series') {
-            // I3: optional second .eq('tenant_id') on lookup. Idempotent
-            // chain accepts both shapes.
-            const lookupChain: any = {
-              eq: () => lookupChain,
-              maybeSingle: () =>
-                Promise.resolve({ data: opts.series, error: null }),
-            };
-            const updateChain: any = {
-              eq: () => updateChain,
+// These tests assert the REAL reproduced behaviour against the direct
+// `delete_booking_with_guard` RPC + the audit_events emission — NOT a
+// boundary mock.
+
+// Shared mock supabase with: series/master/existing reads, a controllable
+// `delete_booking_with_guard` rpc, an audit_events insert capture, and a
+// materialized_through-update capture.
+function buildDirectDeleteSupabase(opts: {
+  series: Record<string, unknown>;
+  masterOrders: Array<{ id: string }>;
+  // What delete_booking_with_guard returns, per call. If a function,
+  // called with the rpc args; else returned verbatim.
+  guardResult:
+    | { data: unknown; error: unknown }
+    | ((args: Record<string, unknown>) => { data: unknown; error: unknown });
+}) {
+  const master = {
+    id: 'MASTER',
+    tenant_id: 'T',
+    title: null,
+    description: null,
+    requester_person_id: 'P',
+    host_person_id: null,
+    booked_by_user_id: 'U',
+    location_id: 'S',
+    start_at: '2026-05-01T09:00:00Z',
+    end_at: '2026-05-01T10:00:00Z',
+    timezone: 'UTC',
+    status: 'confirmed' as const,
+    source: 'portal',
+    cost_center_id: null,
+    cost_amount_snapshot: null,
+    policy_snapshot: {},
+    applied_rule_ids: [],
+    config_release_id: null,
+    calendar_event_id: null,
+    calendar_provider: null,
+    calendar_etag: null,
+    calendar_last_synced_at: null,
+    recurrence_series_id: 'SER',
+    recurrence_index: 0,
+    recurrence_overridden: false,
+    recurrence_skipped: false,
+    template_id: null,
+    created_at: '2026-05-01T09:00:00Z',
+    updated_at: '2026-05-01T09:00:00Z',
+  };
+  const masterSlotEmbed = {
+    id: 'MASTER-SLOT',
+    tenant_id: 'T',
+    booking_id: 'MASTER',
+    slot_type: 'room',
+    space_id: 'S',
+    start_at: master.start_at,
+    end_at: master.end_at,
+    setup_buffer_minutes: 0,
+    teardown_buffer_minutes: 0,
+    effective_start_at: master.start_at,
+    effective_end_at: master.end_at,
+    attendee_count: 2,
+    attendee_person_ids: [],
+    status: master.status,
+    check_in_required: false,
+    check_in_grace_minutes: 15,
+    checked_in_at: null,
+    released_at: null,
+    cancellation_grace_until: null,
+    display_order: 0,
+    created_at: master.created_at,
+    updated_at: master.updated_at,
+    bookings: master,
+  };
+
+  const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
+  const auditInserts: Array<Record<string, unknown>> = [];
+  const seriesUpdates: Array<unknown> = [];
+
+  const supabase = {
+    admin: {
+      rpc: (fn: string, args: Record<string, unknown>) => {
+        rpcCalls.push({ fn, args });
+        if (fn === 'delete_booking_with_guard') {
+          const r =
+            typeof opts.guardResult === 'function'
+              ? opts.guardResult(args)
+              : opts.guardResult;
+          return Promise.resolve(r);
+        }
+        return Promise.resolve({ data: null, error: null });
+      },
+      from: (table: string) => {
+        if (table === 'recurrence_series') {
+          const lookupChain: any = {
+            eq: () => lookupChain,
+            maybeSingle: () =>
+              Promise.resolve({ data: opts.series, error: null }),
+          };
+          const buildUpdateChain = (patch: unknown) => {
+            seriesUpdates.push(patch);
+            const c: any = {
+              eq: () => c,
               then: (r: (v: { error: unknown }) => unknown) =>
                 Promise.resolve({ error: null }).then(r),
             };
-            return {
-              select: () => ({ eq: () => lookupChain }),
-              update: () => updateChain,
-            };
-          }
-          if (table === 'booking_slots') {
-            // I3: tenant_id eq added before booking_id eq.
-            return {
-              select: () => ({
+            return c;
+          };
+          return {
+            select: () => ({ eq: () => lookupChain }),
+            update: (patch: unknown) => buildUpdateChain(patch),
+          };
+        }
+        if (table === 'booking_slots') {
+          return {
+            select: () => ({
+              eq: () => ({
                 eq: () => ({
-                  eq: () => ({
-                    order: () => ({
-                      limit: () => ({
-                        maybeSingle: () =>
-                          Promise.resolve({ data: masterSlotEmbed, error: null }),
-                      }),
+                  order: () => ({
+                    limit: () => ({
+                      maybeSingle: () =>
+                        Promise.resolve({ data: masterSlotEmbed, error: null }),
                     }),
                   }),
                 }),
               }),
-            };
-          }
-          if (table === 'bookings') {
-            return {
-              select: () => ({ eq: () => ({ eq: () => Promise.resolve({ data: opts.existing, error: null }) }) }),
-            };
-          }
-          if (table === 'business_hours_calendars') {
-            // I3: optional .eq('tenant_id') after .eq('id').
-            const calChain: any = {
-              eq: () => calChain,
-              maybeSingle: () => Promise.resolve({ data: null, error: null }),
-            };
-            return { select: () => ({ eq: () => calChain }) };
-          }
-          if (table === 'orders') {
-            // Master orders for cloneBundleOrdersToOccurrence.
-            // I3: optional .eq('tenant_id') after .eq('booking_id').
-            const ordersChain: any = {
-              eq: () => ordersChain,
-              then: (r: (v: { data: unknown; error: unknown }) => unknown) =>
-                Promise.resolve({ data: opts.masterOrders, error: null }).then(r),
-            };
-            return { select: () => ordersChain };
-          }
-          return {};
-        },
+            }),
+          };
+        }
+        if (table === 'bookings') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () =>
+                  Promise.resolve({
+                    data: [{ recurrence_index: 0 }],
+                    error: null,
+                  }),
+              }),
+            }),
+          };
+        }
+        if (table === 'business_hours_calendars') {
+          const c: any = {
+            eq: () => c,
+            maybeSingle: () => Promise.resolve({ data: null, error: null }),
+          };
+          return { select: () => ({ eq: () => c }) };
+        }
+        if (table === 'orders') {
+          const c: any = {
+            eq: () => c,
+            then: (r: (v: { data: unknown; error: unknown }) => unknown) =>
+              Promise.resolve({ data: opts.masterOrders, error: null }).then(r),
+          };
+          return { select: () => c };
+        }
+        if (table === 'audit_events') {
+          return {
+            insert: (row: Record<string, unknown>) => {
+              auditInserts.push(row);
+              return Promise.resolve({ error: null });
+            },
+          };
+        }
+        return {};
       },
-    };
-  }
+    },
+  };
 
-  // Local helper — mirrors makeMasterBooking from the outer describe.
-  function masterBooking() {
+  return { supabase, rpcCalls, auditInserts, seriesUpdates };
+}
+
+describe('RecurrenceService.materialize — Slice 7 direct delete_booking_with_guard compensation', () => {
+  const series = {
+    id: 'SER',
+    tenant_id: 'T',
+    recurrence_rule: { frequency: 'daily', interval: 1, count: 3 },
+    series_start_at: '2026-05-01T09:00:00Z',
+    series_end_at: null,
+    max_occurrences: 365,
+    holiday_calendar_id: null,
+    materialized_through: '2026-05-01T00:00:00Z',
+    parent_booking_id: 'MASTER',
+  };
+
+  function makeBookingFlow() {
+    let n = 0;
     return {
-      id: 'MASTER',
-      tenant_id: 'T',
-      title: null,
-      description: null,
-      requester_person_id: 'P',
-      host_person_id: null,
-      booked_by_user_id: 'U',
-      location_id: 'S',
-      start_at: '2026-05-01T09:00:00Z',
-      end_at: '2026-05-01T10:00:00Z',
-      timezone: 'UTC',
-      status: 'confirmed' as const,
-      source: 'portal',
-      cost_center_id: null,
-      cost_amount_snapshot: null,
-      policy_snapshot: {},
-      applied_rule_ids: [],
-      config_release_id: null,
-      calendar_event_id: null,
-      calendar_provider: null,
-      calendar_etag: null,
-      calendar_last_synced_at: null,
-      recurrence_series_id: 'SER',
-      recurrence_index: 0,
-      recurrence_overridden: false,
-      recurrence_skipped: false,
-      template_id: null,
-      created_at: '2026-05-01T09:00:00Z',
-      updated_at: '2026-05-01T09:00:00Z',
-    };
-  }
-
-  it('clone failure on occurrence triggers compensation.deleteBooking AND skips the occurrence', async () => {
-    const supabase = buildSupabase({
-      series: {
-        id: 'SER',
-        tenant_id: 'T',
-        recurrence_rule: { frequency: 'daily', interval: 1, count: 3 },
-        series_start_at: '2026-05-01T09:00:00Z',
-        series_end_at: null,
-        max_occurrences: 365,
-        holiday_calendar_id: null,
-        materialized_through: '2026-05-01T00:00:00Z',
-        parent_booking_id: 'MASTER',
-      },
-      masterBooking: masterBooking(),
-      existing: [{ recurrence_index: 0 }],
-      // Master has 1 order — clone will be attempted for each new occurrence.
-      masterOrders: [{ id: 'ORDER-1' }],
-    });
-
-    let createCalls = 0;
-    const bookingFlow = {
       create: jest.fn(async (input: { start_at: string; end_at: string }) => {
-        createCalls += 1;
-        return {
-          id: `OCC-${createCalls}`,
-          start_at: input.start_at,
-          end_at: input.end_at,
-        };
+        n += 1;
+        return { id: `OCC-${n}`, start_at: input.start_at, end_at: input.end_at };
       }),
     };
-    const conflict = { isExclusionViolation: () => false };
+  }
 
-    // Orders fan-out — every clone throws to simulate a hard failure
-    // (asset GiST conflict, FK violation, etc.). The compensation
-    // boundary should catch this and delete the orphan booking.
+  it('clone failure → delete_booking_with_guard called DIRECTLY with the occurrence booking id (not master), rolled_back → no audit, occurrence not in created', async () => {
+    const { supabase, rpcCalls, auditInserts } = buildDirectDeleteSupabase({
+      series,
+      masterOrders: [{ id: 'ORDER-1' }],
+      // Clean rollback for every compensation call.
+      guardResult: { data: { kind: 'rolled_back' }, error: null },
+    });
+    const conflict = { isExclusionViolation: () => false };
     const ordersFanOut = {
       cloneOrderForOccurrence: jest.fn(async () => {
         throw new Error('clone failed: asset GiST conflict');
       }),
     };
 
-    // Mock the compensation boundary + service. The boundary's contract
-    // is: catch the operation throw, call compensate(bookingId), then
-    // re-throw the original error if outcome.kind === 'rolled_back'.
-    const deleteBooking = jest.fn(async (bookingId: string) => {
-      return { kind: 'rolled_back' as const, bookingId };
-    });
-    const compensation = { deleteBooking } as unknown as Parameters<RecurrenceService['constructor']>[4];
-    const txBoundary = {
-      runWithCompensation: jest.fn(async <T>(
-        bookingId: string,
-        operation: () => Promise<T>,
-        compensate: (bookingId: string) => Promise<{ kind: 'rolled_back' | 'partial_failure'; bookingId: string; blockedBy?: string[] }>,
-      ): Promise<T> => {
-        try {
-          return await operation();
-        } catch (err) {
-          const outcome = await compensate(bookingId);
-          if (outcome.kind === 'rolled_back') throw err;
-          // Match boundary's BadRequest('booking.partial_failure') re-throw.
-          throw Object.assign(new Error('booking.partial_failure'), {
-            response: { code: 'booking.partial_failure', booking_id: outcome.bookingId },
-          });
-        }
-      }),
-    };
-
-    const svc = new RecurrenceService(
-      supabase as never,
-      conflict as never,
-      undefined,
-      txBoundary as never,
-      compensation as never,
-    );
-    svc.setBookingFlow(bookingFlow as never);
+    const svc = new RecurrenceService(supabase as never, conflict as never);
+    svc.setBookingFlow(makeBookingFlow() as never);
     svc.setOrdersFanOut(ordersFanOut as never);
 
     const result = await svc.materialize('SER', new Date('2026-05-05T00:00:00Z'));
 
-    // The clone threw on every occurrence → compensation deleteBooking
-    // fired for each created booking. None survived → created length is 0.
+    // Every clone threw → every occurrence compensated → none survived.
     expect(result.created).toHaveLength(0);
-    // Skipped > 0 (each clone failure → skipped += 1 in the catch).
     expect(result.skipped_conflicts).toBeGreaterThan(0);
-    // deleteBooking was called with EACH occurrence's booking id, NOT
-    // the master id.
-    expect(deleteBooking).toHaveBeenCalled();
-    for (const call of deleteBooking.mock.calls) {
-      const id = call[0];
-      expect(id).not.toBe('MASTER');
-      expect(id).toMatch(/^OCC-/);
+
+    // delete_booking_with_guard fired directly with the OCCURRENCE booking
+    // id + the tenant — NOT the master id, NOT via any boundary.
+    const guardCalls = rpcCalls.filter(
+      (c) => c.fn === 'delete_booking_with_guard',
+    );
+    expect(guardCalls.length).toBeGreaterThan(0);
+    for (const c of guardCalls) {
+      expect(c.args.p_booking_id).not.toBe('MASTER');
+      expect(String(c.args.p_booking_id)).toMatch(/^OCC-/);
+      expect(c.args.p_tenant_id).toBe('T');
     }
-    // The runWithCompensation boundary fired once per occurrence
-    // (= once per created booking).
-    expect(txBoundary.runWithCompensation).toHaveBeenCalled();
+    // rolled_back path emits NO audit (booking-compensation.service.ts:
+    // 108-112 — clean rollback, no audit). Reproduced verbatim.
+    expect(auditInserts).toHaveLength(0);
   });
 
-  it('partial_failure (recurrence_series blocker) is logged + skipped', async () => {
-    const supabase = buildSupabase({
-      series: {
-        id: 'SER',
-        tenant_id: 'T',
-        recurrence_rule: { frequency: 'daily', interval: 1, count: 2 },
-        series_start_at: '2026-05-01T09:00:00Z',
-        series_end_at: null,
-        max_occurrences: 365,
-        holiday_calendar_id: null,
-        materialized_through: '2026-05-01T00:00:00Z',
-        parent_booking_id: 'MASTER',
-      },
-      masterBooking: masterBooking(),
-      existing: [{ recurrence_index: 0 }],
+  it('rolled_back path re-throws the ORIGINAL clone error → an original 23P01 takes the conflict skip + ADVANCE path (boundary parity)', async () => {
+    const { supabase, seriesUpdates } = buildDirectDeleteSupabase({
+      series,
       masterOrders: [{ id: 'ORDER-1' }],
+      guardResult: { data: { kind: 'rolled_back' }, error: null },
     });
-
-    const bookingFlow = {
-      create: jest.fn(async (input: { start_at: string; end_at: string }) => ({
-        id: 'OCC-1', start_at: input.start_at, end_at: input.end_at,
-      })),
-    };
-    const conflict = { isExclusionViolation: () => false };
-    const ordersFanOut = {
-      cloneOrderForOccurrence: jest.fn(async () => {
-        throw new Error('clone failed');
-      }),
-    };
-
-    // Compensation returns partial_failure (a child sub-series blocks).
-    const compensation = {
-      deleteBooking: jest.fn(async (bookingId: string) => ({
-        kind: 'partial_failure' as const,
-        bookingId,
-        blockedBy: ['recurrence_series'],
-      })),
-    };
-    const txBoundary = {
-      runWithCompensation: jest.fn(async <T>(
-        bookingId: string,
-        operation: () => Promise<T>,
-        compensate: (bookingId: string) => Promise<{ kind: 'rolled_back' | 'partial_failure'; bookingId: string; blockedBy?: string[] }>,
-      ): Promise<T> => {
-        try { return await operation(); } catch {
-          const outcome = await compensate(bookingId);
-          if (outcome.kind === 'rolled_back') throw new Error('rolled_back path');
-          throw Object.assign(new Error('booking.partial_failure'), {
-            response: {
-              code: 'booking.partial_failure',
-              booking_id: outcome.bookingId,
-              blocked_by: outcome.blockedBy,
-            },
-          });
-        }
-      }),
-    };
-
-    const svc = new RecurrenceService(
-      supabase as never,
-      conflict as never,
-      undefined,
-      txBoundary as never,
-      compensation as never,
-    );
-    svc.setBookingFlow(bookingFlow as never);
-    svc.setOrdersFanOut(ordersFanOut as never);
-
-    const result = await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
-
-    // partial_failure → skipped (orphan booking persists; ops triages
-    // via the audit_events row written by BookingCompensationService).
-    expect(result.skipped_conflicts).toBeGreaterThan(0);
-    expect(compensation.deleteBooking).toHaveBeenCalled();
-  });
-});
-
-// /full-review v3 closure I4 — materialized_through advances ONLY on
-// expected failures. Pre-fix the catch block treated every error as
-// "skip and advance" — a partial_failure or compensation_failed
-// occurrence got bypassed forever after the first run, with no retry.
-//
-// Post-fix: the loop tracks `sawUnexpectedFailure`. When set,
-// materialized_through is NOT bumped, so the next materialize() call
-// re-attempts the same occurrences (and may finally succeed once ops
-// clears the blocker).
-describe('RecurrenceService.materialize — I4 retry-on-unexpected-failure', () => {
-  function masterBooking() {
-    return {
-      id: 'MASTER',
-      tenant_id: 'T',
-      title: null,
-      description: null,
-      requester_person_id: 'P',
-      host_person_id: null,
-      booked_by_user_id: 'U',
-      location_id: 'S',
-      start_at: '2026-05-01T09:00:00Z',
-      end_at: '2026-05-01T10:00:00Z',
-      timezone: 'UTC',
-      status: 'confirmed' as const,
-      source: 'portal',
-      cost_center_id: null,
-      cost_amount_snapshot: null,
-      policy_snapshot: {},
-      applied_rule_ids: [],
-      config_release_id: null,
-      calendar_event_id: null,
-      calendar_provider: null,
-      calendar_etag: null,
-      calendar_last_synced_at: null,
-      recurrence_series_id: 'SER',
-      recurrence_index: 0,
-      recurrence_overridden: false,
-      recurrence_skipped: false,
-      template_id: null,
-      created_at: '2026-05-01T09:00:00Z',
-      updated_at: '2026-05-01T09:00:00Z',
-    };
-  }
-
-  /**
-   * Build a supabase mock that:
-   *   - returns the series + master master-slot embed for materialise reads
-   *   - tracks `recurrence_series.update({ materialized_through })` calls
-   *     so the test can assert whether the bump fired or not
-   */
-  function makeMaterializedThroughTracker(opts: {
-    masterBooking: ReturnType<typeof masterBooking>;
-    masterOrders: Array<{ id: string }>;
-    seriesMaterializedThrough: string;
-  }) {
-    const series = {
-      id: 'SER',
-      tenant_id: 'T',
-      recurrence_rule: { frequency: 'daily', interval: 1, count: 3 },
-      series_start_at: '2026-05-01T09:00:00Z',
-      series_end_at: null,
-      max_occurrences: 365,
-      holiday_calendar_id: null,
-      materialized_through: opts.seriesMaterializedThrough,
-      parent_booking_id: 'MASTER',
-    };
-
-    const masterSlotEmbed = {
-      id: 'MASTER-SLOT',
-      tenant_id: 'T',
-      booking_id: 'MASTER',
-      slot_type: 'room',
-      space_id: 'S',
-      start_at: opts.masterBooking.start_at,
-      end_at: opts.masterBooking.end_at,
-      setup_buffer_minutes: 0,
-      teardown_buffer_minutes: 0,
-      effective_start_at: opts.masterBooking.start_at,
-      effective_end_at: opts.masterBooking.end_at,
-      attendee_count: 2,
-      attendee_person_ids: [],
-      status: opts.masterBooking.status,
-      check_in_required: false,
-      check_in_grace_minutes: 15,
-      checked_in_at: null,
-      released_at: null,
-      cancellation_grace_until: null,
-      display_order: 0,
-      created_at: opts.masterBooking.created_at,
-      updated_at: opts.masterBooking.updated_at,
-      bookings: opts.masterBooking,
-    };
-
-    // Track materialized_through update payloads.
-    const seriesUpdates: Array<unknown> = [];
-
-    return {
-      seriesUpdates,
-      supabase: {
-        admin: {
-          from: (table: string) => {
-            if (table === 'recurrence_series') {
-              const lookupChain: any = {
-                eq: () => lookupChain,
-                maybeSingle: () => Promise.resolve({ data: series, error: null }),
-              };
-              const buildUpdateChain = (patch: unknown) => {
-                seriesUpdates.push(patch);
-                const c: any = {
-                  eq: () => c,
-                  then: (r: (v: { error: unknown }) => unknown) =>
-                    Promise.resolve({ error: null }).then(r),
-                };
-                return c;
-              };
-              return {
-                select: () => ({ eq: () => lookupChain }),
-                update: (patch: unknown) => buildUpdateChain(patch),
-              };
-            }
-            if (table === 'booking_slots') {
-              return {
-                select: () => ({
-                  eq: () => ({
-                    eq: () => ({
-                      order: () => ({
-                        limit: () => ({
-                          maybeSingle: () =>
-                            Promise.resolve({ data: masterSlotEmbed, error: null }),
-                        }),
-                      }),
-                    }),
-                  }),
-                }),
-              };
-            }
-            if (table === 'bookings') {
-              return {
-                select: () => ({ eq: () => ({ eq: () =>
-                  Promise.resolve({ data: [{ recurrence_index: 0 }], error: null }) }) }),
-              };
-            }
-            if (table === 'business_hours_calendars') {
-              const c: any = {
-                eq: () => c,
-                maybeSingle: () => Promise.resolve({ data: null, error: null }),
-              };
-              return { select: () => ({ eq: () => c }) };
-            }
-            if (table === 'orders') {
-              const c: any = {
-                eq: () => c,
-                then: (r: (v: { data: unknown; error: unknown }) => unknown) =>
-                  Promise.resolve({ data: opts.masterOrders, error: null }).then(r),
-              };
-              return { select: () => c };
-            }
-            return {};
-          },
-        },
-      },
-    };
-  }
-
-  it('partial_failure does NOT advance materialized_through (retried on next call)', async () => {
-    const initialMaterialized = '2026-05-01T00:00:00Z';
-    const { supabase, seriesUpdates } = makeMaterializedThroughTracker({
-      masterBooking: masterBooking(),
-      masterOrders: [{ id: 'ORDER-1' }],
-      seriesMaterializedThrough: initialMaterialized,
-    });
-
-    const bookingFlow = {
-      create: jest.fn(async (input: { start_at: string; end_at: string }) => ({
-        id: 'OCC-1', start_at: input.start_at, end_at: input.end_at,
-      })),
-    };
-    const conflict = { isExclusionViolation: () => false };
-    const ordersFanOut = {
-      cloneOrderForOccurrence: jest.fn(async () => {
-        throw new Error('clone failed');
-      }),
-    };
-    // Compensation returns partial_failure on every attempt.
-    const compensation = {
-      deleteBooking: jest.fn(async (bookingId: string) => ({
-        kind: 'partial_failure' as const,
-        bookingId,
-        blockedBy: ['recurrence_series'],
-      })),
-    };
-    const txBoundary = {
-      runWithCompensation: jest.fn(async <T>(
-        bookingId: string,
-        operation: () => Promise<T>,
-        compensate: (bookingId: string) => Promise<{ kind: 'rolled_back' | 'partial_failure'; bookingId: string; blockedBy?: string[] }>,
-      ): Promise<T> => {
-        try { return await operation(); } catch {
-          const outcome = await compensate(bookingId);
-          if (outcome.kind === 'rolled_back') throw new Error('rolled_back path');
-          throw Object.assign(new Error('booking.partial_failure'), {
-            response: { code: 'booking.partial_failure', booking_id: outcome.bookingId },
-          });
-        }
-      }),
-    };
-
-    const svc = new RecurrenceService(
-      supabase as never,
-      conflict as never,
-      undefined,
-      txBoundary as never,
-      compensation as never,
-    );
-    svc.setBookingFlow(bookingFlow as never);
-    svc.setOrdersFanOut(ordersFanOut as never);
-
-    const result = await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
-
-    expect(result.skipped_conflicts).toBeGreaterThan(0);
-
-    // The retry signal: NO materialized_through advance.
-    const advanced = seriesUpdates.filter(
-      (u) => u && typeof u === 'object' && 'materialized_through' in (u as object),
-    );
-    expect(advanced).toHaveLength(0);
-  });
-
-  it('compensation_failed does NOT advance materialized_through', async () => {
-    const { supabase, seriesUpdates } = makeMaterializedThroughTracker({
-      masterBooking: masterBooking(),
-      masterOrders: [{ id: 'ORDER-1' }],
-      seriesMaterializedThrough: '2026-05-01T00:00:00Z',
-    });
-
-    const bookingFlow = {
-      create: jest.fn(async (input: { start_at: string; end_at: string }) => ({
-        id: 'OCC-1', start_at: input.start_at, end_at: input.end_at,
-      })),
-    };
-    const conflict = { isExclusionViolation: () => false };
-    const ordersFanOut = {
-      cloneOrderForOccurrence: jest.fn(async () => {
-        throw new Error('clone failed');
-      }),
-    };
-    const compensation = {
-      deleteBooking: jest.fn(async () => {
-        throw new Error('compensation RPC blew up');
-      }),
-    };
-    // Boundary mirrors the InProcessBookingTransactionBoundary path: when
-    // compensate() throws, it rethrows as InternalServerErrorException
-    // with code 'booking.compensation_failed'.
-    const txBoundary = {
-      runWithCompensation: jest.fn(async <T>(
-        bookingId: string,
-        operation: () => Promise<T>,
-        compensate: (bookingId: string) => Promise<unknown>,
-      ): Promise<T> => {
-        try { return await operation(); } catch {
-          try {
-            await compensate(bookingId);
-          } catch {
-            throw Object.assign(new Error('booking.compensation_failed'), {
-              response: { code: 'booking.compensation_failed', booking_id: bookingId },
-            });
-          }
-          throw new Error('unreachable');
-        }
-      }),
-    };
-
-    const svc = new RecurrenceService(
-      supabase as never,
-      conflict as never,
-      undefined,
-      txBoundary as never,
-      compensation as never,
-    );
-    svc.setBookingFlow(bookingFlow as never);
-    svc.setOrdersFanOut(ordersFanOut as never);
-
-    const result = await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
-
-    expect(result.skipped_conflicts).toBeGreaterThan(0);
-
-    const advanced = seriesUpdates.filter(
-      (u) => u && typeof u === 'object' && 'materialized_through' in (u as object),
-    );
-    expect(advanced).toHaveLength(0);
-  });
-
-  it('expected failures (23P01 conflict) DO advance materialized_through', async () => {
-    // Counter-example: when every failure is "expected" (slot taken,
-    // rule deny), materialized_through SHOULD advance — those are
-    // permanent skips. Otherwise the cron would loop forever on a
-    // permanently-conflicted occurrence.
-    const { supabase, seriesUpdates } = makeMaterializedThroughTracker({
-      masterBooking: masterBooking(),
-      masterOrders: [],
-      seriesMaterializedThrough: '2026-05-01T00:00:00Z',
-    });
-
-    const bookingFlow = {
-      create: jest.fn(async () => {
-        // Every create throws GiST conflict — expected, advance.
-        throw Object.assign(new Error('exclusion'), { code: '23P01' });
-      }),
-    };
+    // The clone throws a 23P01-shaped error; deleteOrphanOccurrence rolls
+    // back cleanly, materialize() re-throws the ORIGINAL error, and the
+    // existing catch's `conflict.isExclusionViolation` matches it →
+    // EXPECTED failure → materialized_through SHOULD advance (this is the
+    // exact behaviour the boundary produced: it re-threw the original on
+    // rolled_back).
     const conflict = {
       isExclusionViolation: (err: unknown) =>
         (err as { code?: string })?.code === '23P01',
+    };
+    const ordersFanOut = {
+      cloneOrderForOccurrence: jest.fn(async () => {
+        throw Object.assign(new Error('asset exclusion'), { code: '23P01' });
+      }),
+    };
+
+    const svc = new RecurrenceService(supabase as never, conflict as never);
+    svc.setBookingFlow(makeBookingFlow() as never);
+    svc.setOrdersFanOut(ordersFanOut as never);
+
+    const result = await svc.materialize('SER', new Date('2026-05-05T00:00:00Z'));
+
+    expect(result.skipped_conflicts).toBeGreaterThan(0);
+    // Expected-failure-only run → materialized_through advances exactly
+    // as it did with the boundary's rolled_back→re-throw-original path.
+    const advanced = seriesUpdates.filter(
+      (u) => u && typeof u === 'object' && 'materialized_through' in (u as object),
+    );
+    expect(advanced.length).toBeGreaterThan(0);
+  });
+});
+
+describe('RecurrenceService.materialize — Slice 7 audit emission + materialized_through gating', () => {
+  const series = {
+    id: 'SER',
+    tenant_id: 'T',
+    recurrence_rule: { frequency: 'daily', interval: 1, count: 3 },
+    series_start_at: '2026-05-01T09:00:00Z',
+    series_end_at: null,
+    max_occurrences: 365,
+    holiday_calendar_id: null,
+    materialized_through: '2026-05-01T00:00:00Z',
+    parent_booking_id: 'MASTER',
+  };
+
+  function makeBookingFlow() {
+    let n = 0;
+    return {
+      create: jest.fn(async (input: { start_at: string; end_at: string }) => {
+        n += 1;
+        return { id: `OCC-${n}`, start_at: input.start_at, end_at: input.end_at };
+      }),
+    };
+  }
+
+  function makeFailingClone() {
+    return {
+      cloneOrderForOccurrence: jest.fn(async () => {
+        throw new Error('clone failed');
+      }),
+    };
+  }
+
+  it('partial_failure → emits booking.compensation_partial_failure audit (verbatim payload) AND does NOT advance materialized_through', async () => {
+    const { supabase, auditInserts, seriesUpdates } = buildDirectDeleteSupabase({
+      series,
+      masterOrders: [{ id: 'ORDER-1' }],
+      guardResult: {
+        data: { kind: 'partial_failure', blocked_by: ['recurrence_series'] },
+        error: null,
+      },
+    });
+    const conflict = { isExclusionViolation: () => false };
+
+    const svc = new RecurrenceService(supabase as never, conflict as never);
+    svc.setBookingFlow(makeBookingFlow() as never);
+    svc.setOrdersFanOut(makeFailingClone() as never);
+
+    const result = await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
+    expect(result.skipped_conflicts).toBeGreaterThan(0);
+
+    // Audit row reproduced verbatim from BookingCompensationService:
+    // event_type 'booking.compensation_partial_failure', entity_type
+    // 'booking', entity_id = occurrence id, details { blocked_by:[...] },
+    // tenant_id 'T' (booking-compensation.service.ts:118-120,142-148).
+    const partial = auditInserts.filter(
+      (r) => r.event_type === 'booking.compensation_partial_failure',
+    );
+    expect(partial.length).toBeGreaterThan(0);
+    for (const row of partial) {
+      expect(row.tenant_id).toBe('T');
+      expect(row.entity_type).toBe('booking');
+      expect(String(row.entity_id)).toMatch(/^OCC-/);
+      expect((row.details as { blocked_by?: unknown }).blocked_by).toEqual([
+        'recurrence_series',
+      ]);
+    }
+
+    // Retry signal: NO materialized_through advance (the partial_failure
+    // outcome maps to booking.partial_failure → sawUnexpectedFailure).
+    const advanced = seriesUpdates.filter(
+      (u) => u && typeof u === 'object' && 'materialized_through' in (u as object),
+    );
+    expect(advanced).toHaveLength(0);
+  });
+
+  it('RPC error → emits booking.compensation_failed audit (verbatim payload) AND does NOT advance materialized_through', async () => {
+    const { supabase, auditInserts, seriesUpdates } = buildDirectDeleteSupabase({
+      series,
+      masterOrders: [{ id: 'ORDER-1' }],
+      // delete_booking_with_guard itself blew up (network/5xx).
+      guardResult: { data: null, error: { message: 'connection lost' } },
+    });
+    const conflict = { isExclusionViolation: () => false };
+
+    const svc = new RecurrenceService(supabase as never, conflict as never);
+    svc.setBookingFlow(makeBookingFlow() as never);
+    svc.setOrdersFanOut(makeFailingClone() as never);
+
+    const result = await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
+    expect(result.skipped_conflicts).toBeGreaterThan(0);
+
+    // Audit row reproduced verbatim: 'booking.compensation_failed',
+    // details { rpc_error: 'connection lost' }
+    // (booking-compensation.service.ts:73-75,142-148).
+    const failed = auditInserts.filter(
+      (r) => r.event_type === 'booking.compensation_failed',
+    );
+    expect(failed.length).toBeGreaterThan(0);
+    for (const row of failed) {
+      expect(row.tenant_id).toBe('T');
+      expect(row.entity_type).toBe('booking');
+      expect(String(row.entity_id)).toMatch(/^OCC-/);
+      expect((row.details as { rpc_error?: unknown }).rpc_error).toBe(
+        'connection lost',
+      );
+    }
+
+    // compensation_failed maps to booking.compensation_failed →
+    // sawUnexpectedFailure → NO advance.
+    const advanced = seriesUpdates.filter(
+      (u) => u && typeof u === 'object' && 'materialized_through' in (u as object),
+    );
+    expect(advanced).toHaveLength(0);
+  });
+
+  it('malformed RPC payload → emits booking.compensation_failed audit (rpc_error=malformed_payload) AND does NOT advance materialized_through', async () => {
+    const { supabase, auditInserts, seriesUpdates } = buildDirectDeleteSupabase({
+      series,
+      masterOrders: [{ id: 'ORDER-1' }],
+      // RPC returned no/garbage payload (booking-compensation.service.ts:
+      // 93-106 malformed-payload branch).
+      guardResult: { data: null, error: null },
+    });
+    const conflict = { isExclusionViolation: () => false };
+
+    const svc = new RecurrenceService(supabase as never, conflict as never);
+    svc.setBookingFlow(makeBookingFlow() as never);
+    svc.setOrdersFanOut(makeFailingClone() as never);
+
+    const result = await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
+    expect(result.skipped_conflicts).toBeGreaterThan(0);
+
+    const failed = auditInserts.filter(
+      (r) => r.event_type === 'booking.compensation_failed',
+    );
+    expect(failed.length).toBeGreaterThan(0);
+    for (const row of failed) {
+      expect((row.details as { rpc_error?: unknown }).rpc_error).toBe(
+        'malformed_payload',
+      );
+    }
+    const advanced = seriesUpdates.filter(
+      (u) => u && typeof u === 'object' && 'materialized_through' in (u as object),
+    );
+    expect(advanced).toHaveLength(0);
+  });
+
+  it('expected failure (23P01 at create) DOES advance materialized_through — Slice 7 does not gate off the expected-skip path', async () => {
+    const { supabase, seriesUpdates } = buildDirectDeleteSupabase({
+      series,
+      masterOrders: [],
+      guardResult: { data: { kind: 'rolled_back' }, error: null },
+    });
+    const conflict = {
+      isExclusionViolation: (err: unknown) =>
+        (err as { code?: string })?.code === '23P01',
+    };
+    const bookingFlow = {
+      // Every create throws a GiST conflict — expected skip → advance.
+      create: jest.fn(async () => {
+        throw Object.assign(new Error('exclusion'), { code: '23P01' });
+      }),
     };
 
     const svc = new RecurrenceService(supabase as never, conflict as never);
@@ -858,8 +674,6 @@ describe('RecurrenceService.materialize — I4 retry-on-unexpected-failure', () 
     const advanced = seriesUpdates.filter(
       (u) => u && typeof u === 'object' && 'materialized_through' in (u as object),
     );
-    // EXACTLY one advance fired — proves the path isn't accidentally
-    // gated off by I4's flag for expected failures.
     expect(advanced.length).toBeGreaterThan(0);
   });
 });

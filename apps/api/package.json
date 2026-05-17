@@ -22,6 +22,7 @@
     "smoke:create-multi-room": "node scripts/smoke-create-multi-room.mjs",
     "smoke:attach-services": "node scripts/smoke-attach-services.mjs",
     "smoke:cancel-order-line": "node scripts/smoke-cancel-order-line.mjs",
+    "smoke:recurrence-clone": "node scripts/smoke-recurrence-clone.mjs",
     "smoke:visual-approval": "node scripts/smoke-visual-approval.mjs",
     "smoke:cross-tenant": "node scripts/smoke-cross-tenant.mjs"
   },

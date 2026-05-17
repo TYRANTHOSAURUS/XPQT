@@ -14,10 +14,13 @@ import type { ActorContext } from './dto/types';
 //   - There is NO TS-side compensation any more; atomicity is a DB
 //     property (the combined RPC fails as a unit and the
 //     attach_operations idempotency marker rolls back with it).
-//   - `InProcessBookingTransactionBoundary` + `BookingCompensationService`
-//     are no longer constructor collaborators of this service (the only
-//     remaining live txBoundary caller is recurrence.service.ts:531 — a
-//     separate slice, untouched).
+//   - The legacy in-process compensation classes
+//     (`InProcessBookingTransactionBoundary` + `BookingCompensationService`)
+//     are not collaborators of this service. Booking-audit Slice 7
+//     (audit 03 P2-1) has since retired both classes entirely; the last
+//     caller (the recurrence occurrence-clone) now calls
+//     `delete_booking_with_guard` directly via
+//     RecurrenceService.deleteOrphanOccurrence.
 //
 // The spec exercises the service as a pure orchestrator over its collabs:
 //   supabase.admin.rpc('create_booking_with_attach_plan', …)  — atomic write

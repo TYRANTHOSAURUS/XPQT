@@ -4,6 +4,7 @@ import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { BundleService } from '../booking-bundles/bundle.service';
+import { bookedByUserIdForRpc } from './booked-by-user-id.util';
 import { ConflictGuardService } from './conflict-guard.service';
 import { RuleResolverService } from '../room-booking-rules/rule-resolver.service';
 import { WorkflowService } from '../workflow/workflow.service';
@@ -43,11 +44,15 @@ import type { ActorContext, Reservation, PolicySnapshot } from './dto/types';
  * entries in the same `slots[]` array single-room sends as 1. Atomicity is
  * a DB property; there is no TS-side compensation any more.
  *
- * `booked_by_user_id` is a DIRECT passthrough on this RPC (00315:135 —
- * `nullif(p_booking_input->>'booked_by_user_id','')::uuid`); there is NO
- * F-CRIT-1 `auth_uid` resolution here (that lives only on the edit/cancel
- * RPC family). So we pass `actor.user_id` exactly as single-room's
- * `BookingFlowService.buildAttachPlan` does (booking-flow.service.ts:936).
+ * `booked_by_user_id` goes through the shared `bookedByUserIdForRpc`
+ * guard (booked-by-user-id.util.ts) — the SAME guard single-room uses —
+ * which coerces a synthetic `system:*` sentinel user_id to NULL before
+ * the `nullif(...)::uuid` bind (00315:135). There is NO F-CRIT-1
+ * `auth_uid` resolution here (that lives only on the edit/cancel RPC
+ * family). Slice-7 D-8: pre-guard this path bound `actor.user_id` raw —
+ * a latent twin of the recurrence/Outlook 500 (no synthetic caller
+ * reaches multi-room today, so it was unfired, but the guard makes the
+ * single-room/multi-room parity real instead of a stale claim).
  *
  * Approval-parity (correctness improvement, NOT silent): single-room wires
  * a Phase-1.5 workflow/approval gate around the combined RPC
@@ -363,9 +368,9 @@ export class MultiRoomBookingService {
       slot_ids: slotIds,
       requester_person_id: input.requester_person_id,
       host_person_id: input.host_person_id ?? null,
-      // DIRECT passthrough — 00315:135 nullif()::uuid. No F-CRIT-1 here
-      // (confirmed by reading 00315). Matches single-room :936.
-      booked_by_user_id: actor.user_id,
+      // Shared D-8 guard — system:* sentinel → null before the 00315:135
+      // nullif()::uuid bind. No F-CRIT-1 here. Same guard single-room uses.
+      booked_by_user_id: bookedByUserIdForRpc(actor),
       location_id: primarySpaceId,            // booking-level anchor; slots hold per-room space
       start_at: input.start_at,
       end_at: input.end_at,
