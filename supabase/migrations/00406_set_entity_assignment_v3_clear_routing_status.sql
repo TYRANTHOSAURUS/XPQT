@@ -395,57 +395,72 @@ begin
     end if;
   end if;
 
-  -- ── 14. INSERT ticket_activities (system_event) ───────────────────────
-  insert into public.ticket_activities
-    (tenant_id, ticket_id, activity_type, author_person_id, visibility, content, metadata)
-  values (
-    p_tenant_id,
-    p_entity_id,
-    'system_event',
-    v_actor_person_id,
-    case when v_reason is not null then 'internal' else 'system' end,
-    v_reason,
-    jsonb_build_object(
-      'event',    v_activity_event,
-      'previous', v_metadata_previous,
-      'next',     v_metadata_next,
-      'reason',   v_reason
-    )
-  );
+  -- ── 14+15 gate (v3 / audit-02 P1-2, review Code-I2) ───────────────────
+  -- §9's no-op early-return is skipped when v_clear_routing_status is set
+  -- (D3), so a routing re-evaluation that re-picks the SAME assignee falls
+  -- through to here purely to clear routing_status. WITHOUT this gate that
+  -- pure-status-clear path would insert a BLANK `assignment_changed`
+  -- ticket_activities row (previous={} / next={}) and a no-op
+  -- `ticket_assigned` domain_events row (previous == new) on every such
+  -- re-eval — timeline noise + spurious notification/MS-Graph wakes. Emit
+  -- the activity + domain event ONLY when something substantive actually
+  -- changed (an assignee axis moved) or a reason was supplied. This does
+  -- NOT regress the flag=false callers: with the flag false §9 already
+  -- early-returns on no-change+no-reason, so reaching here implies
+  -- substantive change or reason → the gate is true → identical to v2.
+  if v_team_changed or v_user_changed or v_vendor_changed or v_reason is not null then
+    -- ── 14. INSERT ticket_activities (system_event) ─────────────────────
+    insert into public.ticket_activities
+      (tenant_id, ticket_id, activity_type, author_person_id, visibility, content, metadata)
+    values (
+      p_tenant_id,
+      p_entity_id,
+      'system_event',
+      v_actor_person_id,
+      case when v_reason is not null then 'internal' else 'system' end,
+      v_reason,
+      jsonb_build_object(
+        'event',    v_activity_event,
+        'previous', v_metadata_previous,
+        'next',     v_metadata_next,
+        'reason',   v_reason
+      )
+    );
 
-  -- ── 15. INSERT public.domain_events (ticket_assigned) ─────────────────
-  --
-  -- C1+C2 fix: write to domain_events instead of outbox.events. Both case
-  -- and work_order side use event_type='ticket_assigned' + entity_type='ticket'
-  -- — entity_id disambiguates per work-order.service.ts:1923-1929 + spec
-  -- line 2024. actor_user_id stays NULL (existing TS callers don't fill
-  -- it; ticket.service.ts:1685-1692).
-  v_event_type := 'ticket_assigned';
+    -- ── 15. INSERT public.domain_events (ticket_assigned) ───────────────
+    --
+    -- C1+C2 fix: write to domain_events instead of outbox.events. Both case
+    -- and work_order side use event_type='ticket_assigned' + entity_type='ticket'
+    -- — entity_id disambiguates per work-order.service.ts:1923-1929 + spec
+    -- line 2024. actor_user_id stays NULL (existing TS callers don't fill
+    -- it; ticket.service.ts:1685-1692).
+    v_event_type := 'ticket_assigned';
 
-  insert into public.domain_events
-    (tenant_id, event_type, entity_type, entity_id, payload, actor_user_id)
-  values (
-    p_tenant_id,
-    v_event_type,
-    'ticket',
-    p_entity_id,
-    jsonb_build_object(
-      'entity_id',                   p_entity_id,
-      'entity_kind',                 p_entity_kind,
-      'previous_assigned_team_id',   v_prev_team,
-      'previous_assigned_user_id',   v_prev_user,
-      'previous_assigned_vendor_id', v_prev_vendor,
-      'new_assigned_team_id',        v_new_team,
-      'new_assigned_user_id',        v_new_user,
-      'new_assigned_vendor_id',      v_new_vendor,
-      'previous_status_category',    v_prev_status_category,
-      'new_status_category',         v_new_status_category,
-      'reason',                      v_reason,
-      'actor_user_id',               p_actor_user_id,
-      'actor_person_id',             v_payload_actor_person
-    ),
-    null
-  );
+    insert into public.domain_events
+      (tenant_id, event_type, entity_type, entity_id, payload, actor_user_id)
+    values (
+      p_tenant_id,
+      v_event_type,
+      'ticket',
+      p_entity_id,
+      jsonb_build_object(
+        'entity_id',                   p_entity_id,
+        'entity_kind',                 p_entity_kind,
+        'previous_assigned_team_id',   v_prev_team,
+        'previous_assigned_user_id',   v_prev_user,
+        'previous_assigned_vendor_id', v_prev_vendor,
+        'new_assigned_team_id',        v_new_team,
+        'new_assigned_user_id',        v_new_user,
+        'new_assigned_vendor_id',      v_new_vendor,
+        'previous_status_category',    v_prev_status_category,
+        'new_status_category',         v_new_status_category,
+        'reason',                      v_reason,
+        'actor_user_id',               p_actor_user_id,
+        'actor_person_id',             v_payload_actor_person
+      ),
+      null
+    );
+  end if;
 
   -- ── 16. Mark command_operations success and return ───────────────────
   v_result := jsonb_build_object(

@@ -136,6 +136,20 @@ export class RoutingEvaluationHandler
     }
     if (!ticketRes.data) {
       // Hard-deleted between emit + fire. Terminal per v9 / P-I5.
+      //
+      // audit-02 P1-2 (review Plan-N1): this lookup is ALSO the runtime
+      // case-only enforcement point — a runnable guard, not a doc-only
+      // paper tiger. `routing.evaluation_required` is produced only for
+      // cases (00354 reclassify_ticket + 00358 grant_ticket_approval_v3,
+      // both aggregate_type='ticket'); there is no work_order producer.
+      // If a WO id ever reached here it is NOT in `public.tickets`
+      // (post-1c.10c work_orders are their own table), so it lands in
+      // THIS branch and terminates cleanly — BEFORE the resolver, the
+      // set_entity_assignment RPC, or markRoutingFailure. The earlier
+      // review concern that a WO id would corrupt data via
+      // markRoutingFailure (case_id=<wo_id> + zero-row tickets.update)
+      // is therefore unreachable: the tickets-membership miss gates it
+      // out here. WO routing-evaluation remains an explicit future gap.
       this.log.log(`ticket_not_found ticket=${ticket_id} event=${event.id}`);
       return;
     }
