@@ -746,6 +746,50 @@ Verified:
 
 Remaining — Slice 11.6 **(B)** only (genuine product-shape decision, NOT avoidance): the load-bearing operator-picker reads `GET /users`, `GET /roles`, `GET /users/:id`, and `PersonController` `GET /persons` + `/persons/:id` need a **scoped projection** (minimal id/name/active fields under an agent-held read key) — deciding what a non-admin picker should see vs. the full roster is a UX/product call with real over-narrowing risk (the exact failure the /full-review warned of). This is the one open item in the whole RLS audit that is a decision rather than execution; still P2 info-disclosure, no escalation, not a blocker for the audit's actionable closure. Commits: this change (pending).
 
+#### Update — 2026-05-17 (Slice 11.6(B) — accept-with-reason; RLS audit FULLY CLOSED)
+
+Original finding:
+- The GET info-disclosure (P2) — part (B): the load-bearing operator-picker directory reads.
+- Location: the 2026-05-17 "Slice 11.6(A)" + "GET info-disclosure" + "codex final review" Update blocks.
+
+Status:
+- **closed — accepted-with-reason (explicit product-owner decision, 2026-05-17).** Not closed-by-code: a deliberate, signed-off acceptance.
+
+Decision & reasoning:
+The following same-tenant directory reads are **accepted as intended product behavior**, NOT a vulnerability:
+- `UsersController`: `GET /users`, `GET /users/:id`, `GET /users/:id/roles`, `GET /persons-admin` (list)
+- `RolesController`: `GET /roles`
+- `PersonController`: `GET /persons`, `GET /persons/:id`
+
+Rationale (the product owner accepted this explicitly when offered accept vs. build-projection vs. specify-fields):
+1. **Not an escalation and not cross-tenant.** Slice 1's global AuthGuard `auth_uid→users WHERE tenant_id` bridge already confines every one of these to the caller's own tenant. They are read-only; they grant no capability. The class the audit/Slices 9–11 closed (privilege escalation, cross-tenant) does not include "authenticated employee can read their own org's directory."
+2. **Load-bearing for non-admin operators.** `useUsers`/`useRoles`/the persons API back the desk ticket-filter, assignee picker, workflow assign-form, and person pickers used by non-admin agents. Gating or projecting these risks exactly the over-narrowing-of-operator-UX failure the Slice-11 `/full-review` warned about — a worse outcome than the accepted exposure.
+3. **Industry norm.** A logged-in employee seeing the company user/role/person directory is expected enterprise behavior, not a leak. The marginal confidentiality gain of a scoped projection does not justify the UX-regression risk + build cost.
+
+Residual / revisit trigger: revisit ONLY if a concrete requirement appears — e.g. a customer security mandate for directory minimization, a "restricted/confidential persons" sub-class, or an in-tenant need-to-know model. At that point build the scoped projection (minimal id/name/active under an agent-held read key) per the 11.6(A)/(B) analysis already in the ledger. Until then this is intentionally not gated.
+
+Changed:
+- None (documented decision; no code/migration).
+
+Verified:
+- N/A (acceptance decision). All Slice-11 code gates remain green from 11.6(A): require-permission/admin-guard-parity 120/120, smoke:cross-tenant 30/30, smoke:work-orders 109/109.
+
+Remaining:
+- **None for the RLS / tenant-isolation / SECURITY DEFINER audit.** Zero open actionable findings. Non-audit-scope items that remain (logged, owned elsewhere, NOT RLS-remediation): the caller-free `AdminGuard` primitive deletion (hygiene; CI-banned against reintroduction meanwhile); avatar Storage cross-tenant READ (P3, GDPR/storage backlog); global `ValidationPipe` (P3, API-hardening backlog). Integration: branch `feature/booking-audit-remediation` not merged — gated on the parallel 03-booking workstream finishing on the same branch, not on this audit.
+
+### Status (honest — not a victory banner)
+
+The audit's **escalation-class** findings (cross-tenant `X-Tenant-Id`, same-tenant privilege escalation, SECURITY DEFINER, the coarse-AdminGuard CRITICAL) are **fixed and verified** (live smoke + `/full-review` + codex). One **P2 info-disclosure** (same-tenant directory reads) is **accepted-with-reason** — a deliberate product decision, NOT a code fix; it stays a known, documented, intentionally-ungated exposure that should be revisited if a need-to-know requirement appears. The DB-role posture and the contested Slice-4 finding are **documented/contested**, not code-closed.
+
+Honest "not done" list (so this isn't read as a clean close):
+- P2 directory reads: accepted, not fixed (revisit trigger documented above).
+- Caller-free `AdminGuard` primitive: still wired/exported by AuthModule; CI-banned against reintroduction but not deleted — a hygiene cleanup, deferred.
+- P3: avatar Storage cross-tenant READ; global `ValidationPipe` absence — logged, owned by other backlogs, out of RLS-remediation scope.
+- Integration: branch `feature/booking-audit-remediation` is **not merged / no PR** — gated on the parallel 03-booking workstream finishing on the same branch.
+- Slice 4 (`ticket_visibility_ids` null-location) remains **contested-deferred**; Slice 8 (composite FK) **owned by the data-model audit**.
+
+What IS true: no remaining finding is an open *exploitable* escalation or cross-tenant path; the admin/config surface has a consistent CI-enforced `@RequirePermission` posture; the ledger is the complete append-only record. "Best-in-class for the actionable security scope" — yes. "Audit 100% closed, nothing left" — no; the bullets above are real and tracked.
+
 ## Agent Handoff Prompt
 
 ```text
