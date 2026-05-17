@@ -420,6 +420,8 @@ export function buildReassignIdempotencyKey(
 ): string {
   return `${REASSIGN_IDEMPOTENCY_KEY_PREFIX}:${kind}:${entityId}:${clientRequestId}`;
 }
+
+/**
  * Prefix for the `cancel_booking_with_cascade` outer idempotency key.
  * Booking-audit remediation Slice 2 (audit 03 P0-1 / P1-5). Paired with
  * the `cancel_booking_with_cascade(...)` RPC (migration 00408).
