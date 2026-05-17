@@ -175,6 +175,18 @@ export interface MultiRoomBookingDto {
     service_window_end_at?: string | null;
     repeats_with_series?: boolean;
     linked_asset_id?: string | null;
+    /**
+     * Slice 3 (audit 03 P1-1) — multi-room create now routes through
+     * `create_booking_with_attach_plan` + `BundleService.buildAttachPlan`,
+     * which REQUIRES a non-empty, per-order-unique `client_line_id` on
+     * every service line (bundle.service.ts:636-650 / attach-plan.types.ts
+     * :138-148, spec §7.4 v8). The booking composer already mints this
+     * for single-room create-with-services; widen the multi-room DTO so
+     * it threads through identically. Missing/dup ids surface as a clean
+     * `client_line_id_required` / `client_line_id_not_unique` 400 (same
+     * as single-room), never a silent drop.
+     */
+    client_line_id?: string;
   }>;
   bundle?: {
     bundle_type?: 'meeting' | 'event' | 'desk_day' | 'parking' | 'hospitality' | 'other';
