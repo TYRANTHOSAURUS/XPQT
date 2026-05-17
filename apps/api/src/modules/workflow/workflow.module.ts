@@ -2,7 +2,8 @@ import { Module, forwardRef } from '@nestjs/common';
 import { TenantModule } from '../tenant/tenant.module';
 import { TicketModule } from '../ticket/ticket.module';
 import { SlaModule } from '../sla/sla.module';
-import { AuthModule } from '../auth/auth.module';
+import { PermissionGuard } from '../../common/permission-guard';
+import { PermissionMetadataGuard } from '../../common/require-permission.decorator';
 import { WorkflowService } from './workflow.service';
 import { WorkflowEngineService } from './workflow-engine.service';
 import { WorkflowValidatorService } from './workflow-validator.service';
@@ -15,8 +16,13 @@ import { WorkflowController } from './workflow.controller';
   // B.2.A.Step9 — SlaModule injected so the `update_ticket` node's sla
   // branch can pre-compute timer due_at values via
   // SlaService.buildTimersForRpc (same shape as WorkOrderService).
-  imports: [TenantModule, forwardRef(() => TicketModule), forwardRef(() => SlaModule), AuthModule],
+  imports: [TenantModule, forwardRef(() => TicketModule), forwardRef(() => SlaModule)],
   providers: [
+    // RLS audit Slice 11.3: WorkflowController re-gated AdminGuard →
+    // @RequirePermission('workflows.*'); AuthModule dropped, the two
+    // permission guards provided locally (config-engine.module pattern).
+    PermissionGuard,
+    PermissionMetadataGuard,
     WorkflowService,
     WorkflowEngineService,
     WorkflowValidatorService,

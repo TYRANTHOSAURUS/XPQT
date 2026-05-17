@@ -58,6 +58,7 @@ export const DEFAULT_ROLE_TEMPLATES: readonly RoleTemplate[] = [
     permissions: [
       'tickets.*',
       'request_types.read',
+      'request_types.use',
       'assets.read',
       'people.read',
       'vendors.read',
@@ -70,6 +71,7 @@ export const DEFAULT_ROLE_TEMPLATES: readonly RoleTemplate[] = [
       'Handles facilities tickets. Grant domain_scope=["fm"] on assignment.',
     permissions: [
       'tickets.*',
+      'request_types.use',
       'assets.*',
       'spaces.read',
       'people.read',
@@ -85,6 +87,7 @@ export const DEFAULT_ROLE_TEMPLATES: readonly RoleTemplate[] = [
     permissions: [
       'tickets.*',
       'request_types.read',
+      'request_types.use',
       'assets.read',
       'people.read',
       'people.update',
@@ -107,6 +110,7 @@ export const DEFAULT_ROLE_TEMPLATES: readonly RoleTemplate[] = [
     permissions: [
       'tickets.create',
       'tickets.read',
+      'request_types.use',
       'service_catalog.read',
       'people.read',
       'visitors.invite',
@@ -177,6 +181,127 @@ export const EXPLICITLY_NO_DEFAULT_ROLE: ReadonlyArray<{
     key: 'rooms.read_all',
     reason:
       'Bypass-scope visibility override for bookings/bundles, mirroring tickets.read_all. Tenant Admin holds via *.*; other roles must be granted explicitly. Same posture as the existing tickets/visitors read_all overrides.',
+  },
+  // RLS audit Slice 11 (2026-05-16): three config domains added to
+  // PERMISSION_CATALOG so the controllers can be gated via
+  // @RequirePermission instead of the coarser @UseGuards(AdminGuard)
+  // (which hard-checks role.type==='admin' and wrongly blocks a
+  // non-admin role that holds the grant). These are admin-tier config
+  // — no non-admin DEFAULT role gets them out of the box (same posture
+  // as gdpr.* / settings.billing); a Tenant Admin grants them per
+  // custom role via the role editor. The point of the catalog model is
+  // that the grant is now POSSIBLE, not that it is default-on.
+  {
+    key: 'business_hours.read',
+    reason:
+      'Admin-tier config (SLA/booking operating calendars). Read kept admin-tier with create/update; Tenant Admin grants explicitly. No non-admin default.',
+  },
+  {
+    key: 'business_hours.create',
+    reason:
+      'Admin-tier config: defines tenant operating-hours calendars that drive SLA timers. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'business_hours.update',
+    reason:
+      'Admin-tier config: edits operating-hours calendars (SLA-affecting). Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'catalog_menus.read',
+    reason:
+      'Admin-tier config (vendor/service menus). Read kept with the mutation set; Tenant Admin grants explicitly. No non-admin default.',
+  },
+  {
+    key: 'catalog_menus.create',
+    reason:
+      'Admin-tier config: creates vendor/service offering menus + items. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'catalog_menus.update',
+    reason:
+      'Admin-tier config: edits vendor/service menus + items + bulk/duplicate. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'catalog_menus.delete',
+    reason:
+      'Admin-tier destructive config: deletes menus/items. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'delegations.read',
+    reason:
+      'Authority-delegation config. Read kept with the mutation set; Tenant Admin grants explicitly. No non-admin default.',
+  },
+  {
+    key: 'delegations.create',
+    reason:
+      'Authority delegation (acting on behalf of another person) — sensitive. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'delegations.update',
+    reason:
+      'Edits/revokes authority delegations — sensitive. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  // RLS audit Slice 11.3 (2026-05-16): webhooks domain added so
+  // webhook-admin.controller can be gated via @RequirePermission instead
+  // of the coarser @UseGuards(AdminGuard). Outbound workflow webhooks +
+  // signing keys are admin-tier integration config — same posture as the
+  // 11.1 additions (gdpr.* / settings.billing): no non-admin default
+  // role; a Tenant Admin grants per custom role. The catalog model makes
+  // the grant POSSIBLE, which AdminGuard did not.
+  {
+    key: 'webhooks.read',
+    reason:
+      'Admin-tier integration config (outbound webhook endpoints + delivery log). Read kept with the mutation set; Tenant Admin grants explicitly. No non-admin default.',
+  },
+  {
+    key: 'webhooks.create',
+    reason:
+      'Admin-tier: creates outbound workflow webhook endpoints (external system integration). Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'webhooks.update',
+    reason:
+      'Admin-tier: edits webhook endpoints (URL/events/headers). Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'webhooks.rotate_key',
+    reason:
+      'Admin-tier security op: rotates the webhook signing key (invalidates the current one). Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'webhooks.test',
+    reason:
+      'Admin-tier: sends a test payload to a webhook endpoint. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  {
+    key: 'webhooks.delete',
+    reason:
+      'Admin-tier destructive config: deletes webhook endpoints. Tenant Admin grants explicitly; no non-admin default role.',
+  },
+  // RLS audit Slice 11.3: workflows.execute added so the manual
+  // instance-control routes (POST /workflows/:id/start/:ticketId,
+  // POST /workflows/instances/:id/resume) have a real catalog key
+  // distinct from workflows.test (dry-run). Real side effects on a
+  // ticket's workflow runtime — admin-tier operational intervention;
+  // no non-admin default (Tenant Admin grants explicitly per role).
+  {
+    key: 'workflows.execute',
+    reason:
+      'Manual workflow-runtime intervention (start on a ticket / resume a paused instance) — real side effects, distinct from the test dry-run. Admin-tier; Tenant Admin grants explicitly, no non-admin default role.',
+  },
+  // RLS audit Slice 11.5 (2026-05-17): visitors.configure added so the
+  // last @UseGuards(AdminGuard) caller (visitors/admin.controller.ts —
+  // visitor types / pass pools / kiosk tokens) can be re-gated like the
+  // rest of Slice 11. Admin-tier console; kiosk-token provisioning is
+  // security-sensitive — same posture as gdpr.* / webhooks.* (Tenant
+  // Admin via *.*; manually granted; no non-admin default role). Closes
+  // codex DECISION B by DOING it rather than deferring (the original
+  // "parallel visitors workstream collision" rationale was stale —
+  // visitors v1 already shipped to main).
+  {
+    key: 'visitors.configure',
+    reason:
+      'Tenant-admin visitor console (types / pass pools / kiosk tokens). Kiosk-token provisioning + rotation are security-sensitive. Tenant Admin grants explicitly; no non-admin default role (same posture as gdpr.* / webhooks.*).',
   },
 ];
 

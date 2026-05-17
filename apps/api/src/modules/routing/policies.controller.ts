@@ -3,12 +3,11 @@ import {
   Controller,
   Get,
   Param,
-  Post,
-  UseGuards} from '@nestjs/common';
+  Post} from '@nestjs/common';
 import { ROUTING_STUDIO_SCHEMAS, type RoutingStudioConfigType } from './policy-validators';
 import { AppErrors } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 import { PolicyStoreService } from './policy-store.service';
 
 /**
@@ -24,17 +23,18 @@ import { PolicyStoreService } from './policy-store.service';
  *   POST   /admin/routing/policies/:config_type/:entity_id/versions   — create draft version
  *   POST   /admin/routing/policies/versions/:version_id/publish       — publish draft → published
  */
-@UseGuards(AdminGuard)
 @Controller('admin/routing/policies')
 export class RoutingPoliciesController {
   constructor(private readonly store: PolicyStoreService) {}
 
   @Get('schemas')
+  @RequirePermission('routing.read')
   getSchemas() {
     return Object.keys(ROUTING_STUDIO_SCHEMAS);
   }
 
   @Get(':config_type')
+  @RequirePermission('routing.read')
   async list(@Param('config_type') configType: string) {
     const type = assertRoutingType(configType);
     const tenant = TenantContext.current();
@@ -42,6 +42,7 @@ export class RoutingPoliciesController {
   }
 
   @Get(':config_type/:entity_id')
+  @RequirePermission('routing.read')
   async get(
     @Param('config_type') configType: string,
     @Param('entity_id') entityId: string,
@@ -57,6 +58,7 @@ export class RoutingPoliciesController {
   }
 
   @Post(':config_type')
+  @RequirePermission('routing.create')
   async create(
     @Param('config_type') configType: string,
     @Body() body: CreateEntityBody,
@@ -77,6 +79,7 @@ export class RoutingPoliciesController {
   }
 
   @Post(':config_type/:entity_id/versions')
+  @RequirePermission('routing.update')
   async createVersion(
     @Param('config_type') configType: string,
     @Param('entity_id') entityId: string,
@@ -95,6 +98,7 @@ export class RoutingPoliciesController {
   }
 
   @Post('versions/:version_id/publish')
+  @RequirePermission('routing.publish')
   async publish(
     @Param('version_id') versionId: string,
     @Body() body?: PublishVersionBody,

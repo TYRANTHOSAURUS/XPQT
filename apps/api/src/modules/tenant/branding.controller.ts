@@ -7,12 +7,10 @@ import {
   Post,
   Put,
   UploadedFile,
-  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { AuthGuard } from '../auth/auth.guard';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 import {
   BrandingService,
   LogoKind,
@@ -33,13 +31,13 @@ export class BrandingController {
   }
 
   @Put('branding')
-  @UseGuards(AuthGuard, AdminGuard)
+  @RequirePermission('settings.update')
   async updateBranding(@Body() dto: UpdateBrandingDto) {
     return this.branding.update(dto);
   }
 
   @Post('branding/logo')
-  @UseGuards(AuthGuard, AdminGuard)
+  @RequirePermission('settings.update')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 2 * 1024 * 1024 } }))
   async uploadLogo(
     @Body('kind') kind: LogoKind,
@@ -56,7 +54,7 @@ export class BrandingController {
   }
 
   @Delete('branding/logo/:kind')
-  @UseGuards(AuthGuard, AdminGuard)
+  @RequirePermission('settings.update')
   async deleteLogo(@Param('kind') kind: LogoKind) {
     if (!VALID_KINDS.includes(kind)) {
       throw AppErrors.validationFailed('tenant.invalid_image_kind', {

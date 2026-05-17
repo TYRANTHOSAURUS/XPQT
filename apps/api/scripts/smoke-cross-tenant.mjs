@@ -76,6 +76,23 @@ const ADMIN_AUTH_UID = '93d41232-35b5-424c-b215-bb5d55a2dfd9';
 const NONADMIN_AUTH_UID = 'd572cfa5-b2b6-42b5-8853-5102621e3819';
 const NONADMIN_USER_ID = '95100000-0000-0000-0000-00000000000c';
 const ADMIN_ROLE_ID = '91000000-0000-0000-0000-000000000001';
+// Slice 10 (2026-05-16) — TENANT_A team for the team-membership
+// self-add escalation probe (team_members feeds ticket_visibility_ids).
+const TEAM_ID = '94000000-0000-0000-0000-000000000001';
+
+// Slice 11.2b (2026-05-16, codex risk #2) — the "one live case" proving
+// the @RequirePermission re-gate delivers what blanket AdminGuard
+// structurally could NOT: a non-admin role (type='agent', NOT 'admin')
+// holding exactly `spaces.create` can POST /spaces. Under the old
+// AdminGuard (hard role.type==='admin') this same role 403'd; under
+// @RequirePermission('spaces.create') it passes the guard. Fixed UUIDs
+// so the finally-cleanup is deterministic. Assigned to the existing
+// NONADMIN user — the proof section runs LAST (after every Slice-9/10
+// probe that asserts this user 403s) so it cannot perturb them, and
+// user_has_permission re-evaluates roles.permissions live per request
+// (no token re-mint needed).
+const PROOF_ROLE_ID = '91000000-0000-0000-0000-0000000011b2';
+const PROOF_ASSIGNMENT_ID = '96000000-0000-0000-0000-0000000011b2';
 
 // Mirror smoke-tickets.mjs:86-87 — TENANT_B fixture seed shape.
 const TENANT_B_ID = '00000000-0000-0000-0000-0000000000b1';
@@ -115,6 +132,73 @@ async function ensureTenantBFixture() {
     throw new Error(
       `ensureTenantBFixture: psql seed failed: ${e.message}\nstdout: ${stdout}\nstderr: ${stderr}`,
     );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Slice 11.2b — non-admin-WITH-permission proof fixture.
+// Idempotent seed + deterministic teardown. Same psql/replica pattern
+// as ensureTenantBFixture (roles + user_role_assignments carry audit
+// triggers that have drifted from migrations — out of scope here).
+// ─────────────────────────────────────────────────────────────────────
+
+function proofDbArgs() {
+  const dbPass = env.SUPABASE_DB_PASS;
+  if (!dbPass) {
+    throw new Error(
+      'Slice 11.2b proof: SUPABASE_DB_PASS missing from .env — cannot seed the non-admin proof role',
+    );
+  }
+  const dbUrl =
+    env.SUPABASE_DB_URL ||
+    'postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres';
+  return { dbPass, dbUrl };
+}
+
+function seedProofRoleFixture() {
+  const { dbPass, dbUrl } = proofDbArgs();
+  // type='agent' — explicitly NOT 'admin'. permissions holds exactly
+  // three single keys: spaces.create (generic 11.2b re-gate proof),
+  // request_types.use (Slice 11.4 portal-fix proof), and
+  // visitors.configure (Slice 11.5 — the LAST AdminGuard caller
+  // re-gated). None is a wildcard and none is admin — this is the role
+  // blanket AdminGuard would have 403'd (role.type !== 'admin') but
+  // @RequirePermission lets through, per-key.
+  const sql = `
+    set session_replication_role = 'replica';
+    insert into public.roles (id, tenant_id, name, description, permissions, type, active)
+      values ('${PROOF_ROLE_ID}', '${TENANT_A_ID}', 'xtenant-proof multi-key',
+              'RLS Slice 11.2b/11.4/11.5 proof — non-admin (agent) role holding exactly spaces.create + request_types.use + visitors.configure',
+              '["spaces.create","request_types.use","visitors.configure"]'::jsonb, 'agent', true)
+      on conflict (id) do update
+        set permissions = excluded.permissions, type = excluded.type, active = true;
+    insert into public.user_role_assignments (id, tenant_id, user_id, role_id, active)
+      values ('${PROOF_ASSIGNMENT_ID}', '${TENANT_A_ID}', '${NONADMIN_USER_ID}', '${PROOF_ROLE_ID}', true)
+      on conflict (id) do update set active = true;
+    set session_replication_role = 'origin';
+  `;
+  execFileSync('psql', [dbUrl, '-v', 'ON_ERROR_STOP=1', '-c', sql], {
+    env: { ...process.env, PGPASSWORD: dbPass },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function cleanupProofRoleFixture() {
+  try {
+    const { dbPass, dbUrl } = proofDbArgs();
+    // Order: assignment → role (FK), then any space the proof POST
+    // actually created (idempotent; harmless if it 400'd on the body).
+    const sql = `
+      delete from public.user_role_assignments where id = '${PROOF_ASSIGNMENT_ID}';
+      delete from public.roles where id = '${PROOF_ROLE_ID}';
+      delete from public.spaces where tenant_id = '${TENANT_A_ID}' and name = 'xtenant-11.2b-proof';
+    `;
+    execFileSync('psql', [dbUrl, '-v', 'ON_ERROR_STOP=1', '-c', sql], {
+      env: { ...process.env, PGPASSWORD: dbPass },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    console.log(`  ! slice11.2b-cleanup failed (non-fatal): ${e.message}`);
   }
 }
 
@@ -180,7 +264,13 @@ async function probe(name, options) {
     (expect === 'badrequest' && r.status === 400) ||
     (expect === 'unauthorized' && r.status === 401) ||
     (expect === 'forbidden' && r.status === 403) ||
-    (expect === 'notfound' && r.status === 404);
+    (expect === 'notfound' && r.status === 404) ||
+    // Slice 11.2b: "the permission guard let it through". 403 = denied
+    // by the guard, 401 = no platform user (guard couldn't resolve the
+    // caller). Anything else (2xx, or 400/422 business validation on the
+    // body) proves the @RequirePermission gate PASSED — which is the
+    // whole proof. Robust to POST /spaces body-validation variance.
+    (expect === 'not_forbidden' && r.status !== 403 && r.status !== 401);
   const txt = await r.text();
   if (ok) {
     results.pass += 1;
@@ -378,6 +468,198 @@ async function probe(name, options) {
     );
   } catch (e) {
     console.log(`  ! escalation-cleanup failed (non-fatal): ${e.message}`);
+  }
+
+  // ── Slice 10: 9 further unguarded admin-mutation controllers ──
+  // The sweep after Slice 9 found these. Probe the two escalation-
+  // class ones with the same-tenant non-admin JWT (the rest follow
+  // the identical @UseGuards(AdminGuard)-per-mutation pattern, so
+  // these two are representative — team membership feeds
+  // ticket_visibility_ids; delegation.create takes no actor).
+  // Plus operational-GET regressions: Slice 10 must NOT have locked
+  // the reads that back non-admin operator pickers.
+  console.log('\n─── Slice 10: same-tenant non-admin on newly-guarded controllers');
+  await probe('GET /spaces  (non-admin, operational picker)', {
+    url: `${API_BASE}/api/spaces`,
+    headers: nonAdminA,
+    expect: 'success',
+  });
+  await probe('GET /vendors  (non-admin, operational)', {
+    url: `${API_BASE}/api/vendors`,
+    headers: nonAdminA,
+    expect: 'success',
+  });
+  await probe('GET /teams  (non-admin, assignment picker)', {
+    url: `${API_BASE}/api/teams`,
+    headers: nonAdminA,
+    expect: 'success',
+  });
+  // Escalation-class P0: non-admin self-adding to a team would grant
+  // operator visibility on that team's tickets (team_members →
+  // ticket_visibility_ids). Must 403.
+  await probe('POST /teams/:id/members  (non-admin self-add → visibility escalation)', {
+    url: `${API_BASE}/api/teams/${TEAM_ID}/members`,
+    method: 'POST',
+    headers: nonAdminA,
+    body: { user_id: NONADMIN_USER_ID },
+    expect: 'forbidden',
+  });
+  // Escalation-class: delegation.create takes no actor — a non-admin
+  // minting a delegation between arbitrary users. Must 403.
+  await probe('POST /delegations  (non-admin mints delegation → escalation)', {
+    url: `${API_BASE}/api/delegations`,
+    method: 'POST',
+    headers: nonAdminA,
+    body: { from_user_id: NONADMIN_USER_ID, to_user_id: NONADMIN_USER_ID },
+    expect: 'forbidden',
+  });
+  // Slice 11.5: the LAST AdminGuard caller, re-gated to
+  // @RequirePermission('visitors.configure'). A plain non-admin (no
+  // visitors.configure) must 403 — and 403 not 500 also proves the
+  // PermissionMetadataGuard DI is wired in visitors.module after the
+  // AuthModule drop (a missing provider would 500 here).
+  await probe('POST /admin/visitors/types  (non-admin, no visitors.configure → 403)', {
+    url: `${API_BASE}/api/admin/visitors/types`,
+    method: 'POST',
+    headers: nonAdminA,
+    body: { display_name: 'xtenant-noadmin', slug: 'xt-noadmin' },
+    expect: 'forbidden',
+  });
+  // Slice 11.6(A): the 3 admin-only audit/effective GETs were ungated
+  // pre-11.6 (any active same-tenant user → 200, the P2 leak). Now
+  // gated users.read / roles.read — plain non-admin must 403 (gate
+  // engaged; 403 not 500 also confirms DI). They're admin-detail-page
+  // only so no operator UX breaks (codex-verified).
+  await probe('GET /users/:id/audit  (non-admin, no users.read → 403, was open pre-11.6)', {
+    url: `${API_BASE}/api/users/00000000-0000-0000-0000-0000000011b2/audit`,
+    headers: nonAdminA,
+    expect: 'forbidden',
+  });
+  await probe('GET /roles/:id/audit  (non-admin, no roles.read → 403, was open pre-11.6)', {
+    url: `${API_BASE}/api/roles/00000000-0000-0000-0000-0000000011b2/audit`,
+    headers: nonAdminA,
+    expect: 'forbidden',
+  });
+  await probe('GET /permissions/users/:id/effective  (non-admin, no roles.read → 403, was open pre-11.6)', {
+    url: `${API_BASE}/api/permissions/users/00000000-0000-0000-0000-0000000011b2/effective`,
+    headers: nonAdminA,
+    expect: 'forbidden',
+  });
+  // Slice 11.2-fix: notification TEMPLATE mutation. This re-gate's
+  // controller edit sat uncommitted for two sessions (b4577f20 shipped
+  // only the module DI). Runtime proof the now-committed
+  // @RequirePermission('notifications.manage_templates') + the
+  // already-committed module DI actually work together: plain non-admin
+  // → 403 (gate engaged; 403 not 500 confirms the committed
+  // controller+module are wired).
+  await probe('POST /notification-templates  (non-admin, no notifications.manage_templates → 403)', {
+    url: `${API_BASE}/api/notification-templates`,
+    method: 'POST',
+    headers: nonAdminA,
+    body: {},
+    expect: 'forbidden',
+  });
+  // Config-mutation sample: non-admin creating a space (location
+  // hierarchy) must 403.
+  await probe('POST /spaces  (non-admin config mutation)', {
+    url: `${API_BASE}/api/spaces`,
+    method: 'POST',
+    headers: nonAdminA,
+    body: { name: 'xtenant-noadmin', type: 'room' },
+    expect: 'forbidden',
+  });
+
+  // Defensive cleanup — only matters if a probe above regressed to a
+  // 2xx and actually wrote. Idempotent. Removes the would-be
+  // team-membership escalation row.
+  try {
+    const dbPass = env.SUPABASE_DB_PASS;
+    const dbUrl =
+      env.SUPABASE_DB_URL ||
+      'postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres';
+    execFileSync(
+      'psql',
+      [
+        dbUrl,
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-c',
+        `delete from public.team_members where team_id = '${TEAM_ID}' and user_id = '${NONADMIN_USER_ID}';`,
+      ],
+      { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+  } catch (e) {
+    console.log(`  ! slice10-cleanup failed (non-fatal): ${e.message}`);
+  }
+
+  // ── Slice 11.2b: non-admin WITH the permission must NOT be 403 ──
+  // codex risk #2's "one live case". Runs LAST so seeding spaces.create
+  // onto NONADMIN cannot flip the earlier Slice-9/10 403 assertions
+  // (which use the same user). Proves the @RequirePermission re-gate
+  // delivers what blanket AdminGuard structurally could not: a
+  // non-admin (type='agent') role that holds exactly spaces.create
+  // passes the guard where AdminGuard (role.type==='admin') 403'd it.
+  console.log(
+    '\n─── Slice 11.2b: non-admin WITH permission (proves the re-gate)',
+  );
+  try {
+    seedProofRoleFixture();
+    // Sanity: the SAME role/user with NO spaces.create still 403s on a
+    // different key's route — isolates "the grant did it", not "the
+    // user is now privileged". POST /workflows needs workflows.create,
+    // which this role does not hold.
+    await probe('POST /workflows  (non-admin, role lacks workflows.create → still 403)', {
+      url: `${API_BASE}/api/workflows`,
+      method: 'POST',
+      headers: nonAdminA,
+      body: { name: 'xtenant-11.2b-neg', graph_definition: {} },
+      expect: 'forbidden',
+    });
+    // The proof: same non-admin user, now holding spaces.create, hits
+    // POST /spaces. NOT 403/401 ⇒ the permission guard passed (2xx, or
+    // 400/422 body-validation — either way the gate let it through).
+    await probe('POST /spaces  (non-admin role holds spaces.create → guard PASSES)', {
+      url: `${API_BASE}/api/spaces`,
+      method: 'POST',
+      headers: nonAdminA,
+      body: { name: 'xtenant-11.2b-proof', type: 'site' },
+      expect: 'not_forbidden',
+    });
+    // Slice 11.4 proof: the SAME non-admin role also holds
+    // request_types.use → GET /config-entities/:id (the Requester
+    // portal / desk create-ticket form-render path) must pass the gate.
+    // Pre-11.3 this was class-level AdminGuard (this exact role 403'd);
+    // 11.4 gates it request_types.use. A non-existent id 404s AFTER the
+    // gate — 404 ∉ {401,403} ⇒ the gate passed (which is the proof).
+    // Negative isolation: the role lacks request_types.read, so this
+    // proves request_types.use specifically, not a generic read grant.
+    await probe('GET /config-entities/:id  (non-admin holds request_types.use → guard PASSES, was AdminGuard-403 pre-11.3)', {
+      url: `${API_BASE}/api/config-entities/00000000-0000-0000-0000-0000000011b2`,
+      headers: nonAdminA,
+      expect: 'not_forbidden',
+    });
+    // Slice 11.5 proof: the SAME non-admin role also holds
+    // visitors.configure → POST /admin/visitors/types (the last
+    // AdminGuard caller, now @RequirePermission) must pass the gate.
+    // Pre-11.5 the class-level AdminGuard 403'd this exact agent role.
+    // Empty body ⇒ Zod 400 AFTER the gate (handler reached) — proves
+    // gate-passed with zero side effects (no visitor_type row created),
+    // same side-effect-free pattern as the 404 proof above. The
+    // plain-nonAdmin negative for this route is asserted 403 in the
+    // Slice-10 section above.
+    await probe('POST /admin/visitors/types  (non-admin holds visitors.configure → guard PASSES, was AdminGuard-403 pre-11.5)', {
+      url: `${API_BASE}/api/admin/visitors/types`,
+      method: 'POST',
+      headers: nonAdminA,
+      body: {},
+      expect: 'not_forbidden',
+    });
+  } catch (e) {
+    results.fail += 1;
+    results.failed.push('Slice 11.2b proof (seed/probe threw)');
+    console.log(`  ✗ Slice 11.2b proof threw: ${e.message}`);
+  } finally {
+    cleanupProofRoleFixture();
   }
 
   console.log('');

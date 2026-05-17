@@ -1,6 +1,13 @@
 import { Controller, Get, Post, Patch, Param, Body, Query } from '@nestjs/common';
 import { AssetService, CreateAssetDto, UpdateAssetDto, CreateAssetTypeDto } from './asset.service';
+import { RequirePermission } from '../../common/require-permission.decorator';
 
+// docs/follow-ups/audits/04-rls-security.md Slice 11 (2026-05-16,
+// codex-decided). Re-gated from blanket @UseGuards(AdminGuard) to the
+// CI-enforced permission catalog so a non-admin role granted
+// `assets.*` works (AdminGuard hard-checked role.type==='admin').
+// Asset inventory + asset types are tenant config; mutations gated.
+// GETs stay open (work-order/dispatch flows read assets).
 @Controller('assets')
 export class AssetController {
   constructor(private readonly assetService: AssetService) {}
@@ -28,11 +35,13 @@ export class AssetController {
   }
 
   @Post()
+  @RequirePermission('assets.create')
   async create(@Body() dto: CreateAssetDto) {
     return this.assetService.create(dto);
   }
 
   @Patch(':id')
+  @RequirePermission('assets.update')
   async update(@Param('id') id: string, @Body() dto: UpdateAssetDto) {
     return this.assetService.update(id, dto);
   }
@@ -53,6 +62,7 @@ export class AssetTypeController {
   }
 
   @Post()
+  @RequirePermission('assets.update')
   async create(@Body() dto: CreateAssetTypeDto) {
     return this.assetService.createType(dto);
   }

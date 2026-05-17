@@ -21,12 +21,18 @@ import { SplitOrchestrationService } from './split-orchestration.service';
 import { ChildExecutionResolverService } from './child-execution-resolver.service';
 import { ScopeOverrideResolverService } from './scope-override-resolver.service';
 import { PermissionGuard } from '../../common/permission-guard';
-import { AuthModule } from '../auth/auth.module';
+import { PermissionMetadataGuard } from '../../common/require-permission.decorator';
 
 @Module({
-  imports: [AuthModule],
+  // RLS audit Slice 11.3: all routing controllers re-gated
+  // @UseGuards(AdminGuard) → @RequirePermission('routing.*'); no
+  // controller here uses AdminGuard anymore (RoutingSimulatorController
+  // already used PermissionGuard), so AuthModule is dropped and the two
+  // permission guards are provided locally (same pattern as
+  // config-engine.module).
   providers: [
     PermissionGuard,
+    PermissionMetadataGuard,
     RoutingService,
     ResolverService,
     ResolverRepository,

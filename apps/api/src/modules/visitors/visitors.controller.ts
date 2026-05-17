@@ -82,7 +82,8 @@ export class VisitorsController {
    *
    * Spec §6.1 — the invite form needs the active visitor types to
    * populate its dropdown. The admin surface (`/admin/visitors/types`)
-   * is gated behind `AdminGuard` so a non-admin host can't read it.
+   * is gated behind `visitors.configure` (RLS audit Slice 11.5) so a
+   * non-admin host can't read it.
    * This endpoint requires only `visitors.invite` (the same permission
    * the host uses to actually create the invitation), which keeps the
    * picker populated without granting admin access.

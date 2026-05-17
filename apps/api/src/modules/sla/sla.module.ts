@@ -5,11 +5,16 @@ import { SlaController } from './sla.controller';
 import { SlaPolicyController } from './sla-policy.controller';
 import { NotificationModule } from '../notification/notification.module';
 import { TicketModule } from '../ticket/ticket.module';
-import { AuthModule } from '../auth/auth.module';
+import { PermissionGuard } from '../../common/permission-guard';
+import { PermissionMetadataGuard } from '../../common/require-permission.decorator';
 
 @Module({
-  imports: [NotificationModule, forwardRef(() => TicketModule), AuthModule],
-  providers: [SlaService, BusinessHoursService],
+  // RLS audit Slice 11.3: SlaPolicyController re-gated AdminGuard →
+  // @RequirePermission('sla.*'); SlaController never used AdminGuard, so
+  // AuthModule is dropped and the permission guards are provided locally
+  // (config-engine.module pattern).
+  imports: [NotificationModule, forwardRef(() => TicketModule)],
+  providers: [SlaService, BusinessHoursService, PermissionGuard, PermissionMetadataGuard],
   controllers: [SlaController, SlaPolicyController],
   // BusinessHoursService is exported so the outbox SlaTimerHandler
   // (apps/api/src/modules/outbox/handlers/sla-timer-recompute.handler.ts)

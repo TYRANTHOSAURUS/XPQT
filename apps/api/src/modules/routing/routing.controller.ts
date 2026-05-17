@@ -1,16 +1,16 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AdminGuard } from '../auth/admin.guard';
+import { RequirePermission } from '../../common/require-permission.decorator';
 import { RoutingRuleCreateSchema, RoutingRuleUpdateSchema } from './routing-rule-validators';
 
-@UseGuards(AdminGuard)
 @Controller('routing-rules')
 export class RoutingRuleController {
   constructor(private readonly supabase: SupabaseService) {}
 
   @Get()
+  @RequirePermission('routing.read')
   async list() {
     const tenant = TenantContext.current();
     const { data, error } = await this.supabase.admin
@@ -23,6 +23,7 @@ export class RoutingRuleController {
   }
 
   @Post()
+  @RequirePermission('routing.create')
   async create(@Body() body: unknown) {
     const parsed = RoutingRuleCreateSchema.safeParse(body);
     if (!parsed.success) {
@@ -39,6 +40,7 @@ export class RoutingRuleController {
   }
 
   @Patch(':id')
+  @RequirePermission('routing.update')
   async update(@Param('id') id: string, @Body() body: unknown) {
     const parsed = RoutingRuleUpdateSchema.safeParse(body);
     if (!parsed.success) {

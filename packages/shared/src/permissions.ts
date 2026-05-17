@@ -170,6 +170,11 @@ export const PERMISSION_CATALOG = {
     description: 'Catalog of requestable items and their forms.',
     actions: {
       read: { label: 'View request types' },
+      use: {
+        label: 'Use a request type to submit',
+        description:
+          "Read a request type's form schema in order to submit a request (portal + desk create-ticket). Distinct from admin .read which backs the form-schema management surface.",
+      },
       create: { label: 'Create request types' },
       update: { label: 'Edit request types' },
       publish: { label: 'Publish or unpublish' },
@@ -277,6 +282,12 @@ export const PERMISSION_CATALOG = {
       publish: { label: 'Publish a new version' },
       duplicate: { label: 'Duplicate a workflow' },
       test: { label: 'Run a test execution', description: 'Dry-run without side effects.' },
+      execute: {
+        label: 'Manually run an instance',
+        description:
+          'Start a workflow on a ticket or resume a paused instance — real side effects (distinct from test/dry-run).',
+        danger: true,
+      },
       rollback: { label: 'Roll back to a previous version', danger: true },
       archive: { label: 'Archive or restore' },
       delete: { label: 'Delete workflows', danger: true },
@@ -421,6 +432,12 @@ export const PERMISSION_CATALOG = {
         description:
           'Access /reception/* and /desk/visitors. Check visitors in/out, manage walk-ups, run the pass pool. Off by default — granted explicitly to reception/service-desk roles.',
       },
+      configure: {
+        label: 'Administer visitor config',
+        description:
+          'Tenant-admin visitor console (/admin/visitors/*): manage visitor types, pass pools, and kiosk tokens. Kiosk token provisioning/rotation is security-sensitive.',
+        danger: true,
+      },
     },
     overrides: {
       read_all: {
@@ -467,6 +484,58 @@ export const PERMISSION_CATALOG = {
         description: 'Suspend retention for specific records under legal review.',
         danger: true,
       },
+    },
+  },
+  business_hours: {
+    label: 'Business hours',
+    icon: 'clock',
+    description:
+      'Tenant operating-hours calendars used by SLA timers and booking windows.',
+    actions: {
+      read: { label: 'View business hours' },
+      create: { label: 'Create business-hours calendars' },
+      update: { label: 'Edit business-hours calendars' },
+    },
+  },
+  catalog_menus: {
+    label: 'Catalog menus',
+    icon: 'book-open',
+    description:
+      'Vendor / service offering menus and their line items (catering, AV, supplies).',
+    actions: {
+      read: { label: 'View catalog menus' },
+      create: { label: 'Create catalog menus & items' },
+      update: { label: 'Edit catalog menus & items' },
+      delete: { label: 'Delete catalog menus & items', danger: true },
+    },
+  },
+  delegations: {
+    label: 'Delegations',
+    icon: 'user-cog',
+    description:
+      'Authority delegations — acting on behalf of another person for approvals/booking.',
+    actions: {
+      read: { label: 'View delegations' },
+      create: { label: 'Create delegations' },
+      update: { label: 'Edit or revoke delegations' },
+    },
+  },
+  webhooks: {
+    label: 'Workflow webhooks',
+    icon: 'webhook',
+    description:
+      'Outbound workflow webhook endpoints, their signing keys, and delivery log.',
+    actions: {
+      read: { label: 'View webhooks & delivery log' },
+      create: { label: 'Create webhook endpoints' },
+      update: { label: 'Edit webhook endpoints' },
+      rotate_key: {
+        label: 'Rotate signing key',
+        description: 'Invalidate the current API key and issue a new one.',
+        danger: true,
+      },
+      test: { label: 'Send a test payload' },
+      delete: { label: 'Delete webhook endpoints', danger: true },
     },
   },
 } as const satisfies Record<string, ModuleMeta>;

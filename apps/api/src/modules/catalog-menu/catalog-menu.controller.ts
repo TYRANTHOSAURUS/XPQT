@@ -6,7 +6,12 @@ import {
   DuplicateMenuDto,
   ResolveOfferDto,
 } from './catalog-menu.service';
+import { RequirePermission } from '../../common/require-permission.decorator';
 
+// docs/follow-ups/audits/04-rls-security.md Slice 10 (2026-05-16).
+// Catalog menus + items are vendor/service config; mutations are
+// admin-only. GETs + `catalog-menus/resolve` (read-shaped — the
+// booking flow resolves an offer) stay open.
 @Controller()
 export class CatalogMenuController {
   constructor(private readonly service: CatalogMenuService) {}
@@ -40,11 +45,13 @@ export class CatalogMenuController {
   }
 
   @Post('catalog-menus')
+  @RequirePermission('catalog_menus.create')
   create(@Body() dto: CreateMenuDto) {
     return this.service.create(dto);
   }
 
   @Patch('catalog-menus/:id')
+  @RequirePermission('catalog_menus.update')
   update(@Param('id') id: string, @Body() dto: Partial<CreateMenuDto>) {
     return this.service.update(id, dto);
   }
@@ -55,11 +62,13 @@ export class CatalogMenuController {
   }
 
   @Post('catalog-menus/:id/items')
+  @RequirePermission('catalog_menus.update')
   addItem(@Param('id') id: string, @Body() dto: CreateMenuItemDto) {
     return this.service.addItem(id, dto);
   }
 
   @Patch('catalog-menus/:id/items/:itemId')
+  @RequirePermission('catalog_menus.update')
   updateItem(
     @Param('id') id: string,
     @Param('itemId') itemId: string,
@@ -69,16 +78,19 @@ export class CatalogMenuController {
   }
 
   @Delete('catalog-menus/:id/items/:itemId')
+  @RequirePermission('catalog_menus.delete')
   removeItem(@Param('id') id: string, @Param('itemId') itemId: string) {
     return this.service.removeItem(id, itemId);
   }
 
   @Post('catalog-menus/:id/duplicate')
+  @RequirePermission('catalog_menus.create')
   duplicate(@Param('id') id: string, @Body() dto: DuplicateMenuDto) {
     return this.service.duplicate(id, dto);
   }
 
   @Post('catalog-menus/:id/items/bulk-update')
+  @RequirePermission('catalog_menus.update')
   bulkUpdateItems(
     @Param('id') id: string,
     @Body() dto: {
@@ -95,6 +107,7 @@ export class CatalogMenuController {
   }
 
   @Post('catalog-menus/:id/items/bulk-delete')
+  @RequirePermission('catalog_menus.delete')
   bulkDeleteItems(@Param('id') id: string, @Body() dto: { item_ids: string[] }) {
     return this.service.bulkDeleteItems(id, dto.item_ids);
   }

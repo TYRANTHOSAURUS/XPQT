@@ -157,6 +157,665 @@ Maintainer rule: every agent that closes, partially closes, or deliberately defe
 | 2026-05-14 | Slice 2 — defense-in-depth `@UseGuards(AdminGuard)` on 10 admin controllers (P0 §un-bridged admin controllers) | **closed** | `@UseGuards(AdminGuard)` added at class level on `workflow.controller.ts`, `routing.controller.ts`, `routing/policies.controller.ts`, `routing/space-groups.controller.ts`, `routing/domains.controller.ts`, `routing/location-teams.controller.ts`, `routing/domain-parents.controller.ts`, `webhook/webhook-admin.controller.ts`, `config-engine/config-entity.controller.ts`, `sla/sla-policy.controller.ts`. `AuthModule` added to `imports[]` of `workflow.module.ts`, `routing.module.ts`, `sla.module.ts`, `webhook.module.ts`, `config-engine.module.ts` so AdminGuard can be DI-resolved. `smoke-cross-tenant.mjs` augmented with 3 cross-tenant POST probes (write side of the attack vector). | `pnpm smoke:cross-tenant` 12/12 pass (3 new POST probes 403'd). `pnpm smoke:work-orders` 109/109 pass. | Closes the audit's secondary P0 (`04-rls-security.md:23-40`). With Slice 1 in place, AdminGuard runs ONLY when AuthGuard already passed the bridge — so the failure mode of "admin in tenant A flips header to tenant B and is admin in tenant B too" is now blocked at AuthGuard (no users row in tenant B → 403) BEFORE AdminGuard. AdminGuard remains as belt+suspenders if Slice 1 regresses, AND as the gate for non-admin same-tenant users (slice 3 will add a same-tenant non-admin probe; that requires a second auth fixture which we don't seed yet). `buildings.controller.ts` was named by the audit but kept un-AdminGuarded — `GET /buildings/:id/floors` is legitimately operator-readable and Slice 1's tenant binding already blocks the audit's cross-tenant read scenario. |
 | 2026-05-14 | Slice 1 — `/full-review` follow-up (C1 + I1 + I3 + I4) | **closed** | Same files plus `apps/api/src/modules/auth/admin.guard.ts`, `apps/api/src/common/permission-guard.ts`, `apps/api/src/modules/auth/admin.guard.spec.ts`. C1: `.eq('status','active')` filter added to AuthGuard bridge — suspended/inactive users with a still-valid JWT can no longer pass any authenticated route. I3: AdminGuard + PermissionGuard refactored to consume `req.user.platformUserId` directly; the users-row lookup ran exactly once per request now (in AuthGuard) instead of three times on admin+permission paths. I4: defensive `TenantContext.current()` wrap — bypassed middleware now surfaces as 404 `tenant.unknown` instead of a 500 stack trace. | `admin.guard.spec` 4/4 pass; `smoke:cross-tenant` 9/9 pass; `smoke:work-orders` 109/109 pass. | **Why the users-table bridge over JWT `app_metadata.tenant_id` cross-check?** The audit names both options as viable closers. Bridge chosen because (a) `app_metadata` mint discipline is unverified in this codebase — the audit ledger calls it out; (b) `public.users WHERE auth_uid AND tenant_id AND status='active'` is the authoritative membership source and the existing-guard pattern (AdminGuard, PermissionGuard, `loadContext`); (c) the lookup is one Supabase REST call (~5-15ms p50 same-region) — measurable but acceptable. The latency is paid once per request and platformUserId is reused everywhere downstream. **Open caveats** (NOT closed by Slice 1): (1) a multi-tenant user with `public.users` rows in two tenants can still hit either via header flip — only Slice 2 (`@UseGuards(AdminGuard)` on the 9 admin controllers) closes that vector; (2) cron / outbox / workflow-engine paths bypass AuthGuard entirely and rely on `TenantContext` being set from row data (safe by construction — they trust no actor input — but documented here as the explicit non-HTTP security model). |
 
+## Closure Updates (templated)
+
+Append-only. Original findings above are unmodified. Terse Closure Ledger
+rows above are retained; these blocks are the structured record of truth
+per the maintainer template.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P0] \`X-Tenant-Id\` header is trusted with no JWT-claim cross-check`
+- Location: `docs/follow-ups/audits/04-rls-security.md:12`
+
+Status:
+- closed
+
+Changed:
+- `apps/api/src/modules/auth/auth.guard.ts` (global auth_uid→public.users bridge, status='active', 403 `auth.user_not_in_tenant`, attaches `platformUserId`)
+- `apps/api/src/modules/auth/admin.guard.ts`, `apps/api/src/common/permission-guard.ts` (consume `platformUserId`)
+- `apps/api/scripts/smoke-cross-tenant.mjs` (new live gate), `package.json` + `apps/api/package.json` (script)
+- `apps/api/src/modules/auth/admin.guard.spec.ts`
+
+Verified:
+- `pnpm smoke:cross-tenant` -> pass (9/9 at Slice 1; 16/16 after Slice 9)
+- `pnpm smoke:work-orders` -> pass 109/109
+- `pnpm --filter @prequest/api lint` -> pass
+
+Remaining:
+- None for this finding. Commits 562b1113, 9b42b1f3.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P0] Admin-domain controllers bypass tenant isolation via \`X-Tenant-Id\` flip`
+- Location: `docs/follow-ups/audits/04-rls-security.md:23`
+
+Status:
+- closed (defense-in-depth) — primary close is the Slice-1 bridge; this adds AdminGuard
+
+Changed:
+- `@UseGuards(AdminGuard)` on workflow / routing.controller / routing(policies,space-groups,domains,location-teams,domain-parents) / webhook-admin / config-entity / sla-policy controllers
+- `AuthModule` into workflow / routing / sla / webhook / config-engine modules
+- `apps/api/scripts/smoke-cross-tenant.mjs` (+3 cross-tenant POST probes)
+
+Verified:
+- `pnpm smoke:cross-tenant` -> pass 12/12
+- `pnpm smoke:work-orders` -> pass 109/109
+
+Remaining:
+- The audit named 9 controllers; this is NOT the full admin surface. See the NEW-FINDING blocks below (Slice 9 + Slice 10) — the original audit inventory was materially incomplete. Commits 8334d1d9, 6486186b.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P1] \`DbService\` runs as superuser — \`service_role\` would be sufficient`
+- Location: `docs/follow-ups/audits/04-rls-security.md:43`
+
+Status:
+- closed (documented posture; non-superuser role deferred as Slice 5.b)
+
+Changed:
+- `docs/visibility.md` §8 "Database role posture — RLS as perimeter, not policy"
+
+Verified:
+- Not run -> docs-only change; no behavior delta.
+
+Remaining:
+- Slice 5.b (provision `prequest_app` non-superuser role) deferred — multi-day, marginal real defense while `SupabaseService.admin` still bypasses. Rationale in §8.4. Commit 05e5d299.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P1] \`ticket_visibility_ids\` returns rows where \`location_id IS NULL\` to any role-assigned user`
+- Location: `docs/follow-ups/audits/04-rls-security.md:50`
+
+Status:
+- contested (deferred — analysis disputes the finding)
+
+Changed:
+- None (no code/migration change made).
+
+Verified:
+- Static analysis only. `00035_vendor_participant_dormant.sql:6-70` is the latest definition. The outer domain check at `:63` already gates the null-location branch at `:67`. The audit's proposed fix would break the "empty domain_scope = all domains" semantic documented at `docs/superpowers/specs/2026-04-20-visibility-scoping-design.md:50,103,277`.
+
+Remaining:
+- Reopen ONLY with a concrete failing visibility test (jest under `apps/api/src/modules/ticket/`). Do not migrate this hot function on prose alone. Commit 1f1fb58f.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P1] Tickets RLS policy is tenant-only (USING clause), no WITH CHECK, no permission gate`
+- Location: `docs/follow-ups/audits/04-rls-security.md:57`
+
+Status:
+- closed (accepted-by-design; the finding itself says "Acceptable IF the tenant-claim check (P0) is added")
+
+Changed:
+- `docs/visibility.md` §8 documents why per-table within-tenant RLS is intentionally NOT added (visibility lives in the service layer).
+
+Verified:
+- Not run -> design/doc decision; the P0 precondition the finding names is closed (Slice 1).
+
+Remaining:
+- None. Within-tenant visibility stays in `TicketVisibilityService` per `docs/visibility.md`. Commit 05e5d299.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P2] \`tenants\` table has no RLS, accessed via service role only — relies on app discipline`
+- Location: `docs/follow-ups/audits/04-rls-security.md:71`
+
+Status:
+- closed
+
+Changed:
+- `supabase/migrations/00405_tenants_deny_by_default_rls.sql`
+
+Verified:
+- Pushed via psql fallback. `pg_class.relrowsecurity=t / relforcerowsecurity=f`; `pg_policy` deny-all `polqual=false polwithcheck=false polcmd='*'`; service-role `select count(*) from public.tenants` -> 2 rows (bypass intact); `pnpm smoke:cross-tenant` -> pass 12/12 post-push.
+
+Remaining:
+- None. Note: pre-push `relrowsecurity` was already `t` — the 00001 comment was stale. Commits 4cedc705, 0ca848c9.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `### [P2] \`service_rule_templates\` is globally readable to all authenticated users via \`USING (true)\`` and `### [P2] \`anon\` role can call \`validate_invitation_token\` and \`validate_kiosk_token\` and \`peek_invitation_token\``
+- Location: `docs/follow-ups/audits/04-rls-security.md:76` and `:81`
+
+Status:
+- closed (no action — the audit itself confirmed these safe; Slice 7 re-verified)
+
+Changed:
+- None.
+
+Verified:
+- Slice 7 parallel SECURITY DEFINER sweep re-confirmed the bearer-token trio (hash lookup, post-use tombstone, distinct error codes) and the seed-template read posture. Read-only.
+
+Remaining:
+- None known.
+
+#### Update — 2026-05-14
+
+Original finding:
+- `## P3 findings` (SECURITY DEFINER long-tail + `user_has_permission` JSONB presence note)
+- Location: `docs/follow-ups/audits/04-rls-security.md:89`
+
+Status:
+- closed — no findings
+
+Changed:
+- None (read-only audit).
+
+Verified:
+- Two parallel Explore subagents audited every SECURITY DEFINER function split at migration 00299. All set `search_path`, validate `p_tenant_id` or are bearer-token-bound, and `revoke from public` + grant only `service_role`. No fix migrations needed.
+
+Remaining:
+- None. The `user_has_permission` JSONB-presence behavior is intentional per the audit's own P3 note. Commit 110d14a6.
+
+---
+
+### NEW FINDINGS — discovered during remediation (audit was incomplete)
+
+The original 8-auditor pass + `## Executive verdict` ("Best-in-class: **close** (after the P0 fix)") materially under-counted the admin-controller surface. The cross-tenant header-flip was real and is closed, but a **same-tenant privilege-escalation class** was missed entirely. These are appended as new findings (not retrofitted onto original headings — there is no original heading for them).
+
+#### NEW FINDING + Update — 2026-05-16
+
+Finding (not in original audit):
+- **[P0] user-management controllers allow same-tenant privilege escalation.** `apps/api/src/modules/user-management/user-management.controller.ts` exposed `UsersController` / `RolesController` / `RoleAssignmentsController` / `PersonsAdminController` behind only the global AuthGuard. Any active same-tenant non-admin could `POST /role-assignments {user_id: self, role_id: <Admin>}` (service `assignRole` used `actor` only for the audit trail — `user-management.service.ts:359-390`) then pass AdminGuard everywhere. Surfaced by an external reviewer 2026-05-16; the original audit named 9 controllers, none under `user-management/`.
+
+Status:
+- closed (escalation vector) + P2 GET info-disclosure follow-up open
+
+Changed:
+- `apps/api/src/modules/user-management/user-management.controller.ts` (`@UseGuards(AdminGuard)` per-mutation; class-level on `RoleAssignmentsController`)
+- `apps/api/src/modules/user-management/user-management.module.ts` (`AuthModule`)
+- `apps/api/src/modules/auth/admin.guard.ts` (F2: + `roles.active` + `starts_at`/`ends_at`, mirrors `user_has_permission` `00109:70-73`)
+- `apps/api/src/modules/auth/admin.guard.spec.ts`, `apps/api/scripts/smoke-cross-tenant.mjs`
+
+Verified:
+- `pnpm --filter @prequest/api run test -- admin.guard.spec.ts` -> pass 8/8 (added inactive-role / expired / not-yet-started)
+- `pnpm smoke:cross-tenant` -> pass 16/16 (non-admin self-grant Admin via `POST /role-assignments` -> 403)
+- `pnpm smoke:work-orders` -> pass 109/109; `tsc` -> pass
+
+Remaining:
+- **P2 (open):** GET info-disclosure — `GET /users`, `/users/:id`, `/users/:id/roles`, `/users/:id/audit`, `/roles`, `/persons-admin`, `/permissions/users/:id/effective` readable by any active same-tenant user. Deliberately not locked: `GET /users` / `GET /roles` back non-admin operator pickers (desk ticket-filter, user-picker, workflow assign-form). Needs per-endpoint operational analysis. Commit 50b6dc72.
+
+#### NEW FINDING + Update — 2026-05-16 (in progress)
+
+Finding (not in original audit):
+- **[P0-class] 9 further controllers allow same-tenant admin-config mutation with no admin/permission gate.** Post-Slice-9 codebase-wide sweep (Explore subagent, grep of controller + service layers) found: `asset`, `business-hours`, `catalog-menu`, `delegation`, `space`, `team`, `vendor`, `notification` (template routes), `config-engine/service-catalog`. Spot-verified: `delegation.create` takes no actor (any user mints a delegation between arbitrary users); `team` `POST/:id/members` is unguarded and `team_members` feeds `ticket_visibility_ids` (self-add = visibility escalation); `space`/`vendor`/`asset`/etc. mutate tenant config/hierarchy.
+
+Status:
+- partial (in progress — Slice 10)
+
+Changed:
+- (pending — this block will be updated with the per-controller guard diff + smoke probes on commit)
+
+Verified:
+- Sweep method: grep `@UseGuards`/`requirePermission` in both controller and service for each. Spot-verified delegation/space/team by direct read. Implementation verification pending.
+
+Remaining:
+- Slice 10 to apply `@UseGuards(AdminGuard)` per-mutation (operational GETs preserved per the Slice-9 pattern), wire `AuthModule` into 9 modules, extend `smoke:cross-tenant` non-admin probes on the escalation-class ones (team membership, delegation). Then `/full-review` + codex.
+
+#### Update — 2026-05-16 (Slice 10 shipped; pre-review)
+
+Original finding:
+- The NEW FINDING block immediately above ("[P0-class] 9 further controllers...").
+- Location: `docs/follow-ups/audits/04-rls-security.md` (this section).
+
+Status:
+- partial (shipped + smoke-verified; `/full-review` + codex pending per the review mandate)
+
+Changed:
+- `apps/api/src/modules/{asset,business-hours,catalog-menu,delegation,space,team,vendor,notification}.controller.ts` + `config-engine/service-catalog.controller.ts` (method-level `@UseGuards(AdminGuard)` on mutations; operational GETs + notification self-service + `catalog-menus/resolve` left open)
+- `apps/api/src/modules/{asset,business-hours,catalog-menu,delegation,space,team,vendor,notification}.module.ts` (`AuthModule` wired; config-engine already had it)
+- `apps/api/scripts/smoke-cross-tenant.mjs` (+6 Slice 10 probes + team_members defensive cleanup)
+
+Verified:
+- `pnpm --filter @prequest/api lint` -> pass (tsc clean)
+- `pnpm smoke:cross-tenant` -> pass 22/22 (operational GETs 200 for non-admin; team self-add / delegation mint / space create 403)
+- `pnpm smoke:work-orders` -> pass 109/109 (no operational regression)
+
+Remaining:
+- `/full-review` + codex on the Slice 9+10 step (big-step review mandate). A residual **P2 IDOR**: `notification` `POST /:id/read` takes a bare notification id with no ownership check (same-tenant mark-anyone's-read) — integrity-class, not escalation; deferred. **P2 GET info-disclosure** across all guarded controllers persists by design (operational pickers depend on the reads). Commit 552e2db2.
+
+#### Update — 2026-05-16 (`/full-review` on the Slice 9+10 step)
+
+Original finding:
+- The two NEW FINDING blocks above (Slice 9 user-management P0; Slice 10 nine-controller sweep).
+- Location: `docs/follow-ups/audits/04-rls-security.md` (NEW FINDINGS section).
+
+Status:
+- partial — security closed & verified; **one CRITICAL design finding open (Slice 11)**; 3 cheap fixes applied/logged.
+
+Two adversarial reviewers (fresh-context) pressure-tested commits 50b6dc72 + 552e2db2. Outcomes:
+
+- **[CRITICAL — open, Slice 11] Blanket `AdminGuard` is coarser than the codebase's CI-enforced permission model.** `packages/shared/src/permissions.ts` `PERMISSION_CATALOG` defines `spaces.create/update/delete`, `teams.create/update/manage_members`, `vendors.*`, `assets.*`, `service_catalog.*`, `notifications.manage_templates`, `routing.*`, `workflows.*`, `sla.*`, `users.*`, `roles.*`. The sibling `config-engine/criteria-set.controller.ts:21-49` already gates via in-body `await this.permissions.requirePermission(request, 'criteria_sets.create')`. `packages/shared/src/role-defaults.ts` grants NON-admin roles `assets.*`, `teams.*`, `spaces.read`, `vendors.admin` etc. — so `AdminGuard` (hard `role.type==='admin'`, `admin.guard.ts:61`) 403s a legitimate non-admin role that holds the granted permission. Verified real: catalog keys exist; sibling pattern exists; role-defaults grant non-admin keys; false-positive check passed (none of the 9 Slice-10 services had pre-existing in-body authz, so AdminGuard ADDED a gate where none existed — the P0 close is genuine and fail-closed, the *mechanism* is the issue, not a security regression). **Slice 11** re-gates Slice-2/9/10 controllers to the permission catalog. Architecture fork (decorator-guard primitive vs. invasive in-body conversion vs. documented interim) surfaced to the user — codex (the mandated big-step tiebreaker) is CLI-broken. `business_hours` / `catalog_menus` / `delegations` have no catalog domain and need adding (CI-gated SoT + role-defaults).
+
+- **[CRITICAL C1 — fixed-in-doc] "guards run before pipes" rationale was wrong.** `apps/api/src/main.ts:55` has NO global `ValidationPipe` (and `app.module.ts` no `APP_PIPE`); the Slice-10 DTOs are plain interfaces. The smoke escalation probes are still REAL gates — `@UseGuards(AdminGuard)` is invoked by Nest before the handler regardless — but the recorded justification was a non-sequitur. **New finding logged:** the absence of a global `ValidationPipe` is an untracked input-validation gap (separate from this audit; flagged for the API-hardening backlog).
+
+- **[IMPORTANT I3 — closed] Orphaned-role fail-closed path now tested.** `admin.guard.ts` already fails closed when the PostgREST embed returns `role: null` (dangling FK). Added `admin.guard.spec.ts` case "rejects (fail-closed) when the embedded role is null". Verified: `pnpm --filter @prequest/api run test -- admin.guard.spec.ts` -> 9/9 pass.
+
+- **[IMPORTANT P4 — new finding, open] Highest-risk unaudited surface: browser-direct PostgREST + Supabase Storage RLS.** This audit + the sweep only covered NestJS `*.controller.ts`. If the web app's Supabase client (Realtime/Storage/anon-or-auth key) can directly `from('team_members').insert(...)` / `from('user_role_assignments').insert(...)`, RLS is the *only* gate there and `docs/visibility.md` §8 establishes RLS is tenant-scoped, NOT permission-scoped — so a browser-direct insert into `team_members` within one's own tenant is the SAME visibility escalation Slice 10 just closed at the HTTP layer, still open at the data layer. Plus the known avatar/Storage cross-tenant gap (`project_people_and_users_surface_shipped`). **Needs a dedicated investigation slice: does the browser hold a Supabase key with table-level reach, and what is RLS on the escalation-class tables?**
+
+- **[IMPORTANT P3 — strengthened] GET info-disclosure deferral.** Re-stated with an explicit owner+scope: the GET roster/role/permission-map exposure (`GET /users`, `/roles`, `/persons-admin`, `/permissions/users/:id/effective`, plus Slice-10 `GET /spaces|/teams|/vendors|...`) is **P2, owned by the RLS-audit follow-up, gated behind Slice 11** (the permission re-gate will naturally produce scoped read keys e.g. `teams.read` for picker projections). Not permanent; sequenced after Slice 11.
+
+- **[NIT — accepted] Admin-token smoke blindness.** All smoke gates mint an Admin JWT, so an over-restrictive Slice-10 regression (admin-locked endpoint a non-admin operator needs) is invisible. Partially mitigated by the Slice-9/10 non-admin GET probes (operator pickers assert 200). Fully resolved by Slice 11's non-admin-with-permission probe rework.
+
+Changed:
+- `apps/api/src/modules/auth/admin.guard.spec.ts` (I3 fail-closed case)
+- this ledger (C1/P3/P4 logged; Slice 11 opened)
+
+Verified:
+- `pnpm --filter @prequest/api run test -- admin.guard.spec.ts` -> pass 9/9
+- Slice 9/10 functional verification unchanged (smoke:cross-tenant 22/22, smoke:work-orders 109/109 from the prior blocks)
+
+Remaining:
+- Slice 11 (CRITICAL re-gate) — architecture fork pending user steer. P4 browser-direct/Storage RLS investigation. Global `ValidationPipe` gap (separate backlog). GET info-disclosure sequenced behind Slice 11.
+
+#### Update — 2026-05-16 (Slice 11.1 + 11.2 — fork decided by codex, executed)
+
+Original finding:
+- The `/full-review` CRITICAL above ("Blanket `AdminGuard` is coarser than the codebase's CI-enforced permission model").
+- Location: `docs/follow-ups/audits/04-rls-security.md` ("Closure Updates" — the 2026-05-16 `/full-review` block).
+
+Status:
+- partial — core CRITICAL closed for Slice-10's 9 controllers + verified; Slice-2/9 re-gate (11.3) and the non-admin-WITH-permission proof probe + endpoint→key mapping table (11.2b, codex risk #2) remain; then full-review + codex on the whole of Slice 11.
+
+Decision: **codex picked Option A** (stdin-piped invocation; `--full-auto` was the prior hang cause — see `[[feedback_codex_long_argv_hang]]`). Build a reusable `@RequirePermission('domain.action')` composed decorator (`applyDecorators(SetMetadata, UseGuards(PermissionMetadataGuard))`) delegating to the canonical `PermissionGuard.requirePermission` → `public.user_has_permission` path; add explicit `business_hours`/`catalog_menus`/`delegations` catalog domains (no vague mapping); mapping table + per-key tests + non-admin-with-permission smoke as the key risk mitigation. Codex's caveats folded in: "same security semantics" only holds because the guard delegates to the canonical RPC (it does); module/provider cleanup needed (done).
+
+Changed:
+- `apps/api/src/common/require-permission.decorator.ts` (NEW — `@RequirePermission` + `PermissionMetadataGuard`) + `require-permission.guard.spec.ts` (5/5)
+- `packages/shared/src/permissions.ts` (+`business_hours`/`catalog_menus`/`delegations` domains), `packages/shared/src/role-defaults.ts` (+10 `EXPLICITLY_NO_DEFAULT_ROLE` entries with reasons — admin-tier config, same posture as gdpr.*/settings.billing; the catalog model makes the grant POSSIBLE, which AdminGuard did not)
+- 9 Slice-10 controllers re-gated `@UseGuards(AdminGuard)` → `@RequirePermission('<key>')` + 9 modules wired (`PermissionGuard`+`PermissionMetadataGuard` providers; 8 dropped now-unused `AuthModule`; config-engine retains it for ConfigEntityController's still-AdminGuard'd Slice-2 routes)
+- `apps/api/src/modules/auth/admin.guard.spec.ts` (the I3 orphaned-role fail-closed case from the prior block)
+
+Verified:
+- `pnpm --filter @prequest/shared build` -> clean (PermissionKey includes new keys)
+- `pnpm --filter @prequest/api test -- "require-permission.guard|admin.guard.spec|permission-catalog"` -> 27/27 (incl. the CI catalog-coverage gate green with the 3 new domains)
+- `pnpm --filter @prequest/api lint` -> tsc clean
+- `pnpm smoke:cross-tenant` -> 22/22 (runtime DI intact — re-gated routes 403 not 500; no-permission deny path preserved identical to AdminGuard; operational GETs 200; cross-tenant still blocked)
+- `pnpm smoke:work-orders` -> 109/109 (no regression)
+
+Commits: `988d6452` (11.1 primitive+catalog), `b4577f20` (11.2 re-gate). Branch `feature/booking-audit-remediation`.
+
+Remaining:
+- **11.2b**: seed a non-admin role holding e.g. `spaces.create`, mint its JWT, assert `POST /spaces` → 2xx (proves the fix delivers what AdminGuard could not — codex risk #2's "one live case"); endpoint→permission-key mapping table + a unit test asserting every `@RequirePermission` route's key.
+- **11.3**: re-gate Slice-2 (routing/workflow/sla-policy/webhook-admin/config-entity) + Slice-9 (user-management Users/Roles/RoleAssignments/PersonsAdmin) controllers from AdminGuard → `@RequirePermission` (keys: `routing.*`/`workflows.*`/`sla.*`/`users.*`/`roles.*` already exist; webhooks may need a domain) for full consistency; then drop `AdminGuard` if zero callers remain.
+- Then `/full-review` + codex on the whole Slice 11.
+- Unchanged opens: P4 browser-direct/Storage RLS investigation; global `ValidationPipe` gap (separate backlog); GET info-disclosure (sequenced behind 11.3).
+
+#### Update — 2026-05-16 (Slice 11.3 — Slice-2/9 + leftover AdminGuard re-gated; AdminGuard near-eliminated)
+
+Original finding:
+- The `/full-review` CRITICAL ("Blanket `AdminGuard` is coarser than the codebase's CI-enforced permission model"), continued from the Slice 11.1+11.2 block.
+- Location: `docs/follow-ups/audits/04-rls-security.md` ("Closure Updates" — the 2026-05-16 Slice 11.1+11.2 block).
+
+Status:
+- partial — CRITICAL now closed for the **entire** original audit admin surface (Slice-2 + Slice-9) plus the previously-out-of-scope leftover AdminGuard controllers; verified. `AdminGuard` reduced to a **single justified caller** (`visitors/admin.controller.ts`). 11.2b (proof probe + key-mapping unit test) + the whole-of-Slice-11 `/full-review`+codex remain.
+
+Changed (all `@UseGuards(AdminGuard)` → declarative `@RequirePermission('<catalog key>')`, same canonical `user_has_permission` path; module DI: `AuthModule` dropped where AdminGuard now unused, `PermissionGuard`+`PermissionMetadataGuard` provided locally — config-engine.module pattern):
+- **Catalog (11.3a)** `packages/shared/src/permissions.ts`: new `webhooks` domain (`read/create/update/rotate_key/test/delete`) + new `workflows.execute` action (manual instance start/resume — real side effects, distinct from the `workflows.test` dry-run). `packages/shared/src/role-defaults.ts`: +7 `EXPLICITLY_NO_DEFAULT_ROLE` entries with reasons (admin-tier posture, same precedent as the 11.1 `business_hours`/`catalog_menus`/`delegations` additions). No SQL migration — `user_has_permission` evaluates `roles.permissions` JSONB dynamically; catalog-parity spec stays green (mirrors the 11.1 close).
+- **Slice-2 (11.3b)** 6 routing controllers (`routing.controller`, `policies.controller`, `space-groups.controller`, `domains.controller`, `location-teams.controller`, `domain-parents.controller`) → `routing.*`; `workflow.controller` → `workflows.*` (+`workflows.execute` for start/resume); `sla-policy.controller` → `sla.*`; `webhook-admin.controller` → `webhooks.*`; `config-entity.controller` → `request_types.*`. Modules wired: `routing`, `workflow`, `sla`, `webhook`, `config-engine`.
+- **Slice-9 (11.3c)** `user-management.controller.ts` `Users`/`Roles`/`RoleAssignments`/`PersonsAdmin` mutations → `users.*`/`roles.*`/`roles.assign`/`people.*`; module wired. Open operational GETs (`/users`, `/users/:id`, `/users/:id/roles`, `/users/:id/audit`, `/roles`, `/persons-admin`, `/users/me`) **left open exactly as before** per the Slice-9 rationale (they back non-admin operator pickers; not an escalation vector — tracked as the standing P2 GET info-disclosure item).
+- **Leftover AdminGuard (11.3d)** `tenant/branding.controller.ts`, `portal-announcements/portal-announcements.controller.ts`, `portal-appearance/portal-appearance.controller.ts` → `settings.read`/`settings.update` (these were never in the original audit scope; re-gated for full consistency / best-in-class). `tenant`/`portal-announcements`/`portal-appearance` modules wired. `branding` public `GET /current/branding` left ungated (called pre-auth by the login page — unchanged). `floor-plan/floor-plan-admin.controller.ts` already used in-body `floor_plans.admin` (no AdminGuard) — no change.
+
+Key architectural decisions (grounded by reading source, not the handoff hint):
+- **Class-level-AdminGuard controllers gate every route, including GETs, with `<domain>.read` — NOT left open.** These controllers were admin-*closed* on reads; leaving GETs ungated when removing class-level AdminGuard would *widen* scope (new info-disclosure). Gating reads with `.read` preserves/correctly-refines the posture and matches the established codebase convention — sibling `config-engine/criteria-set.controller.ts` and `request-type.controller.ts` already gate GETs with `<domain>.read` ("GETs are admin-only except for…"). Distinct from the Slice-9/10 per-method-AdminGuard controllers whose GETs were *already open* (those stay open per the proven pattern).
+- **`config-entity.controller.ts` → `request_types.*`, not `routing.*`.** The handoff hint ("it's the routing policy store") was wrong: this is the generic versioned config-entity store that today exclusively backs request-type **form schemas** (`config_type:'form_schema'`; frontend `@/api/config-entities` callers under form-schema-detail / request-type-dialog). The routing policy store is the *separate* `RoutingPoliciesController` on `PolicyStoreService`. Gated to match the sibling `RequestTypeController` (`request_types.*`) in the same module.
+- **`workflows.execute` (new catalog action)** for `POST /workflows/:id/start/:ticketId` + `POST /workflows/instances/:id/resume`: no existing `workflows` action models manual instance control with real side effects (`workflows.test` is explicitly dry-run). Added the action rather than mis-mapping or keeping AdminGuard — the catalog model's whole point is that the grant is *possible*.
+- **`visitors/admin.controller.ts` — KEPT on `@UseGuards(AdminGuard)` with written rationale (justified remaining caller).** Genuine admin-only visitor-type / pass-pool / kiosk configuration; the `visitors` catalog domain models only `invite`/`reception`/`read_all` — no visitor-config action exists, and adding one is out of 04-rls scope and would collide with the parallel visitors workstream. It already does an in-body `visitors.read_all` check on `GET /all`. This is the *only* non-spec `@UseGuards(AdminGuard)` decorator left in `apps/api/src`; `AdminGuard` therefore stays as a primitive (still referenced + spec'd) — not deleted (handoff rule: don't delete unless truly unreferenced).
+
+Endpoint → permission-key mapping (the codex-risk-#2 record of truth; a unit test asserting these is 11.2b):
+
+| Controller | Route(s) | Key |
+|---|---|---|
+| RoutingRuleController | GET / · POST / · PATCH /:id | `routing.read` · `routing.create` · `routing.update` |
+| RoutingPoliciesController | GET schemas\|:type\|:type/:id · POST :type · POST :type/:id/versions · POST versions/:id/publish | `routing.read` · `routing.create` · `routing.update` · `routing.publish` |
+| SpaceGroupsController | GET / · POST / · PATCH /:id · DELETE /:id · POST /:id/members · DELETE /:id/members/:sid | `routing.read` · `routing.create` · `routing.update` · `routing.delete` · `routing.update` · `routing.update` |
+| RoutingDomainsController | GET (/ ·lookup ·:id) · POST / · PATCH /:id · DELETE /:id | `routing.read` · `routing.create` · `routing.update` · `routing.delete` |
+| LocationTeamsController | GET / · POST / · PATCH /:id · DELETE /:id | `routing.read` · `routing.create` · `routing.update` · `routing.delete` |
+| DomainParentsController | GET / · POST / · DELETE /:id | `routing.read` · `routing.create` · `routing.delete` |
+| WorkflowController | GET (list·:id·instances*) · POST / · PATCH /:id/graph · POST /:id/publish·unpublish · POST /:id/clone · POST /:id/simulate · POST /:id/start/:tid · POST /instances/:id/resume | `workflows.read` · `workflows.create` · `workflows.update` · `workflows.publish` · `workflows.duplicate` · `workflows.test` · `workflows.execute` · `workflows.execute` |
+| SlaPolicyController | GET / · POST / · PATCH /:id | `sla.read` · `sla.create` · `sla.update` |
+| WebhookAdminController | GET /·:id/events · POST / · PATCH /:id · DELETE /:id · POST /:id/api-key/rotate · POST /:id/test | `webhooks.read` · `webhooks.create` · `webhooks.update` · `webhooks.delete` · `webhooks.rotate_key` · `webhooks.test` |
+| ConfigEntityController | GET /·:id · POST / · POST/PATCH /:id/draft · POST /:id/publish · POST /:id/rollback/:vid | `request_types.read` · `request_types.create` · `request_types.update` · `request_types.publish` |
+| UsersController (mutations) | POST / · PATCH /:id · POST /:id/roles · DELETE /:id/roles/:rid | `users.create` · `users.update` · `roles.assign` · `roles.assign` |
+| RolesController (mutations) | POST / · PATCH /:id | `roles.create` · `roles.update` |
+| RoleAssignmentsController (class-level) | POST / · PATCH /:id · DELETE /:id | `roles.assign` |
+| PersonsAdminController (mutations) | POST / · PATCH /:id | `people.create` · `people.update` |
+| BrandingController (mutations) | PUT /branding · POST /branding/logo · DELETE /branding/logo/:kind | `settings.update` |
+| PortalAnnouncementsController | GET / · POST / · DELETE /:id | `settings.read` · `settings.update` |
+| PortalAppearanceController | GET /list·/ · PATCH / · POST /hero · DELETE /hero | `settings.read` · `settings.update` |
+
+Verified:
+- `pnpm --filter @prequest/shared run build` -> clean (PermissionKey includes `webhooks.*` + `workflows.execute`)
+- `pnpm --filter @prequest/api run test -- "require-permission.guard|admin.guard.spec|permission-catalog"` -> **27/27** (catalog-coverage + parity + SQL-parity green with the new domain/action)
+- `pnpm --filter @prequest/api run lint` (tsc) -> **zero errors in any Slice-11.3-touched file**. (The branch tsc is red on `outbox/*` + `reservations/*` from the in-flight **parallel 03-booking-reservation workstream** — `buildCancelBookingIdempotencyKey`/`bundleCascade`/`handleBundleCancelled`, migration 00408 + `smoke:cancel-booking`; per handoff execution rule #7 that is their state, not a Slice-11.3 regression.)
+- `pnpm smoke:cross-tenant` -> **22/22** (runtime DI intact across all 8 newly-wired modules — re-gated routes 403 not 500; cross-tenant header-flip still 403; non-admin same-tenant escalation still 403; operational GET pickers 200)
+- `pnpm smoke:work-orders` -> **109/109** (no operational regression)
+
+Remaining:
+- **11.2b**: seed a non-admin role holding exactly one key (e.g. `spaces.create`) + a TENANT_A user with it; assert `POST /spaces` is NOT 403 (proves the re-gate delivers what AdminGuard structurally could not — codex risk #2's "one live case"). Add a jest test asserting every `@RequirePermission` route resolves the key in the mapping table above.
+- Then `/full-review` + codex on the whole of Slice 11 (`988d6452..HEAD` minus parallel-workstream commits).
+- Unchanged opens: **P4** browser-direct PostgREST / Supabase Storage RLS investigation; global `ValidationPipe` gap (separate API-hardening backlog); GET info-disclosure — for the Slice-9 user-management open GETs (the Slice-2 surface is now `.read`-gated, no longer plain-readable, so that part of the P2 is closed by 11.3).
+- Commits: (pending this change).
+
+#### Update — 2026-05-16 (Slice 11.2b — non-admin-WITH-permission live proof + key-mapping unit test)
+
+Original finding:
+- codex risk #2 on the Slice-11 re-gate ("need one live case proving a non-admin role granted the key actually works; and unit tests that assert every decorated mutation calls the expected permission key"), from the Slice 11.1+11.2 decision block.
+- Location: `docs/follow-ups/audits/04-rls-security.md` (the 2026-05-16 Slice 11.1+11.2 + Slice 11.3 Update blocks).
+
+Status:
+- closed — both halves delivered and green. The endpoint→key mapping table is in the Slice 11.3 block above.
+
+Changed:
+- `apps/api/scripts/smoke-cross-tenant.mjs`: new `seedProofRoleFixture()` / `cleanupProofRoleFixture()` (idempotent psql seed + deterministic finally-teardown, same replica-role pattern as `ensureTenantBFixture`); new `probe` `expect:'not_forbidden'` mode (ok ⇔ status ∉ {401,403} — "the guard let it through", robust to POST-body validation variance); a **Slice 11.2b** section that runs LAST (so seeding `spaces.create` onto the existing NONADMIN user cannot perturb the Slice-9/10 403 assertions on that same user) with a **negative control** (same user/role lacking `workflows.create` → `POST /workflows` still **403**) and the **proof** (same non-admin `type='agent'` role now holding exactly `spaces.create` → `POST /spaces` → **201**, i.e. NOT 403).
+- `apps/api/src/common/require-permission-routes.spec.ts` (NEW): asserts every re-gated route's `@RequirePermission` metadata equals the audited catalog key (the run-and-compile mirror of the Slice-11.3 mapping table), class-level keys, the must-stay-OPEN Slice-9 operational GETs + public branding read (re-gate widened/narrowed neither), and that every mapped key passes `validatePermission`. (`isomorphic-dompurify` stubbed — `BrandingController`'s transitive `svg-sanitizer`→jsdom import breaks under jest; metadata-only test never sanitizes.)
+
+Verified:
+- `pnpm --filter @prequest/api run test -- require-permission-routes` -> **88/88** pass.
+- `pnpm smoke:cross-tenant` -> **24/24**, exit 0. Decisive line: `POST /spaces (non-admin role holds spaces.create → guard PASSES) → HTTP 201`. Under the prior blanket `@UseGuards(AdminGuard)` (hard `role.type==='admin'`, `admin.guard.ts:61`) that exact `type='agent'` role 403'd; under `@RequirePermission('spaces.create')` it 201s — the structural proof the re-gate delivers what AdminGuard could not. Negative control `POST /workflows … → 403` confirms it is the *grant* (not user privilege) doing it.
+- Post-run remote check: `roles`/`user_role_assignments`/`spaces` proof rows all `count=0` — finally-teardown leaves zero fixture residue.
+- (Prior Slice-11.3 gates unchanged: 27/27 + 88/88 unit, smoke:work-orders 109/109.)
+
+Remaining:
+- Whole-of-Slice-11 `/full-review` + codex (next).
+- Unchanged opens: P4 browser-direct / Storage RLS; global `ValidationPipe` gap; Slice-9 open-GET info-disclosure (the Slice-2 read surface is now `.read`-gated by 11.3).
+- Commits: Slice 11.3 `5d6f1b6f`; this change (pending).
+
+#### Update — 2026-05-16 (Slice 11 — `/full-review` synthesis: code clean, 3 honesty/scope fixes, 1 NEW pre-existing P1)
+
+Original finding:
+- The Slice-11 re-gate (commits `988d6452` 11.1, `b4577f20` 11.2, `5d6f1b6f` 11.3, `4edede82` 11.2b).
+- Location: the three 2026-05-16 Slice-11 Update blocks above.
+
+Status:
+- partial — two fresh-context adversarial reviewers (plan + code, parallel) pressure-tested the whole slice. **Code review: no P0/P1 — DI complete, AuthModule drops safe (AuthGuard is `APP_GUARD` `app.module.ts:117`, covers the ex-explicit-AuthGuard branding/portal routes), class-level decorator resolves, catalog typechecks, 11.2b proof non-tautological, no silent widen/narrow vs. the prior class-level-AdminGuard.** Plan review surfaced 1 pre-existing P1 (NOT a Slice-11 regression) + honesty/scope corrections. Codex (mandated independent second reviewer) pending.
+
+Changed (fixes applied this block):
+- **Semantics honesty (was overstated as "identical"):** the AdminGuard→`@RequirePermission` swap is deliberately **NOT semantically identical**. It is (a) **broader on reads** — a `*.read` Auditor / `request_types.read` IT Agent / etc. now passes re-gated GETs that AdminGuard (`role.type==='admin'`) 403'd; this is *the intended CRITICAL fix*, not a leak; and (b) **narrower for `type='admin'` roles that lack the specific key and `*.*`** — such a custom role passed blanket AdminGuard but is now correctly scoped; this is the *intended least-privilege tightening*. Default templates are unaffected on the paths they need (Tenant Admin `*.*` passes everything; Auditor `*.read` passes every re-gated GET; agent templates hold their domain keys). Equivalence with the prior AdminGuard validity (active assignment + `roles.active` + `starts_at`/`ends_at` + tenant) holds because Slice-9 hardened `admin.guard.ts:30-67` to mirror `00109:70-73` exactly and `@RequirePermission` delegates to that same `user_has_permission` RPC. **Residual risk:** the mirror is two independent codepaths; a future edit to `user_has_permission` silently desyncs `admin.guard.ts` for the one remaining AdminGuard caller (visitors/admin) with no pinning test — tracked as a follow-up (a parity test asserting AdminGuard ⇔ `user_has_permission` validity).
+- **visitors/admin closure precision (was "CRITICAL closed for the entire admin surface" — overstated):** corrected — the CRITICAL is closed for the **entire original-audit admin surface (Slice-2 + Slice-9) and all leftover AdminGuard controllers EXCEPT `visitors/admin.controller.ts`**, which remains on `@UseGuards(AdminGuard)`. Strengthened rationale (security, not just process): it stays a **fail-closed, Slice-9-hardened admin-only gate — not an open hole and not a security regression** (the CRITICAL was about consistency/least-privilege, not an exploitable bypass); a correct re-gate needs a `visitors`-domain *config* action (the catalog models only `invite`/`reception`/`read_all`), and inventing one here would collide with the separately-tracked visitors workstream's own permission model (`project_visitors_track_split_off`, `project_visitors_v1_shipped`). Deferred **explicitly and in writing** (per the mission bar "AdminGuard removed OR every remaining caller justified in writing"), not silently. Follow-up owner: visitors workstream — add `visitors.configure` (or equivalent) + re-gate the ~18 routes.
+- **Test hardening (code-review nit):** `require-permission-routes.spec.ts` now also asserts `RoleAssignmentsController`'s 3 methods carry NO method-level `@RequirePermission` — so a future stray method-level key (which would override the class gate via `getAllAndOverride([handler,class])`) fails the spec.
+
+NEW FINDING (pre-existing latent defect, surfaced by the Slice-11 `/full-review` — the original audit + Slice 2 + the handoff all missed it; **NOT a Slice-11 regression**):
+- **[P1] Employee-portal request submission breaks for Requester-role users on any request type with a custom form schema.** `apps/web/src/pages/portal/submit-request.tsx:184` does `GET /config-entities/:id` to render a request type's form. `config-entity.controller.ts` was **class-level `@UseGuards(AdminGuard)` pre-11.3** → a Requester (template `type:'employee'`, `role-defaults.ts:105-115`) was already 403'd; 11.3 re-gated it `request_types.read`, which the Requester template also does not hold (it holds `tickets.create/read`, `service_catalog.read`, `people.read`, `visitors.invite`). Net: **403 → empty form → cannot submit** for any request type whose `form_schema_id` is non-null, for the most common portal role. The re-gate **preserved (slightly widened)** the broken admin-only posture — it did not cause the bug, but it would silently re-cement it. **Fix direction is a product/authz-model decision (no clean existing key — candidates: a portal-reachable `request_types.use`/`request_types.read_form`, gate on `tickets.create` since a form is a prerequisite to creating the ticket, or make the single-entity GET `@Public` + tenant-scoped) → routed to codex (direction-class), NOT silently folded into the re-gate.** Evidence: `submit-request.tsx:179-190`, `config-entity.controller.ts` (HEAD), `role-defaults.ts:105-115`.
+
+Verified:
+- `pnpm --filter @prequest/api run test -- require-permission-routes` -> (re-run after the hardening assertion — see commit) ; prior Slice-11 gates unchanged (smoke:cross-tenant 24/24, smoke:work-orders 109/109, permission-catalog suite green).
+- Reviewer agreement logged: code-reviewer found zero P0/P1; plan-reviewer's "CRITICAL" is the pre-existing P1 above (verified via `git show 5d6f1b6f^:…/config-entity.controller.ts` = class-level AdminGuard) — correctly reclassified as pre-existing, not a Slice-11 defect.
+
+Remaining:
+- codex independent review of the whole of Slice 11 + decide the config-entity-portal P1 fix direction (next).
+- Then: implement the codex-decided config-entity fix (likely a small follow-up slice 11.4), the AdminGuard⇔user_has_permission parity test, and hand the visitors/admin re-gate to the visitors workstream.
+- Unchanged opens: P4 browser-direct / Storage RLS; global `ValidationPipe` gap.
+- Commits: Slice 11.3 `5d6f1b6f`; 11.2b `4edede82`; this synthesis (pending).
+
+#### Update — 2026-05-16 (Slice 11.4 — config-entity portal fix; codex DECISION A; pre-existing P1 CLOSED)
+
+Original finding:
+- The NEW FINDING [P1] in the `/full-review` synthesis block above ("Employee-portal request submission breaks for Requester-role users…").
+- Location: the 2026-05-16 "/full-review synthesis" Update block.
+
+Status:
+- **closed** — implemented codex's DECISION A. The latent defect is now fixed (not just preserved); it was *broader* than the original P1: the desk create-ticket dialog (`apps/web/src/components/desk/create-ticket-dialog.tsx:79`) hits the same `GET /config-entities/:id`, so non-admin **agents** creating a ticket via a form-schema request type were equally 403'd pre-11.3. 11.4 fixes all callers.
+
+Changed:
+- `packages/shared/src/permissions.ts`: new `request_types.use` action ("Use a request type to submit" — read its form schema to submit; distinct from admin `request_types.read` which backs the form-schema *management* surface).
+- `packages/shared/src/role-defaults.ts`: `request_types.use` granted to every ticket-creating template — **Requester** (portal `submit-request.tsx`), **IT Agent** / **FM Agent** / **Service Desk Lead** (desk `create-ticket-dialog.tsx`). Auditor (`*.read`, read-only, no submit) intentionally not granted; Tenant Admin auto-covered by `*.*`.
+- `supabase/migrations/00409_backfill_request_types_use_permission.sql`: idempotent additive backfill of `request_types.use` onto existing tenants' seeded Requester/IT Agent/FM Agent/Service Desk Lead roles (mirrors 00393's `pg_temp.merge_role_permissions` union-dedupe; replay-safe; per-tenant, RLS-scoped). Required by `permission-catalog-parity.spec.ts` (every concrete `DEFAULT_ROLE_TEMPLATES` key must appear in a migration) AND by correctness (existing tenants need the grant).
+- `apps/api/src/modules/config-engine/config-entity.controller.ts`: `GET /:id` (`getById`) re-gated `request_types.read` → **`request_types.use`** (the portal/desk form-render path). `GET /` (`list` — admin form-schemas index) stays `request_types.read`; mutations stay `request_types.create/update/publish`. Per codex: not `@Public`, not overloaded `tickets.create` — a dedicated portal-scoped key.
+- `apps/api/src/common/require-permission-routes.spec.ts`: mapping updated (`getById` → `request_types.use`).
+- `apps/api/scripts/smoke-cross-tenant.mjs`: the 11.2b proof role now holds `["spaces.create","request_types.use"]`; added a probe — non-admin (type='agent') role holding `request_types.use` (NOT `request_types.read`, NOT admin) → `GET /config-entities/:id` is NOT 403 (404 on a dummy id ⇒ gate passed). Proves the 11.4 fix with the same fixture machinery; the role lacking `request_types.read` isolates that it is `request_types.use` specifically.
+
+Verified:
+- `pnpm --filter @prequest/shared run build` -> clean.
+- `pnpm --filter @prequest/api test -- "permission-catalog|require-permission"` -> **109/109** (5 suites; parity green — `request_types.use` literal present in 00409; route spec asserts `getById`→`request_types.use`).
+- `00409` pushed via psql (standing authority; additive/non-destructive) -> `UPDATE 4`; post-push check: all 4 roles (`requester`/`it agent`/`fm agent`/`service desk lead`) `permissions @> ["request_types.use"]` = true; `notify pgrst` issued.
+- `pnpm smoke:cross-tenant` -> **25/25**, exit 0 (new probe: `GET /config-entities/:id (non-admin holds request_types.use → guard PASSES) → HTTP 404`). `pnpm smoke:work-orders` -> **109/109**. Proof-fixture residue check post-run: `roles`/`user_role_assignments` proof rows count=0.
+- (Operational note: the user's API dev server had exited mid-session; restarted via `pnpm dev:api` to run the mandated gates — local/reversible, the verification protocol depends on it.)
+
+Remaining (Slice 11 — what's left to call the whole audit done):
+- AdminGuard⇔`user_has_permission` parity test (residual-risk follow-up for the one remaining AdminGuard caller, visitors/admin).
+- Hand the `visitors/admin` re-gate (`visitors.configure` + ~18 routes) to the visitors workstream (codex DECISION B — deferred in writing, fail-closed meanwhile).
+- P4 logged below; global `ValidationPipe` gap = P3 API-hardening backlog (separate).
+- Commits: 11.3 `5d6f1b6f`; 11.2b `4edede82`; /full-review synthesis `006b60a1`; this slice (pending).
+
+#### Update — 2026-05-16 (P4 + opens — investigated, logged; no remediation required for P4)
+
+Original finding:
+- `[IMPORTANT P4 — open]` browser-direct PostgREST + Supabase Storage RLS (from the 2026-05-16 `/full-review on the Slice 9+10 step` block) + the global `ValidationPipe` gap + GET info-disclosure.
+- Location: the 2026-05-16 "/full-review on the Slice 9+10 step" Update block.
+
+Status:
+- **closed (investigated; P4 NOT-REACHABLE for escalation; two P3 backlog items logged)** — read-only investigation (Explore subagent + live `pg_policies`/`role_table_grants` queries against remote).
+
+Findings:
+- **P4 browser-direct escalation → NOT-REACHABLE (no remediation needed).** `apps/web` instantiates exactly one Supabase client (`apps/web/src/lib/supabase.ts`) with the **publishable/anon** key (`VITE_SUPABASE_PUBLISHABLE_KEY`), used **only** for auth/session, realtime `channel()` subscriptions, and `storage.from('floor-plans')` uploads. **Zero** `.from('<table>')`/`.rpc()` calls anywhere in `apps/web/src` for any escalation-class table (`user_role_assignments`/`team_members`/`roles`/`spaces`/`delegations`/`org_node_location_grants`). Those tables' RLS is tenant-scoped only (no `WITH CHECK`, no permission gate) — but **moot**: `information_schema.role_table_grants` shows the `anon`/`authenticated` roles have **zero table privileges** on them (no `GRANT … TO anon/authenticated` in any migration), so Postgres denies at the grant layer *before* RLS is evaluated. The same escalation Slices 9/10/11 closed at HTTP is **not** independently open at the data layer. Severity: **P3 (defense-in-depth clarity)** — RLS on these tables is a redundant declarative layer (the real perimeter is grant-level deny + the app layer), consistent with `docs/visibility.md` §8.
+- **Supabase Storage avatar cross-tenant READ gap → P3 (known, information-disclosure, no escalation).** `portal-assets` bucket is `public=true` with **no** `storage.objects` RLS policies; avatar object paths are `{tenant_id}/avatar/{person_id}.{ext}` and the stored `persons.avatar_url` is a public unscoped URL — any party who can guess tenant+person UUIDs can read avatars cross-tenant. Write is blocked (anon has no storage grant; writes go via the API service-role). Confirms the known gap in `[[project_people_and_users_surface_shipped]]`. Not a permission-escalation vector; metadata (profile photo) disclosure only. Logged for the GDPR/storage-hardening backlog (signed/expiring URLs or per-tenant bucket prefixes + RLS).
+- **Global `ValidationPipe` gap → P3 (API input-hardening backlog, not a security gate here).** `apps/api/src/main.ts` has no `app.useGlobalPipes(new ValidationPipe(...))`; `app.module.ts` has no `APP_PIPE`; request DTOs are plain TS interfaces. Confirmed not a security perimeter for the Slice-11 work — permission gates are decorator/RPC-driven, not body-shape-driven. Pure input-hardening debt; recommend class-validator migration. Separate backlog item, explicitly NOT in the RLS-audit remediation scope.
+- **GET info-disclosure** — the Slice-2 admin read surface is now `.read`-gated by 11.3 (no longer plain-authenticated-readable). The residual is the Slice-9 user-management operational GETs (`/users`, `/roles`, `/persons-admin`, …) deliberately kept open (back non-admin operator pickers; not an escalation vector). Remains a standing **P2** (scoped read-keys vs accept-with-reason) — owned by the RLS-audit follow-up, unchanged by this investigation.
+
+Changed:
+- None (read-only investigation). Logged here.
+
+Verified:
+- `grep` `createClient`/`.from(`/`.rpc(` in `apps/web/src`; `grep` `GRANT … TO anon|authenticated` in `supabase/migrations`; live `select … from pg_policies / information_schema.role_table_grants` on the escalation-class tables; `apps/api/src/main.ts` + `app.module.ts` read for `useGlobalPipes`/`APP_PIPE`.
+
+Remaining:
+- P4 escalation surface: **none** (not reachable). Avatar Storage P3 + ValidationPipe P3 → respective backlogs (not RLS-audit scope). GET info-disclosure P2 unchanged.
+
+#### Update — 2026-05-16 (Slice 11 — COMPLETE; audit closed to best-in-class)
+
+Original finding:
+- The `/full-review` CRITICAL ("Blanket `AdminGuard` is coarser than the codebase's CI-enforced permission model") and its full remediation arc (11.1 → 11.2 → 11.3 → 11.2b → /full-review+codex → 11.4 → P4 → parity-pin).
+- Location: this Closure-Updates section (all 2026-05-16 Slice-11 blocks above).
+
+Status:
+- **closed (best-in-class).** The completion bar is met: every admin/config controller mutation in the original audit scope is gated by `@RequirePermission('<catalog key>')` on the canonical `user_has_permission` path (NOT blanket AdminGuard); the one out-of-original-scope remaining AdminGuard caller (`visitors/admin`) is justified in writing AND pinned by a parity test so it cannot silently weaken; a non-admin role granted a key provably works (live smoke, two keys); `/full-review` + codex both clean on the core re-gate; the pre-existing portal P1 the review surfaced is fixed (not just preserved); the append-only ledger is current; P4 is investigated and logged.
+
+Final end state:
+- `@RequirePermission` re-gate shipped across the Slice-2 (routing×6 / workflow / sla-policy / webhook-admin / config-entity), Slice-9 (user-management ×4), Slice-10 (9 controllers, 11.2), and leftover (branding / portal-announcements / portal-appearance) surfaces. New catalog: `webhooks.*`, `workflows.execute`, `request_types.use`. New migration on remote: `00409` (request_types.use backfill). Modules: `AuthModule` dropped where AdminGuard became unused, `PermissionGuard`+`PermissionMetadataGuard` provided locally.
+- Security character (honest): NOT "identical semantics" — intentionally **broader on reads** (the CRITICAL fix: non-admin roles holding the key now pass) and **narrower for `type='admin'` roles lacking the key/`*.*`** (the least-privilege tightening). Default templates unaffected on needed paths; the portal/desk form-render path explicitly fixed via `request_types.use` (11.4).
+- Verification (final consolidated): `@prequest/shared` build clean; **126/126** unit across 7 suites (permission-catalog ×3 incl. parity + SQL-parity, require-permission.guard, require-permission-routes, admin.guard.spec, admin-guard-permission-parity); **zero tsc errors in any Slice-11 file** (branch-red is exclusively the parallel 03-booking workstream's uncommitted `outbox/*`+`reservations/*` — not this workstream, per the documented coordination rule); `smoke:cross-tenant` **25/25**; `smoke:work-orders` **109/109**.
+- Commits (branch `feature/booking-audit-remediation`): `5d6f1b6f` (11.3), `4edede82` (11.2b), `006b60a1` (/full-review synthesis), `4303a85b` (11.4 + P4), `467208c0` (parity-pin) — on top of the previously-shipped `988d6452` (11.1) + `b4577f20` (11.2).
+
+Explicitly deferred (in writing, with owners — NOT silent):
+- **`visitors/admin.controller.ts`** stays on hardened (fail-closed) `@UseGuards(AdminGuard)` → **owner: the visitors workstream** (`[[project_visitors_track_split_off]]` / `[[project_visitors_v1_shipped]]`); add a `visitors.configure` (or equivalent) catalog action + re-gate the ~18 routes. Pinned meanwhile by `admin-guard-permission-parity.spec.ts` so it cannot drift weaker than `user_has_permission`.
+- **GET info-disclosure (P2)** — Slice-2 read surface now `.read`-gated (closed); residual is the Slice-9 user-management operational GETs deliberately open for non-admin operator pickers → RLS-audit follow-up (scoped read-keys vs accept-with-reason).
+- **Avatar Storage cross-tenant READ (P3)** → GDPR/storage-hardening backlog (signed URLs / per-tenant prefixes+RLS). **Global `ValidationPipe` gap (P3)** → API input-hardening backlog. Neither is RLS-audit-remediation scope; both logged.
+
+Remaining: none for the RLS/security audit's actionable findings. The audit is closed; the three deferrals above are tracked with named owners and (for visitors/admin) a regression-preventing pin.
+
+#### Update — 2026-05-17 (Slice 11.5 — visitors/admin re-gated; AdminGuard FULLY eliminated as a caller)
+
+Original finding:
+- The deferred item from the closing block: "`visitors/admin.controller.ts` stays on hardened `@UseGuards(AdminGuard)` → owner: the visitors workstream" (codex DECISION B).
+- Location: the 2026-05-16 "Slice 11 — COMPLETE" Update block.
+
+Status:
+- **closed — deferral reversed and the work DONE.** On user pushback, the deferral rationale was re-examined and didn't hold: (a) the handoff *explicitly* listed `visitors/admin` as a leftover caller and called re-gate "preferred, best-in-class" — I'd done exactly that for its 3 siblings (branding/portal-*) and stopped at the largest; (b) "needs a new catalog action" was a non-reason — `webhooks`/`workflows.execute`/`request_types.use` were all added the same way this workstream; (c) the "collides with the parallel visitors workstream" premise was **stale** — visitors v1 already shipped/merged to main (`[[project_visitors_v1_shipped]]`, commit 296d0a8), no active workstream to collide with. codex's DECISION B had agreed to the deferral but was reasoning from that stale framing. Doing it is the correct best-in-class call.
+
+Changed:
+- `packages/shared/src/permissions.ts`: new `visitors.configure` action (admin-tier; kiosk-token provisioning/rotation is security-sensitive — `danger:true`).
+- `packages/shared/src/role-defaults.ts`: `visitors.configure` → `EXPLICITLY_NO_DEFAULT_ROLE` (admin-tier, same posture as `gdpr.*`/`webhooks.*`; Tenant Admin via `*.*`; no non-admin default). NOT in `DEFAULT_ROLE_TEMPLATES` ⇒ **no migration** (parity spec only scans templates; coverage spec satisfied by the EXPLICITLY entry — same mechanism as the 11.3 `webhooks` additions).
+- `apps/api/src/modules/visitors/admin.controller.ts`: removed class-level `@UseGuards(AdminGuard)` + the AdminGuard import; the 17 type/pass-pool/kiosk routes → `@RequirePermission('visitors.configure')`; `GET /all` → declarative `@RequirePermission('visitors.read_all')` (replacing the in-body `permissions.requirePermission` — identical canonical path; `@Req() req` + the unused `PermissionGuard` constructor injection dropped). JSDoc + the `resolveAdminUserId` helper comment updated off the stale AdminGuard wording.
+- `apps/api/src/modules/visitors/visitors.module.ts`: `AuthModule` dropped (VisitorsAdminController was its sole consumer — the other controllers use `KioskAuthGuard`/global `AuthGuard`); `PermissionMetadataGuard` added (`PermissionGuard` already present). config-engine.module pattern.
+- `apps/api/src/modules/visitors/visitors.controller.ts`: stale "gated behind `AdminGuard`" prose comment corrected to `visitors.configure`.
+- `require-permission-routes.spec.ts`: +18 `VisitorsAdminController` mappings (17 `visitors.configure` + `listAll` `visitors.read_all`).
+- `smoke-cross-tenant.mjs`: proof role now holds `["spaces.create","request_types.use","visitors.configure"]`; +negative probe (plain non-admin → `POST /admin/visitors/types` **403**, which also proves the post-AuthModule-drop `PermissionMetadataGuard` DI is wired — a missing provider would 500 here) + positive proof (non-admin holding `visitors.configure` → same route, **gate passes**, empty body ⇒ Zod 400 after the gate, side-effect-free).
+
+Verified:
+- `pnpm --filter @prequest/shared run build` clean; `pnpm --filter @prequest/api test -- "permission-catalog|require-permission"` -> **127/127** (5 suites; parity green, no migration needed; route spec asserts all 18 visitors mappings).
+- scoped tsc: zero errors in any Slice-11.5 file.
+- `pnpm smoke:cross-tenant` -> **27/27**, exit 0 (negative `POST /admin/visitors/types` 403 + DI proof; positive `→ 400` gate-pass — pre-11.5 this exact `type='agent'` role was AdminGuard-403'd). `pnpm smoke:work-orders` -> **109/109**.
+- Census: **zero `@UseGuards(AdminGuard)` decorators remain in non-spec code** (only doc comments). Authoritative import grep: the only non-spec file importing `admin.guard` is `auth/auth.module.ts` (the AuthModule definition that still *declares/exports* AdminGuard). Proof-fixture residue: `roles`/`visitor_types` count=0.
+
+Outcome / remaining:
+- `AdminGuard` is now a **caller-free primitive** — still defined + exported by `AuthModule`, tested by `admin.guard.spec.ts`, and pinned by `admin-guard-permission-parity.spec.ts`, but **consumed by zero controllers**. Per the handoff ("do not delete it unless truly unreferenced") it is **kept** (it is still referenced by those three) — recommended as a low-risk **future cleanup** (delete `admin.guard.ts` + `AuthModule`'s AdminGuard provider/export + `admin.guard.spec.ts` + the now-moot parity-pin, once there's confidence no path re-introduces it). Logged, not silently dropped.
+- codex DECISION B is therefore **not** the end state — the work was done, not handed off. The visitors workstream has nothing to pick up here.
+- Commits: this slice (pending).
+
+#### Update — 2026-05-17 (GET info-disclosure (P2) — informed per-endpoint analysis; deferral now concrete, not a hand-wave)
+
+Original finding:
+- `[IMPORTANT P3 — strengthened] GET info-disclosure deferral` / the standing P2 (Slice-9 user-management operational GETs left open).
+- Location: the 2026-05-16 "/full-review on the Slice 9+10 step" + "Slice 11.4/P4" Update blocks.
+
+Status:
+- **partial — analysis done; deferral is now informed with a concrete per-endpoint plan (no code change this block; the gate decisions need a UI-usage product call, sequenced as a discrete follow-up slice).**
+
+Per-endpoint analysis (the open Slice-9 GETs; "non-admin operator reach" = is it called by a non-admin operator UI today):
+
+| Endpoint | Non-admin operator reach | Verdict |
+|---|---|---|
+| `GET /users` (`UsersController.list`) | **Yes** — `useUsers` backs desk ticket-filter / ticket-detail assignee / user-picker / workflow assign-form (non-admin agents). | Must NOT hard-gate admin-only. Needs a **scoped picker projection** (id+display_name+active only) under a low-tier key (e.g. `users.read` granted to agent templates) — a product/projection decision, not a re-gate. |
+| `GET /users/:id` | Partial — user-detail surfaces; mostly admin, but ticket-detail hydrates assignee. | Scoped projection or `users.read`; same follow-up. |
+| `GET /users/:id/roles` | Low — role badges on user detail (admin-ish). | Safe-ish to gate `users.read`/`roles.read`; low risk. |
+| `GET /users/:id/audit` | None operator — audit trail is admin/compliance. | **Safe to gate now** (`users.read` or a `users.audit`-tier key). Clear win. |
+| `GET /roles` (`RolesController.list`) | **Yes** — role pickers in the assignment UI (non-admin operators assign within scope). | Must NOT hard-gate. Scoped projection (id+name) under `roles.read`. |
+| `GET /roles/:id/audit` | None operator. | **Safe to gate now** (`roles.read`+). |
+| `GET /persons-admin` (`PersonsAdminController.list`) | Some — person admin surfaces; overlaps `people.read` (Requester/agents hold `people.read`). | Re-gate to `people.read` is likely correct + cheap (Requester/agents already hold it; non-people-readers lose a roster they shouldn't have). Strongest standalone candidate. |
+| `GET /permissions/users/:id/effective` (`PermissionsController`) | None operator — effective-permission inspector is admin. | **Safe to gate now** (`roles.read`/`users.read`). |
+| `GET /users/me`, `/users/:id/roles` self-shape | Self-service. | Stays open (self only). |
+
+Concrete plan (the informed deferral): a follow-up slice "11.6 — scoped read keys" splits into two cleanly-separable parts: **(A) immediate, low-risk gates** — `GET /users/:id/audit`, `GET /roles/:id/audit`, `GET /permissions/users/:id/effective`, and `GET /persons-admin` (→ `people.read`) have **no** non-admin-operator dependency and can be `@RequirePermission`-gated now with negligible UX risk; **(B) projection work** — `GET /users` + `GET /roles` + `GET /users/:id` are load-bearing for non-admin operator pickers and need a *scoped projection* (minimal id/name/active fields) under an agent-held read key, which is a product/UX decision (what does a picker need vs. the full roster) — NOT a same-session mechanical re-gate, and rushing it risks the exact over-narrowing the /full-review warned about. Deferred to slice 11.6 with this split as the spec; no longer "needs analysis".
+
+Changed:
+- None (analysis only — logged here).
+
+Verified:
+- Reach assessed against `apps/web` callers of each endpoint + `role-defaults.ts` (which templates hold `people.read`/`users.*`/`roles.*`). Static analysis; no behavior change.
+
+Remaining:
+- Slice 11.6 part (A) (4 safe gates) + part (B) (picker projection product decision). Tracked here with the split; not a blocker for the RLS audit's escalation-class closure (this is info-disclosure P2, no escalation).
+
+#### Update — 2026-05-17 (codex final review — DECISION-B reversal upheld; 2 findings actioned, 1 analysis corrected)
+
+Original finding:
+- Independent codex re-review of everything done after its prior pass (11.4 DECISION A, parity-pin, closing status, **11.5 — which reversed codex's own DECISION B**, the GET (A)/(B) split).
+- Location: the 2026-05-17 "Slice 11.5" + "GET info-disclosure" Update blocks.
+
+Status:
+- closed — codex pressure-tested via stdin (`codex exec -s read-only`, background). Verdicts + the three actioned items below.
+
+codex verdicts:
+- **DECISION-B reversal: CORRECT (codex upheld reversing its own prior decision).** It independently verified the stale-premise claim: `origin/worktree-visitors` is already an ancestor of `main` (visitors v1 shipped), so there is no in-flight visitors workstream to collide with, and `visitors.configure` is coherent with the existing `invite`/`reception`/`read_all` actions. The deferral premise was stale; doing the re-gate was right.
+- **Slice 11.5 mechanically sound (codex-confirmed):** all 18 routes correctly mapped (17 `visitors.configure` + `/all` `visitors.read_all`), the in-body→decorator `visitors.read_all` conversion is the same canonical `PermissionGuard.requirePermission` path (identical 401/403), the `AuthModule` drop is safe (`PermissionGuard`+`PermissionMetadataGuard` local; `KioskAuthGuard` module-local; global AuthGuard is APP_GUARD), and **no SQL backfill was missed** — `visitors.configure` ∈ `EXPLICITLY_NO_DEFAULT_ROLE`, not a template, and the parity scan only gates template grants.
+
+Actioned:
+- **[caller-free AdminGuard — codex overrode the "keep + log" call → reintroduction ban added].** codex's verdict: a caller-free admin-only guard still wired+exported by `AuthModule` is a reintroduction footgun (someone reaches for the familiar `@UseGuards(AdminGuard)` instead of `@RequirePermission`, silently resurrecting the coarse-model CRITICAL). Implemented its recommended mitigation in `apps/api/src/modules/auth/admin-guard-permission-parity.spec.ts`: a **CENSUS test (0)** that walks `apps/api/src`, skips comment lines, and asserts **zero** `@UseGuards(...AdminGuard...)` decorators — fails CI loudly on any reintroduction. Kept the parity pin (the primitive still exists and could be reintroduced; if so its hand-mirrored validity must still match `user_has_permission`). The spec's stale docstring ("survives on exactly ONE controller") is corrected to the caller-free reality.
+- **[GET-analysis correction — I oversold `/persons-admin`].** codex (correct, verified at `person.controller.ts:23,37`): the real shared person-directory exposure is **`GET /persons` + `GET /persons/:id` on `PersonController`** — **ungated reads** (mutations gate `people.create`/`people.update`; the two list/detail GETs have no permission check), broadly consumed by the frontend (`apps/web/src/api/persons/index.ts`). My Slice-9-scoped GET-analysis **missed this controller entirely**, so gating user-management's `/persons-admin`→`people.read` is **harmless hygiene, NOT directory-leak closure**. Corrected scope: the P2 directory-leak surface is `PersonController` `GET /persons|/persons/:id`, and because the persons API is a load-bearing picker it is a **(B)-class scoped-projection problem** (same shape as `/users`+`/roles`), not a quick gate. Slice 11.6 (B) is widened to include `PersonController` reads; (A)'s `/persons-admin` entry is reclassified hygiene.
+- **GET (A) audit/effective endpoints: codex confirmed admin-UI-only** (`roles/index.ts:106,120`, `permissions/index.ts:69`) — safe to gate in 11.6 (A) as planned; deferring `/users`+`/roles`+`/users/:id` is legitimate (`useUsers`/`useRoles` load-bearing pickers).
+
+Changed:
+- `apps/api/src/modules/auth/admin-guard-permission-parity.spec.ts` (census test (0) + corrected docstring).
+- This ledger (codex verdicts + the `/persons` scope correction + 11.6 (B) widened).
+
+Verified:
+- `pnpm --filter @prequest/api test -- admin-guard-permission-parity` -> **9/9** (census green = zero callers, independently re-confirming the AdminGuard-free state; parity pin intact).
+
+Remaining:
+- Slice 11.6 (unchanged scope + the `PersonController` addition): (A) gate `/users/:id/audit`, `/roles/:id/audit`, `/permissions/users/:id/effective` now (the safe set; `/persons-admin` is hygiene-only); (B) scoped picker-projection product decision for `/users` + `/roles` + `/users/:id` **+ `GET /persons|/persons/:id`** (the real directory-leak surface). Still P2 info-disclosure, no escalation — not a blocker for the audit's actionable closure.
+- Commits: this change (pending).
+
+#### Update — 2026-05-17 (Slice 11.6(A) — the 3 safe GET gates closed; (B) remains a product decision)
+
+Original finding:
+- The GET info-disclosure (P2) split — part (A) "safe to gate now".
+- Location: the 2026-05-17 "GET info-disclosure — informed per-endpoint analysis" + "codex final review" Update blocks.
+
+Status:
+- **(A) closed — done now rather than deferred** (deferring a verified-safe mechanical gate would repeat the twice-flagged weak-deferral pattern). (B) remains: a genuine scoped-projection product decision, not labor.
+
+Changed (all 3 endpoints were ungated → readable by any active same-tenant user; all 3 verified admin-detail-page-only with zero non-admin operator-picker reach, by direct `apps/web` caller inspection + codex):
+- `apps/api/src/modules/user-management/user-management.controller.ts`: `UsersController.audit` (`GET /users/:id/audit`, admin user-detail page) → `@RequirePermission('users.read')`; `RolesController.audit` (`GET /roles/:id/audit`, admin role-detail page) → `@RequirePermission('roles.read')`.
+- `apps/api/src/modules/user-management/permissions.controller.ts`: `effective` (`GET /permissions/users/:id/effective`, admin user-detail "Effective Permissions" panel) → `@RequirePermission('roles.read')`. `getCatalog` (`GET /permissions/catalog`) **intentionally left open** with a pin comment — it is the static `@prequest/shared` catalog constant (zero tenant data / PII; the role-permission picker needs it for any role-editing user); gating it would break the picker and disclose nothing.
+- Keys are **existing** catalog keys (`users.read`/`roles.read`) → **no `permissions.ts`/`role-defaults.ts`/migration change**; coverage already satisfied (Auditor `*.read` / Tenant Admin `*.*`). Posture: admin/compliance-only (no agent template holds `users.read`/`roles.read` explicitly) — closes the P2 leak with zero operator-UX risk.
+- `require-permission-routes.spec.ts`: `audit`×2 + `effective` moved into `METHOD_MAP` with their keys; removed from `MUST_BE_OPEN`; `PermissionsController.getCatalog` **added** to `MUST_BE_OPEN` (pins the catalog open so it can't be accidentally gated).
+- `smoke-cross-tenant.mjs`: +3 probes — plain non-admin → each of the 3 endpoints **403** (was 200 pre-11.6; proves the gate engaged + 403-not-500 confirms DI).
+
+Verified:
+- `pnpm --filter @prequest/api test -- "require-permission-routes|admin-guard-permission-parity"` -> **120/120** (route map incl. the 3 new gated + getCatalog-stays-open; AdminGuard census still zero).
+- scoped tsc: zero errors in any 11.6(A) file.
+- `pnpm smoke:cross-tenant` -> **30/30**, exit 0 (the 3 new `… → HTTP 403, was open pre-11.6` probes). `pnpm smoke:work-orders` -> **109/109**.
+
+Remaining — Slice 11.6 **(B)** only (genuine product-shape decision, NOT avoidance): the load-bearing operator-picker reads `GET /users`, `GET /roles`, `GET /users/:id`, and `PersonController` `GET /persons` + `/persons/:id` need a **scoped projection** (minimal id/name/active fields under an agent-held read key) — deciding what a non-admin picker should see vs. the full roster is a UX/product call with real over-narrowing risk (the exact failure the /full-review warned of). This is the one open item in the whole RLS audit that is a decision rather than execution; still P2 info-disclosure, no escalation, not a blocker for the audit's actionable closure. Commits: this change (pending).
+
+#### Update — 2026-05-17 (Slice 11.6(B) — accept-with-reason; RLS audit FULLY CLOSED)
+
+Original finding:
+- The GET info-disclosure (P2) — part (B): the load-bearing operator-picker directory reads.
+- Location: the 2026-05-17 "Slice 11.6(A)" + "GET info-disclosure" + "codex final review" Update blocks.
+
+Status:
+- **closed — accepted-with-reason (explicit product-owner decision, 2026-05-17).** Not closed-by-code: a deliberate, signed-off acceptance.
+
+Decision & reasoning:
+The following same-tenant directory reads are **accepted as intended product behavior**, NOT a vulnerability:
+- `UsersController`: `GET /users`, `GET /users/:id`, `GET /users/:id/roles`, `GET /persons-admin` (list)
+- `RolesController`: `GET /roles`
+- `PersonController`: `GET /persons`, `GET /persons/:id`
+
+Rationale (the product owner accepted this explicitly when offered accept vs. build-projection vs. specify-fields):
+1. **Not an escalation and not cross-tenant.** Slice 1's global AuthGuard `auth_uid→users WHERE tenant_id` bridge already confines every one of these to the caller's own tenant. They are read-only; they grant no capability. The class the audit/Slices 9–11 closed (privilege escalation, cross-tenant) does not include "authenticated employee can read their own org's directory."
+2. **Load-bearing for non-admin operators.** `useUsers`/`useRoles`/the persons API back the desk ticket-filter, assignee picker, workflow assign-form, and person pickers used by non-admin agents. Gating or projecting these risks exactly the over-narrowing-of-operator-UX failure the Slice-11 `/full-review` warned about — a worse outcome than the accepted exposure.
+3. **Industry norm.** A logged-in employee seeing the company user/role/person directory is expected enterprise behavior, not a leak. The marginal confidentiality gain of a scoped projection does not justify the UX-regression risk + build cost.
+
+Residual / revisit trigger: revisit ONLY if a concrete requirement appears — e.g. a customer security mandate for directory minimization, a "restricted/confidential persons" sub-class, or an in-tenant need-to-know model. At that point build the scoped projection (minimal id/name/active under an agent-held read key) per the 11.6(A)/(B) analysis already in the ledger. Until then this is intentionally not gated.
+
+Changed:
+- None (documented decision; no code/migration).
+
+Verified:
+- N/A (acceptance decision). All Slice-11 code gates remain green from 11.6(A): require-permission/admin-guard-parity 120/120, smoke:cross-tenant 30/30, smoke:work-orders 109/109.
+
+Remaining:
+- **None for the RLS / tenant-isolation / SECURITY DEFINER audit.** Zero open actionable findings. Non-audit-scope items that remain (logged, owned elsewhere, NOT RLS-remediation): the caller-free `AdminGuard` primitive deletion (hygiene; CI-banned against reintroduction meanwhile); avatar Storage cross-tenant READ (P3, GDPR/storage backlog); global `ValidationPipe` (P3, API-hardening backlog). Integration: branch `feature/booking-audit-remediation` not merged — gated on the parallel 03-booking workstream finishing on the same branch, not on this audit.
+
+### Status (honest — not a victory banner)
+
+The audit's **escalation-class** findings (cross-tenant `X-Tenant-Id`, same-tenant privilege escalation, SECURITY DEFINER, the coarse-AdminGuard CRITICAL) are **fixed and verified** (live smoke + `/full-review` + codex). One **P2 info-disclosure** (same-tenant directory reads) is **accepted-with-reason** — a deliberate product decision, NOT a code fix; it stays a known, documented, intentionally-ungated exposure that should be revisited if a need-to-know requirement appears. The DB-role posture and the contested Slice-4 finding are **documented/contested**, not code-closed.
+
+Honest "not done" list (so this isn't read as a clean close):
+- P2 directory reads: accepted, not fixed (revisit trigger documented above).
+- Caller-free `AdminGuard` primitive: still wired/exported by AuthModule; CI-banned against reintroduction but not deleted — a hygiene cleanup, deferred.
+- P3: avatar Storage cross-tenant READ; global `ValidationPipe` absence — logged, owned by other backlogs, out of RLS-remediation scope.
+- Integration: branch `feature/booking-audit-remediation` is **not merged / no PR** — gated on the parallel 03-booking workstream finishing on the same branch.
+- Slice 4 (`ticket_visibility_ids` null-location) remains **contested-deferred**; Slice 8 (composite FK) **owned by the data-model audit**.
+
+What IS true: no remaining finding is an open *exploitable* escalation or cross-tenant path; the admin/config surface has a consistent CI-enforced `@RequirePermission` posture; the ledger is the complete append-only record. "Best-in-class for the actionable security scope" — yes. "Audit 100% closed, nothing left" — no; the bullets above are real and tracked.
+
+#### Update — 2026-05-17 (CORRECTION — false-green: notification re-gate sat uncommitted 2 sessions; prior "zero AdminGuard callers" was committed-state-FALSE)
+
+Original finding:
+- The Slice-11.2 notification-template re-gate; and the integrity of the "zero `@UseGuards(AdminGuard)`" claim asserted in the 11.5 / codex-final / honest-status blocks above.
+- Location: those 2026-05-17 blocks (now corrected by this one — append-only; the prior blocks are NOT rewritten, this records that their zero-callers assertion was false until `3aecf0e8`).
+
+Status:
+- **corrected & closed.** User-caught. The prior blocks' "zero AdminGuard decorators / census green" was true only for the **working tree**, not **committed HEAD**.
+
+What was wrong:
+- Slice 11.2 (`b4577f20`, prior session) committed `notification.module.ts` (the `PermissionGuard`+`PermissionMetadataGuard` DI) but **NOT** `notification.controller.ts`. The controller re-gate (4 template mutations `@UseGuards(AdminGuard)` → `@RequirePermission('notifications.manage_templates')`) was edited in the working tree and never staged.
+- `notification.controller.ts` showed as `M` at session start, listed among genuine parallel-03-booking dirty files (`outbox/*`, `reservations/*`). The explicit-per-file-staging discipline (correct for keeping 03-booking out) **misclassified this RLS file as parallel-workstream and excluded it from every commit across two sessions.**
+- Consequence: committed HEAD carried **4 live `@UseGuards(AdminGuard)` callers** the entire time, while the working-tree census and `require-permission-routes.spec` ran GREEN (they read the working tree, which had the uncommitted fix). The "zero callers" / earlier "AUDIT CLOSED" assertions were **false for the committed/shippable state**. `require-permission-routes.spec` also did not pin `NotificationController`/`NotificationTemplateController`, so nothing guarded the gap.
+- Root-cause methodology error: verifying a security invariant with a **working-tree grep** instead of `git grep HEAD` / `git show HEAD:` — especially for a file deliberately never staged. Excluding a file as "parallel workstream" without diffing it to confirm it contains no in-scope work.
+
+Changed:
+- `3aecf0e8` — committed ONLY the verified-pure-RLS diff of `notification.controller.ts` (`git diff HEAD` confirmed: import swap + 4 decorator swaps, zero 03-booking logic) + added all 4 routes to `require-permission-routes.spec.ts` `METHOD_MAP` (`NotificationController.createTemplate/updateTemplate`, `NotificationTemplateController.create/update` → `notifications.manage_templates`). Committed `notification.module.ts` already had the DI (`b4577f20`) — no module change.
+- This change — `smoke-cross-tenant.mjs` +1 probe: plain non-admin `POST /notification-templates` → 403 (runtime proof the now-committed controller + already-committed module DI actually work together — closing this episode's exact committed-vs-working-tree divergence at runtime).
+
+Verified (correctly this time — against the COMMITTED tree):
+- `git grep "@UseGuards([^)]*AdminGuard" HEAD -- apps/api/src | grep -v spec` → only doc-comment matches; **zero real decorators**. `git show HEAD:.../notification.controller.ts` → 4× `@RequirePermission('notifications.manage_templates')`.
+- `pnpm --filter @prequest/api test -- "permission-catalog|require-permission|admin.guard.spec|admin-guard-permission-parity"` → **151/151** (7 suites; the 4 notification pins included; AdminGuard census still zero).
+- `pnpm smoke:cross-tenant` → **31/31**, exit 0 (incl. the new notification-templates non-admin→403). `pnpm smoke:work-orders` → **109/109**.
+
+Honest restatement: "zero `@UseGuards(AdminGuard)` callers" is now TRUE **for committed HEAD as of `3aecf0e8`** (it was working-tree-only before). The earlier blocks asserting it pre-`3aecf0e8` were committed-state-wrong; this block is the correction of record. Still NOT on `main` — branch `feature/booking-audit-remediation`, merge gated on the parallel 03-booking workstream (unchanged).
+
 ## Agent Handoff Prompt
 
 ```text
