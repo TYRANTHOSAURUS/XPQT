@@ -157,7 +157,6 @@ function makeService(opts: {
     supabase as never,
     {} as never,
     {} as never,
-    {} as never,
     eventBus,
   );
   return { svc, captured, eventBus, unsubscribe: () => sub.unsubscribe() };
