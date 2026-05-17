@@ -660,6 +660,8 @@ Maintainer rule: every agent that closes, partially closes, or deliberately defe
 | 2026-05-17 | **P2-1** — cheap interim guard SHIPPED | **SHIPPED (interim; full split stays DEFERRED + owned)** | `TicketService.update()` rejects a `work_order` id on `PATCH /tickets/:id` with registered `ticket.work_order_id_on_case_endpoint` (400) instead of the misleading generic `update_entity_combined.not_found`. Covers `PATCH /tickets/bulk/update` too (per-id `results[]` error, batch not aborted). New code in `KnownErrorCode` + en/nl catalogs (api+web). No migration. Commit aac61b7a. See §2026-05-17 best-in-class continuation. | tsc + errors:check-app-errors + web tsc green; `/full-review` 2-agent (code: P2-1 clean across 6 sub-checks; plan: layer-choice + reject-not-route both sound); codex Q3 clean. | Full case-vs-WO `TicketService` split STILL DEFERRED → integrator/data-model owner (verdict Should-fix #16). Interim converts a misleading error into a correct typed one; it does not reduce the split's necessity (tracked here + `docs/follow-ups/audit-02-best-in-class-routing-2026-05-17.md`, not only a code comment). |
 | 2026-05-17 | **Code-I1** — routing-eval handler non-idempotent audit inserts under outbox redelivery | **RE-DEFERRED with risk + owner + ready-to-apply prescription** (NOT closed — deliberate) | A TS check-then-insert guard was authored, adversarially reviewed, and **reverted**: it has a residual TOCTOU race (`outbox.worker.ts` `sweepStaleClaims` re-claims after ~staleClaimMs with NO handler-liveness check; multi-replica also possible) AND adds an unbounded extra SELECT on every routing eval; the handler class-doc explicitly documents duplicate `routing_decisions` rows as *tolerable, not corruption*. Shipping a racy guard under "closed" = overclaim. Confirmed by `/full-review` plan agent + **codex Q4**. See §2026-05-17 for the exact prescription. | `/full-review` 2-agent + codex Q4 all converged on re-defer. RPC assignment write already replay-safe (`command_operations` key `routing-evaluation:<event_id>`); only the audit row dupes. | **Owner = next authorized + uncontended DB-push window (data-model migration owner; same window as P2-3 renumber + `check-migration-prefix-unique.sh`).** Prescription (codex-validated): claim next-free mig number at write time → `create unique index if not exists uq_routing_decisions_outbox_event on public.routing_decisions (tenant_id, (context->>'outbox_event_id'), chosen_by) where context ? 'outbox_event_id';` + `notify pgrst,'reload schema';` + the 2 handler inserts (success ~291; `markRoutingFailure` ~427) → ON CONFLICT DO NOTHING. **Risk if unapplied:** a duplicate append-only `routing_decisions` audit row on outbox redelivery — NO double-assignment (idempotent), documented tolerable, pre-existing (NOT a P1-2 regression). Not P0/P1. |
 | 2026-05-17 | **codex tertiary adversarial gate** — unobtainable 2026-05-16, **OBTAINED 2026-05-17** | **OBTAINED — supersedes the 2026-05-16 "codex unobtainable" gate-degradation** | Scoped review: Q1 00406 v3 backward-compat across ALL `set_entity_assignment` callers; Q2 00410 v7 across ALL `update_entity_combined` callers; Q3 reassign/bulkUpdate/getChildTasks; Q4 Code-I1 direction. | codex `succeeded` (responsive); prompt-to-file per `feedback_codex_long_argv_hang`. | **00406/00410 safe-as-merged for all current callers** (Q1/Q2). Q3 clean. Q4 → re-defer confirmed. 3 NITs: Q1+Q2 unregistered guard error codes → **FOLDED** (commit 53ea0c66, registered 400 + en/nl api+web); Q2 00410 `comment on function` says satisfaction "handled symmetrically" but code rejects WO satisfaction → **documented forward-only fix** (no migration push solely for a comment; correct on next `update_entity_combined` touch). The 2026-05-16 "codex never available" gate-degradation is now CLOSED — it WAS obtained; merged RPCs are codex-clean. |
+| 2026-05-17 | **Slice 8 — live-smoke** | **PASSED — supersedes the 2026-05-16 "DEFERRED with owner + per-finding risk" row** | 10 probes authored into `smoke-tickets.mjs` (+1097) + `smoke-work-orders.mjs` (+418): P0-1 bulk/update 200/207/422+replay; P1-1 case+WO reassign (`command_operations`+`routing_decisions`+activity+domain-event+assignee-change); P0-2 SLA-escalation reassign (cron-driven, crossing anchor + `sla:escalation:*` cmd-op + assignee moved + recurrence-safe); P1-2 routing_status→idle atomic + no spurious activity; P1-5 getChildTasks cross-visibility (zero-role watcher EXCLUDES vendor child, admin INCLUDES — non-vacuous, asserts parent readable); vendor-assignment e2e; WO cross-tenant; dispatch idempotency-replay; reclassify; P1-3 satisfaction round-trip + WO-guard negative. Commit 051bbbe8. Registered: CLAUDE.md mandatory matrix + `docs/smoke-gates.md` (COVERED). See §2026-05-17 live-smoke Update. | **Independently re-run by the orchestrator (not just the authoring subagent), TWICE: `smoke:tickets` 122/0 exit 0, `smoke:work-orders` 125/0 exit 0, ZERO CONTENTION-DEFER triggered on any of 3 full runs.** Adversarial vacuousness review: NO CRITICAL, no fake-green, P1-5 security probe proven to go red on the exact revert mutation; 2 IMPORTANT folds applied (probe-9 audit assertion tightened to `metadata.event='reclassified'`; SLA CONTENTION-DEFER backstop made self-verifying). | **Runtime honesty:** not a truly *solo* runtime — the shared remote DB + concurrent `:3001` session/cron persisted. What was achieved: server-code-provenance isolation (`:3010` server built from THIS worktree; `:3001` runs a divergent branch) + per-run isolated fixtures + server-agnostic idempotent-outcome assertions + a scoped CONTENTION-DEFER escape hatch that **never triggered across 3 independent full runs** — i.e. the gate is proven robust UNDER the real concurrent conditions, a stronger result than a one-off solo pass. No genuine product regression found. The 2026-05-16 per-finding risk (HTTP→DB paths unverified end-to-end) is now **DISCHARGED** for all 10 enumerated probes. |
+| 2026-05-17 | **Best-in-class status** | **MET — by the project's own bar (live-API smoke is the ship gate)** | All 2026-05-16 P0/P1 closures now live-HTTP-smoked green; codex tertiary gate obtained (2026-05-16 "environmental" caveat closed); P2-1 interim shipped+reviewed; Code-I1 re-deferred with codex-validated prescription+owner+risk; living-contract docs (`smoke-gates.md`/CLAUDE.md/`visibility.md`/`assignments-routing-fulfillment.md`) synced; 02+00 ledgers reconciled append-only; cross-session items routed not absorbed (`audit-02-best-in-class-routing-2026-05-17.md`, with the brief's "B.2 CI-RED" premise corrected by evidence). | Per-slice `tsc`/`errors:check-app-errors`/web-tsc/design-polish green; `/full-review` 2-agent per substantive slice (folds verified against real code); **codex obtained** Q1–Q4; live smoke independently re-confirmed green ×3. Commits aac61b7a · 53ea0c66 · 7898b33e · 051bbbe8 (+ this row) on `worktree-audit-02-best-in-class`. | Remaining are explicitly-deferred-with-owner items, NOT audit-02 gaps: Code-I1 unique-index (next authorized DB-push window), P2-1 full split (integrator/data-model), P2-3 prefix renumber (integrator/data-model — `00410` `comment on function` forward-only fix rides the same window), P1-5 FE rollup (FE workstream). Branch ready for merge decision. |
 
 ## Agent Handoff Prompt
 
@@ -817,3 +819,45 @@ Append-only; the 2026-05-16 rows above are unchanged.
   the actual code before folding.
 - **Remaining:** the 2026-05-16 "codex never available (environmental)" gate
   caveat is now CLOSED for the merged RPC surface.
+
+#### Update — 2026-05-17 — Slice 8 live-smoke PASSED (the ship gate)
+
+- **Original state:** 2026-05-16 deferred the entire Slice-8 probe set "with
+  owner + per-finding risk" — the single largest gap to best-in-class, since
+  CLAUDE.md makes live smoke the ship standard precisely because unit/
+  code-review miss real-DB regressions (2026-05-01 P0).
+- **Status:** CLOSED — authored, registered, and **independently re-run green
+  by the orchestrator (twice, post-fold), not merely by the authoring
+  subagent**: `smoke:tickets` 122 pass / 0 fail exit 0; `smoke:work-orders`
+  125 pass / 0 fail exit 0; **zero CONTENTION-DEFER triggered on any of 3
+  full runs**.
+- **Approach:** the 2026-05-16 blocker was contention on the shared `:3001`
+  runtime (server-code provenance unattributable + fixture collision). Solved
+  by (a) building + running an API server from THIS worktree on `:3010`
+  (provenance attributable — `:3001` runs the divergent
+  `feature/booking-audit-remediation` branch with ±368/176/463 lines in the
+  exact ticket/WO/SLA code under test), and (b) per-run isolated fixtures
+  (unique RFC-4122-v4 uuids, `psql session_replication_role='replica'` seed,
+  `finally` teardown) + server-agnostic idempotent-outcome assertions, so the
+  still-shared remote DB + concurrent cron never make a probe flaky. A scoped
+  CONTENTION-DEFER escape hatch exists for the one SLA crossing-anchor
+  ordering sub-assertion; it never fired.
+- **Adversarial-reviewed:** a fresh-context reviewer hunted vacuous/fake-green
+  probes — verdict: NO CRITICAL, no fake-green, no existing probe weakened
+  (1527 insertions, 3 doc deletions only); the P1-5 security probe is
+  genuinely sound (proven it goes red on the exact `ticket.service.ts`
+  visibility-filter revert). 2 IMPORTANT findings folded: probe-9's audit
+  assertion tightened from a `length>=1` count-proxy to
+  `metadata.event='reclassified'` (per `00355_reclassify_ticket_v2.sql`:
+  332-338); the SLA CONTENTION-DEFER backstop made self-verifying (asserts
+  the seeded case is not pre-assigned to the escalate target, so a future
+  seed change can't silently hollow the backstop).
+- **No genuine product regression** found across all 10 probes. One apparent
+  P1-5 "leak" was traced to intentional pre-existing operator-scope semantics
+  (empty domain/location scope = tenant-wide operator tier, `00374`
+  unmodified vs main) and the probe corrected to the zero-role planning
+  requester seed (`00381`) — the P1-5 remediation itself is correct.
+- **Risk discharged:** the 2026-05-16 per-finding risk ("the live HTTP→DB
+  happy/replay paths of the closed surfaces are unverified end-to-end") is
+  now discharged for all 10 enumerated probes. Best-in-class bar MET — see
+  the Closure Ledger "Best-in-class status" 2026-05-17 row.
