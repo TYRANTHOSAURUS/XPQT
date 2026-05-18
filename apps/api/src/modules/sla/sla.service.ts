@@ -841,9 +841,25 @@ export class SlaService {
     // successful applyReassignment for the purpose of the downstream
     // crossing gate in fireThreshold). This restores R-A02-2: the stuck
     // escalation finally records its crossing + fires side-effects exactly
-    // once. `in_progress` is NOT a short-circuit signal (another tick
-    // mid-flight holds the key — the RPC's own advisory-lock + gate is the
-    // authoritative WRITE-side guard; this is purely the READ side).
+    // once.
+    //
+    // M-1 (CR2 code-review): this method's boolean return is now
+    // TRI-SOURCE — `true` means "an assignment delta was applied this
+    // tick" OR "an idempotent no-op replay" OR (here) "a prior tick's
+    // RPC already committed under this key". All three are correct
+    // "assignment is durable, proceed to the crossing gate" signals for
+    // fireThreshold; do NOT 'simplify' this back to a pure changed flag.
+    //
+    // M-2 (CR2 code-review): `in_progress` is deliberately NOT a
+    // short-circuit signal — another tick mid-flight holds the key. The
+    // RPC's advisory-lock + payload-hash gate is the authoritative
+    // WRITE-side guard; this probe is purely the READ side. Convergence
+    // is across TICKS, not within the racing tick: a tick that races a
+    // concurrent in_progress op and recomputes a drifted payload may
+    // still throw `payload_mismatch` ONCE — the next cron tick then
+    // probes the now-committed `success` row and completes. Bounded,
+    // self-healing in ≤1 tick; never permanent (pre-CR2 it was permanent
+    // because no tick ever short-circuited).
     const stableKey = buildSlaEscalationIdempotencyKey(
       timer.id,
       threshold.at_percent,

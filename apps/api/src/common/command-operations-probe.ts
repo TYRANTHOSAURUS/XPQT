@@ -33,7 +33,14 @@
  * short-circuits: `outcome='in_progress'` means a concurrent op holds the
  * key (00316:37 — the v6 outcome enum is exactly ('in_progress',
  * 'success')); callers decide how to treat in_progress per their own
- * concurrency model.
+ * concurrency model. NOTE (M-2, CR2 review): this read closes the
+ * PERMANENT poison (a sequential retry/recovery short-circuits on the
+ * committed `success` row). It does NOT serialize concurrent same-key
+ * callers — a caller racing a concurrent in_progress op falls through,
+ * and if it recomputes a drifted payload the RPC may still
+ * `payload_mismatch` ONCE; the failure is bounded and self-heals on the
+ * next attempt (the success row now makes its probe hit). Convergence is
+ * across attempts, not within the racing one.
  *
  * Citations:
  *   - supabase/migrations/00316_command_operations_table.sql:32-54
