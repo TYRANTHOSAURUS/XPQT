@@ -111,83 +111,15 @@ export class NotificationService {
     return results;
   }
 
-  /**
-   * Get in-app notifications for a person.
-   */
-  async getInAppForPerson(personId: string, unreadOnly = false) {
-    const tenant = TenantContext.current();
-
-    let query = this.supabase.admin
-      .from('notifications')
-      .select('*')
-      .eq('tenant_id', tenant.id)
-      .eq('recipient_person_id', personId)
-      .eq('target_channel', 'in_app')
-      .order('created_at', { ascending: false })
-      .limit(50);
-
-    if (unreadOnly) {
-      query = query.is('read_at', null);
-    }
-
-    const { data, error } = await query;
-    if (error) throw error;
-    return data;
-  }
-
-  /**
-   * Mark a notification as read.
-   *
-   * Cross-tenant write fix (codex post-fix review 2026-05-08): the prior
-   * implementation updated by id alone. supabase.admin bypasses RLS, so a
-   * cross-tenant or colliding notification id from any authed user could
-   * flip another tenant's notification to "read". Filter by tenant.
-   */
-  async markAsRead(notificationId: string) {
-    const tenant = TenantContext.current();
-    const { error } = await this.supabase.admin
-      .from('notifications')
-      .update({ status: 'read', read_at: new Date().toISOString() })
-      .eq('id', notificationId)
-      .eq('tenant_id', tenant.id);
-
-    if (error) throw error;
-    return { read: true };
-  }
-
-  /**
-   * Mark all in-app notifications as read for a person.
-   */
-  async markAllAsRead(personId: string) {
-    const tenant = TenantContext.current();
-    const { error } = await this.supabase.admin
-      .from('notifications')
-      .update({ status: 'read', read_at: new Date().toISOString() })
-      .eq('tenant_id', tenant.id)
-      .eq('recipient_person_id', personId)
-      .eq('target_channel', 'in_app')
-      .is('read_at', null);
-
-    if (error) throw error;
-    return { read_all: true };
-  }
-
-  /**
-   * Get unread notification count for a person.
-   */
-  async getUnreadCount(personId: string) {
-    const tenant = TenantContext.current();
-    const { count, error } = await this.supabase.admin
-      .from('notifications')
-      .select('id', { count: 'exact', head: true })
-      .eq('tenant_id', tenant.id)
-      .eq('recipient_person_id', personId)
-      .eq('target_channel', 'in_app')
-      .is('read_at', null);
-
-    if (error) throw error;
-    return { unread_count: count ?? 0 };
-  }
+  // The per-person in-app *consumer* surface (list / unread-count /
+  // mark-read / mark-all-read) lived here behind caller-supplied
+  // id/personId with no recipient binding — a same-tenant IDOR
+  // (docs/follow-ups/audits/04-rls-security.md, codex 2026-05-18 #1).
+  // It had zero callers; the live inbox is the auth-bound, server-derived
+  // `/me/inbox/*` (InboxService/InboxController, B.4.A.5). The dead
+  // methods + routes were deleted. This class is now producer-only
+  // (`send` / `sendToTeam`) plus the tenant-wide notification TEMPLATE
+  // admin surface.
 
   // ─── Notification Templates ───────────────────────────────────────────────
 
