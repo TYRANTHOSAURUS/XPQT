@@ -13,6 +13,7 @@ import type {
 import { crossingKey } from './sla-threshold.types';
 import { percentElapsed, selectApplicableThresholds } from './sla-threshold.helpers';
 import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
+import { probeCommandOperationSuccess } from '../../common/command-operations-probe';
 import { buildSlaEscalationIdempotencyKey } from '@prequest/shared';
 
 @Injectable()
@@ -818,6 +819,45 @@ export class SlaService {
     threshold: EscalationThreshold,
     policyName: string,
   ): Promise<boolean> {
+    // audit02 CR2 / D-A02-4: caller-side command_operations success-probe
+    // BEFORE recomputing the mutable payload. The SLA escalation reuses
+    // the STABLE key `sla:escalation:<timer>:<pct>:<type>` but builds
+    // p_payload from MUTABLE state (watchers — v3 internally dedups/orders
+    // so a fresh client-side `Array.from(new Set(...))` differs from the
+    // stored set; assignment/reason can drift from an intervening manual
+    // reassign). The poison path: tick-1's RPC commits a
+    // command_operations success row, then writeCrossing (or any step
+    // after the RPC, before the crossing) crashes → NO crossing row. A
+    // later tick re-enters here, recomputes a DRIFTED payload → same key +
+    // different hash → `command_operations.payload_mismatch` (00419:200) →
+    // throw BEFORE writeCrossing → the escalation is permanently poisoned
+    // and R-A02-2's no-permanent-suppression is broken.
+    //
+    // If a `success` row already exists under the stable key, the
+    // canonical assignment write ALREADY committed (idempotently, by a
+    // prior tick whose post-RPC step failed). Short-circuit WITHOUT
+    // recomputing the mutable payload or re-calling the RPC — return
+    // `true` ("assignment already done", which is equivalent to a fresh
+    // successful applyReassignment for the purpose of the downstream
+    // crossing gate in fireThreshold). This restores R-A02-2: the stuck
+    // escalation finally records its crossing + fires side-effects exactly
+    // once. `in_progress` is NOT a short-circuit signal (another tick
+    // mid-flight holds the key — the RPC's own advisory-lock + gate is the
+    // authoritative WRITE-side guard; this is purely the READ side).
+    const stableKey = buildSlaEscalationIdempotencyKey(
+      timer.id,
+      threshold.at_percent,
+      timer.timer_type,
+    );
+    const committed = await probeCommandOperationSuccess(
+      this.supabase,
+      ticket.tenant_id,
+      stableKey,
+    );
+    if (committed) {
+      return true;
+    }
+
     const assignment: Record<string, unknown> = {};
     let changed = false;
     const newWatchers = new Set<string>((ticket.watchers as string[] | null) ?? []);
@@ -866,11 +906,7 @@ export class SlaService {
     }
 
     if (changed) {
-      const idempotencyKey = buildSlaEscalationIdempotencyKey(
-        timer.id,
-        threshold.at_percent,
-        timer.timer_type,
-      );
+      const idempotencyKey = stableKey;
       const { error } = await this.supabase.admin.rpc('set_entity_assignment', {
         p_entity_id: ticket.id,
         p_entity_kind: kind,

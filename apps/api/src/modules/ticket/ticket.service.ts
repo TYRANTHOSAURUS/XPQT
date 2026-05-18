@@ -9,6 +9,7 @@ import {
 import { AppError, AppErrors, mapRpcErrorToAppError } from '../../common/errors';
 import { hasOwnDefined } from '../../common/has-own-defined';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { probeCommandOperationSuccess } from '../../common/command-operations-probe';
 import {
   assertTenantOwned,
   validateAssigneesInTenant,
@@ -1275,6 +1276,46 @@ export class TicketService {
       });
     }
 
+    // The clientRequestId is the idempotency-key seed; validate it BEFORE
+    // the resolver re-evaluation (audit02 CR2 — the success-probe below
+    // needs the stable key). Hoisted up from the pre-RPC site; the
+    // contract (400 when absent) is unchanged.
+    if (!clientRequestId) {
+      throw AppErrors.badRequest(
+        'command_operations.client_request_id_required',
+        'POST /tickets/:id/reassign requires X-Client-Request-Id header per I1 (RequireClientRequestIdGuard).',
+      );
+    }
+    const reassignKey = buildReassignIdempotencyKey('case', id, clientRequestId);
+
+    // audit02 CR2 / D-A02-4: caller-side command_operations success-probe
+    // BEFORE re-evaluating the resolver / recomputing the payload. The
+    // reassign key `reassign:case:<id>:<crid>` is STABLE, but a retried
+    // request with the SAME crid re-runs the resolver before the RPC; if
+    // routing config / ticket state drifted between the original and the
+    // retry the recomputed `decision` differs → same key + different
+    // payload hash → `command_operations.payload_mismatch` (00419:200)
+    // → the retry errors instead of replaying the original. (Manual
+    // reassign is a pure function of the stable dto+crid → already safe;
+    // the uniform guard is applied there too for defense-in-depth.) If a
+    // `success` row already exists under the stable key, the canonical
+    // write committed atomically (assignment + status inherit +
+    // routing_decisions + activity + event); return the SAME externally-
+    // visible result the original call returned (getById — cached_result
+    // 00419:803-816 does not carry the full ticket shape, so a tenant-
+    // scoped re-fetch is the correct way to reproduce the contract; the
+    // write already happened). `in_progress` is NOT a short-circuit
+    // signal — that's the RPC's own advisory-lock window; let the RPC
+    // call below handle it exactly as today.
+    const reassignCommitted = await probeCommandOperationSuccess(
+      this.supabase,
+      tenant.id,
+      reassignKey,
+    );
+    if (reassignCommitted) {
+      return this.getById(id, SYSTEM_ACTOR);
+    }
+
     // audit02 Slice C (P1-1): every reassign — manual OR rerun_resolver —
     // commits through the canonical `set_entity_assignment` v3 RPC (00416)
     // in ONE transaction (assignment columns + status_category inherit +
@@ -1425,13 +1466,6 @@ export class TicketService {
     };
     if (decision) payload.decision = decision;
 
-    if (!clientRequestId) {
-      throw AppErrors.badRequest(
-        'command_operations.client_request_id_required',
-        'POST /tickets/:id/reassign requires X-Client-Request-Id header per I1 (RequireClientRequestIdGuard).',
-      );
-    }
-
     const { error: rpcErr } = await this.supabase.admin.rpc(
       'set_entity_assignment',
       {
@@ -1442,7 +1476,7 @@ export class TicketService {
         // SYSTEM_ACTOR collapses to null (the RPC's actor_person resolve
         // falls through cleanly).
         p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
-        p_idempotency_key: buildReassignIdempotencyKey('case', id, clientRequestId),
+        p_idempotency_key: reassignKey,
         p_payload: payload,
       },
     );

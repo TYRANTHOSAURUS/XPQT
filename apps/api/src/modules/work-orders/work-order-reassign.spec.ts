@@ -54,6 +54,12 @@ function makeDeps(
     // null → simulate a refetch miss after the RPC committed.
     refetchRow?: WorkOrderRow | null;
     rpcError?: { message: string; code?: string } | null;
+    // audit02 CR2 / D-A02-4: command_operations success-probe rows keyed
+    // by idempotency_key. A `success` row short-circuits the RPC.
+    commandOps?: Record<
+      string,
+      { outcome: string; cached_result: Record<string, unknown> | null } | null
+    >;
   } = {},
 ) {
   let row: WorkOrderRow = { ...initial };
@@ -62,6 +68,7 @@ function makeDeps(
   const routingDecisions: Array<Record<string, unknown>> = [];
   const permissionChecks: Array<{ user_id: string; permission: string }> = [];
   const rpcCalls: RpcCall[] = [];
+  const commandOpsProbes: Array<Record<string, unknown>> = [];
   let woSelectCalls = 0;
 
   const teams = options.teams ?? [];
@@ -160,6 +167,25 @@ function makeDeps(
             },
           } as unknown;
         }
+        if (table === 'command_operations') {
+          const filters: Record<string, unknown> = {};
+          const chain: Record<string, unknown> = {
+            select: () => chain,
+            eq: (col: string, val: unknown) => {
+              filters[col] = val;
+              return chain;
+            },
+            maybeSingle: async () => {
+              commandOpsProbes.push({ ...filters });
+              const key = filters.idempotency_key as string;
+              return {
+                data: options.commandOps?.[key] ?? null,
+                error: null,
+              };
+            },
+          };
+          return chain as unknown;
+        }
         throw new Error(`unexpected table in mock: ${table}`);
       }),
       rpc: jest.fn(async (fn: string, args: Record<string, unknown>) => {
@@ -214,6 +240,7 @@ function makeDeps(
     routingDecisions,
     permissionChecks,
     rpcCalls,
+    commandOpsProbes,
     supabase,
     slaService,
     visibility,
@@ -618,5 +645,51 @@ describe('WorkOrderService.reassign — audit02 Slice C (P1-1)', () => {
         CRID,
       ),
     ).rejects.toThrow(AppError);
+  });
+
+  // ── audit02 CR2 / D-A02-4 — command_operations success-probe ─────────
+  // WO manual reassign is payload-stable, but the uniform guard is
+  // applied for consistency/defense-in-depth: a retry with the SAME crid
+  // that finds a committed command_operations success row returns the
+  // contracted refetched row WITHOUT re-calling the RPC.
+  it('retry with a committed command_operations success row: NO RPC, returns the refetched work_order row', async () => {
+    const crid = 'crid-wo-retry';
+    const key = buildReassignIdempotencyKey('work_order', 'wo1', crid);
+    const deps = makeDeps(
+      {
+        id: 'wo1',
+        tenant_id: TENANT,
+        status: 'assigned',
+        status_category: 'assigned',
+        assigned_team_id: 'team-new',
+        assigned_user_id: null,
+        assigned_vendor_id: null,
+      },
+      {
+        teams: [{ id: 'team-new', tenant_id: TENANT }],
+        commandOps: {
+          [key]: { outcome: 'success', cached_result: { noop: false } },
+        },
+      },
+    );
+    const svc = makeSvc(deps);
+
+    const result = await svc.reassign(
+      'wo1',
+      { assigned_team_id: 'team-new', reason: 'retry same crid' },
+      SYSTEM_ACTOR,
+      crid,
+    );
+
+    // RPC NOT re-called — the canonical write already committed.
+    expect(assignCalls(deps.rpcCalls)).toHaveLength(0);
+    // Contracted return shape: the refetched work_order row.
+    expect(result).toMatchObject({ id: 'wo1' });
+    // Probe was tenant-scoped on the stable reassign key.
+    expect(deps.commandOpsProbes).toHaveLength(1);
+    expect(deps.commandOpsProbes[0]).toMatchObject({
+      tenant_id: TENANT,
+      idempotency_key: key,
+    });
   });
 });

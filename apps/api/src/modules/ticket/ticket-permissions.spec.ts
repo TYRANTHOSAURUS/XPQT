@@ -152,6 +152,17 @@ function makeDeps(
           });
           return chain as unknown;
         }
+        if (table === 'command_operations') {
+          // audit02 CR2 / D-A02-4: reassign() success-probes
+          // command_operations before re-evaluating/re-calling the RPC.
+          // These permission-gate tests exercise the NORMAL (no prior
+          // commit) path → return no row so the probe falls through.
+          const chain: Record<string, unknown> = {};
+          chain.select = () => chain;
+          chain.eq = () => chain;
+          chain.maybeSingle = async () => ({ data: null, error: null });
+          return chain as unknown;
+        }
         // Catch-all (ticket_activities, domain_events, etc.).
         return {
           insert: () => ({

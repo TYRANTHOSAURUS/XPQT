@@ -625,4 +625,108 @@ describe('TicketService.reassign — audit02 Slice C (P1-1)', () => {
 
     expect(assignCalls(deps.rpcCalls)).toHaveLength(0);
   });
+
+  // ── audit02 CR2 / D-A02-4 — command_operations success-probe ─────────
+  // The reassign key `reassign:case:<id>:<crid>` is stable. A retried
+  // request with the SAME crid that re-evaluates the resolver before the
+  // RPC can hit `payload_mismatch` if routing/ticket state drifted
+  // between the original and the retry. Fix: probe command_operations for
+  // a `success` row under the stable key BEFORE re-evaluating; if present
+  // the canonical write already committed → return the contracted result
+  // (getById) WITHOUT re-evaluating / re-calling the RPC.
+
+  it('rerun_resolver retry with a committed command_operations success row: NO evaluate, NO RPC, returns getById result', async () => {
+    const crid = 'crid-case-retry';
+    const key = buildReassignIdempotencyKey('case', TICKET_ID, crid);
+    const deps = makeSupabase({
+      command_operations: [
+        {
+          tenant_id: TENANT.id,
+          idempotency_key: key,
+          outcome: 'success',
+          cached_result: { noop: false },
+        },
+      ],
+    });
+    const routingService = {
+      evaluate: jest.fn(),
+      recordDecision: jest.fn(),
+    };
+    const { svc } = makeSvc(deps, routingService);
+
+    const ticketRow = {
+      id: TICKET_ID,
+      tenant_id: TENANT.id,
+      ticket_kind: 'case',
+      ticket_type_id: null,
+      location_id: null,
+      asset_id: null,
+      priority: 'medium',
+      assigned_team_id: NEW_TEAM,
+      assigned_user_id: null,
+      assigned_vendor_id: null,
+      status_category: 'assigned',
+    };
+    const getByIdSpy = jest
+      .spyOn(svc, 'getById')
+      .mockResolvedValue(ticketRow as never);
+
+    const result = await svc.reassign(
+      TICKET_ID,
+      { rerun_resolver: true, reason: 'retry same crid', actor_person_id: 'p-1' },
+      'auth-uid',
+      crid,
+    );
+
+    // Resolver NOT re-run, RPC NOT re-called — the write already committed.
+    expect(routingService.evaluate).not.toHaveBeenCalled();
+    expect(assignCalls(deps.rpcCalls)).toHaveLength(0);
+    // Contracted return shape preserved (getById, the original return).
+    expect(result).toMatchObject({ id: TICKET_ID });
+    // getById was used to produce the return (the visibility-gated
+    // pre-read + the final return both call it; the final return is what
+    // matters for the contract).
+    expect(getByIdSpy).toHaveBeenCalled();
+  });
+
+  it('manual reassign retry with a committed command_operations success row: NO RPC, returns getById result', async () => {
+    const crid = 'crid-case-manual-retry';
+    const key = buildReassignIdempotencyKey('case', TICKET_ID, crid);
+    const deps = makeSupabase({
+      command_operations: [
+        {
+          tenant_id: TENANT.id,
+          idempotency_key: key,
+          outcome: 'success',
+          cached_result: { noop: false },
+        },
+      ],
+    });
+    const routingService = { evaluate: jest.fn(), recordDecision: jest.fn() };
+    const { svc } = makeSvc(deps, routingService);
+
+    jest.spyOn(svc, 'getById').mockResolvedValue({
+      id: TICKET_ID,
+      tenant_id: TENANT.id,
+      ticket_kind: 'case',
+      ticket_type_id: null,
+      location_id: null,
+      asset_id: null,
+      priority: 'medium',
+      assigned_team_id: NEW_TEAM,
+      assigned_user_id: null,
+      assigned_vendor_id: null,
+      status_category: 'assigned',
+    } as never);
+
+    const result = await svc.reassign(
+      TICKET_ID,
+      { assigned_team_id: NEW_TEAM, reason: 'manual retry', actor_person_id: 'p-1' },
+      'auth-uid',
+      crid,
+    );
+
+    expect(assignCalls(deps.rpcCalls)).toHaveLength(0);
+    expect(result).toMatchObject({ id: TICKET_ID });
+  });
 });

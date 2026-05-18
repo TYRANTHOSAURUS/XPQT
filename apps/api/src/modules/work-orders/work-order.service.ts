@@ -8,6 +8,7 @@ import {
   buildReassignIdempotencyKey,
 } from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { probeCommandOperationSuccess } from '../../common/command-operations-probe';
 import { TenantContext } from '../../common/tenant-context';
 import {
   validateAssigneesInTenant,
@@ -986,6 +987,57 @@ export class WorkOrderService {
         'POST /work-orders/:id/reassign requires X-Client-Request-Id header per I1 (RequireClientRequestIdGuard).',
       );
     }
+    const reassignKey = buildReassignIdempotencyKey(
+      'work_order',
+      workOrderId,
+      clientRequestId,
+    );
+
+    // Refetch so the response shape carries every v3-side side effect
+    // (status_category inheritance, updated_at). Shared by the normal
+    // post-RPC path and the audit02 CR2 success-probe short-circuit.
+    const refetchContracted = async (): Promise<WorkOrderRow> => {
+      const { data: refreshed, error: refetchErr } = await this.supabase.admin
+        .from('work_orders')
+        .select('*')
+        .eq('id', workOrderId)
+        .eq('tenant_id', tenant.id)
+        .maybeSingle();
+      if (refetchErr) throw refetchErr;
+      if (!refreshed) {
+        // Closes audit P2-4: the legacy code threw
+        // `forbidden('work_order.no_longer_accessible')` here, which
+        // misleadingly suggested a permission failure. The v3 RPC
+        // committed under service_role + tenant_id matched — a null
+        // refetch means the row was deleted concurrently or the
+        // PostgREST cache is stale. `notFound` is the correct shape
+        // (mirrors WorkOrderService.update @ work-order.service.ts:507).
+        throw AppErrors.notFound('work_order', workOrderId);
+      }
+      return refreshed as WorkOrderRow;
+    };
+
+    // audit02 CR2 / D-A02-4: caller-side command_operations success-probe
+    // BEFORE re-calling the RPC. WO manual reassign is payload-stable
+    // (pure function of the stable dto+crid), so it can't poison itself —
+    // but the uniform guard is applied for consistency/defense-in-depth
+    // with the case-side + SLA + routing-handler callers. If a `success`
+    // row already exists under the stable `reassign:work_order:<id>:<crid>`
+    // key, the canonical write committed atomically — return the SAME
+    // externally-visible result the original call returned (the refetched
+    // work_orders row; cached_result 00419:803-816 doesn't carry the full
+    // row shape so a tenant-scoped re-fetch is the correct contract
+    // reproduction) WITHOUT re-calling the RPC. `in_progress` is NOT a
+    // short-circuit signal — that's the RPC's own advisory-lock window;
+    // let the RPC call below handle it exactly as today.
+    const reassignCommitted = await probeCommandOperationSuccess(
+      this.supabase,
+      tenant.id,
+      reassignKey,
+    );
+    if (reassignCommitted) {
+      return refetchContracted();
+    }
 
     const { error: rpcErr } = await this.supabase.admin.rpc(
       'set_entity_assignment',
@@ -997,11 +1049,7 @@ export class WorkOrderService {
         // SYSTEM_ACTOR collapses to null (the RPC's actor_person resolve
         // falls through cleanly).
         p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
-        p_idempotency_key: buildReassignIdempotencyKey(
-          'work_order',
-          workOrderId,
-          clientRequestId,
-        ),
+        p_idempotency_key: reassignKey,
         p_payload: {
           // Send all three explicitly so v3 performs a clean overwrite
           // (omitted = "no change"; explicit null = "clear").
@@ -1015,26 +1063,7 @@ export class WorkOrderService {
     );
     if (rpcErr) throw mapRpcErrorToAppError(rpcErr);
 
-    // Refetch so the response shape carries every v3-side side effect
-    // (status_category inheritance, updated_at).
-    const { data: refreshed, error: refetchErr } = await this.supabase.admin
-      .from('work_orders')
-      .select('*')
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id)
-      .maybeSingle();
-    if (refetchErr) throw refetchErr;
-    if (!refreshed) {
-      // Closes audit P2-4: the legacy code threw
-      // `forbidden('work_order.no_longer_accessible')` here, which
-      // misleadingly suggested a permission failure. The v3 RPC
-      // committed under service_role + tenant_id matched — a null
-      // refetch means the row was deleted concurrently or the
-      // PostgREST cache is stale. `notFound` is the correct shape
-      // (mirrors WorkOrderService.update @ work-order.service.ts:507).
-      throw AppErrors.notFound('work_order', workOrderId);
-    }
-    return refreshed as WorkOrderRow;
+    return refetchContracted();
   }
 
   /**

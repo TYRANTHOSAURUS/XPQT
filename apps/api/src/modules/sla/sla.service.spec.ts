@@ -367,6 +367,18 @@ describe('SlaService.applyReassignment — audit02 Slice B (P0-2)', () => {
             };
             return chain;
           }
+          // audit02 CR2 / D-A02-4: applyReassignment now success-probes
+          // command_operations BEFORE the recompute. These Slice B tests
+          // exercise the NORMAL (no prior commit) path → return no row so
+          // the probe falls through to the RPC exactly as before.
+          if (table === 'command_operations') {
+            const chain: Record<string, unknown> = {
+              select: () => chain,
+              eq: () => chain,
+              maybeSingle: async () => ({ data: null, error: null }),
+            };
+            return chain;
+          }
           // Any raw tickets/work_orders update is a regression for the
           // assignment+watchers write.
           if (table === 'tickets' || table === 'work_orders') {
@@ -724,5 +736,344 @@ describe('SlaService.fireThreshold — R-A02-2 crossing-insert gates side-effect
     ).toHaveLength(1);
     const applySpy = svc.applyReassignment as unknown as jest.Mock;
     expect(applySpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('SlaService.applyReassignment — audit02 CR2 / D-A02-4 success-probe short-circuit', () => {
+  // D-A02-4: the SLA escalation reuses the STABLE idempotency key
+  // `sla:escalation:<timer>:<pct>:<type>` but recomputes p_payload from
+  // MUTABLE state (watchers v3-dedup/order, an intervening manual
+  // reassign). If tick-1's RPC committed (command_operations success row)
+  // but a post-RPC step crashed before the crossing was written, a later
+  // tick recomputes a DRIFTED payload → same key + different hash →
+  // `command_operations.payload_mismatch` → applyReassignment throws
+  // BEFORE writeCrossing → the escalation is permanently poisoned and
+  // R-A02-2's no-permanent-suppression is broken.
+  //
+  // Fix: applyReassignment probes command_operations for a `success` row
+  // under the stable key FIRST. If present → the assignment already
+  // committed → return true ("assignment done", equivalent to a fresh
+  // successful applyReassignment for the downstream crossing gate)
+  // WITHOUT recomputing the mutable payload or re-calling the RPC.
+
+  type RpcCall = { fn: string; args: Record<string, unknown> };
+
+  function makeProbeDeps(opts: {
+    // command_operations row keyed by idempotency_key
+    commandOps?: Record<
+      string,
+      { outcome: string; cached_result: Record<string, unknown> | null } | null
+    >;
+  }) {
+    const rpcCalls: RpcCall[] = [];
+    const probeFilters: Array<Record<string, unknown>> = [];
+
+    const supabase = {
+      admin: {
+        rpc: async (fn: string, args: Record<string, unknown>) => {
+          rpcCalls.push({ fn, args });
+          return { data: { noop: false }, error: null };
+        },
+        from: (table: string) => {
+          if (table === 'command_operations') {
+            const filters: Record<string, unknown> = {};
+            const chain: Record<string, unknown> = {
+              select: () => chain,
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: async () => {
+                probeFilters.push({ ...filters });
+                const key = filters.idempotency_key as string;
+                const row = opts.commandOps?.[key] ?? null;
+                return { data: row, error: null };
+              },
+            };
+            return chain;
+          }
+          if (table === 'users') {
+            const filters: Record<string, unknown> = {};
+            const chain: Record<string, unknown> = {
+              select: () => chain,
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: async () => ({
+                data:
+                  filters.person_id !== undefined
+                    ? { id: 'user-new', person_id: filters.person_id }
+                    : filters.id !== undefined
+                      ? { person_id: 'person-old' }
+                      : null,
+                error: null,
+              }),
+            };
+            return chain;
+          }
+          throw new Error(`unexpected table in probe mock: ${table}`);
+        },
+      },
+    };
+    return { supabase, rpcCalls, probeFilters };
+  }
+
+  const ticket = {
+    id: 'tic-1',
+    tenant_id: 'ten-1',
+    assigned_user_id: 'user-old',
+    assigned_team_id: null as string | null,
+    watchers: ['person-existing'] as string[] | null,
+  };
+  const timer = { id: 'timer-1', timer_type: 'response' as const };
+  const threshold = {
+    at_percent: 100,
+    timer_type: 'response' as const,
+    action: 'escalate' as const,
+    target_type: 'user' as const,
+    target_id: 'person-new',
+  };
+  const stableKey = buildSlaEscalationIdempotencyKey('timer-1', 100, 'response');
+
+  it('short-circuits (no recompute, no RPC) when a command_operations success row exists for the stable key — returns true', async () => {
+    const { supabase, rpcCalls, probeFilters } = makeProbeDeps({
+      commandOps: {
+        [stableKey]: { outcome: 'success', cached_result: { noop: false } },
+      },
+    });
+    const svc = new SlaService(supabase as never, {} as never, {} as never);
+
+    const changed = await (svc as never as {
+      applyReassignment: (...a: unknown[]) => Promise<boolean>;
+    }).applyReassignment(
+      ticket,
+      { personId: 'person-new' },
+      'case',
+      timer,
+      threshold,
+      'Priority P1 SLA',
+    );
+
+    // Treated as "assignment already committed" → true so the downstream
+    // crossing gate fires (closes the no-permanent-suppression hole).
+    expect(changed).toBe(true);
+    // NO set_entity_assignment RPC — the write already happened.
+    expect(rpcCalls.filter((c) => c.fn === 'set_entity_assignment')).toHaveLength(0);
+    // Probe was tenant-scoped on the SAME stable key.
+    expect(probeFilters).toHaveLength(1);
+    expect(probeFilters[0]).toMatchObject({
+      tenant_id: 'ten-1',
+      idempotency_key: stableKey,
+    });
+  });
+
+  it('does NOT short-circuit on an in_progress row (concurrent op holds the key) — falls through to the RPC', async () => {
+    const { supabase, rpcCalls } = makeProbeDeps({
+      commandOps: {
+        [stableKey]: { outcome: 'in_progress', cached_result: null },
+      },
+    });
+    const svc = new SlaService(supabase as never, {} as never, {} as never);
+
+    await (svc as never as {
+      applyReassignment: (...a: unknown[]) => Promise<boolean>;
+    }).applyReassignment(
+      ticket,
+      { personId: 'person-new' },
+      'case',
+      timer,
+      threshold,
+      'Priority P1 SLA',
+    );
+
+    // in_progress is NOT a short-circuit signal — the RPC still runs (its
+    // own advisory-lock + gate handles the concurrent case).
+    expect(rpcCalls.filter((c) => c.fn === 'set_entity_assignment')).toHaveLength(1);
+  });
+
+  it('no command_operations row → normal path: RPC is called exactly once', async () => {
+    const { supabase, rpcCalls } = makeProbeDeps({ commandOps: {} });
+    const svc = new SlaService(supabase as never, {} as never, {} as never);
+
+    await (svc as never as {
+      applyReassignment: (...a: unknown[]) => Promise<boolean>;
+    }).applyReassignment(
+      ticket,
+      { personId: 'person-new' },
+      'case',
+      timer,
+      threshold,
+      'Priority P1 SLA',
+    );
+
+    expect(rpcCalls.filter((c) => c.fn === 'set_entity_assignment')).toHaveLength(1);
+  });
+});
+
+describe('SlaService.fireThreshold — D-A02-4 RPC-ok-then-crash no longer poisons', () => {
+  // The poison path: tick-1's set_entity_assignment RPC commits (a
+  // command_operations success row exists) but writeCrossing (or any
+  // step after the RPC, before the crossing) crashes → NO crossing row.
+  // A later tick re-enters fireThreshold for the same uncrossed
+  // (timer,pct,type). With the success-probe, applyReassignment detects
+  // the committed write, returns true WITHOUT re-calling the RPC, and
+  // fireThreshold proceeds to write the crossing + fire side-effects
+  // exactly once — the escalation finally completes (no payload_mismatch,
+  // no permanent suppression).
+
+  function makeDeps(opts: {
+    commandOpsSuccessForKey: string;
+    crossingInsertResults: Array<{ code?: string } | null>;
+  }) {
+    const inserts: Array<{ table: string; row: Record<string, unknown> }> = [];
+    const rpcCalls: Array<{ fn: string }> = [];
+    let crossingIdx = 0;
+
+    const supabase = {
+      admin: {
+        rpc: async (fn: string) => {
+          rpcCalls.push({ fn });
+          return { data: { noop: false }, error: null };
+        },
+        from: (table: string) => {
+          if (table === 'command_operations') {
+            const filters: Record<string, unknown> = {};
+            const chain: Record<string, unknown> = {
+              select: () => chain,
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: async () => ({
+                data:
+                  filters.idempotency_key === opts.commandOpsSuccessForKey
+                    ? { outcome: 'success', cached_result: { noop: false } }
+                    : null,
+                error: null,
+              }),
+            };
+            return chain;
+          }
+          if (table === 'sla_threshold_crossings') {
+            return {
+              insert: (row: Record<string, unknown>) => {
+                inserts.push({ table, row });
+                const err = opts.crossingInsertResults[crossingIdx] ?? null;
+                crossingIdx += 1;
+                return Promise.resolve({ error: err });
+              },
+              update: () => {
+                const c: Record<string, unknown> = {
+                  eq: () => c,
+                  then: (resolve: (v: unknown) => void) =>
+                    resolve({ error: null }),
+                };
+                return c;
+              },
+            };
+          }
+          if (table === 'ticket_activities' || table === 'domain_events') {
+            return {
+              insert: (row: Record<string, unknown>) => {
+                inserts.push({ table, row });
+                return Promise.resolve({ error: null });
+              },
+            };
+          }
+          if (table === 'users') {
+            const filters: Record<string, unknown> = {};
+            const chain: Record<string, unknown> = {
+              select: () => chain,
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: async () => ({
+                data:
+                  filters.person_id !== undefined
+                    ? { id: 'user-new', person_id: filters.person_id }
+                    : { person_id: 'person-old' },
+                error: null,
+              }),
+            };
+            return chain;
+          }
+          throw new Error(`unexpected table in fire mock: ${table}`);
+        },
+      },
+    };
+    return { supabase, inserts, rpcCalls };
+  }
+
+  const timer = {
+    id: 'timer-1',
+    tenant_id: 'ten-1',
+    ticket_id: 'tic-1',
+    sla_policy_id: 'pol-1',
+    timer_type: 'response' as const,
+    due_at: new Date().toISOString(),
+  };
+  const threshold = {
+    at_percent: 100,
+    timer_type: 'response' as const,
+    action: 'escalate' as const,
+    target_type: 'user' as const,
+    target_id: 'person-new',
+  };
+  const stableKey = buildSlaEscalationIdempotencyKey('timer-1', 100, 'response');
+
+  it('tick-1 committed RPC but no crossing (post-RPC crash) → next tick does NOT re-call the RPC, writes the crossing + side-effects exactly once', async () => {
+    const { supabase, inserts, rpcCalls } = makeDeps({
+      commandOpsSuccessForKey: stableKey,
+      crossingInsertResults: [null],
+    });
+    const notifications = {
+      send: jest.fn().mockResolvedValue([{ id: 'notif-1' }]),
+      sendToTeam: jest.fn().mockResolvedValue([]),
+    };
+    const svc = new SlaService(
+      supabase as never,
+      {} as never,
+      notifications as never,
+    );
+    jest.spyOn(svc as never as { loadTicketForFire: jest.Mock }, 'loadTicketForFire')
+      .mockResolvedValue({
+        id: 'tic-1',
+        tenant_id: 'ten-1',
+        title: 'Broken AC',
+        assigned_user_id: 'user-old',
+        assigned_team_id: null,
+        requester_person_id: 'req-1',
+        watchers: [],
+        kind: 'case',
+      } as never);
+    jest
+      .spyOn(svc as never as { loadPolicyName: jest.Mock }, 'loadPolicyName')
+      .mockResolvedValue('P1 SLA' as never);
+    jest
+      .spyOn(svc as never as { resolveTarget: jest.Mock }, 'resolveTarget')
+      .mockResolvedValue({ personId: 'person-new' } as never);
+    jest
+      .spyOn(svc as never as { resolveTargetName: jest.Mock }, 'resolveTargetName')
+      .mockResolvedValue('Alice Manager' as never);
+
+    await expect(
+      (svc as never as { fireThreshold: (...a: unknown[]) => Promise<void> })
+        .fireThreshold(timer, threshold),
+    ).resolves.toBeUndefined();
+
+    // The RPC was NOT re-called (the assignment already committed under
+    // the stable key — the success-probe short-circuited it).
+    expect(rpcCalls.filter((c) => c.fn === 'set_entity_assignment')).toHaveLength(0);
+    // The crossing was written exactly once (escalation completes — no
+    // permanent suppression).
+    expect(
+      inserts.filter((i) => i.table === 'sla_threshold_crossings'),
+    ).toHaveLength(1);
+    // Side-effects fired exactly once.
+    expect(inserts.filter((i) => i.table === 'ticket_activities')).toHaveLength(1);
+    expect(notifications.send).toHaveBeenCalledTimes(1);
+    expect(inserts.filter((i) => i.table === 'domain_events')).toHaveLength(1);
   });
 });
