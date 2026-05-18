@@ -725,9 +725,14 @@ function seedFixtureE() {
       ('${assetCustomId}'::uuid, '${TENANT_ID}'::uuid, '${assetTypeId}'::uuid,
        'pooled', 'Smoke E projector (custom)', 'available');
 
+    -- catalog_items.category is constrained (00013:8) to
+    -- ('food_and_drinks','equipment','supplies','services'). This is a
+    -- catering order (see header: "1 catering order (+1 OLI)"); catering
+    -- is food/drink → 'food_and_drinks' (was the stale 'catering' literal
+    -- which violated catalog_items_category_check and aborted seedFixtureE).
     insert into public.catalog_items (id, tenant_id, name, category)
     values ('${catalogItemId}'::uuid, '${TENANT_ID}'::uuid,
-            'Smoke E catalog item', 'catering');
+            'Smoke E catalog item', 'food_and_drinks');
 
     insert into public.orders
       (id, tenant_id, requester_person_id, booking_id, status,

@@ -311,6 +311,11 @@ async function deleteFixtures(state) {
   const teamIds =
     (state.teamIds ?? []).map((id) => `'${id}'::uuid`).join(', ') ||
     `'00000000-0000-0000-0000-000000000000'::uuid`;
+  // audit-03 P2-3 probe (k) — real recurrence_series parents to sweep.
+  // Deleted AFTER bookings (bookings.recurrence_series_id → this table).
+  const seriesIds =
+    (state.seriesIds ?? []).map((id) => `'${id}'::uuid`).join(', ') ||
+    `'00000000-0000-0000-0000-000000000000'::uuid`;
   // FIX 4 — ONLY the idempotency keys THIS run minted (never a tenant-wide
   // `like 'booking.create:%'` sweep — that would clobber sibling smokes'
   // ledger rows on the shared remote). Escape single quotes defensively
@@ -371,6 +376,8 @@ async function deleteFixtures(state) {
     delete from public.bookings
       where tenant_id = '${TENANT_ID}'::uuid
         and id in (select id from _smoke_mr_bk);
+    delete from public.recurrence_series
+      where tenant_id = '${TENANT_ID}'::uuid and id in (${seriesIds});
     delete from public.assets
       where tenant_id = '${TENANT_ID}'::uuid and id in (${assetIds});
     delete from public.catalog_items
@@ -1229,7 +1236,7 @@ async function runNoServicesApprovalProbes(probe, adminUserId) {
       false,
       'resolveAdminPersonId() returned empty — cannot run the P2-3 probes',
     );
-    return { spaceIds: [], ruleIds: [], teamIds: [] };
+    return { spaceIds: [], ruleIds: [], teamIds: [], seriesIds: [] };
   }
 
   // 3 dedicated rooms: [h]=no-rule, [i]=person-rule, [j]=team-rule.
@@ -1238,6 +1245,12 @@ async function runNoServicesApprovalProbes(probe, adminUserId) {
   const ruleIdTeam = crypto.randomUUID();
   const teamId = crypto.randomUUID();
   const ruleIds = [ruleIdPerson, ruleIdTeam];
+  // audit-03 P2-3 probe (k): real recurrence_series parents seeded so the
+  // 00303 validate_attach_plan_tenant_fks guard passes and the probe
+  // genuinely exercises a recurrence-tagged combined-RPC create. Swept by
+  // deleteFixtures (FK-ordered: after bookings, before nothing — it is a
+  // parent of bookings.recurrence_series_id).
+  const seriesIds = [];
   const teamIds = [teamId];
 
   runPsql(
@@ -1538,6 +1551,31 @@ async function runNoServicesApprovalProbes(probe, adminUserId) {
     mintedIdempotencyKeys.add(idemKey);
     const { start, end } = isoAnchor(FIXTURE_DAYS, 16);
 
+    // HONEST FIX (audit-03 slice6): seed a real tenant-scoped
+    // recurrence_series PARENT before the combined-RPC call. Previously
+    // probe (k) passed a dangling crypto.randomUUID() for
+    // recurrence_series_id, so the PRE-EXISTING 00303
+    // validate_attach_plan_tenant_fks guard correctly rejected the create
+    // with 42501 'attach_plan.fk_invalid: recurrence_series_id' and the
+    // probe never reached the chain-col assertions. Seeding a valid parent
+    // (same proven-GREEN shape as smoke-edit-booking-scope.mjs:266-272 —
+    // recurrence_series NOT-NULL cols per 00124: recurrence_rule,
+    // series_start_at, materialized_through; max_occurrences defaults 365;
+    // parent_booking_id nullable per 00278) makes the probe genuinely
+    // exercise a recurrence-tagged combined-RPC create with chain-col
+    // persistence. Swept by deleteFixtures via state.seriesIds.
+    seriesIds.push(seriesId);
+    runPsql(
+      `set session_replication_role='replica';\n` +
+        `insert into public.recurrence_series\n` +
+        `  (id, tenant_id, recurrence_rule, series_start_at, materialized_through)\n` +
+        `values\n` +
+        `  ('${seriesId}'::uuid, '${TENANT_ID}'::uuid,\n` +
+        `   jsonb_build_object('frequency','weekly','interval',1,'count',8),\n` +
+        `   '${start}'::timestamptz, '${end}'::timestamptz);\n` +
+        `set session_replication_role='origin';`,
+    );
+
     const bookingInput = {
       booking_id: occBookingId,
       slot_ids: [occSlotId],
@@ -1669,8 +1707,9 @@ async function runNoServicesApprovalProbes(probe, adminUserId) {
     }
   }
 
-  // spaceIds + ruleIds + teamIds returned so deleteFixtures sweeps them.
-  return { spaceIds, ruleIds, teamIds };
+  // spaceIds + ruleIds + teamIds + seriesIds returned so deleteFixtures
+  // sweeps them.
+  return { spaceIds, ruleIds, teamIds, seriesIds };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1706,7 +1745,7 @@ async function main() {
     process.exit(2);
   }
 
-  const state = { allSpaceIds: [], fixtureIds: [], ruleIds: [], teamIds: [] };
+  const state = { allSpaceIds: [], fixtureIds: [], ruleIds: [], teamIds: [], seriesIds: [] };
 
   try {
     const adminUserId = resolveAdminUserId();
@@ -1754,6 +1793,7 @@ async function main() {
     state.allSpaceIds.push(...p23.spaceIds);
     state.ruleIds.push(...p23.ruleIds);
     state.teamIds.push(...p23.teamIds);
+    state.seriesIds.push(...(p23.seriesIds ?? []));
   } finally {
     console.log('\nCleaning up fixtures…');
     await deleteFixtures(state);
