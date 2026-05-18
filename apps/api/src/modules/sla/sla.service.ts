@@ -1144,7 +1144,7 @@ export class SlaService {
     // Backfill the winner's notification_id onto the crossing row it
     // claimed. notification_id is informational only (read by
     // listCrossingsForTicket for the ticket-detail escalations panel —
-    // sla.service.ts:1184; no FK-driven logic), so a best-effort follow-up
+    // sla.service.ts:1315; no FK-driven logic), so a best-effort follow-up
     // UPDATE is sufficient and a miss leaves it null without affecting
     // dedup correctness.
     if (firstNotificationId) {
