@@ -1,7 +1,7 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, isAppError, type AppError } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import { TenantService } from '../tenant/tenant.service';
 import { ConflictGuardService } from './conflict-guard.service';
@@ -646,8 +646,26 @@ export class RecurrenceService {
         }
         // EXPECTED: rule_deny / reservation_slot_conflict → rule outcome
         // at create-time, user-correctable. Skip + advance.
-        const e = err as { response?: { code?: string }; message?: string };
-        const code = e.response?.code;
+        //
+        // audit-03 slice1 (D-9): every value thrown into this catch is an
+        // `AppError` (booking.compensation_failed / .partial_failure via
+        // AppErrors.server at :601/:626; rule_deny via AppErrors.forbidden
+        // in booking-flow.service.ts:182/:842; reservation_slot_conflict
+        // via AppErrors.conflict booking-flow.service.ts:311). `AppError`
+        // has `.code: KnownErrorCode` and NO `.response` — the old
+        // `e.response?.code` was ALWAYS undefined, so every dedicated
+        // triage branch below was DEAD and control always fell to the
+        // catch-all. Correctness was unaffected (catch-all sets
+        // sawUnexpectedFailure=true) but the ops-triage log lines never
+        // fired. Read `code` off the real AppError; keep the `message`
+        // fallback (used in the log lines below). The no-advance invariant
+        // at :707 (`!sawUnexpectedFailure`) is unchanged: every now-live
+        // branch that is NOT a benign per-occurrence skip still sets
+        // sawUnexpectedFailure=true exactly as the catch-all did.
+        const e = err as { message?: string };
+        const code: string | undefined = isAppError(err)
+          ? (err as AppError).code
+          : undefined;
         if (code === 'rule_deny' || code === 'reservation_slot_conflict') {
           skipped += 1;
           continue;
