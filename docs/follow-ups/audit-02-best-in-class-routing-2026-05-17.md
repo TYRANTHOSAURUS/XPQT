@@ -177,6 +177,50 @@ explicit, evidenced `[KNOWN-DEFECT b2-dispatch-replay-sla-due_at]` carve-out
 This mirrors the adversarially-validated SLA `CONTENTION-DEFER` mechanic; it
 does not hide the defect (logged + routed + ledgered).
 
+#### Update — 2026-05-18 — item #5 RESOLVED by migration 00428
+
+The pre-existing B.2 dispatch idempotency-replay defect routed above is
+**RESOLVED**. Closure evidence (the original §5 narrative + the table row
+below are left intact — this is appended, not rewritten):
+
+- **Fix on remote:** `supabase/migrations/00428_dispatch_idempotency_intent_hash.sql`
+  pushed to the shared remote 2026-05-18 + `pg_get_functiondef`-verified
+  live. Applies exactly the §5 fix prescription: a path-scoped
+  `dispatch_strip_hash_server_fields(jsonb)` (strips `due_at` ONLY from
+  elements of a key literally named `timers`, so an arbitrary
+  `routing_context.due_at` is preserved) + `dispatch_idempotency_payload_hash(jsonb)`
+  = `md5(coalesce(strip(p)::text,''))`, with both dispatch RPCs reproduced
+  VERBATIM from the **verified-latest v3** sources (`00341` single,
+  `00342` batch) and ONLY the `v_payload_hash` line re-pointed. Mirrors the
+  `00407` booking-edit pattern as prescribed.
+- **Caught regression (C1):** the batch RPC was initially reproduced from
+  the STALE `00337` v1; because `create or replace` is last-writer-wins and
+  00428 is numerically last, that would have silently clobbered `00342`
+  v3's F-IMP-1 per-task `routing_rule_id` tenant-validate (a P0 cross-tenant
+  guard) + F-CRIT-1 `sla_timers` polymorphic columns. Caught by
+  `/full-review`, re-based on `00342` v3, live-verified preserved. (The §5
+  prescription's "bundle with the P2-3 renumber window" caveat was honored
+  in spirit by re-basing on the verified-latest body rather than a stale
+  on-disk file.)
+- **Probe carve-out removed — strict hard gate restored:** the
+  `[KNOWN-DEFECT b2-dispatch-replay-sla-due_at]` carve-out in
+  `smoke-work-orders.mjs` probe 8 (described in §5 "Probe disposition") is
+  **removed**. Replay now MUST return 200/201 same WO id; replay
+  `payload_mismatch` is a hard fail. Proven GREEN 3/3 deterministic with
+  fresh isolated fixtures.
+- **Runnable guard added:**
+  `apps/api/src/modules/ticket/dispatch.idempotency.spec.ts` (static
+  migration-text scan, mirrors 00407's guard; 4/4; demonstrably catches the
+  C1 stale-source-clobber class).
+- Review chain: codex pre-impl design-check → `/full-review` (2 agents) →
+  codex tertiary, all GO-WITH-CHANGES (folded); lint +
+  `errors:check-app-errors` green. Closure ledgered append-only in
+  `docs/follow-ups/audits/02-tickets-work-orders.md` (2026-05-18 block +
+  ledger row).
+
+**Owner action on this item: none remaining — CLOSED.** The §5 routing was
+correct and is now discharged.
+
 ## Summary for owners
 
 | # | Item | Owner | Status |
@@ -186,6 +230,11 @@ does not hide the defect (logged + routed + ledgered).
 | 4 | `SubIssueProgress` under-reports post-P1-5 | FE workstream | Routed w/ fix options |
 | 5 | Pre-existing dispatch replay → spurious 409 when child resolves an SLA (server-stamped `timers.due_at` in the md5 idempotency hash) | B.2 / dispatch owner | Discovered by audit-02 gate; routed w/ confirmed root cause + 00407-pattern fix prescription; probe carve-out (safety still hard-asserted) |
 | 6 | PR#20 merge dropped audit-02's `ticket.work_order_id_on_case_endpoint` runtime-array registration | this continuation (fixing) | Restored on `audit-02-pr20-reconcile-fix`; tsc/errors:check green |
+| 7 | **I2** — sibling now()-in-hash on the WO + workflow-engine SLA-install path via `update_entity_combined` v7 (`sla.service.ts:219`→`work-order.service.ts:584`/`workflow-engine.service.ts:1907`, hashed @ `00427`:241-245 / `00330`:115). NOT the case path (verified phantom). Same bug-class as #5 (now fixed by 00428) | B.2 / SLA-restart path | Discovered by audit-02 `/full-review`, independently verified, **user-approved to ROUTE not fold** (smoke-gated mega-RPC, high blast radius). Precise coords + 00407-pattern fix prescription + required review cycle in `docs/follow-ups/i2-sla-install-idempotency-due_at-2026-05-18.md`. Risk if unfixed: spurious 409 on legitimate WO/workflow-engine SLA-install retries with a stable `X-Client-Request-Id` — correctness/ergonomics, no data corruption |
+
+> **#5 status update (2026-05-18):** RESOLVED by migration `00428` —
+> see the `#### Update — 2026-05-18` block under §5 above (original row left
+> intact, append-only). #7 (I2) is the newly-routed sibling, still open.
 
 audit-02's own deliverables (P2-1 interim, codex gate, Code-I1 re-defer,
 live-smoke) are tracked in `docs/follow-ups/audits/02-tickets-work-orders.md`

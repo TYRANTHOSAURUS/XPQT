@@ -663,6 +663,7 @@ Maintainer rule: every agent that closes, partially closes, or deliberately defe
 | 2026-05-17 | **Slice 8 — live-smoke** | **PASSED — supersedes the 2026-05-16 "DEFERRED with owner + per-finding risk" row** | 10 probes authored into `smoke-tickets.mjs` (+1097) + `smoke-work-orders.mjs` (+418): P0-1 bulk/update 200/207/422+replay; P1-1 case+WO reassign (`command_operations`+`routing_decisions`+activity+domain-event+assignee-change); P0-2 SLA-escalation reassign (cron-driven, crossing anchor + `sla:escalation:*` cmd-op + assignee moved + recurrence-safe); P1-2 routing_status→idle atomic + no spurious activity; P1-5 getChildTasks cross-visibility (zero-role watcher EXCLUDES vendor child, admin INCLUDES — non-vacuous, asserts parent readable); vendor-assignment e2e; WO cross-tenant; dispatch idempotency-replay; reclassify; P1-3 satisfaction round-trip + WO-guard negative. Commit 051bbbe8. Registered: CLAUDE.md mandatory matrix + `docs/smoke-gates.md` (COVERED). See §2026-05-17 live-smoke Update. | **Independently re-run by the orchestrator (not just the authoring subagent), TWICE: `smoke:tickets` 122/0 exit 0, `smoke:work-orders` 125/0 exit 0, ZERO CONTENTION-DEFER triggered on any of 3 full runs.** Adversarial vacuousness review: NO CRITICAL, no fake-green, P1-5 security probe proven to go red on the exact revert mutation; 2 IMPORTANT folds applied (probe-9 audit assertion tightened to `metadata.event='reclassified'`; SLA CONTENTION-DEFER backstop made self-verifying). | **Runtime honesty:** not a truly *solo* runtime — the shared remote DB + concurrent `:3001` session/cron persisted. What was achieved: server-code-provenance isolation (`:3010` server built from THIS worktree; `:3001` runs a divergent branch) + per-run isolated fixtures + server-agnostic idempotent-outcome assertions + a scoped CONTENTION-DEFER escape hatch that **never triggered across 3 independent full runs** — i.e. the gate is proven robust UNDER the real concurrent conditions, a stronger result than a one-off solo pass. No genuine product regression found. The 2026-05-16 per-finding risk (HTTP→DB paths unverified end-to-end) is now **DISCHARGED** for all 10 enumerated probes. |
 | 2026-05-17 | **Best-in-class status** | **MET — by the project's own bar (live-API smoke is the ship gate)** | All 2026-05-16 P0/P1 closures now live-HTTP-smoked green; codex tertiary gate obtained (2026-05-16 "environmental" caveat closed); P2-1 interim shipped+reviewed; Code-I1 re-deferred with codex-validated prescription+owner+risk; living-contract docs (`smoke-gates.md`/CLAUDE.md/`visibility.md`/`assignments-routing-fulfillment.md`) synced; 02+00 ledgers reconciled append-only; cross-session items routed not absorbed (`audit-02-best-in-class-routing-2026-05-17.md`, with the brief's "B.2 CI-RED" premise corrected by evidence). | Per-slice `tsc`/`errors:check-app-errors`/web-tsc/design-polish green; `/full-review` 2-agent per substantive slice (folds verified against real code); **codex obtained** Q1–Q4; live smoke independently re-confirmed green ×3. Commits aac61b7a · 53ea0c66 · 7898b33e · 051bbbe8 (+ this row) on `worktree-audit-02-best-in-class`. | Remaining are explicitly-deferred-with-owner items, NOT audit-02 gaps: Code-I1 unique-index (next authorized DB-push window), P2-1 full split (integrator/data-model), P2-3 prefix renumber (integrator/data-model — `00410` `comment on function` forward-only fix rides the same window), P1-5 FE rollup (FE workstream). Branch ready for merge decision. |
 | 2026-05-18 | **Post-PR#20 concurrent-merge integrity re-verification** | **audit-02 SURVIVED + 1 regression fixed + 1 pre-existing B.2 defect discovered & routed** | A concurrent workstream merged PR#20 (booking-audit) on top of audit-02's PR#18 (origin/main 362c45f1→4c4ba587). Re-verified on the ACTUAL merged main: (a) all 5 audit-02 commits + PR#18 merge are ancestors; (b) PR#20's `error-codes.ts` +105 merge **dropped** audit-02's `ticket.work_order_id_on_case_endpoint` runtime-array entry (type-union survived → no tsc break, but P2-1 error would render generic at runtime) → **RESTORED** on branch `audit-02-pr20-reconcile-fix`; (c) remote `set_entity_assignment` v3 + `update_entity_combined` v7 bodies **re-verified intact** (PR#20's colliding 00406/00410 files do not redefine them); (d) gate re-run on merged-main surfaced a **pre-existing B.2 dispatch idempotency-replay defect** (server-stamped `timers.due_at` in `md5(p_payload)` @ 00341:153 + dispatch.service.ts:309 → spurious `payload_mismatch` 409 on legitimate replay when an SLA resolves; 3/3 deterministic). | tsc + errors:check-app-errors green on merged-main+fix; remote bodies via `pg_get_functiondef` (`t\|t` / `t\|t\|t`); dispatch defect root-caused (00341:153, dispatch.service.ts:255-265/309, 9 sla_policies) + reproduced 3×; safety invariant (no duplicate WO) hard-asserted ✓ 3×. | The dispatch defect is **NOT audit-02 / NOT this continuation / NOT a PR#20 code regression** (dispatch code unchanged; PR#20-era SLA-config data flipped a dormant latent bug active) — pre-existing B.2 subsystem defect, **discovered by the audit-02 gate doing its job**. Routed (not absorbed) → B.2/dispatch owner with confirmed root cause + the 00407-pattern fix prescription: `docs/follow-ups/audit-02-best-in-class-routing-2026-05-17.md` §5. Probe hardened with an evidenced, fingerprint-scoped `[KNOWN-DEFECT]` carve-out (mirrors the validated SLA CONTENTION-DEFER; safety still hard-asserted; no fake-green). audit-02's own scope remains MET. |
+| 2026-05-18 | **B.2 dispatch idempotency-replay** — the defect routed §5 in the row above | **CLOSED (code + remote migration verified + smoke 3×)** | Migration `00428_dispatch_idempotency_intent_hash.sql`: path-scoped `dispatch_strip_hash_server_fields(jsonb)` (strips `due_at` ONLY from elements of a key literally named `timers`; `routing_context.due_at` preserved) + `dispatch_idempotency_payload_hash(jsonb)`; `dispatch_child_work_order` reproduced VERBATIM from `00341` v3 + `dispatch_child_work_orders_batch` VERBATIM from `00342` v3 (byte-diff: exactly one `v_payload_hash` line changed per fn). Probe-8 `[KNOWN-DEFECT b2-dispatch-replay-sla-due_at]` carve-out REMOVED → strict hard gate. New runnable guard `apps/api/src/modules/ticket/dispatch.idempotency.spec.ts` (mirrors 00407 GUARD-2). **C1 caught & fixed:** batch was first reproduced from STALE `00337` v1 → `create-or-replace` last-writer would have clobbered `00342` v3 (the F-IMP-1 per-task `routing_rule_id` tenant-validate P0 cross-tenant guard + F-CRIT-1 `sla_timers` polymorphic cols); caught by `/full-review`, re-based on `00342`, live-verified preserved. | 00428 pushed to remote + `pg_get_functiondef`: both RPCs route through `dispatch_idempotency_payload_hash`, no raw `md5(p_*::text)`, C1 routing_rule tenant-validate + polymorphic cols PRESERVED, helper path-scoped. `smoke:work-orders` 3/3 exit 0 deterministic — probe-8 `✓ dispatch replay — same WO id both calls` all 3 (fresh fixtures). codex pre-impl design-check (GO-WITH-CHANGES, folded) + `/full-review` 2-agent (C1 caught & fixed) + codex tertiary (GO-WITH-CHANGES, folded); tsc + errors:check-app-errors green; guard 4/4. | **Supersedes the §5 routed deferral** (prior row + `audit-02-best-in-class-routing-2026-05-17.md` §5, now RESOLVED append-only). I1 accepted non-goals documented: replay-after-SLA-policy-edit 409 is by-design (config genuinely changed → fail-closed); forward-only — pre-00428 `command_operations` rows not rewritten so a pre-00428 dispatch replayed post-00428 may still 409, NOT a regression (that deploy-crossing replay was already broken by the very bug fixed). `smoke:tickets` prior interleaved-load flake (scattered P1-3/P0-2 probes, client-side ECONNRESET) characterized **FLAKE_INFRA** — 5/5 green in isolation; 00428 is dispatch-only and cannot affect those probes; NO smoke-tickets carve-out (green in isolation; weakening = fake-green). **NEW sibling I2** (same now()-in-hash on the WO + workflow-engine SLA-install path via `update_entity_combined` v7 `00427`:241 / `update_entity_sla` `00330`:115; producer `sla.service.ts:219`→`work-order.service.ts:584`/`workflow-engine.service.ts:1907`; NOT the case path — verified phantom) discovered by `/full-review`, independently verified, **user-approved ROUTE-not-fold** → `docs/follow-ups/i2-sla-install-idempotency-due_at-2026-05-18.md`. |
 
 ## Agent Handoff Prompt
 
@@ -945,3 +946,115 @@ work).
   "Fully done" for audit-02 ⇒ yes; the routed B.2 dispatch fix + the
   standing deferrals (Code-I1, P2-1 split, P2-3 renumber, P1-5 FE) are
   explicitly owned elsewhere with risk stated.
+
+#### Update — 2026-05-18 — B.2 dispatch idempotency-replay FIXED (00428) + C1 caught + I2 routed
+
+The pre-existing B.2 dispatch idempotency-replay defect routed in the prior
+2026-05-18 block (and `audit-02-best-in-class-routing-2026-05-17.md` §5) is
+now **FIXED, SHIPPED, and live-verified**. The probe carve-out it carried is
+**removed** — probe 8 is a strict hard gate again.
+
+- **Fix shipped + verified:** migration
+  `supabase/migrations/00428_dispatch_idempotency_intent_hash.sql` pushed to
+  the shared remote 2026-05-18 + `pg_get_functiondef`-verified live. New
+  `public.dispatch_strip_hash_server_fields(jsonb)` (recursive, immutable,
+  `language sql`, `search_path=public`; **path-scoped** — strips `due_at`
+  ONLY from elements of a key literally named `timers`, so an arbitrary
+  `routing_context.due_at` is preserved; `timer_type` /
+  `target_minutes` / `business_hours_calendar_id` stay in the hash identity)
+  + `public.dispatch_idempotency_payload_hash(jsonb)` =
+  `md5(coalesce(strip(p)::text,''))`. Mirrors the 00407 booking-edit
+  pattern. `dispatch_child_work_order` reproduced VERBATIM from the
+  verified-latest single v3 (`00341_dispatch_child_work_order_v3.sql`) and
+  `dispatch_child_work_orders_batch` VERBATIM from the verified-latest batch
+  v3 (`00342_dispatch_child_work_orders_batch_v3.sql`), each with ONLY the
+  `v_payload_hash` line changed (byte-diffs proved exactly one changed line
+  per function). Review chain: codex pre-impl design-check
+  (GO-WITH-CHANGES — path-scoped strip folded) → `/full-review` (2
+  adversarial agents) → codex tertiary (GO-WITH-CHANGES — folded);
+  lint + `errors:check-app-errors` green.
+- **C1 — a real caught regression (recorded, not a hypothetical):** the
+  batch RPC was INITIALLY reproduced from the **STALE**
+  `00337_dispatch_child_work_orders_batch.sql` (v1). Because
+  `create or replace` is last-writer-wins and 00428 is numerically last,
+  pushing as-drafted would have **silently clobbered** `00342_..._v3`,
+  reverting (a) the F-IMP-1 / codex-S8-I1 per-task `routing_rule_id` tenant
+  validation (`perform public.validate_entity_in_tenant(p_tenant_id,
+  'routing_rule',...)`) — a **P0 cross-tenant leak guard** — and (b) the
+  F-CRIT-1 `sla_timers` polymorphic columns
+  (`entity_kind`/`case_id`/`work_order_id`/`started_at`). Caught by the
+  `/full-review` code reviewer; re-based on `00342` v3; live
+  `pg_get_functiondef` confirms the routing_rule tenant-validate
+  (×5 `validate_entity_in_tenant`, incl. the routing_rule gate guarded by
+  `if v_routing_rule_id is not null`) + polymorphic cols are PRESERVED. This
+  is the exact stale-source-clobber class the project's last-writer-wins
+  migration model is vulnerable to — record it as a caught near-miss, not a
+  clean pass.
+- **Runnable structural guard:**
+  `apps/api/src/modules/ticket/dispatch.idempotency.spec.ts` (mirrors
+  00407's `assemble-edit-plan.idempotency.spec.ts` GUARD-2 static
+  migration-text scan): resolves the numerically-highest migration defining
+  each dispatch RPC + the strip helper; asserts the hash routes through
+  `dispatch_idempotency_payload_hash`, no raw
+  `md5(coalesce(p_(payload|tasks)::text`, helper is path-scoped (not
+  neutered / flat / identity); 4/4 pass; demonstrably catches the C1
+  stale-source-clobber class. Satisfies `feedback_runnable_guards_mandate`
+  (no paper tiger — verified to go red on the regression it guards).
+- **I1 accepted non-goals (recorded):** (a) a legitimate replay AFTER an
+  SLA-policy edit (`target_minutes`/`business_hours_calendar_id` changed
+  under the same `sla_id`) still 409s **by design** — those stay in the
+  hash identity; the intent's SLA config genuinely changed, so fail-closed
+  is correct. (b) 00428's header documents a forward-only caveat:
+  pre-00428 `command_operations` rows are not rewritten, so a dispatch
+  whose row was written pre-00428 then replayed post-00428 may still 409 —
+  NOT a regression (that deploy-crossing replay was already broken by the
+  very bug 00428 fixes).
+- **Probe carve-out REMOVED — strict hard gate restored:** the
+  `[KNOWN-DEFECT b2-dispatch-replay-sla-due_at]` probe-8 carve-out in
+  `apps/api/scripts/smoke-work-orders.mjs` (`a2ProbeDispatchReplay`) was
+  removed. Replay MUST return 200/201 with the same WO id;
+  `payload_mismatch` on replay is now a hard fail. Proven GREEN **3/3
+  deterministic** with fresh isolated fixtures: probe-8
+  `✓ dispatch replay — same WO id both calls` on all 3 runs; no
+  KNOWN-DEFECT line, no `✗`.
+- **`smoke-tickets` FLAKE_INFRA characterization (recorded so it is NOT
+  mistaken for a regression, and NO carve-out was added):** when run
+  interleaved with 3× `smoke-work-orders` under concurrent-session
+  shared-proxied-DB load, `smoke-tickets` flaked at **scattered** probes
+  (P1-3 `a2ProbeSatisfaction`; P0-2 `a2ProbeSlaEscalation`/`a2GetCase`)
+  with client-side `TypeError: fetch failed` / `ECONNRESET` (server healthy
+  throughout; the failing probe passed on retry). Characterized
+  **FLAKE_INFRA**: 5/5 fully green in ISOLATION (122 pass / 0 fail each,
+  610 assertions, zero network errors). Not a code defect; 00428 is
+  dispatch-only and cannot touch those probes; the Step-0 baseline was
+  0/0/0 on the same code pre-push. Mitigation = run the final tickets gate
+  in isolation. **No `smoke-tickets` carve-out was added** — it is green in
+  isolation; weakening it would be fake-green.
+- **I2 — a NEW sibling now()-in-hash bug discovered + ROUTED (not folded):**
+  the same idempotency-hash bug-class exists on the **work-order PATCH
+  SLA-install path AND the workflow-engine SLA-install path** (NOT the case
+  path — that is a verified phantom; `buildPatchesPayloadForCase` never
+  emits an `sla` branch, case SLA immutable). Producer
+  `sla.service.ts:219`→`:236`/`:250`, consumed at
+  `work-order.service.ts:584`/`:589` + `workflow-engine.service.ts:1907`,
+  hashed by `update_entity_combined` v7 (latest `00427`:241-245) /
+  `update_entity_sla` (latest `00330`:115). User-approved to **ROUTE not
+  fold** (it is the smoke-gated mega-RPC, high blast radius; needs its own
+  full review+smoke cycle). Routed to the B.2 / SLA-restart owner via the
+  routing doc (`audit-02-best-in-class-routing-2026-05-17.md`, new row) +
+  the self-contained follow-up doc
+  `docs/follow-ups/i2-sla-install-idempotency-due_at-2026-05-18.md`. Risk
+  if unfixed: spurious 409 on legitimate WO + workflow-engine SLA-install
+  retries with a stable `X-Client-Request-Id` — correctness/ergonomics
+  only, no data corruption (identical severity profile to the now-fixed
+  dispatch defect).
+- **Net:** the routed B.2 dispatch defect from the prior block is now
+  CLOSED on remote with a runnable guard and a strict (carve-out-free)
+  probe; one stale-source-clobber near-miss (C1) was caught in review
+  before push; one NEW genuine sibling defect (I2) was discovered by the
+  same `/full-review` and honestly routed (not silently absorbed) per
+  user direction.
+
+| Date | Finding / Slice | Status | Evidence | Verification | Notes |
+|---|---|---|---|---|---|
+| 2026-05-18 | **B.2 dispatch idempotency-replay** (routed 2026-05-18 §5) | **CLOSED — fixed on remote + strict probe restored** | `00428_dispatch_idempotency_intent_hash.sql` pushed + `pg_get_functiondef`-verified live (path-scoped `dispatch_strip_hash_server_fields` + `dispatch_idempotency_payload_hash`; both dispatch RPCs reproduced VERBATIM from verified-latest v3 — `00341`/`00342` — with one `v_payload_hash` line changed; byte-diff-proven). `smoke-work-orders.mjs` `[KNOWN-DEFECT]` probe-8 carve-out REMOVED → strict hard gate. New runnable guard `apps/api/src/modules/ticket/dispatch.idempotency.spec.ts` (4/4). | codex design-check → `/full-review` 2-agent → codex tertiary (all GO-WITH-CHANGES, folded); lint + errors:check green; **probe-8 GREEN 3/3 deterministic** (`✓ same WO id both calls`, fresh isolated fixtures, no KNOWN-DEFECT/✗); guard 4/4. | **C1 caught:** batch RPC was first reproduced from STALE `00337` v1 → would have silently clobbered `00342` v3's F-IMP-1 routing_rule tenant-validate (P0 cross-tenant guard) + F-CRIT-1 sla_timers polymorphic cols; caught by `/full-review`, re-based, live-verified preserved (×5 `validate_entity_in_tenant`, polymorphic cols). **I1 accepted non-goals:** post-SLA-policy-edit replay 409 by design; pre-00428 cmd_op rows not rewritten (forward-only, not a regression). **FLAKE_INFRA:** `smoke-tickets` flaked at scattered probes ONLY under concurrent shared-DB load (5/5 green isolated, 122/0); not code; NO carve-out added. **I2 routed** (NOT folded, user-approved): sibling now()-in-hash on WO + workflow-engine SLA-install via `update_entity_combined` v7 → `audit-02-best-in-class-routing-2026-05-17.md` (new row) + `docs/follow-ups/i2-sla-install-idempotency-due_at-2026-05-18.md`. |
