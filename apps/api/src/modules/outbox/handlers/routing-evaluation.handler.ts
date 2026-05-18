@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { DbService } from '../../../common/db/db.service';
 import { SupabaseService } from '../../../common/supabase/supabase.service';
 import { RoutingService } from '../../routing/routing.service';
 import type { AssignmentTarget, ResolverContext } from '../../routing/resolver.types';
@@ -59,12 +60,19 @@ import type { OutboxEvent } from '../outbox.types';
  *      gate keyed on (tenant_id, idempotency_key). We use
  *      `routing-evaluation:<event_id>` so a replay collapses to the cached
  *      RPC result — no double-assignment.
- *   b) Routing-decision INSERTs use the event_id in the context payload so
- *      ops triage can identify "this row was written by event X". There is
- *      no unique constraint on routing_decisions — append-only audit is
- *      the intended shape. Duplicates from a replay are tolerable; they
- *      surface as two trace rows pointing at the same event_id which is
- *      a debuggable state, not a corruption.
+ *   b) Routing-decision INSERTs carry the event_id in the context payload
+ *      and use a raw `ON CONFLICT (tenant_id,
+ *      (context->>'outbox_event_id'), chosen_by) WHERE context ?
+ *      'outbox_event_id' DO NOTHING` matching the partial unique index
+ *      `uq_routing_decisions_outbox_event` (migration 00429, audit-02
+ *      Code-I1). A redelivered event no longer writes a DUPLICATE audit
+ *      row — the second insert is conflict-skipped and treated as an
+ *      expected idempotent replay (success on the §6 path, silent on the
+ *      markRoutingFailure path). chosen_by is in the key so the success
+ *      row and the 'auto_routing_failed' sentinel for the same event are
+ *      distinct (different chosen_by) and don't collide. Rows without an
+ *      outbox_event_id (manual reassigns, RPC-internal rows) are excluded
+ *      by the partial predicate and stay append-only.
  *
  * ── Cross-tenant defense ─────────────────────────────────────────────────
  *
@@ -83,6 +91,45 @@ const ROUTING_EVALUATION_IDEMPOTENCY_KEY_PREFIX = 'routing-evaluation';
 
 function buildRoutingEvaluationIdempotencyKey(eventId: string): string {
   return `${ROUTING_EVALUATION_IDEMPOTENCY_KEY_PREFIX}:${eventId}`;
+}
+
+// codex-tertiary item-5 (NUL hardening): a U+0000 (NUL) in any string that
+// reaches a `$n::jsonb` bind makes Postgres reject the cast ("unsupported
+// Unicode escape \u0000" / invalid byte) — on the markRoutingFailure path the
+// reason is a free-text exception message that can contain a NUL, so the
+// failure-path audit insert would throw and (per the warn-only contract there)
+// the routing FAILURE would go UNAUDITED. The success path's `trace` reasons
+// are also free-text (TraceEntry.reason, resolver-derived) so we scrub both
+// jsonb-bound objects defensively. NUL-free input (the overwhelmingly common
+// case) is returned byte-for-byte identical — behaviour is unchanged for it;
+// only a NUL-bearing value is altered (NUL replaced with the U+FFFD
+// replacement char so the text is preserved and the audit row becomes a VALID
+// row instead of a thrown/swallowed insert).
+function stripNul(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.includes('\u0000') ? s.replace(/\u0000/g, '�') : s;
+}
+
+/**
+ * Recursively return a structural clone of a JSON-safe value with every
+ * string scrubbed of NUL via {@link stripNul}. Used immediately before
+ * `JSON.stringify` for the two jsonb-bound params so a NUL anywhere in a
+ * nested string (resolver trace reasons, failure reason) cannot make the
+ * `::jsonb` cast fail. Non-string scalars and structure are untouched; a
+ * NUL-free object produces an equivalent (deep-equal) value, so existing
+ * assertions that parse the params back are unaffected.
+ */
+function scrubNul<T>(value: T): T {
+  if (typeof value === 'string') return stripNul(value) as unknown as T;
+  if (Array.isArray(value)) return value.map((v) => scrubNul(v)) as unknown as T;
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = scrubNul(v);
+    }
+    return out as unknown as T;
+  }
+  return value;
 }
 
 interface TicketContextRow {
@@ -108,6 +155,14 @@ export class RoutingEvaluationHandler
   constructor(
     private readonly supabase: SupabaseService,
     private readonly routingService: RoutingService,
+    // audit-02 Code-I1: the routing_decisions audit inserts move to a raw
+    // parameterised insert + `ON CONFLICT ... DO NOTHING` so an outbox
+    // redelivery cannot write a duplicate audit row (the assignment RPC was
+    // already idempotent via command_operations; only the audit row duped).
+    // DbModule is @Global (see db.module.ts) so DbService is injectable here
+    // with no module-import change — same provider outbox.worker.ts uses for
+    // its raw-SQL outbox state-machine writes.
+    private readonly db: DbService,
   ) {}
 
   async handle(event: OutboxEvent<RoutingEvaluationRequiredPayload>): Promise<void> {
@@ -284,43 +339,87 @@ export class RoutingEvaluationHandler
     // breadcrumb". Even when target == current, we record the decision
     // so the audit feed shows the evaluation happened.
     //
-    // codex-S11-I1 (2026-05-11): inspect .error explicitly. A silent
+    // codex-S11-I1 (2026-05-11): inspect failure explicitly. A silent
     // failure here leaves the ticket flapping in routing_status='pending'
     // with no audit row and no failure breadcrumb — exactly the failure
     // mode the outbox worker's retry contract exists to surface.
-    const decisionRes = await this.supabase.admin.from('routing_decisions').insert({
-      tenant_id: event.tenant_id,
-      ticket_id,
-      // P2-2 tail (audit-02): set the polymorphic discriminator EXPLICITLY
-      // at this site instead of relying on the 00232 derive trigger. This
-      // handler is case-only by construction (see class-doc), so
-      // entity_kind='case' + case_id=ticket_id are statically correct —
-      // mirrors how set_entity_assignment sets them inside the RPC
-      // (00327:262-271) and the reassign sites (ticket.service.ts:1466).
-      entity_kind: 'case',
-      case_id: ticket_id,
-      strategy: evaluation.strategy,
-      chosen_team_id: target?.kind === 'team' ? target.team_id : null,
-      chosen_user_id: target?.kind === 'user' ? target.user_id : null,
-      chosen_vendor_id: target?.kind === 'vendor' ? target.vendor_id : null,
-      chosen_by: evaluation.chosen_by,
-      rule_id: evaluation.rule_id,
-      trace: evaluation.trace,
-      context: {
-        request_type_id: context.request_type_id,
-        domain: context.domain,
-        priority: context.priority,
-        asset_id: context.asset_id,
-        location_id: context.location_id,
-        outbox_event_id: event.id,
-      },
-    });
-    if (decisionRes.error) {
-      // The assignment write at step 5 already committed. Surface the
-      // audit-row failure so ops can investigate; the outbox worker's
-      // retry will re-attempt the audit insert on next tick.
+    //
+    // audit-02 Code-I1: raw parameterised insert (NOT supabase-js) so we
+    // can append an `ON CONFLICT ... DO NOTHING` whose conflict target
+    // matches uq_routing_decisions_outbox_event (00429) exactly — required
+    // for the partial-index inference to bind. Fully parameterised
+    // ($1..$12); jsonb columns are passed as JSON strings + cast `::jsonb`.
+    // No string interpolation of any value (SQL-injection safe). Column set
+    // is byte-for-byte the same the prior supabase-js insert wrote.
+    //
+    // P2-2 tail (audit-02): entity_kind/case_id set EXPLICITLY here instead
+    // of via the 00232 derive trigger. This handler is case-only by
+    // construction (see class-doc), so entity_kind='case' + case_id=
+    // ticket_id are statically correct — mirrors set_entity_assignment
+    // (00327:262-271) and the reassign sites (ticket.service.ts:1466).
+    const decisionContext = {
+      request_type_id: context.request_type_id,
+      domain: context.domain,
+      priority: context.priority,
+      asset_id: context.asset_id,
+      location_id: context.location_id,
+      outbox_event_id: event.id,
+    };
+    // Initialised to [] so the post-catch `length === 0` read is never
+    // unassigned even if a future edit adds a non-throwing catch branch
+    // (the current catch always throws; this is defensive — review I-1).
+    let decisionRows: { id: string }[] = [];
+    try {
+      const decisionRes = await this.db.query<{ id: string }>(
+        `insert into public.routing_decisions
+           (tenant_id, ticket_id, entity_kind, case_id, strategy,
+            chosen_team_id, chosen_user_id, chosen_vendor_id, chosen_by,
+            rule_id, trace, context)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb)
+         on conflict (tenant_id, (context->>'outbox_event_id'), chosen_by)
+           where context ? 'outbox_event_id'
+           do nothing
+         returning id`,
+        [
+          event.tenant_id,
+          ticket_id,
+          'case',
+          ticket_id,
+          evaluation.strategy,
+          target?.kind === 'team' ? target.team_id : null,
+          target?.kind === 'user' ? target.user_id : null,
+          target?.kind === 'vendor' ? target.vendor_id : null,
+          evaluation.chosen_by,
+          evaluation.rule_id,
+          // codex-tertiary item-5: scrub NUL before the ::jsonb cast.
+          // evaluation.trace[].reason is free-text (resolver-derived); a NUL
+          // there would otherwise throw the audit insert.
+          JSON.stringify(scrubNul(evaluation.trace)),
+          JSON.stringify(scrubNul(decisionContext)),
+        ],
+      );
+      decisionRows = decisionRes.rows;
+    } catch (err) {
+      // The assignment write at step 5 already committed. A GENUINE DB
+      // error (connectivity, constraint other than the idempotency index,
+      // etc.) still THROWS exactly as before so the outbox worker retries
+      // and ops can investigate — behaviour preserved from the pre-fix
+      // supabase-js `.error` throw path.
+      const message = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `routing.evaluation_required.audit_insert_failed event=${event.id}: ${decisionRes.error.message}`,
+        `routing.evaluation_required.audit_insert_failed event=${event.id}: ${message}`,
+      );
+    }
+    if (decisionRows.length === 0) {
+      // ON CONFLICT DO NOTHING returned zero rows ⇒ a routing_decisions row
+      // for (tenant, this outbox event, this chosen_by) already exists: an
+      // expected idempotent OUTBOX REDELIVERY of the same event. This is
+      // SUCCESS, not a failure — do NOT throw, do NOT warn (a duplicate
+      // delivery is the at-least-once contract working as designed). The
+      // first delivery already wrote the audit row; nothing more to do.
+      this.log.debug(
+        `routing-decision audit insert skipped (idempotent replay) ` +
+          `ticket=${ticket_id} event=${event.id} chosen_by=${evaluation.chosen_by}`,
       );
     }
 
@@ -383,7 +482,17 @@ export class RoutingEvaluationHandler
     reason: string,
     eventId: string,
   ): Promise<void> {
-    const truncated = reason.length > 500 ? `${reason.slice(0, 497)}...` : reason;
+    // codex-tertiary item-5 (NUL hardening): `reason` is a free-text
+    // exception message (resolver crash / RPC error). A NUL in it would make
+    // the failure-path routing_decisions `::jsonb` cast throw — caught
+    // warn-only here — so the routing FAILURE would go UNAUDITED. Strip NUL at
+    // the source so the truncated reason that feeds tickets.update,
+    // ticket_activities.metadata, failureTrace[].reason and
+    // failureContext.failure_reason is uniformly NUL-free and produces a VALID
+    // audit row. NUL-free messages (the common case) are unaffected.
+    const truncated = stripNul(
+      reason.length > 500 ? `${reason.slice(0, 497)}...` : reason,
+    );
 
     const updateRes = await this.supabase.admin
       .from('tickets')
@@ -424,33 +533,73 @@ export class RoutingEvaluationHandler
     // sentinel — ops can filter routing_decisions on this value to
     // surface unresolved routing problems. trace carries the truncated
     // reason for forensics.
-    const decisionRes = await this.supabase.admin.from('routing_decisions').insert({
-      tenant_id: tenantId,
-      ticket_id: ticketId,
-      entity_kind: 'case',
-      case_id: ticketId,
-      strategy: 'failed',
-      chosen_team_id: null,
-      chosen_user_id: null,
-      chosen_vendor_id: null,
-      chosen_by: 'auto_routing_failed',
-      rule_id: null,
-      trace: [
-        {
-          step: 'evaluation_failed',
-          matched: false,
-          reason: truncated,
-          target: null,
-        },
-      ],
-      context: {
-        outbox_event_id: eventId,
-        failure_reason: truncated,
+    //
+    // audit-02 Code-I1: raw parameterised insert + the SAME ON CONFLICT
+    // clause as the success path so an outbox redelivery of a failure-path
+    // event can't duplicate the failure breadcrumb. The conflict-target
+    // key includes chosen_by, and this row's chosen_by is the distinct
+    // 'auto_routing_failed' sentinel, so a failure-path replay collapses to
+    // one row WITHOUT colliding with a success-path row for the same event.
+    // jsonb columns passed as JSON strings + cast ::jsonb; fully
+    // parameterised (SQL-injection safe).
+    const failureTrace = [
+      {
+        step: 'evaluation_failed',
+        matched: false,
+        reason: truncated,
+        target: null,
       },
-    });
-    if (decisionRes.error) {
+    ];
+    const failureContext = {
+      outbox_event_id: eventId,
+      failure_reason: truncated,
+    };
+    try {
+      const decisionRes = await this.db.query<{ id: string }>(
+        `insert into public.routing_decisions
+           (tenant_id, ticket_id, entity_kind, case_id, strategy,
+            chosen_team_id, chosen_user_id, chosen_vendor_id, chosen_by,
+            rule_id, trace, context)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb)
+         on conflict (tenant_id, (context->>'outbox_event_id'), chosen_by)
+           where context ? 'outbox_event_id'
+           do nothing
+         returning id`,
+        [
+          tenantId,
+          ticketId,
+          'case',
+          ticketId,
+          'failed',
+          null,
+          null,
+          null,
+          'auto_routing_failed',
+          null,
+          JSON.stringify(failureTrace),
+          JSON.stringify(failureContext),
+        ],
+      );
+      // rows.length === 0 ⇒ ON CONFLICT DO NOTHING skipped: a failure-path
+      // breadcrumb for this event already exists (expected idempotent
+      // outbox redelivery). SILENT success — NOT a warn. A duplicate
+      // delivery is not an error; warning here would be noise. rows.length
+      // === 1 ⇒ first delivery, row written, as before.
+      if (decisionRes.rows.length === 0) {
+        this.log.debug(
+          `markRoutingFailure: routing_decisions audit insert skipped ` +
+            `(idempotent replay) event=${eventId}`,
+        );
+      }
+    } catch (err) {
+      // GENUINE DB error on a failure path. KEEP warn-only — do NOT
+      // escalate to throw: this is itself the failure-recording path, and
+      // a throw here would re-drive the whole event and risk wedging the
+      // outbox (behaviour preserved from the pre-fix supabase-js `.error`
+      // warn-only branch).
+      const message = err instanceof Error ? err.message : String(err);
       this.log.warn(
-        `markRoutingFailure: routing_decisions insert failed event=${eventId}: ${decisionRes.error.message}`,
+        `markRoutingFailure: routing_decisions insert failed event=${eventId}: ${message}`,
       );
     }
   }

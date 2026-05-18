@@ -664,6 +664,7 @@ Maintainer rule: every agent that closes, partially closes, or deliberately defe
 | 2026-05-17 | **Best-in-class status** | **MET — by the project's own bar (live-API smoke is the ship gate)** | All 2026-05-16 P0/P1 closures now live-HTTP-smoked green; codex tertiary gate obtained (2026-05-16 "environmental" caveat closed); P2-1 interim shipped+reviewed; Code-I1 re-deferred with codex-validated prescription+owner+risk; living-contract docs (`smoke-gates.md`/CLAUDE.md/`visibility.md`/`assignments-routing-fulfillment.md`) synced; 02+00 ledgers reconciled append-only; cross-session items routed not absorbed (`audit-02-best-in-class-routing-2026-05-17.md`, with the brief's "B.2 CI-RED" premise corrected by evidence). | Per-slice `tsc`/`errors:check-app-errors`/web-tsc/design-polish green; `/full-review` 2-agent per substantive slice (folds verified against real code); **codex obtained** Q1–Q4; live smoke independently re-confirmed green ×3. Commits aac61b7a · 53ea0c66 · 7898b33e · 051bbbe8 (+ this row) on `worktree-audit-02-best-in-class`. | Remaining are explicitly-deferred-with-owner items, NOT audit-02 gaps: Code-I1 unique-index (next authorized DB-push window), P2-1 full split (integrator/data-model), P2-3 prefix renumber (integrator/data-model — `00410` `comment on function` forward-only fix rides the same window), P1-5 FE rollup (FE workstream). Branch ready for merge decision. |
 | 2026-05-18 | **Post-PR#20 concurrent-merge integrity re-verification** | **audit-02 SURVIVED + 1 regression fixed + 1 pre-existing B.2 defect discovered & routed** | A concurrent workstream merged PR#20 (booking-audit) on top of audit-02's PR#18 (origin/main 362c45f1→4c4ba587). Re-verified on the ACTUAL merged main: (a) all 5 audit-02 commits + PR#18 merge are ancestors; (b) PR#20's `error-codes.ts` +105 merge **dropped** audit-02's `ticket.work_order_id_on_case_endpoint` runtime-array entry (type-union survived → no tsc break, but P2-1 error would render generic at runtime) → **RESTORED** on branch `audit-02-pr20-reconcile-fix`; (c) remote `set_entity_assignment` v3 + `update_entity_combined` v7 bodies **re-verified intact** (PR#20's colliding 00406/00410 files do not redefine them); (d) gate re-run on merged-main surfaced a **pre-existing B.2 dispatch idempotency-replay defect** (server-stamped `timers.due_at` in `md5(p_payload)` @ 00341:153 + dispatch.service.ts:309 → spurious `payload_mismatch` 409 on legitimate replay when an SLA resolves; 3/3 deterministic). | tsc + errors:check-app-errors green on merged-main+fix; remote bodies via `pg_get_functiondef` (`t\|t` / `t\|t\|t`); dispatch defect root-caused (00341:153, dispatch.service.ts:255-265/309, 9 sla_policies) + reproduced 3×; safety invariant (no duplicate WO) hard-asserted ✓ 3×. | The dispatch defect is **NOT audit-02 / NOT this continuation / NOT a PR#20 code regression** (dispatch code unchanged; PR#20-era SLA-config data flipped a dormant latent bug active) — pre-existing B.2 subsystem defect, **discovered by the audit-02 gate doing its job**. Routed (not absorbed) → B.2/dispatch owner with confirmed root cause + the 00407-pattern fix prescription: `docs/follow-ups/audit-02-best-in-class-routing-2026-05-17.md` §5. Probe hardened with an evidenced, fingerprint-scoped `[KNOWN-DEFECT]` carve-out (mirrors the validated SLA CONTENTION-DEFER; safety still hard-asserted; no fake-green). audit-02's own scope remains MET. |
 | 2026-05-18 | **B.2 dispatch idempotency-replay** — the defect routed §5 in the row above | **CLOSED (code + remote migration verified + smoke 3×)** | Migration `00428_dispatch_idempotency_intent_hash.sql`: path-scoped `dispatch_strip_hash_server_fields(jsonb)` (strips `due_at` ONLY from elements of a key literally named `timers`; `routing_context.due_at` preserved) + `dispatch_idempotency_payload_hash(jsonb)`; `dispatch_child_work_order` reproduced VERBATIM from `00341` v3 + `dispatch_child_work_orders_batch` VERBATIM from `00342` v3 (byte-diff: exactly one `v_payload_hash` line changed per fn). Probe-8 `[KNOWN-DEFECT b2-dispatch-replay-sla-due_at]` carve-out REMOVED → strict hard gate. New runnable guard `apps/api/src/modules/ticket/dispatch.idempotency.spec.ts` (mirrors 00407 GUARD-2). **C1 caught & fixed:** batch was first reproduced from STALE `00337` v1 → `create-or-replace` last-writer would have clobbered `00342` v3 (the F-IMP-1 per-task `routing_rule_id` tenant-validate P0 cross-tenant guard + F-CRIT-1 `sla_timers` polymorphic cols); caught by `/full-review`, re-based on `00342`, live-verified preserved. | 00428 pushed to remote + `pg_get_functiondef`: both RPCs route through `dispatch_idempotency_payload_hash`, no raw `md5(p_*::text)`, C1 routing_rule tenant-validate + polymorphic cols PRESERVED, helper path-scoped. `smoke:work-orders` 3/3 exit 0 deterministic — probe-8 `✓ dispatch replay — same WO id both calls` all 3 (fresh fixtures). codex pre-impl design-check (GO-WITH-CHANGES, folded) + `/full-review` 2-agent (C1 caught & fixed) + codex tertiary (GO-WITH-CHANGES, folded); tsc + errors:check-app-errors green; guard 4/4. | **Supersedes the §5 routed deferral** (prior row + `audit-02-best-in-class-routing-2026-05-17.md` §5, now RESOLVED append-only). I1 accepted non-goals documented: replay-after-SLA-policy-edit 409 is by-design (config genuinely changed → fail-closed); forward-only — pre-00428 `command_operations` rows not rewritten so a pre-00428 dispatch replayed post-00428 may still 409, NOT a regression (that deploy-crossing replay was already broken by the very bug fixed). `smoke:tickets` prior interleaved-load flake (scattered P1-3/P0-2 probes, client-side ECONNRESET) characterized **FLAKE_INFRA** — 5/5 green in isolation; 00428 is dispatch-only and cannot affect those probes; NO smoke-tickets carve-out (green in isolation; weakening = fake-green). **NEW sibling I2** (same now()-in-hash on the WO + workflow-engine SLA-install path via `update_entity_combined` v7 `00427`:241 / `update_entity_sla` `00330`:115; producer `sla.service.ts:219`→`work-order.service.ts:584`/`workflow-engine.service.ts:1907`; NOT the case path — verified phantom) discovered by `/full-review`, independently verified, **user-approved ROUTE-not-fold** → `docs/follow-ups/i2-sla-install-idempotency-due_at-2026-05-18.md`. |
+| 2026-05-18 | **Code-I1** — routing-eval handler non-idempotent `routing_decisions` audit inserts under outbox redelivery | **CLOSED (code + remote partial-unique-index verified + smoke 3×)** | Migration `00429_routing_decisions_outbox_event_unique_index.sql` pushed to the shared remote 2026-05-18; `pg_indexes` live-verified: `CREATE UNIQUE INDEX uq_routing_decisions_outbox_event ON public.routing_decisions USING btree (tenant_id, ((context ->> 'outbox_event_id')), chosen_by) WHERE (context ? 'outbox_event_id')`, `indisunique=t`. Index-only (remote pre-verified 0 dup groups / 0 null `chosen_by` → `CREATE UNIQUE INDEX` cannot fail on data; no dedup step). `routing-evaluation.handler.ts`: both `routing_decisions` inserts converted from supabase-js `.insert()` to raw parameterised `this.db.query(... on conflict (tenant_id,(context->>'outbox_event_id'),chosen_by) where context ? 'outbox_event_id' do nothing returning id)` (`DbService` injected — DbModule is `@Global`, same provider `outbox.worker.ts` uses, no module-import change). Per-site error semantics PRESERVED: Site 1 (§6 success) genuine DB error still THROWS (outbox retry contract), conflict-skipped replay (`rows.length===0`) → idempotent SUCCESS (debug, no throw); Site 2 (`markRoutingFailure`) genuine error stays WARN-ONLY (NOT escalated to throw — a throw in the failure-recording path could wedge the outbox), conflict-skipped → silent success. **The codex-tertiary NO-GO ("item 3") was mis-scoped** — verified by reading the handler L256-294: the cited control flow is ENTIRELY PRE-EXISTING and untouched by Code-I1; it is a separate `set_entity_assignment` idempotency-key/payload-stability defect, **routed not folded** as **I3** (user-approved). | 00429 pushed + `pg_indexes` live-verified (`indisunique=t`, expression partial index byte-matches the handler's explicit `ON CONFLICT` arbiter). codex pre-impl design-check → "Approach A explicit-conflict-target, GO-WITH-CHANGES" (B `.upsert` invalid for an expression partial index; C catch-23505 weaker); `/full-review` 2-agent (no CRITICAL; both designated high-risk items — DbService BYPASSRLS/tenant posture == supabase service_role, 12-col↔$1..$12 1:1 no transposition — verified correct; IMPORTANT-1 rollback-coupling + I-1 defensive init + N-3 folded); codex tertiary (smoke replay hardened: per-run scoped pre-clean + baseline isolation + `finally` outbox.events teardown scoped by case-id AND a2 tenant; NUL-byte sanitiser on jsonb-bound `trace`/`context`/`failure_reason`). `pnpm -C apps/api lint` + `pnpm errors:check-app-errors` green; `routing-evaluation.handler.spec.ts` 14/14 (10 pre-existing preserved + 4 new). `smoke:tickets` independently re-run isolated 3/3 exit 0 (123 pass / 0 fail each) — `a2ProbeRoutingEvalClear` gained `✓ routing-eval — same outbox event REDELIVERED, still exactly 1 routing_decisions row (Code-I1: ON CONFLICT DO NOTHING)`, deterministically green all 3 runs. | **Supersedes the 2026-05-17 "Code-I1 RE-DEFERRED" row** (left intact; this is appended). **Rollback-coupling note (folded IMPORTANT-1, also in the 00429 header):** the handler's EXPLICIT `ON CONFLICT` target hard-requires 00429's index — if the index is dropped while the handler change is deployed, EVERY routing eval throws "no unique or exclusion constraint matching the ON CONFLICT specification" → `audit_insert_failed` → outbox retry → dead-letter. Deploy index-first; forward-only; **never drop `uq_routing_decisions_outbox_event` independently.** **`smoke:tickets` FLAKE_INFRA only under concurrent/interleaved load** (green in isolation; mitigation = run the final gate isolated; no carve-out). **I3 routed** (codex-tertiary NO-GO finding, verified PRE-EXISTING + orthogonal by reading handler L256-294, user-approved ROUTE-not-fold): `set_entity_assignment` idempotency-key/payload-drift on an assignment-changing routing-eval retry → wrong `auto_routing_failed` audit + missing success breadcrumb (assignment still correctly applied; no corruption; pre-existing; not P0/P1) → `audit-02-best-in-class-routing-2026-05-17.md` (new row #8) + `docs/follow-ups/i3-routing-eval-assignment-rpc-payload-drift-2026-05-18.md`. |
 
 ## Agent Handoff Prompt
 
@@ -1058,3 +1059,121 @@ now **FIXED, SHIPPED, and live-verified**. The probe carve-out it carried is
 | Date | Finding / Slice | Status | Evidence | Verification | Notes |
 |---|---|---|---|---|---|
 | 2026-05-18 | **B.2 dispatch idempotency-replay** (routed 2026-05-18 §5) | **CLOSED — fixed on remote + strict probe restored** | `00428_dispatch_idempotency_intent_hash.sql` pushed + `pg_get_functiondef`-verified live (path-scoped `dispatch_strip_hash_server_fields` + `dispatch_idempotency_payload_hash`; both dispatch RPCs reproduced VERBATIM from verified-latest v3 — `00341`/`00342` — with one `v_payload_hash` line changed; byte-diff-proven). `smoke-work-orders.mjs` `[KNOWN-DEFECT]` probe-8 carve-out REMOVED → strict hard gate. New runnable guard `apps/api/src/modules/ticket/dispatch.idempotency.spec.ts` (4/4). | codex design-check → `/full-review` 2-agent → codex tertiary (all GO-WITH-CHANGES, folded); lint + errors:check green; **probe-8 GREEN 3/3 deterministic** (`✓ same WO id both calls`, fresh isolated fixtures, no KNOWN-DEFECT/✗); guard 4/4. | **C1 caught:** batch RPC was first reproduced from STALE `00337` v1 → would have silently clobbered `00342` v3's F-IMP-1 routing_rule tenant-validate (P0 cross-tenant guard) + F-CRIT-1 sla_timers polymorphic cols; caught by `/full-review`, re-based, live-verified preserved (×5 `validate_entity_in_tenant`, polymorphic cols). **I1 accepted non-goals:** post-SLA-policy-edit replay 409 by design; pre-00428 cmd_op rows not rewritten (forward-only, not a regression). **FLAKE_INFRA:** `smoke-tickets` flaked at scattered probes ONLY under concurrent shared-DB load (5/5 green isolated, 122/0); not code; NO carve-out added. **I2 routed** (NOT folded, user-approved): sibling now()-in-hash on WO + workflow-engine SLA-install via `update_entity_combined` v7 → `audit-02-best-in-class-routing-2026-05-17.md` (new row) + `docs/follow-ups/i2-sla-install-idempotency-due_at-2026-05-18.md`. |
+| 2026-05-18 | **Code-I1** — routing-eval handler non-idempotent audit inserts under outbox redelivery (the 2026-05-17 RE-DEFERRED finding) | **CLOSED — fixed on remote + smoke 3× + I3 routed** | `00429_routing_decisions_outbox_event_unique_index.sql` pushed + `pg_indexes`-verified live: partial UNIQUE index `uq_routing_decisions_outbox_event` on `(tenant_id, (context->>'outbox_event_id'), chosen_by) WHERE context ? 'outbox_event_id'`, `indisunique=t` (index-only — remote pre-verified 0 dup groups / 0 null `chosen_by`, no dedup). `routing-evaluation.handler.ts`: both `routing_decisions` inserts → raw parameterised `this.db.query(... ON CONFLICT … DO NOTHING RETURNING id)` with the EXPLICIT conflict target byte-matching the index; per-site error semantics preserved (§6 success genuine-error THROWS / conflict-skipped → idempotent success; `markRoutingFailure` genuine-error WARN-only / conflict-skipped → silent success). `DbService` injected (DbModule `@Global`, no module-import change). | codex pre-impl design-check (Approach A explicit-conflict-target GO-WITH-CHANGES; B/.upsert invalid for an expression partial index, C catch-23505 weaker) → `/full-review` 2-agent (no CRITICAL; high-risk items — DbService BYPASSRLS/tenant posture == service_role, 12-col↔$1..$12 1:1, ON CONFLICT byte-matches index — verified; IMPORTANT-1 rollback-coupling + I-1 + N-3 folded) → codex tertiary (smoke replay hardened: scoped pre-clean + baseline isolation + `finally` teardown scoped by case-id AND a2 tenant; NUL-byte sanitiser on jsonb-bound fields). lint + errors:check green; handler spec 14/14. **`smoke:tickets` independently re-run isolated 3/3 exit 0** (123/0 each) — `a2ProbeRoutingEvalClear` `✓ routing-eval — same outbox event REDELIVERED, still exactly 1 routing_decisions row` all 3. | **Supersedes the 2026-05-17 "Code-I1 RE-DEFERRED" row** (left intact; appended). **Rollback-coupling (folded IMPORTANT-1, in the 00429 header too):** the handler's explicit `ON CONFLICT` target hard-requires 00429's index — dropping the index while the handler is deployed throws on EVERY routing eval → `audit_insert_failed` → outbox retry → dead-letter. Deploy index-first; forward-only; **never drop `uq_routing_decisions_outbox_event` independently.** **codex-tertiary NO-GO "item 3" was mis-scoped** (verified by reading handler L256-294: the cited control flow is ENTIRELY PRE-EXISTING + untouched by Code-I1 — Code-I1 only converts the routing_decisions insert and preserves the genuine-error-throw trigger). **I3 routed** (user-approved ROUTE-not-fold): `set_entity_assignment` idempotency-key/payload-drift on an assignment-changing routing-eval retry → wrong `auto_routing_failed` audit + missing success breadcrumb (assignment still correctly applied; no corruption; pre-existing; orthogonal; not P0/P1) → `audit-02-best-in-class-routing-2026-05-17.md` (new row #8) + `docs/follow-ups/i3-routing-eval-assignment-rpc-payload-drift-2026-05-18.md`. **`smoke:tickets` FLAKE_INFRA only under concurrent/interleaved load** (green isolated; mitigation = run the final gate isolated; no carve-out). |
+
+#### Update — 2026-05-18 — Code-I1 CLOSED (00429) + I3 routed
+
+The 2026-05-17 **Code-I1 RE-DEFERRED** finding (the routing-evaluation
+handler's own two `routing_decisions` inserts being non-idempotent under
+outbox redelivery — a replay could write a duplicate append-only audit
+row) is now **CLOSED, SHIPPED, and live-verified**. The 2026-05-17 RE-DEFER
+row + its `#### Update — 2026-05-17 — Code-I1 RE-DEFERRED` narrative are
+left intact above — this is appended, not rewritten. The ready-to-apply
+prescription recorded in the 2026-05-17 row was applied as written
+(partial unique index + `ON CONFLICT DO NOTHING`), tightened by review.
+
+- **Fix shipped + verified:** migration
+  `supabase/migrations/00429_routing_decisions_outbox_event_unique_index.sql`
+  pushed to the shared remote 2026-05-18 + `pg_indexes`-verified live:
+  `CREATE UNIQUE INDEX uq_routing_decisions_outbox_event ON
+  public.routing_decisions USING btree (tenant_id,
+  ((context ->> 'outbox_event_id')), chosen_by) WHERE
+  (context ? 'outbox_event_id')`, `indisunique=t`. The migration is
+  **index-only** — the remote was pre-verified to have **0 duplicate
+  groups and 0 null `chosen_by`** under the partial predicate, so
+  `CREATE UNIQUE INDEX` cannot fail on existing data; no dedup step was
+  needed or shipped. The 2026-05-17 prescription's exact-shape
+  `(tenant_id, (context->>'outbox_event_id'), chosen_by) where context ?
+  'outbox_event_id'` was honored.
+- **Handler converted to the canonical idempotent write:** both
+  `routing_decisions` inserts in
+  `apps/api/src/modules/outbox/handlers/routing-evaluation.handler.ts`
+  were converted from supabase-js `.insert()` to raw parameterised
+  `this.db.query(... insert into public.routing_decisions (<12 cols>)
+  values ($1..$12,$11::jsonb,$12::jsonb) on conflict
+  (tenant_id,(context->>'outbox_event_id'),chosen_by) where context ?
+  'outbox_event_id' do nothing returning id)`. `DbService` is injected
+  (DbModule is `@Global` — the same provider `outbox.worker.ts` already
+  uses; **no module-import change**). The EXPLICIT `ON CONFLICT` target
+  byte-matches the 00429 index for arbiter inference.
+- **Per-site error semantics PRESERVED (deliberate, asymmetric):**
+  Site 1 (§6 success) — a genuine DB error still THROWS (the outbox
+  retry contract is intact); a conflict-skipped replay
+  (`rows.length===0`) → idempotent SUCCESS (debug log, no throw/warn).
+  Site 2 (`markRoutingFailure`) — a genuine error stays WARN-ONLY
+  (NOT escalated to throw: a throw in the failure-recording path could
+  wedge the outbox); conflict-skipped → silent success. A defensive
+  `let decisionRows: {id:string}[] = []` init (folded I-1) and a
+  comment-accuracy fix (folded N-3) were applied.
+- **Review chain:** codex pre-impl design-check returned "Approach A
+  with EXPLICIT conflict target, GO-WITH-CHANGES" (folded); Approach B —
+  a supabase-js `.upsert` — was proven invalid for an *expression
+  partial* index, and Approach C — catch-23505 — is weaker.
+  `/full-review` (2 adversarial agents) returned no CRITICAL; both
+  designated high-risk items were verified correct: (a) `DbService`
+  connects as Postgres role `postgres` (`BYPASSRLS`) — the SAME
+  RLS-bypass/tenant posture as the supabase service_role the handler
+  used before, **no security regression**; (b) the 12-col ↔ `$1..$12`
+  mapping is 1:1 in BOTH inserts, no transposition; (c) `trace`/
+  `context` are always non-null jsonb so no new throw surface;
+  (d) outbox `event.id` is stable across redeliveries / `sweepStaleClaims`
+  so the fix is not inert; (e) no other writer sets
+  `context.outbox_event_id`, so the partial index constrains only this
+  handler. codex tertiary hardened the smoke replay (per-run scoped
+  pre-clean + baseline isolation + `finally` `outbox.events` teardown,
+  all scoped by case-id AND the a2 tenant) and applied a NUL-byte
+  sanitiser to the jsonb-bound `trace`/`context`/`failure_reason` so a
+  NUL in a free-text exception message cannot make `$n::jsonb` reject
+  and silently drop a failure audit row.
+- **Rollback-coupling (folded IMPORTANT-1 — also documented in the 00429
+  header):** the handler's EXPLICIT `ON CONFLICT` target **hard-requires**
+  00429's index. If the index is dropped while the handler change is
+  deployed, EVERY routing eval throws *"no unique or exclusion constraint
+  matching the ON CONFLICT specification"* → `audit_insert_failed` →
+  outbox retry → dead-letter. **Deploy index-first; forward-only; never
+  drop `uq_routing_decisions_outbox_event` independently.**
+- **Gates green:** `pnpm -C apps/api lint` (tsc --noEmit) +
+  `pnpm errors:check-app-errors` (0 raw throws / 35 modules) green;
+  `routing-evaluation.handler.spec.ts` 14/14 (10 pre-existing preserved
+  via FakeDb + 4 new Code-I1 tests — the FakeDb positional reconstruction
+  is a known column-transposition blind spot, mitigated by the manual
+  1:1 verify in `/full-review` + the live smoke replay).
+- **Smoke:** `smoke-tickets.mjs` `a2ProbeRoutingEvalClear` gained
+  `✓ routing-eval — same outbox event REDELIVERED, still exactly 1
+  routing_decisions row (Code-I1: ON CONFLICT DO NOTHING)`.
+  Independently re-run by the orchestrator (not just the authoring
+  subagent): **`smoke:tickets` 3/3 isolated, exit 0 (123 pass / 0 fail
+  each)**; the routing-eval+replay probe was deterministically green on
+  all 3 runs. `smoke-tickets` remains **FLAKE_INFRA only** under
+  concurrent/interleaved load (green in isolation; mitigation = run the
+  final gate isolated; no carve-out added — weakening it would be
+  fake-green).
+- **codex-tertiary NO-GO "item 3" was mis-scoped → routed as I3 (NOT a
+  Code-I1 regression):** codex tertiary returned NO-GO on Code-I1 citing
+  "item 3". Verified by reading the handler L256-294: the cited control
+  flow (`applyAssignment` conditional payload → `set_entity_assignment`
+  → `rpcRes.error` → `markRoutingFailure` + `return` BEFORE the §6
+  success audit insert) is **ENTIRELY PRE-EXISTING and untouched by
+  Code-I1** — Code-I1 only converts the `routing_decisions` insert and
+  preserves the genuine-error-throw trigger, so item 3 exists
+  IDENTICALLY before/after Code-I1. It is a separate defect in the
+  `set_entity_assignment` idempotency-key/payload-stability design,
+  orthogonal to the routing_decisions-dup Code-I1 scopes. The user
+  explicitly chose **"Ship Code-I1 + route item 3"**. Routed (not
+  folded) as **I3** → `docs/follow-ups/audit-02-best-in-class-routing-2026-05-17.md`
+  (new "Summary for owners" row #8) + the self-contained follow-up
+  `docs/follow-ups/i3-routing-eval-assignment-rpc-payload-drift-2026-05-18.md`.
+  Risk if I3 unfixed: on a partial-commit retry or a plain redelivery of
+  an **assignment-changing** routing-eval event, the assignment is
+  correctly applied but the audit trail wrongly records
+  `auto_routing_failed` and the success `routing_decisions` breadcrumb is
+  missing — audit-integrity/ops-confusion only, NO wrong assignment, NO
+  data corruption; pre-existing; not P0/P1 (same class/severity profile
+  as the original Code-I1 dup-audit-row).
+- **Net:** the 2026-05-17 Code-I1 re-deferral is now discharged on
+  remote with the prescribed partial unique index + an idempotent
+  `ON CONFLICT DO NOTHING` handler write, a live 3× smoke replay proof,
+  and a recorded forward-only rollback-coupling caveat; the
+  codex-tertiary NO-GO was proven to be a mis-scoped pre-existing
+  defect (I3) and honestly routed — not silently absorbed — per user
+  direction.
