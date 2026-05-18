@@ -1608,14 +1608,18 @@ export class TicketService {
     const childCols =
       'id, title, status, status_category, priority, assigned_team_id, assigned_user_id, assigned_vendor_id, interaction_mode, created_at, resolved_at, sla_id, sla_resolution_due_at, sla_resolution_breached_at';
 
+    let woVisibleIds: string[] | null = null; // null = see all (system or has_read_all)
+
     if (actorAuthUid !== SYSTEM_ACTOR) {
       const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
       // Gate on parent (case) visibility first.
       await this.visibility.assertVisible(parentTicketId, ctx, 'read');
       if (!ctx.user_id && !ctx.has_read_all) return [];
-      // If the actor can see the parent case, they can see its work_order
-      // children. (The visibility model treats children as inheriting parent
-      // visibility for read; tighter scoping is a future step 1c.9 concern.)
+      // Audit 02 / P1-5: children are independently filtered through
+      // work_order_visibility_ids (00374) — parent-case visibility does NOT
+      // automatically grant visibility on every child work-order. A vendor WO
+      // dispatched outside the actor's scope must be excluded.
+      woVisibleIds = await this.visibility.getVisibleWorkOrderIds(ctx);
     }
 
     const { data, error } = await this.supabase.admin
@@ -1626,9 +1630,20 @@ export class TicketService {
       .order('created_at');
 
     if (error) throw error;
+
+    const rows = data ?? [];
+    // Apply per-child visibility filter (null = see all; [] or id-set = filter).
+    const filtered =
+      woVisibleIds !== null
+        ? (() => {
+            const allowed = new Set(woVisibleIds);
+            return rows.filter((r) => allowed.has(r.id));
+          })()
+        : rows;
+
     // Step 1c.10c: synthesize ticket_kind='work_order' for frontend
     // WorkOrderRow type continuity.
-    return (data ?? []).map((row) => ({ ...row, ticket_kind: 'work_order' as const }));
+    return filtered.map((row) => ({ ...row, ticket_kind: 'work_order' as const }));
   }
 
   /**

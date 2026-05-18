@@ -220,3 +220,55 @@ describe('TicketVisibilityService.loadContext', () => {
     expect(result.has_write_all).toBe(false);
   });
 });
+
+describe('TicketVisibilityService.getVisibleWorkOrderIds', () => {
+  function mkRpcSvc(rpcReturn: unknown) {
+    const supabase = {
+      admin: {
+        rpc: jest.fn(async () => rpcReturn),
+      },
+    };
+    return { svc: new TicketVisibilityService(supabase as never), rpc: supabase.admin.rpc };
+  }
+
+  it('returns null when ctx.has_read_all is true (no filter — see all)', async () => {
+    const { svc, rpc } = mkRpcSvc({ data: ['wo1'], error: null });
+    const result = await svc.getVisibleWorkOrderIds(ctx({ has_read_all: true }));
+    expect(result).toBeNull();
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('returns [] when ctx.user_id is falsy', async () => {
+    const { svc, rpc } = mkRpcSvc({ data: ['wo1'], error: null });
+    const result = await svc.getVisibleWorkOrderIds(ctx({ user_id: '' }));
+    expect(result).toEqual([]);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('calls work_order_visibility_ids rpc with correct args and maps rows (string array)', async () => {
+    const { svc, rpc } = mkRpcSvc({ data: ['wo1', 'wo2'], error: null });
+    const result = await svc.getVisibleWorkOrderIds(ctx({ user_id: 'u1', tenant_id: 't1' }));
+    expect(rpc).toHaveBeenCalledWith('work_order_visibility_ids', {
+      p_user_id: 'u1',
+      p_tenant_id: 't1',
+    });
+    expect(result).toEqual(['wo1', 'wo2']);
+  });
+
+  it('maps object-shaped rows ({ id: string }) correctly', async () => {
+    const { svc } = mkRpcSvc({ data: [{ id: 'wo1' }, { id: 'wo2' }], error: null });
+    const result = await svc.getVisibleWorkOrderIds(ctx({ user_id: 'u1', tenant_id: 't1' }));
+    expect(result).toEqual(['wo1', 'wo2']);
+  });
+
+  it('returns [] when rpc returns null data', async () => {
+    const { svc } = mkRpcSvc({ data: null, error: null });
+    const result = await svc.getVisibleWorkOrderIds(ctx({ user_id: 'u1', tenant_id: 't1' }));
+    expect(result).toEqual([]);
+  });
+
+  it('throws when rpc returns an error', async () => {
+    const { svc } = mkRpcSvc({ data: null, error: new Error('rpc fail') });
+    await expect(svc.getVisibleWorkOrderIds(ctx({ user_id: 'u1', tenant_id: 't1' }))).rejects.toThrow('rpc fail');
+  });
+});
