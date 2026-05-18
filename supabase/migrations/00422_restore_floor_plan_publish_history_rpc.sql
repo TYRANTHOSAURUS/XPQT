@@ -1,4 +1,4 @@
--- 00374_restore_floor_plan_publish_history_rpc.sql
+-- 00422_restore_floor_plan_publish_history_rpc.sql
 -- Restore a previous publish snapshot. Atomic. Creates its own history row
 -- of the current state before applying the snapshot.
 

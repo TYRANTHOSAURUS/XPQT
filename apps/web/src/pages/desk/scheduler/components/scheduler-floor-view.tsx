@@ -104,9 +104,9 @@ export function SchedulerFloorView({
     timeWindow.start <= now && now <= timeWindow.end;
 
   function handleSpaceClick(spaceId: string) {
-    const reservations = reservationsBySpaceId.get(spaceId) ?? [];
-    // Find a reservation that overlaps the current time window.
-    const active = reservations.find((r) => {
+    const spaceSlots = reservationsBySpaceId.get(spaceId) ?? [];
+    // Find a booking slot that overlaps the current time window.
+    const active = spaceSlots.find((r) => {
       const rStart = new Date(r.effective_start_at).getTime();
       const rEnd = new Date(r.effective_end_at).getTime();
       const winStart = timeWindow.start.getTime();

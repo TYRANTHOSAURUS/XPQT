@@ -1,6 +1,6 @@
--- 00376_floor_plans_storage_relax.sql
+-- 00423_floor_plans_storage_relax.sql
 --
--- The storage policies from 00372 used `current_tenant_id()` which only returns
+-- The storage policies from 00420 used `current_tenant_id()` which only returns
 -- a value when called from the API server (it reads a session-level setting
 -- the API sets per request). Direct uploads from the frontend's Supabase JS
 -- client run without that setting, so the policy denies every upload with

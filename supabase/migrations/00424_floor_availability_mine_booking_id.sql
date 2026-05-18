@@ -1,4 +1,4 @@
--- 00400_floor_availability_mine_booking_id.sql
+-- 00424_floor_availability_mine_booking_id.sql
 -- Extends `floor_availability` RPC to include `mine_booking_id` on each space
 -- entry, so the portal /book/floor surface can wire an inline cancel action
 -- when state='mine' (without a second round-trip to look up the booking id).

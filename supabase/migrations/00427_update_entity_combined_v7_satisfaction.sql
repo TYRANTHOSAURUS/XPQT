@@ -1,11 +1,11 @@
--- 00410 — update_entity_combined v7 (audit-02 P1-3 remediation).
+-- 00427 — update_entity_combined v7 (audit-02 P1-3 remediation).
 --
 -- Spec:        docs/follow-ups/audits/02-tickets-work-orders.md
 --              "#### P1-3 — Satisfaction rating writes outside orchestrator".
 -- Supersedes:  00384 (v6 hardened — 8-arg signature; CREATE OR REPLACE on the
 --              identical 8-arg signature, no arity change, no drop needed).
 -- Predecessor: 00331 v1 → 00332 v2 → 00333 v3 → 00334 v4 → 00335 v5 →
---              00383 v6 → 00384 v6 hardened → 00410 v7.
+--              00383 v6 → 00384 v6 hardened → 00427 v7.
 --
 -- ── Single finding folded into one CREATE OR REPLACE ──────────────────
 --
@@ -136,7 +136,7 @@ declare
   v_has_cost_key             boolean;
   v_has_tags_key             boolean;
   v_has_watchers_key         boolean;
-  -- 00410 v7: satisfaction key-presence (mirrors v6 cost/tags pattern).
+  -- 00427 v7: satisfaction key-presence (mirrors v6 cost/tags pattern).
   v_has_sat_rating_key       boolean;
   v_has_sat_comment_key      boolean;
 
@@ -168,7 +168,7 @@ declare
   v_watcher_match_count      int;
   v_watchers_changed         boolean := false;
 
-  -- 00410 v7: satisfaction working vars (mirror v6 cost vars).
+  -- 00427 v7: satisfaction working vars (mirror v6 cost vars).
   v_prev_sat_rating          smallint;
   v_new_sat_rating           smallint;
   v_sat_rating_raw           jsonb;
@@ -323,7 +323,7 @@ begin
   v_prev_cost             := v_current.cost;
   v_prev_tags             := v_current.tags;
   v_prev_watchers         := v_current.watchers;
-  -- 00410 v7: previous satisfaction snapshot (mirrors v6 cost snapshot).
+  -- 00427 v7: previous satisfaction snapshot (mirrors v6 cost snapshot).
   v_prev_sat_rating       := v_current.satisfaction_rating;
   v_prev_sat_comment      := v_current.satisfaction_comment;
 
@@ -567,12 +567,12 @@ begin
     v_has_cost_key        := v_metadata ? 'cost';
     v_has_tags_key        := v_metadata ? 'tags';
     v_has_watchers_key    := v_metadata ? 'watchers';
-    -- 00410 v7: satisfaction key-presence — same `?` guard as cost/tags
+    -- 00427 v7: satisfaction key-presence — same `?` guard as cost/tags
     -- so absent ≠ "set to null" and present-with-null = explicit clear.
     v_has_sat_rating_key  := v_metadata ? 'satisfaction_rating';
     v_has_sat_comment_key := v_metadata ? 'satisfaction_comment';
 
-    -- 00410 v7 (review Plan-2): satisfaction is CASE-ONLY. The non-atomic
+    -- 00427 v7 (review Plan-2): satisfaction is CASE-ONLY. The non-atomic
     -- side-write this slice replaces only ever wrote `.from('tickets')`
     -- (audit-02 P1-3); satisfaction is a requester-of-the-case concept and
     -- the shipped requester-rating system persists to its own table, not
@@ -580,7 +580,7 @@ begin
     -- `work_orders.satisfaction_rating` exists in schema (00213) but is
     -- vestigial — folding satisfaction symmetrically would WIDEN the
     -- writable surface beyond what the side-write did. Reject the
-    -- combination loudly (mirror 00406 D5). Unreachable today (no caller
+    -- combination loudly (mirror 00425 D5). Unreachable today (no caller
     -- sends satisfaction; the WO `update()` path never set it).
     if p_entity_kind = 'work_order'
        and (v_has_sat_rating_key or v_has_sat_comment_key) then
@@ -704,7 +704,7 @@ begin
       v_watchers_changed := v_new_watchers is distinct from v_prev_watchers;
     end if;
 
-    -- ── 00410 v7: satisfaction_rating ─────────────────────────────────
+    -- ── 00427 v7: satisfaction_rating ─────────────────────────────────
     -- Mirrors the cost block (v6:555-571): `?`-key-presence guard,
     -- null = explicit clear, number = validate-and-set, anything else
     -- rejects as update_entity_combined.invalid_metadata (registered
@@ -732,7 +732,7 @@ begin
       v_sat_rating_changed := v_new_sat_rating is distinct from v_prev_sat_rating;
     end if;
 
-    -- ── 00410 v7: satisfaction_comment ────────────────────────────────
+    -- ── 00427 v7: satisfaction_comment ────────────────────────────────
     -- Mirrors the description block (v6:550-553): null OR empty string
     -- both clear; absent untouched. text column, no further validation.
     if v_has_sat_comment_key then
@@ -772,7 +772,7 @@ begin
       v_metadata_changes := v_metadata_changes || jsonb_build_object(
         'watchers', jsonb_build_object('previous', to_jsonb(v_prev_watchers), 'next', to_jsonb(v_new_watchers)));
     end if;
-    -- 00410 v7: satisfaction reflected in the same metadata_changed
+    -- 00427 v7: satisfaction reflected in the same metadata_changed
     -- activity row (mirrors v6 cost/title change-set entries).
     if v_sat_rating_changed then
       v_metadata_changes := v_metadata_changes || jsonb_build_object(
@@ -898,6 +898,6 @@ end;
 $$;
 
 comment on function public.update_entity_combined(text, uuid, uuid, uuid, text, jsonb, text, int) is
-  '00410 v7 (audit-02 P1-3). Folds satisfaction_rating + satisfaction_comment into the metadata branch of update_entity_combined: the same row UPDATE that writes title/description/cost/tags/watchers, and the same metadata_changed activity row. Atomic with every other branch, audited, idempotent via command_operations. Key-presence (`?`) guard like cost/tags — absent key untouched, present-with-null = explicit clear; satisfaction-only patches now go through the RPC and require X-Client-Request-Id (the PATCH /tickets/:id RequireClientRequestIdGuard covers HTTP callers; no internal/SYSTEM satisfaction caller exists). Handled SYMMETRICALLY in both the case (public.tickets) and work_order (public.work_orders) arms because BOTH tables carry identical satisfaction_rating smallint CHECK(between 1 and 5) + satisfaction_comment text columns (00011_tickets.sql:28-29 / 00213_step1c1_work_orders_new_table.sql:83-84); no range check in the RPC — the column CHECK is the authoritative gate, matching the app posture. Keys absent => byte-identical to 00384 v6 (every existing non-satisfaction caller unaffected). All v6 hardening (authoritative plan_version compare under FOR UPDATE; p_activity_source in payload_hash) preserved verbatim. Supersedes 00384. Spec: docs/follow-ups/audits/02-tickets-work-orders.md.';
+  '00427 v7 (audit-02 P1-3). Folds satisfaction_rating + satisfaction_comment into the metadata branch of update_entity_combined: the same row UPDATE that writes title/description/cost/tags/watchers, and the same metadata_changed activity row. Atomic with every other branch, audited, idempotent via command_operations. Key-presence (`?`) guard like cost/tags — absent key untouched, present-with-null = explicit clear; satisfaction-only patches now go through the RPC and require X-Client-Request-Id (the PATCH /tickets/:id RequireClientRequestIdGuard covers HTTP callers; no internal/SYSTEM satisfaction caller exists). Handled SYMMETRICALLY in both the case (public.tickets) and work_order (public.work_orders) arms because BOTH tables carry identical satisfaction_rating smallint CHECK(between 1 and 5) + satisfaction_comment text columns (00011_tickets.sql:28-29 / 00213_step1c1_work_orders_new_table.sql:83-84); no range check in the RPC — the column CHECK is the authoritative gate, matching the app posture. Keys absent => byte-identical to 00384 v6 (every existing non-satisfaction caller unaffected). All v6 hardening (authoritative plan_version compare under FOR UPDATE; p_activity_source in payload_hash) preserved verbatim. Supersedes 00384. Spec: docs/follow-ups/audits/02-tickets-work-orders.md.';
 
 notify pgrst, 'reload schema';

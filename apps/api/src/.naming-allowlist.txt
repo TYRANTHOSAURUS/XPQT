@@ -1051,3 +1051,34 @@ apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:2
 apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:415:        if (e.bundle_id === BUNDLE_1) {
 apps/api/src/modules/reservations/reservation-edit-scope-cascade-batch.spec.ts:445:    expect(captured.some((e) => e.bundle_id === BUNDLE_2)).toBe(true);
 apps/api/src/modules/reservations/reservation.service.ts:2171:          bundle_id: args.bundleId,
+
+# === CI-hygiene 2026-05-18 — PR#20 booking-audit refs (pre-existing, were masked behind the ripgrep CI gap; not introduced by this PR) ===
+# KEEP_BACKWARDS_COMPAT_FIELD — `bundle_id` retained as cancelBundle/cancelLine method-arg, event-payload, and return-shape field where under canonicalisation bundle_id IS the booking id (wire/API compat). Mirrors allowlist lines 603-644.
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:341:              bundle_id: BUNDLE,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:406:          () => svc.cancelBundle({ bundle_id: BUNDLE }, CTX),
+apps/api/src/modules/booking-bundles/bundle-cascade.service.events.spec.ts:387:        () => svc.cancelBundle({ bundle_id: BUNDLE, client_request_id: CRID }, CTX),
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:231:      bookingId: args.bundle_id,
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:165:      bookingId: line.bundle_id,
+apps/api/src/modules/booking-bundles/bundle.service.ts:345:      bundle_id: bundleId,
+apps/api/src/modules/outbox/handlers/booking-cancelled-cascade.handler.ts:181:          bundle_id: bookingId,
+apps/api/src/modules/outbox/handlers/bundle-services-cancelled-cascade.handler.ts:137:          bundle_id: bookingId,
+apps/api/src/modules/reservations/multi-room-booking.service.spec.ts:52:        bundle_id: bookingId,
+apps/api/src/modules/reservations/multi-room-booking.service.ts:439:          bundle_id: bookingId,
+apps/api/src/modules/visitors/bundle-cascade-integration.spec.ts:747:            { bundle_id: BUNDLE, client_request_id: CLIENT_REQUEST_ID },
+# KEEP_AUDIT_ENTITY_TYPE — `'booking_bundle'` string literal passed as the audit entity_type on the bundle.created event. Mirrors allowlist lines 584-601.
+apps/api/src/modules/booking-bundles/bundle.service.ts:344:    void this.audit(tenantId, 'bundle.created', 'booking_bundle', bundleId, {
+# KEEP_HISTORICAL_COMMENT — rename-rationale comments + doc-comment file-path citations of the reservations module (not code symbols). Mirrors allowlist lines 281-310 and 1017-1019.
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:243:    // was cancelled (old cancelBundleImpl pushed args.bundle_id).
+apps/api/src/modules/outbox/handlers/booking-cancelled-cascade.handler.ts:167:    // Under canonicalisation `bundle_id` IS the booking id (adapter.ts:
+apps/api/src/modules/outbox/handlers/booking-cancelled-cascade.handler.ts:12:} from '../../reservations/reservation-projection';
+apps/api/src/modules/outbox/handlers/bundle-services-cancelled-cascade.handler.ts:124:    // Under canonicalisation `bundle_id` IS the booking id
+apps/api/src/modules/outbox/handlers/bundle-services-cancelled-cascade.handler.ts:44: * Synthesizes the `{kind:'bundle.cancelled', bundle_id:booking_id}` shape
+apps/api/src/modules/reservations/booked-by-user-id.util.ts:16: *     (reservations.module.ts:~190) — calendar inbound create.
+apps/api/src/modules/reservations/multi-room-booking.service.ts:147:    // POST /reservations/multi-room route, reservation.controller.ts:151)
+apps/api/src/modules/reservations/recurrence.service.ts:93:   * from reservations.module.ts in the same change.
+# KEEP_HISTORICAL_COMMENT — live import of the reservations module (no KEEP_LIVE_IMPORT class exists; mirrors allowlist lines 1005-1020).
+apps/api/src/modules/outbox/handlers/booking-cancelled-cascade.handler.ts:7:import { BookingNotificationsService } from '../../reservations/booking-notifications.service';
+apps/api/src/modules/outbox/outbox.module.ts:4:import { ReservationsModule } from '../reservations/reservations.module';
+# KEEP_WIRE_SHAPE — documented byte-stable response shape; `reservations[]` is the response field on POST /reservations/multi-room. Mirrors allowlist lines 948-949.
+apps/api/src/modules/reservations/multi-room-booking.service.ts:67: * Returns shape is byte-stable: `{ group_id, reservations[] }` where
+apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:247:      cancelled_reservation_ids: result.booking_cancelled ? [args.bundle_id] : [],
