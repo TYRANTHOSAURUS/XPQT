@@ -907,7 +907,7 @@ A user-requested codex done-check (read-only, vs committed HEAD) returned **NOT-
 
 **Corrected status for #2:** browser-direct **table-DML (00415) AND RPC-EXECUTE (00417)** are now both grant-denied, claim-independent, for the two browser roles (trio excepted, by audit design). The earlier "RPC tracked-P2 / not live" is **closed, not deferred** — it was a real live cross-tenant leak, found by codex, fixed and proven. Honest residuals unchanged: SECURITY INVOKER browser-direct *reads* still RLS-gated/claim-dependent (SELECT kept for Realtime); avatar Storage cross-tenant READ P3; ADP partiality (postgres-only); `supabase_admin` extension-fn EXECUTE not revokable from this role (non-tenant math, documented).
 
-Commit: pending (00417 + smoke + ledger; file-scoped) — surfaced to the user, not done unprompted; until then 00417 is applied-to-remote-but-uncommitted (same C2 window, recorded).
+Commit: **`58b4b999`** (user-authorized, sweep-safe explicit-pathspec: `00417` + `smoke-cross-tenant.mjs` + this ledger; parallel audit02 files excluded — the shared branch advanced again mid-session, commit is cleanly on top). Re-verified against committed HEAD `58b4b999` + live remote: `00417` committed with the corrected `REVOKE … FROM public, anon, authenticated` + `GRANT … TO service_role` + trio re-grant; smoke EXECUTE-guard scoped to `proowner=postgres` at HEAD; live `tickets_distinct_tags` anon/authenticated=`false`, service_role=`true`. C2 remote-vs-committed window closed for 00417. Branch unmerged (gated on parallel 03-booking, unchanged).
 
 ## Codex Deep Review Verdict — 2026-05-18
 
