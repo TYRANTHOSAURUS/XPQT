@@ -662,6 +662,7 @@ Maintainer rule: every agent that closes, partially closes, or deliberately defe
 | 2026-05-17 | **codex tertiary adversarial gate** — unobtainable 2026-05-16, **OBTAINED 2026-05-17** | **OBTAINED — supersedes the 2026-05-16 "codex unobtainable" gate-degradation** | Scoped review: Q1 00406 v3 backward-compat across ALL `set_entity_assignment` callers; Q2 00410 v7 across ALL `update_entity_combined` callers; Q3 reassign/bulkUpdate/getChildTasks; Q4 Code-I1 direction. | codex `succeeded` (responsive); prompt-to-file per `feedback_codex_long_argv_hang`. | **00406/00410 safe-as-merged for all current callers** (Q1/Q2). Q3 clean. Q4 → re-defer confirmed. 3 NITs: Q1+Q2 unregistered guard error codes → **FOLDED** (commit 53ea0c66, registered 400 + en/nl api+web); Q2 00410 `comment on function` says satisfaction "handled symmetrically" but code rejects WO satisfaction → **documented forward-only fix** (no migration push solely for a comment; correct on next `update_entity_combined` touch). The 2026-05-16 "codex never available" gate-degradation is now CLOSED — it WAS obtained; merged RPCs are codex-clean. |
 | 2026-05-17 | **Slice 8 — live-smoke** | **PASSED — supersedes the 2026-05-16 "DEFERRED with owner + per-finding risk" row** | 10 probes authored into `smoke-tickets.mjs` (+1097) + `smoke-work-orders.mjs` (+418): P0-1 bulk/update 200/207/422+replay; P1-1 case+WO reassign (`command_operations`+`routing_decisions`+activity+domain-event+assignee-change); P0-2 SLA-escalation reassign (cron-driven, crossing anchor + `sla:escalation:*` cmd-op + assignee moved + recurrence-safe); P1-2 routing_status→idle atomic + no spurious activity; P1-5 getChildTasks cross-visibility (zero-role watcher EXCLUDES vendor child, admin INCLUDES — non-vacuous, asserts parent readable); vendor-assignment e2e; WO cross-tenant; dispatch idempotency-replay; reclassify; P1-3 satisfaction round-trip + WO-guard negative. Commit 051bbbe8. Registered: CLAUDE.md mandatory matrix + `docs/smoke-gates.md` (COVERED). See §2026-05-17 live-smoke Update. | **Independently re-run by the orchestrator (not just the authoring subagent), TWICE: `smoke:tickets` 122/0 exit 0, `smoke:work-orders` 125/0 exit 0, ZERO CONTENTION-DEFER triggered on any of 3 full runs.** Adversarial vacuousness review: NO CRITICAL, no fake-green, P1-5 security probe proven to go red on the exact revert mutation; 2 IMPORTANT folds applied (probe-9 audit assertion tightened to `metadata.event='reclassified'`; SLA CONTENTION-DEFER backstop made self-verifying). | **Runtime honesty:** not a truly *solo* runtime — the shared remote DB + concurrent `:3001` session/cron persisted. What was achieved: server-code-provenance isolation (`:3010` server built from THIS worktree; `:3001` runs a divergent branch) + per-run isolated fixtures + server-agnostic idempotent-outcome assertions + a scoped CONTENTION-DEFER escape hatch that **never triggered across 3 independent full runs** — i.e. the gate is proven robust UNDER the real concurrent conditions, a stronger result than a one-off solo pass. No genuine product regression found. The 2026-05-16 per-finding risk (HTTP→DB paths unverified end-to-end) is now **DISCHARGED** for all 10 enumerated probes. |
 | 2026-05-17 | **Best-in-class status** | **MET — by the project's own bar (live-API smoke is the ship gate)** | All 2026-05-16 P0/P1 closures now live-HTTP-smoked green; codex tertiary gate obtained (2026-05-16 "environmental" caveat closed); P2-1 interim shipped+reviewed; Code-I1 re-deferred with codex-validated prescription+owner+risk; living-contract docs (`smoke-gates.md`/CLAUDE.md/`visibility.md`/`assignments-routing-fulfillment.md`) synced; 02+00 ledgers reconciled append-only; cross-session items routed not absorbed (`audit-02-best-in-class-routing-2026-05-17.md`, with the brief's "B.2 CI-RED" premise corrected by evidence). | Per-slice `tsc`/`errors:check-app-errors`/web-tsc/design-polish green; `/full-review` 2-agent per substantive slice (folds verified against real code); **codex obtained** Q1–Q4; live smoke independently re-confirmed green ×3. Commits aac61b7a · 53ea0c66 · 7898b33e · 051bbbe8 (+ this row) on `worktree-audit-02-best-in-class`. | Remaining are explicitly-deferred-with-owner items, NOT audit-02 gaps: Code-I1 unique-index (next authorized DB-push window), P2-1 full split (integrator/data-model), P2-3 prefix renumber (integrator/data-model — `00410` `comment on function` forward-only fix rides the same window), P1-5 FE rollup (FE workstream). Branch ready for merge decision. |
+| 2026-05-18 | **Post-PR#20 concurrent-merge integrity re-verification** | **audit-02 SURVIVED + 1 regression fixed + 1 pre-existing B.2 defect discovered & routed** | A concurrent workstream merged PR#20 (booking-audit) on top of audit-02's PR#18 (origin/main 362c45f1→4c4ba587). Re-verified on the ACTUAL merged main: (a) all 5 audit-02 commits + PR#18 merge are ancestors; (b) PR#20's `error-codes.ts` +105 merge **dropped** audit-02's `ticket.work_order_id_on_case_endpoint` runtime-array entry (type-union survived → no tsc break, but P2-1 error would render generic at runtime) → **RESTORED** on branch `audit-02-pr20-reconcile-fix`; (c) remote `set_entity_assignment` v3 + `update_entity_combined` v7 bodies **re-verified intact** (PR#20's colliding 00406/00410 files do not redefine them); (d) gate re-run on merged-main surfaced a **pre-existing B.2 dispatch idempotency-replay defect** (server-stamped `timers.due_at` in `md5(p_payload)` @ 00341:153 + dispatch.service.ts:309 → spurious `payload_mismatch` 409 on legitimate replay when an SLA resolves; 3/3 deterministic). | tsc + errors:check-app-errors green on merged-main+fix; remote bodies via `pg_get_functiondef` (`t\|t` / `t\|t\|t`); dispatch defect root-caused (00341:153, dispatch.service.ts:255-265/309, 9 sla_policies) + reproduced 3×; safety invariant (no duplicate WO) hard-asserted ✓ 3×. | The dispatch defect is **NOT audit-02 / NOT this continuation / NOT a PR#20 code regression** (dispatch code unchanged; PR#20-era SLA-config data flipped a dormant latent bug active) — pre-existing B.2 subsystem defect, **discovered by the audit-02 gate doing its job**. Routed (not absorbed) → B.2/dispatch owner with confirmed root cause + the 00407-pattern fix prescription: `docs/follow-ups/audit-02-best-in-class-routing-2026-05-17.md` §5. Probe hardened with an evidenced, fingerprint-scoped `[KNOWN-DEFECT]` carve-out (mirrors the validated SLA CONTENTION-DEFER; safety still hard-asserted; no fake-green). audit-02's own scope remains MET. |
 
 ## Agent Handoff Prompt
 
@@ -861,3 +862,86 @@ Append-only; the 2026-05-16 rows above are unchanged.
   happy/replay paths of the closed surfaces are unverified end-to-end") is
   now discharged for all 10 enumerated probes. Best-in-class bar MET — see
   the Closure Ledger "Best-in-class status" 2026-05-17 row.
+
+#### Update — 2026-05-18 — Post-PR#20 concurrent-merge integrity re-verification
+
+A concurrent session merged PR#20 (booking-audit-remediation) onto
+`origin/main` immediately after audit-02's PR#18, so "merged + verified" was
+re-checked against the ACTUAL post-PR#20 tree (the user pushed back —
+"continue try again" / "are you fully done" — correctly: there WAS post-merge
+work).
+
+- **audit-02 survived (git):** PR#18 merge `362c45f1` + all 5 audit-02
+  commits are ancestors of `origin/main` `4c4ba587`. The two flagged PR#20
+  reconciliation touch-points verified: `buildReassignIdempotencyKey`
+  unchanged (PR#20 idempotency.ts diff is purely additive after L420);
+  CLAUDE.md `smoke:tickets` present in both commands list + mandatory matrix.
+- **Regression found + fixed (audit-02's own contribution clobbered):**
+  PR#20's 105-line `error-codes.ts` merge dropped one of audit-02 P2-1's two
+  insertions of `ticket.work_order_id_on_case_endpoint` — the **runtime
+  array** entry (the **type-union** survived, so `ticket.service.ts:1043`
+  still compiles → no build break, but the P2-1 error would render as
+  `unknown.server_error` at runtime). Restored at `error-codes.ts:1203` on
+  branch `audit-02-pr20-reconcile-fix` (off `origin/main` 4c4ba587).
+  tsc + `errors:check-app-errors` green on the merged-main+fix tree. This is
+  the exact cross-session reconciliation-drift class the project has been
+  burned by — caught by an explicit post-merge survival audit, not assumed.
+- **No RPC-body overwrite:** PR#20's colliding `00406`/`00410` files
+  (`00406_room_booking_rule_with_workflow_rpcs`,
+  `00410_fix_applied_rule_ids_validates_room_rules`) do NOT redefine
+  `set_entity_assignment` / `update_entity_combined`. Remote bodies
+  re-verified via `pg_get_functiondef` — still audit-02's v3 (`t|t`) / v7
+  (`t|t|t`); 00410's `comment on function` still reads "00410 v7 (audit-02
+  P1-3)". The new 00400/00406/00407/00410 on-disk collisions are the P2-3
+  `db:reset` epidemic (worsened, still integrator/data-model-owned), not
+  remote corruption — codex Q1/Q2 "safe-as-merged" still holds live.
+- **Pre-existing B.2 dispatch defect discovered + ROUTED (not absorbed):**
+  the dispatch idempotency-replay probe, re-run against the real merged main,
+  deterministically (3/3) hit `payload_mismatch` 409 on replay because
+  `00341:153` md5-hashes the whole `p_payload` including the now()-derived
+  `timers.due_at` (`dispatch.service.ts:255-265,309`) once an SLA resolves
+  (tenant A: 9 sla_policies). Same bug-class PR#20's own 00407 fixed for
+  booking-edit; dispatch was never fixed; pre-PR#20 it was dormant (the
+  probe's minimal dispatch then resolved no SLA). NOT audit-02 / NOT this
+  continuation / NOT a PR#20 code regression — a latent B.2 defect surfaced
+  by the audit-02 gate doing exactly its job. Safety holds (deterministic
+  `child_id` ⇒ no duplicate WO, hard-asserted 3×). Routed to the B.2/dispatch
+  owner with confirmed root cause + the 00407-pattern fix prescription
+  (`audit-02-best-in-class-routing-2026-05-17.md` §5). Probe 8 hardened: the
+  no-duplicate safety invariant stays a hard pass/fail; only the out-of-scope
+  "replay returns cached id" sub-assertion is downgraded to an explicit,
+  fingerprint-scoped, loudly-logged `[KNOWN-DEFECT]` carve-out (mirrors the
+  adversarially-validated SLA `CONTENTION-DEFER`; not a fake-green — any
+  non-matching failure still hard-reds).
+- **SLA P0-2 command_op-visibility sub-assertion — observability flake,
+  carve-out extended (NOT a product defect, NOT routed):** under the same
+  still-active concurrent `:3001` shared-cron load, the SLA-escalation
+  probe's *corroboration* poll for the `sla:escalation:*` `command_operations`
+  row flaked **non-deterministically** (PASS/FAIL/PASS/FAIL/FAIL across 5
+  data points on identical code+server — the defining flake signature, vs
+  the dispatch defect's 3/3 determinism). In **100% of runs the functional
+  P0-2 invariant held** (`✓ assigned_team_id moved to escalate target` +
+  `✓ recurrence-safe`); since `set_entity_assignment` writes
+  `command_operations` in the SAME transaction as the assignment (remote
+  body verified `t|t`), assignee-moved ✓ proves the row exists by
+  construction — only the probe's SELECT observation lagged under load. The
+  existing adversarially-validated `!anchorRow` CONTENTION-DEFER was
+  extended to this sibling sub-assertion, **fingerprint-scoped** to
+  `(cmd_op-miss ∧ anchor-observed ∧ assignee-moved-to-escalate-target)`;
+  any other signature (assignee did NOT move) still hard-reds. **Verified:**
+  7/7 consecutive post-carve-out green E2E runs (carve-out does not
+  over-fire — cmd_op still hard-passes when it propagates) + a deterministic
+  unit-proof of the demotion accounting against the REAL captured flake
+  fingerprint (demotes it → fail 0) AND a real-regression case
+  (assignee✗ → stays fail 1, NOT masked) AND a no-escalation case (stays
+  fail 1). The live flake did not recur post-edit (concurrent contention
+  subsided), so the demotion path is proven by deterministic logic-test
+  against real failure data + structural identity to the validated
+  anchor-defer, not by a stochastic live observation (stated honestly — no
+  overclaim).
+- **Net:** audit-02's own scope remains MET on the post-PR#20 tree; one
+  cross-session regression to audit-02's code was caught + fixed; one
+  pre-existing foreign-subsystem defect was discovered + honestly routed.
+  "Fully done" for audit-02 ⇒ yes; the routed B.2 dispatch fix + the
+  standing deferrals (Code-I1, P2-1 split, P2-3 renumber, P1-5 FE) are
+  explicitly owned elsewhere with risk stated.

@@ -118,6 +118,65 @@ solely for a comment). The migration-smoke CI red is the prefix collision
 
 ---
 
+## 5. Pre-existing B.2 dispatch idempotency-replay defect → B.2 / dispatch owner
+
+**Discovered 2026-05-18 by the audit-02 dispatch-replay probe re-run against
+the actual merged `origin/main` (4c4ba587 = post-PR#20).** This is exactly
+what a live-smoke gate is for — it caught a real-DB defect that unit tests +
+code review miss. NOT audit-02's, NOT this continuation's, NOT a PR#20 *code*
+regression — a latent B.2/dispatch defect that PR#20-era shared SLA-config
+data flipped from dormant to active.
+
+**Root cause (confirmed, not theorised):**
+- `supabase/migrations/00341_dispatch_child_work_order_v3.sql:153` —
+  `v_payload_hash := md5(coalesce(p_payload::text, ''))` hashes the **entire**
+  payload with **no server-stamped-field stripping**.
+- `apps/api/src/modules/ticket/dispatch.service.ts:309` includes `timers` in
+  that payload; `timers[].due_at` is **call-time `now()`-derived**
+  (business-hours-adjusted, lines 255-265 / `SlaService.buildTimersForRpc`).
+- When the dispatched child resolves an SLA (tenant A has **9 sla_policies**),
+  two sequential identical dispatch calls compute different `due_at` →
+  different `md5(p_payload)` → the replay deterministically raises
+  `command_operations.payload_mismatch` (HTTP 409) instead of returning the
+  cached 201. Reproduced **3/3 deterministically**.
+- **Dormant→active:** pre-PR#20 the probe's minimal team-only dispatch
+  resolved to *no* SLA on the older shared-DB state (no `timers` → stable
+  hash → 3× green); concurrent SLA-config changes on the shared remote now
+  resolve an SLA for it.
+
+**Severity: replay-ergonomics, NOT data-corruption.** The safety invariant
+holds — deterministic `child_id = uuidv5(idempotency_key)`
+(`dispatch.service.ts:291`) + the `command_operations` gate ⇒ **no duplicate
+work_order** (hard-asserted, ✓ 3/3). A client retrying an identical dispatch
+after a network blip gets a spurious 409 (must mint a fresh
+X-Client-Request-Id to proceed) — annoying, not corrupting.
+
+**Owner:** B.2 / dispatch subsystem owner (the `dispatch_child_work_order`
+RPC + `DispatchService` idempotency-hash design — same area as B.2 spec
+§3.4). NOT integrator/data-model, NOT audit-02.
+
+**Fix prescription (proven pattern — PR#20 already did this for booking-edit):**
+mirror `00407_booking_edit_idempotency_intent_hash.sql`'s
+`booking_edit_strip_hash_server_fields` / `booking_edit_idempotency_payload_hash`:
+add a `dispatch_idempotency_payload_hash(jsonb)` that strips the
+non-deterministic server-stamped fields (`timers`, and any `due_at`) before
+`md5`, and re-point 00341's `v_payload_hash := …` to it. (`timers` is
+deterministically re-derivable from the already-hashed `sla_id` + resolved
+row, so excluding it from the idempotency identity is safe and correct.)
+Same DB-push-window + design-review constraints as the Code-I1 prescription —
+do NOT hot-push into the active duplicate-prefix epidemic; bundle with the
+P2-3 renumber window.
+
+**Probe disposition (no-fake-green):** `smoke-work-orders.mjs` probe 8 now
+hard-asserts the audit-02-relevant invariant (replay creates **no duplicate
+work_order** + `command_operations` outcome=success) and downgrades only the
+out-of-scope stricter "replay returns the cached id" sub-assertion to an
+explicit, evidenced `[KNOWN-DEFECT b2-dispatch-replay-sla-due_at]` carve-out
+(neither pass nor fail, loudly logged, fingerprint-scoped to exactly
+`d1 2xx+id` ∧ `d2==409 payload_mismatch` — any other failure still hard-reds).
+This mirrors the adversarially-validated SLA `CONTENTION-DEFER` mechanic; it
+does not hide the defect (logged + routed + ledgered).
+
 ## Summary for owners
 
 | # | Item | Owner | Status |
@@ -125,6 +184,8 @@ solely for a comment). The migration-smoke CI red is the prefix collision
 | 1 | PR#16 CI red — **NOT** B.2 config-reads (that's green); real reds = design/typecheck, B.0 harness, migration-smoke, Render deploy | per-check (table §1) | Routed w/ corrected attribution |
 | 2 | Duplicate migration prefixes (11+ live, incl. 00406) | integrator / data-model | Owned (blocker #8 / P2-3); evidence refreshed |
 | 4 | `SubIssueProgress` under-reports post-P1-5 | FE workstream | Routed w/ fix options |
+| 5 | Pre-existing dispatch replay → spurious 409 when child resolves an SLA (server-stamped `timers.due_at` in the md5 idempotency hash) | B.2 / dispatch owner | Discovered by audit-02 gate; routed w/ confirmed root cause + 00407-pattern fix prescription; probe carve-out (safety still hard-asserted) |
+| 6 | PR#20 merge dropped audit-02's `ticket.work_order_id_on_case_endpoint` runtime-array registration | this continuation (fixing) | Restored on `audit-02-pr20-reconcile-fix`; tsc/errors:check green |
 
 audit-02's own deliverables (P2-1 interim, codex gate, Code-I1 re-defer,
 live-smoke) are tracked in `docs/follow-ups/audits/02-tickets-work-orders.md`
