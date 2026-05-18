@@ -816,6 +816,148 @@ Verified (correctly this time — against the COMMITTED tree):
 
 Honest restatement: "zero `@UseGuards(AdminGuard)` callers" is now TRUE **for committed HEAD as of `3aecf0e8`** (it was working-tree-only before). The earlier blocks asserting it pre-`3aecf0e8` were committed-state-wrong; this block is the correction of record. Still NOT on `main` — branch `feature/booking-audit-remediation`, merge gated on the parallel 03-booking workstream (unchanged).
 
+#### Update — 2026-05-18 (codex remaining-item #1 — notification same-tenant IDOR CLOSED)
+
+Original finding:
+- Codex Deep Review Verdict 2026-05-18, remaining item #1 / the long-deferred "P2 integrity" row: `NotificationController.markAsRead(@Param('id') id)` (+ the sibling `getForPerson` / `getUnreadCount` / `markAllAsRead` `person/:personId*` routes) read/flipped notification read-state by a caller-supplied `id`/`personId` with **no recipient binding**. `supabase.admin` bypasses RLS, so any authed same-tenant user could mark/read **anyone's** notifications.
+
+Status:
+- **closed (fixed, not accepted).**
+
+Resolution & rationale:
+- Exhaustive caller search (`git grep` web + api internal + scripts + tests, against committed HEAD): the four legacy *consumer* routes/methods have **zero callers anywhere**. The live user-facing inbox is the server-derived, auth-bound `/me/inbox/*` surface (`InboxController` / `InboxService.resolveActor` — B.4.A.5), which the web app actually uses (`apps/web/src/api/inbox/mutations.ts`). `apps/web/src/api/notifications/index.ts` only touches `/notification-templates`.
+- Fix = **delete the dead IDOR surface** rather than re-secure unused redundant code (CLAUDE.md: "if certain something is unused, delete it"; "best-in-class, not legacy"). This is the strongest reading of codex's "or accept only self-scoped ids" — the only surviving read-state mutation path (`/me/inbox/*`) is already server-derived and correct. The notification *producers* (`send`/`sendToTeam`) + the tenant-wide TEMPLATE admin routes are untouched.
+
+Changed:
+- `apps/api/src/modules/notification/notification.controller.ts` — removed `getForPerson` / `getUnreadCount` / `markAsRead` / `markAllAsRead` routes (+ unused `Query` import); rationale comment rewritten.
+- `apps/api/src/modules/notification/notification.service.ts` — removed the four dead consumer methods (`getInAppForPerson` / `markAsRead` / `markAllAsRead` / `getUnreadCount`).
+- `apps/api/scripts/smoke-cross-tenant.mjs` — new IDOR section: seeds a notification owned by a TENANT_A person who is NOT the admin caller, then asserts (TDD red-before-green, verified) the 4 routes are `404` (removed) **and** the victim row's `read_at` stays `NULL`.
+
+Verified (TDD red→green, against the running API at committed-HEAD code):
+- RED (pre-fix): `POST /notifications/:id/read` → `HTTP 201 {"read":true}`, victim `read_at` SET, 4/4 route probes fail (31 pass / 5 fail).
+- GREEN (post-fix): all 4 routes `404`, victim `read_at` still `NULL` (`smoke:cross-tenant` clean).
+- `tsc --noEmit` (`@prequest/api lint`) exit 0 — zero errors. `pnpm smoke:work-orders` 109/109. `permission-catalog|require-permission|admin.guard.spec|admin-guard-permission-parity` **151/151** (route-spec only pins the still-present template routes; allowlist-style — deleting the four unlisted consumer methods does not dangle it).
+
+Remaining: none for #1.
+
+#### Update — 2026-05-18 (codex remaining-item #2 — browser-direct PostgREST: prior conclusion CORRECTED; P1 HARDENED)
+
+Original finding:
+- Codex remaining item #2 / the standing "P4 — browser-direct PostgREST + Supabase Storage RLS" item. **The prior 2026-05-16 closure block ("Update — 2026-05-16 (P4 + opens…)") concluded "P4 NOT-REACHABLE … anon/authenticated have ZERO table privileges … Postgres denies at the GRANT layer before RLS." That conclusion is factually WRONG on its stated mechanism** — corrected here (append-only; the prior block is not rewritten, this is the correction of record).
+
+Status:
+- **closed (corrected + hardened).** Was a real **P1 latent defense-in-depth defect**, not the "P3 accepted" the prior block claimed. Now grant-hardened.
+
+What was actually true (proven this session — live remote DB + a real authenticated browser session token, codex-concurred):
+1. **Reachable.** `SUPABASE_URL` is a transparent Cloudflare Worker (`docs/vpn-supabase-proxy-bypass.md`) that proxies `/rest/v1`; in prod the browser hits Supabase PostgREST directly anyway. Anon publishable-key `GET /rest/v1/user_role_assignments` → `HTTP 200 []` (reachable, RLS-empty — not 404/401).
+2. **Grants were wide open** — not zero. `anon`+`authenticated` held full INSERT/UPDATE/DELETE/TRUNCATE on every escalation-class table (`information_schema.role_table_grants`). The "grant-layer deny" the prior block relied on did not exist.
+3. **RLS was the sole gate**, and it denied **only by the accident of an unminted JWT claim**: `current_tenant_id()` (`00002_rls_helpers.sql:5-14`) reads `jwt.claims->'app_metadata'->>'tenant_id'` / top-level `tenant_id`; the app never mints it (audit P0). A real authenticated browser session token decoded: `role=authenticated`, `app_metadata={provider,providers}` only — **no `tenant_id`**. So `current_tenant_id()`=NULL → `tenant_id = NULL` denies all rows/writes. Empirical: authenticated browser-direct reads of `user_role_assignments`/`team_members`/`users`/`roles` → `200 []`; self-grant `POST` → `403` Postgres `42501`. **Not a live P0**, but one custom-access-token hook minting `tenant_id` away from instant browser-direct same-tenant escalation bypassing every Slice 9/10/11 HTTP guard.
+
+Decision (codex independently reviewed the finding + direction, stdin/read-only; concurred P1-latent, remediation (a), and that it blocked clean closure): **revoke write DML from the browser roles**, codex's preferred "all public tables" scope (web makes zero browser-direct writes/rpc at HEAD — verified; every write goes via the NestJS API on the postgres/service-role path, untouched). SELECT intentionally **kept** — Supabase Realtime per-subscriber RLS needs it on the 8 `supabase_realtime`-published tables; revoking it would break the inbox bell / scheduler live updates, revoking writes does not.
+
+Changed:
+- `supabase/migrations/00415_revoke_browser_write_grants.sql` (NEW) — `REVOKE INSERT,UPDATE,DELETE,TRUNCATE ON ALL TABLES IN SCHEMA public FROM anon, authenticated` + matching `ALTER DEFAULT PRIVILEGES` (regression-by-new-table proof) + `notify pgrst`. Idempotent; no structural change (does not touch the booking-canonicalization destructive-default invariant).
+- `apps/api/scripts/smoke-cross-tenant.mjs` — new "Browser-direct PostgREST" section: (i) grant assertion — `anon`/`authenticated` hold NO write DML on the escalation-class set but DO retain SELECT on the Realtime set (the deterministic red→green for 00415); (ii) live end-to-end — a real authenticated browser session token's self-grant `POST /rest/v1/user_role_assignments` is denied. Post-00415 the denial is **grant-layer, claim-independent** (holds even if a future hook mints `tenant_id`).
+
+Verified:
+- User authorized the remote push (deploy-class; not covered by the workstream-scoped standing DB-push authorizations). Pushed via the psql fallback 2026-05-18 → `REVOKE` / `ALTER DEFAULT PRIVILEGES` / `NOTIFY` applied. Post-push remote check: escalation-class anon/authenticated write grants = **0**; Realtime-published-table SELECT missing = **0**; `service_role` INSERT intact = **true**.
+- TDD red→green: pre-push `smoke:cross-tenant` 38 pass / **1 deliberate RED** (`12 write grants still present — apply 00415`); post-push **39 pass / 0 fail** (grant assertion GREEN; SELECT-retained GREEN; browser-direct self-grant `403`). `pnpm smoke:work-orders` **109/109** (no operational regression from the revoke or the notification deletion).
+
+Remaining for #2: none. (Avatar/`portal-assets` Storage cross-tenant READ stays a tracked **P3** — GDPR/storage backlog, info-disclosure only, not escalation; unchanged by this block.)
+
+#### Update — 2026-05-18 (codex remaining-items #3 / #4 / #5 — dispositions)
+
+- **#3 caller-free `AdminGuard` — KEEP (decision recorded).** Independently re-verified against committed HEAD: `git grep "@UseGuards([^)]*AdminGuard" HEAD` → only prose/spec comments, **zero live controller decorators**. Still referenced by `auth.module.ts` (declares/exports), `admin.guard.spec.ts`, and `admin-guard-permission-parity.spec.ts` → per the handoff rule ("do not delete unless truly unreferenced") it is **kept**, not deleted. The zero-caller CENSUS test (0) + the `user_has_permission` parity pin in `admin-guard-permission-parity.spec.ts` are retained and green (part of the 151/151). Note (methodology, not a defect): the census walks the working tree (`fs.readdir`), which equals committed HEAD under CI checkout — the prior false-green was a *local-verification* error, mitigated by the standing "verify against `git grep HEAD`" rule (applied here). Full deletion of the primitive remains a low-value, non-zero-risk **P3 hygiene** cleanup (delete `admin.guard.ts` + AuthModule provider/export + the two specs), explicitly deferred — not in security scope.
+- **#4 global `ValidationPipe` — PLAN recorded (out of RLS-remediation scope, P3 API-hardening backlog).** Confirmed at HEAD: no `useGlobalPipes`/`APP_PIPE`; `class-validator`/`class-transformer` are not deps; DTOs are plain interfaces. Not a tenant-isolation gate (Slice-11 permission gates are decorator/RPC-driven, not body-shape-driven). Concrete plan: add `class-validator`+`class-transformer`; `app.useGlobalPipes(new ValidationPipe({ whitelist:true, forbidNonWhitelisted:true, transform:true }))` in `main.ts`; incrementally convert DTO interfaces → decorated classes per module behind a CI check. **Owner: API input-hardening backlog.** Deliberately NOT implemented here (a full DTO migration is a separate workstream; implementing it would be scope creep the audit itself disclaims).
+- **#5 composite `(tenant_id, id)` FK hardening — owned by Audit 01, not duplicated.** Verified `docs/follow-ups/audits/01-data-model.md` owns it as its **[P0] Composite (tenant_id, id) FKs are inconsistent** (`01-data-model.md:19-22`, hardening plan §1) with a multi-day sweep + CI guard. The 04-rls Slice-8 ledger row already defers correctly with an accurate pointer. No change here — confirmed correctly owned elsewhere.
+
+#### Update — 2026-05-18 (full-review on the #1/#2 remediation — corrections of record; some closure language was OVERSTATED)
+
+Two fresh-context adversarial reviewers (plan + code) pressure-tested the #1 notification deletion + #2 `00415` work. They found the security fixes sound but **several honesty/scoping defects in the two blocks above** + one mine-introduced zombie. Corrections of record (append-only — the blocks above are not rewritten; this block governs where they conflict):
+
+- **[code-review C2 — REFUTED, with the valid kernel kept] "00415 is a no-op; grants were already zero; red→green is tautological."** Refuted: no migration before `00415` performs a broad table-DML revoke on the escalation tables (the other `revoke` migrations — 00274/00280/00282/00378/00394/00395/00407 — revoke *functions*). The contemporaneous pre-push smoke output (`✗ 12 anon/authenticated write grants still present`) → post-push (`✓ … NO INSERT/UPDATE/DELETE`, `esc_writes_left=0`) is the authoritative red→green. The reviewer queried the live DB **after** this session's mid-review push and misread the post-fix state as the original. **Valid kernel kept (OPEN):** `00415` is applied-to-remote but the code/migration/ledger remain **uncommitted** — the remote diverges from every committed tree and from `pnpm db:reset`. This window is **still open**: the global rule forbids committing without explicit user request; commit is the recommended next step (file-scoped to the 5 RLS files) and is surfaced to the user, not done unilaterally.
+- **[plan-review C1 — VALID; closure language CORRECTED, overclaim withdrawn] `00415` hardened TABLE DML only; the RPC-EXECUTE-to-browser-roles surface is NOT hardened.** Live check: **35 SECURITY DEFINER functions** + INVOKER RPCs (`reclassify_ticket`, `create_booking_with_attach_plan`, `grant_booking_approval` — `prosecdef=f`) are EXECUTE-able by `anon`/`authenticated`. The earlier blocks' phrases "browser-direct posture now known and **hardened**" / "claim-independent" are **withdrawn as overstated** — they are accurate ONLY for browser-direct *table* writes. Assessment of the RPC surface (not a blanket re-audit): the plan reviewer's cited `search_global`→anon is **wrong** (live: SECURITY DEFINER, grantees `{postgres,service_role}` only — already locked, proving the team's per-function-EXECUTE-revoke pattern); SECURITY INVOKER RPCs run with caller privileges so RLS applies → fail-closed for browser JWTs exactly like the read path (claim-dependent); the SECURITY DEFINER set is the Slice-7-audited `p_tenant_id`-validated corpus. **No dedicated browser-direct-RPC exploit probe was run.** Honest status: **TRACKED P2 (NOT closed, NOT a claimed-hardened item)** — recommended fix is the symmetric completion: `REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA public FROM anon, authenticated` **except** the documented anon-callable bearer-token trio (`validate_invitation_token`/`peek_invitation_token`/`validate_kiosk_token`), as its own verified slice. Item #2 is therefore: **browser-direct table-DML — hardened; browser-direct RPC-EXECUTE — known, assessed, tracked-P2 (not hardened).**
+- **[plan-review I3 — VALID; logged honestly] browser-direct READS remain RLS-only and claim-dependent.** `00415` deliberately KEEPS SELECT (Supabase Realtime per-subscriber RLS needs it). So browser-direct `GET /rest/v1/<tenant-scoped table>` remains gated solely by RLS, which fails closed **only** because `current_tenant_id()` is NULL (claim unminted) — the same latent fragility the write path had before `00415`. Writes are now claim-independent; **reads are not**. This is the identical P1-latent class for the read surface; folded into the same tracked follow-up as the RPC item (root cause = the unminted-claim RLS dependency; the durable fix is the symmetric grant-revoke + treating the API as the sole data perimeter per `docs/visibility.md` §8, not minting the claim).
+- **[plan-review I2 / code-review I1 — VALID; FIXED + honestly caveated] `ALTER DEFAULT PRIVILEGES` is partial.** Verified `postgres` is NOT a member of `supabase_admin` and NOT superuser → `ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin` raises "permission denied" (the broadened clause would have **failed the push**). `00415` now does `postgres`-only ADP with an explicit honest caveat that dashboard/`supabase_admin`-created future tables can still re-grant — and the smoke grant-assertion was **broadened from the escalation subset to ALL public base tables** so it now matches the `REVOKE … ON ALL TABLES` scope and catches any future re-grant by any creator role. The load-bearing protection is the all-tables REVOKE (every current table, any creator); ADP + the broadened gate cover future regressions.
+- **[code-review I3 / plan-review I1 — VALID; framing CORRECTED] `notifications` (00017) ≠ `inbox_notifications` (00391); the deleted surface was not "superseded", it was the only consumer of an orphaned table.** `/me/inbox/*` reads `inbox_notifications`; the deleted routes read `notifications`. Producers (`NotificationService.send`/`sendToTeam`, the workflow `notification` node) still write `notifications` `target_channel='in_app'` rows that now have **no consumer**. This does **not** weaken the IDOR fix (the exploitable read/flip-by-id routes are gone; that is sound and proven). The "redundant / superseded by /me/inbox" wording in the #1 block is **corrected**: the legacy `notifications` in-app *consumer* path was deleted (killing the IDOR); the `notifications` in-app *producer* rows are now consumer-orphaned — a pre-existing two-table split surfaced (not introduced) by this removal. **Tracked correctness/cleanup follow-up** (migrate producers to `inbox_notifications` or document `notifications` as email/legacy-only) — not a security item, explicitly logged not glossed.
+- **[code-review I2 — VALID; FIXED, mine-introduced] zombie regression test.** `cross-tenant-fk-leak-writes.spec.ts` "site 6" reproduced the deleted `notification.service.ts:markAsRead`. Repointed to the surviving stronger path `inbox.service.ts:markRead` (`inbox_notifications` filtered by the `(tenant_id, user_id, id)` triple — the `user_id` binding is precisely what closes the IDOR class). Header index line updated. Suite green (139 pass / 1 skip).
+- **[code-review C1 — acknowledged; honest attribution] tree `tsc` is RED, exclusively on the parallel workstream.** The only `error TS` file is `src/modules/work-orders/work-order.service.ts` (`resolveAuthorPersonId` unused) — the concurrent audit02/SLA workstream's uncommitted change on this shared branch (HEAD advanced `32668257`→`72df4f0c` mid-session). This session's five files are `tsc`-clean (verified). The recommended commit is **file-scoped to the five RLS files only** — the parallel workstream's dirty files (`work-orders/work-order.service.ts`, `reservation-edit-scope.spec.ts`, `workflow-engine.service.spec.ts`, the 02/03 audit docs) deliberately excluded (same per-file-staging discipline as the prior false-green correction, applied correctly: stage only verified-pure-RLS files).
+
+Post-correction completion-bar status (honest): **#1 notification IDOR — closed/fixed** (dead exploitable routes deleted; behavioral red→green proven). **#2 browser-direct — table-DML hardened (`00415`, all public tables, claim-independent); RPC-EXECUTE surface and the read surface KNOWN + assessed + TRACKED-P2 (explicitly NOT claimed hardened).** Per the audit bar ("known and either hardened or explicitly accepted"): the *write/table* class is hardened; the RPC + read residuals are *known and tracked*, not silently accepted. **#3/#4/#5** as the dispositions block. Avatar Storage cross-tenant READ stays the tracked P3. Verified against committed-HEAD code + live remote DB + the running API; tree-`tsc`-red is exclusively the parallel workstream.
+
+Verified (post full-review fixes): `pnpm --filter @prequest/api test -- "cross-tenant-fk-leak-writes|require-permission-routes|admin-guard-permission-parity"` → 139 pass / 1 skip / 3 suites. `pnpm smoke:cross-tenant` → **39 pass / 0 fail** (broadened all-public-tables grant assertion GREEN; SELECT-retained GREEN on 8 Realtime tables; browser-direct self-grant `403`; IDOR 5/5). `pnpm smoke:work-orders` 109/109 (prior run; unaffected — service-role path). Remote: `writes_left=0` across ALL public tables; `postgres` ADP entries present; `service_role` INSERT intact.
+
+Commits: **none yet** — the change set (5 RLS files + `00415`) is uncommitted pending explicit user request to commit (global rule: never commit unprompted). Recommended file-scoped commit is surfaced to the user; until then the remote-vs-committed window (C2 valid kernel) stays open and is recorded as such.
+
+## Codex Deep Review Verdict — 2026-05-18
+
+Reviewer: Codex, static code review against the current working tree and committed `HEAD` grep where relevant. No live smoke gates were run in this pass.
+
+### Validated Checkmarks
+
+| Finding / claim | Codex validation | Evidence |
+|---|---:|---|
+| P0 global tenant binding blocks `X-Tenant-Id` header flip | ✅ validated | `AuthGuard` bridges `auth_uid -> public.users(id)` with `tenant_id` and `status='active'`, attaches `platformUserId`, and rejects missing membership with `auth.user_not_in_tenant`. |
+| Admin/config controllers moved off coarse `AdminGuard` to permission catalog | ✅ validated for sampled/current tree | Workflow, routing, SLA policy, config entity, team/vendor/asset, visitors/admin, notification-template mutations and related surfaces use `@RequirePermission(...)`. |
+| Zero real `@UseGuards(AdminGuard)` controller callers in committed `HEAD` | ✅ validated | `git grep "@UseGuards([^)]*AdminGuard" HEAD -- apps/api/src` returns prose/spec comments only, no live decorators. |
+| Notification controller false-green correction is fixed | ✅ validated | `notification.controller.ts` has `@RequirePermission('notifications.manage_templates')` on template mutations in the current tree; route spec/smoke claims are recorded in the ledger. |
+| Visitors admin no longer the last `AdminGuard` caller | ✅ validated | `VisitorsAdminController` uses `visitors.configure` / `visitors.read_all` via `@RequirePermission`, not `AdminGuard`. |
+| Same-tenant directory reads remain open by product decision | ✅ validated as accepted, not fixed | `PersonController` list/detail and user/role directory reads remain intentionally open. Ledger explicitly accepts the exposure as same-tenant product behavior, not an escalation. |
+| Notification mark-read IDOR remains a deferred integrity issue | ✅ validated as still open | `NotificationController.markAsRead(@Param('id') id)` still takes a bare notification id and calls `markAsRead(id)` with no actor/owner check. Ledger marks this as P2 integrity, not escalation. |
+| `DbService` superuser posture documented, not changed | ✅ validated as documented decision | `docs/visibility.md` documents the postgres/service-role posture and app-layer enforcement. This is not a code hardening close. |
+| Global `ValidationPipe` gap remains out of scope | ✅ validated as still not globally present | Review notes and code indicate no global `ValidationPipe`; DTO validation remains route-local/inconsistent. |
+
+### Verdict
+
+Audit 04 is **closed for exploitable cross-tenant and privilege-escalation findings in the NestJS API surface reviewed here**. The fixes are real: tenant binding is global, admin/config mutation surfaces are permission-gated, and the coarse `AdminGuard` caller problem is eliminated with a CI-style census test.
+
+It is **not a total security close**. Remaining items are intentionally accepted or deferred:
+- **Accepted:** same-tenant directory reads (`users`, `roles`, `persons`) are product behavior, not currently treated as a vulnerability.
+- **Open P2 integrity:** notification `POST /notifications/:id/read` can mark a same-tenant notification by bare id unless the service checks ownership elsewhere; this needs a focused fix.
+- **Deferred P3/security hardening:** browser-direct PostgREST/Storage RLS audit, avatar/storage tenant isolation, global `ValidationPipe`, caller-free `AdminGuard` deletion, and broader composite-FK work owned by Audit 01/data-model.
+- **Documented-not-hardened:** `DbService` still uses privileged DB access; the project explicitly relies on app-layer guards for API paths.
+
+The correct claim is: **best-in-class for the audited tenant-escalation class after fixes; not a clean "nothing left" security audit.**
+
+### Post-Verdict Remediation — 2026-05-18 (follow-up agent; appended, codex table above unchanged)
+
+Codex's table above is preserved as the record of that point in time. After it, the follow-up agent actioned its five remaining items. Net change to the verdict:
+
+- **Item #1 (notification mark-read IDOR) — was "✅ validated as still open" → now CLOSED (fixed).** The dead legacy `/notifications/:id/read` + `person/:personId*` consumer surface (zero callers; superseded by the server-derived `/me/inbox/*`) was deleted, not re-secured. TDD red→green proven in `smoke:cross-tenant` (routes `404`, victim `read_at` stays `NULL`). See the 2026-05-18 Closure-Update block.
+- **Item #2 (browser-direct PostgREST/Storage) — was "deferred P3/accepted" → was actually P1-latent; now HARDENED.** The prior "P4 NOT-REACHABLE / zero grants" conclusion was factually wrong (reachable; full anon/authenticated CRUD grants; RLS the sole gate, fail-closed only by an unminted JWT claim). Migration `00415` (user-authorized, pushed) revokes browser-role write DML on all `public.*` (SELECT kept for Realtime); a grant-assertion + live browser-direct probe pin it. Claim-independent now. See the 2026-05-18 Closure-Update block.
+- **Item #3 (caller-free `AdminGuard`) —** decision recorded: **keep** (still referenced by AuthModule + two specs; deletion = deferred P3 hygiene); zero committed callers re-verified via `git grep HEAD`; census + parity pin retained/green.
+- **Item #4 (global `ValidationPipe`) —** confirmed absent at HEAD; concrete P3 plan recorded; **owner = API input-hardening backlog**; deliberately not implemented (separate workstream, out of RLS scope).
+- **Item #5 (composite `(tenant_id,id)` FK) —** confirmed owned by Audit 01 (`01-data-model.md:19-22` P0); not duplicated here.
+
+Completion bar status: **[SUPERSEDED by the "full-review — corrections of record" block above — read that for the honest scoping; the wording here overclaimed and was corrected.]** no cross-tenant header flip or same-tenant privilege escalation remains in the API surface (Slices 1–11); notification read-state can no longer be changed across users (item #1 fixed); browser-direct **table-DML** posture hardened (item #2 — `00415` write-grant revoke) — but the browser-direct **RPC-EXECUTE** surface and the **read** surface are KNOWN/assessed/**TRACKED-P2, NOT hardened** (full-review plan-C1/I3); avatar Storage cross-tenant READ remains a tracked P3. Verified against committed-HEAD code + live remote DB + the running API. The `/full-review` gate ran (findings folded in via the corrections block); commit is file-scoped to the 5 RLS files (tree-`tsc`-red is exclusively the parallel workstream).
+
+### Updated Claude Agent Prompt — 2026-05-18
+
+```text
+You are the follow-up RLS/security agent for Audit 04:
+docs/follow-ups/audits/04-rls-security.md
+
+Codex reviewed the current tree on 2026-05-18. Do NOT redo the global AuthGuard tenant bridge or the AdminGuard→RequirePermission re-gate unless you find a concrete regression. Those are validated as closed for the audited NestJS escalation class.
+
+Remaining work only:
+1. Fix the notification same-tenant IDOR: `POST /notifications/:id/read` must verify the notification belongs to the current actor/person before marking it read, or accept only self-scoped ids. Add a smoke or integration test proving user A cannot mark user B's notification read.
+2. Run the browser-direct PostgREST + Supabase Storage RLS investigation: determine whether the web app can directly insert/update escalation-class tables (`team_members`, `user_role_assignments`, etc.) or read cross-tenant storage assets. If direct access exists, add table/storage RLS policies or remove the browser capability.
+3. Decide whether to delete caller-free `AdminGuard`. If kept, retain the zero-caller census test so no controller can reintroduce coarse admin gating.
+4. Add or plan global `ValidationPipe` / input-hardening work. This is separate from tenant isolation but was surfaced during the audit.
+5. Coordinate composite `(tenant_id, id)` FK hardening with Audit 01/data-model; do not duplicate it here.
+
+Required closure behavior:
+- Update this Codex Deep Review Verdict and the Closure Ledger append-only.
+- Verify security invariants against committed `HEAD`, not only the working tree.
+- Add tests/probes that would have failed before the fix.
+- If a same-tenant exposure is accepted rather than fixed, record the product decision, revisit trigger, and exact endpoints.
+
+Completion bar:
+- No cross-tenant header flip or same-tenant privilege escalation remains in the API surface.
+- Notification read-state cannot be changed across users without authorization.
+- Browser-direct Supabase and Storage posture is known and either hardened or explicitly accepted.
+```
+
 ## Agent Handoff Prompt
 
 ```text
