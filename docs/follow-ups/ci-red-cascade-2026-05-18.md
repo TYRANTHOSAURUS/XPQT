@@ -14,6 +14,7 @@ hidden behind the previous by fail-fast ordering:
 | RC3 | web naming-allowlist drift — 6 pre-existing legacy-name refs (`bookings.tsx` historical comment; 2 `scheduler-floor-view.tsx` locals; 3 `idempotency.ts` JSDoc/URL refs from PR #20) | `check` @ "Phase 8 naming" `[web]` | behind RC2 (fail-fast) |
 | RC4 | web eslint 4 errors pre-existing on main — `inbox/queries.ts` (`@tanstack/query` exhaustive-deps + infinite-query-property-order) and `test-setup.ts` (`eslint-disable` naming a rule the flat config never registers) | `check` @ "Typecheck web" | behind RC3 |
 | RC5 | api naming-allowlist drift — 24 pre-existing legacy-name refs in `apps/api/src` (booking-bundles / outbox cascade handlers / reservations / visitors) introduced by **PR #20 (booking-audit)**, which merged through red CI without updating `apps/api/src/.naming-allowlist.txt` | `check` @ "Phase 8 naming" `[api]` | behind RC4 |
+| RC6 | **B.0 concurrency harness** — ~39 pre-existing test failures across 4 suites (`reclassify_ticket`, `create_ticket_with_automation`, `grant_ticket_approval`, `grant_booking_approval`). Root cause: the harness's `seedRequestType` INSERT into `workflow_definitions` violates `workflow_definitions_entity_type_check` (test-fixture seed vs current schema drift) — **not** concurrency logic, **not** caused by the RC1 renumber (verified: schema-only-equivalent renames; `migration-smoke` + schema-integrity asserts pass; the ticket-domain suites that fail were untouched by the renumber) | `B.0 concurrency` @ "Run concurrency harness" | doubly masked: B.0's `dorny/paths-filter` rarely triggered on recent main pushes (vacuous "success"), and when it did it died earlier at RC1's `supabase start` collision — so `pnpm test:concurrency` had not actually executed on recent main at all |
 
 ## What the fix PR (`fix/ci-migration-prefixes`) did
 
@@ -42,9 +43,29 @@ hidden behind the previous by fail-fast ordering:
 - **RC5** — the 24 PR #20 api refs were classified into
   `apps/api/src/.naming-allowlist.txt` mirroring the file's existing
   `KEEP_*` precedent. **Allowlist-only — no booking-domain code was renamed.**
+- **RC6** — **NOT fixed here; deliberately deferred as a tracked follow-up
+  (owner decision 2026-05-18).** This PR fixes RC1-RC5 (CI-verified: the
+  `check` and `migration-smoke` jobs go red→green). It does **not** make
+  `B.0 concurrency` green — but it does not make it worse either: it converts
+  B.0 from a *hidden* failure (skipped by path-filter, or dead at the RC1
+  collision) into a *visible, real* one. Net effect on `main` is strictly
+  positive (two chronically-red jobs fixed; the third's true failure surfaced
+  instead of masked).
 
 ## Owed follow-ups (NOT this PR's debt)
 
+0. **RC6 — B.0 concurrency-harness seed/schema drift (~39 tests, 4 suites).**
+   Pre-existing; surfaced (not caused) by this PR unmasking the harness.
+   Root cause to investigate: `seedRequestType` inserts a
+   `workflow_definitions` row whose `entity_type` violates
+   `workflow_definitions_entity_type_check` — almost certainly the harness
+   fixtures (`apps/api/test/concurrency/**`) drifted from a
+   `workflow_definitions.entity_type` constraint tightening (likely from the
+   universal-workflow / booking-audit migrations). Likely a **single shared
+   seed fix**, not 39 distinct bugs (every failure shares the identical
+   `seedRequestType` constraint violation). **Owner: booking/workflow /
+   universal-workflow workstream.** Until fixed, `B.0` stays red — but it is
+   now red for a *true, visible* reason, which is the point of unmasking.
 1. **RC5 + RC3-idempotency refs are PR #20 (booking-audit) debt.** This
    CI-hygiene PR *absorbed* them only to get CI green; it did not introduce
    them. The booking-audit / Phase 8 workstream owns the eventual canonical
