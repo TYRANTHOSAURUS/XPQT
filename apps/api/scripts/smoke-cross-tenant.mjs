@@ -319,6 +319,41 @@ function browserGrantPosture() {
   return { writesLeft, selectMissing };
 }
 
+// 00417 guard: NO postgres-owned (i.e. app/migration-authored) public
+// routine may be browser-role-EXECUTE-able except the audit-documented
+// bearer-token trio. Scoped to `proowner = postgres` deliberately: the
+// ~219 still-executable routines are pg_trgm/btree_gist extension math
+// owned by `supabase_admin` — they carry NO tenant data and CANNOT be
+// revoked from the non-owner migration role, so asserting "zero of ALL
+// routines" would be an unachievable paper-tiger gate. The
+// security-meaningful, achievable invariant is "zero app routines"
+// (every SECURITY DEFINER tenant-data fn — incl. the proven leak
+// tickets_distinct_tags — is postgres-owned). Must be 0.
+const BEARER_TRIO = [
+  'validate_invitation_token',
+  'peek_invitation_token',
+  'validate_kiosk_token',
+];
+function browserExecuteGrantPosture() {
+  const { dbPass, dbUrl } = proofDbArgs();
+  const trio = BEARER_TRIO.map((n) => `'${n}'`).join(',');
+  const sql = `select count(*)
+    from pg_proc p
+    where p.pronamespace = 'public'::regnamespace
+      and pg_get_userbyid(p.proowner) = 'postgres'
+      and has_function_privilege('authenticated', p.oid, 'EXECUTE')
+      and p.proname not in (${trio});`;
+  return Number(
+    execFileSync(
+      'psql',
+      [dbUrl, '-tA', '-v', 'ON_ERROR_STOP=1', '-c', sql],
+      { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+      .toString()
+      .trim(),
+  );
+}
+
 function cleanupIdorNotificationFixture() {
   try {
     const { dbPass, dbUrl } = proofDbArgs();
@@ -930,6 +965,75 @@ async function probe(name, options) {
       } catch (e) {
         console.log(`  ! browser-direct cleanup failed (non-fatal): ${e.message}`);
       }
+    }
+
+    // ── 00417: browser-role EXECUTE revoked on public functions ──
+    // (codex done-check 2026-05-18 found a LIVE cross-tenant leak via
+    // SECURITY DEFINER tickets_distinct_tags(tenant) granted to
+    // authenticated — it trusts the caller-supplied tenant arg.)
+    const execLeft = browserExecuteGrantPosture();
+    if (execLeft === 0) {
+      results.pass += 1;
+      console.log(
+        '  ✓ anon/authenticated EXECUTE on ZERO postgres-owned app routines except the bearer-token trio (00417)',
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Browser EXECUTE grants NOT revoked (00417 not applied / regressed)');
+      console.log(
+        `  ✗ ${execLeft} postgres-owned app routines still anon/authenticated-EXECUTABLE beyond the trio — apply migration 00417`,
+      );
+    }
+    // Decisive live red→green: the proven leak. Authenticated TENANT_A
+    // browser token calls the SECURITY DEFINER fn with a FOREIGN tenant.
+    // Pre-00417: HTTP 200 + that tenant's tags. Post-00417: grant-denied
+    // (PostgREST 404 PGRST202 / 401 / 403). Status ∉ 2xx ⇒ denied.
+    const lr = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/tickets_distinct_tags`, {
+      method: 'POST',
+      headers: {
+        apikey: env.SUPABASE_PUBLISHABLE_KEY,
+        Authorization: `Bearer ${browserTok}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ tenant: TENANT_B_ID }),
+    });
+    if (lr.status < 200 || lr.status >= 300) {
+      results.pass += 1;
+      console.log(
+        `  ✓ browser-direct rpc/tickets_distinct_tags(foreign tenant) → HTTP ${lr.status} (cross-tenant RPC leak denied)`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('LIVE cross-tenant RPC leak: tickets_distinct_tags executable browser-direct');
+      console.log(
+        `  ✗ browser-direct rpc/tickets_distinct_tags(foreign tenant) → HTTP ${lr.status} — LIVE cross-tenant leak; apply 00417`,
+      );
+    }
+    // Trio preserved: a bearer-token fn must still be reachable (not
+    // grant-denied) — else 00417 over-revoked and kiosk/invitation
+    // flows break. Bogus token ⇒ the fn runs and returns its own
+    // not-found, NOT PostgREST's PGRST202 "function not found".
+    const tp = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/validate_kiosk_token`, {
+      method: 'POST',
+      headers: {
+        apikey: env.SUPABASE_PUBLISHABLE_KEY,
+        Authorization: `Bearer ${browserTok}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ p_token: 'smoke-bogus-token' }),
+    });
+    const tpBody = (await tp.text()).slice(0, 120);
+    if (tp.status !== 403 && !tpBody.includes('PGRST202')) {
+      results.pass += 1;
+      console.log(
+        `  ✓ bearer-token trio preserved (validate_kiosk_token still reachable → HTTP ${tp.status})`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('00417 over-revoked: bearer-token trio no longer reachable');
+      console.log(
+        `  ✗ validate_kiosk_token → HTTP ${tp.status} ${tpBody} — 00417 broke the kiosk/invitation flow`,
+      );
     }
   } catch (e) {
     results.fail += 1;
