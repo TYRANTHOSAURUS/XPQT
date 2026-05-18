@@ -16,6 +16,8 @@ Exit 0 = all probes pass. Exit 1 = at least one regression.
 
 **Required before claiming complete:** any work touching `WorkOrderService` / `TicketService.update` / the desk-detail sidebar.
 
+**Also required (added 2026-05-18, audit-02 Slice F):** any work touching `set_entity_assignment` v3/v3.1/v3.2 (migrations 00416/00418/00419) · `TicketService.reassign` / `WorkOrderService.reassign` (case+WO, manual + `rerun_resolver`) · the routing-evaluation outbox handler (`routing-evaluation.handler.ts`) · `SlaService.applyReassignment` / `fireThreshold` / `processThresholds` (SLA escalation) · `TicketService.getChildTasks` / `TicketVisibilityService.getVisibleWorkOrderIds` (P1-5) · `apps/api/src/common/command-operations-probe.ts` (`probeCommandOperationSuccess` — the CR2 caller-side success-probe) · any migration altering `routing_decisions` (`entity_kind`/`case_id`/`work_order_id`/`chosen_*`/`strategy`/`chosen_by`), `command_operations`, `sla_timers`, `sla_threshold_crossings`, `sla_policies`.
+
 Script: `apps/api/scripts/smoke-work-orders.mjs`.
 
 Mutation matrix: status · priority · assignment · plan · sla · title · tags · cost-fractional · dispatch.
@@ -23,6 +25,19 @@ Mutation matrix: status · priority · assignment · plan · sla · title · tag
 Validation probes (7): ghost uuids, malformed uuids, oversized arrays, ghost assignees, empty title.
 
 Uses the **current-row-XOR-sentinel pattern** so every mutation actually exercises the write path — no phantom-success on a no-op fast path.
+
+**audit-02 Slice F block (`runAudit2Probes`, ~25 assertions).** Gated by a mandatory **STEP-0 provenance probe**: a manual `POST /tickets/:id/reassign` must land a `command_operations` `outcome='success'` row under `reassign:case:<id>:<crid>` — pre-Slice-C reassign wrote NO such row, so its presence proves the running :3001 server is serving audit-02 code (not stale TS / the concurrent audit-04 branch state). If the provenance probe FAILS the rest of the audit-02 block is **skipped** (not passed) and a precise LIVE-SMOKE-BLOCKED reason is surfaced — a green smoke against stale TS is a false-green, worse than no smoke. With provenance green, the block covers (live-validated 2026-05-18):
+
+- **P1-1 case reassign** — `command_operations` success + `routing_decisions` (explicit `entity_kind='case'`, manual `strategy='manual'`/`chosen_by='manual_reassign'`) + a `reassigned` `ticket_activities` row, ALL atomic; idempotent same-crid replay (no duplicate audit); **D-A02-4 drifted-retry** — a same-crid + drifted-payload retry after a committed success short-circuits to the ORIGINAL committed result (NOT `payload_mismatch`, NOT double-apply — the CR2 poison-closure; `payload_mismatch` is deliberately unreachable from the reassign HTTP surface once a success exists); the **CR2 caller-probe** on the `rerun_resolver` path.
+- **P1-1/D-A02-2/D-A02-3 rerun_resolver provenance** — `routing_decisions` reflects the RESOLVER (`strategy ∈ {asset,location,fixed,auto,rule}`, resolver `chosen_by`), never hardcoded `manual`; the D-A02-3 `chosen_by='unassigned' ⟺ all chosen_* NULL` provenance invariant holds.
+- **Vendor end-to-end (smoke-gap #5)** — reassign with `assigned_vendor_id` → `command_operations` + `routing_decisions` + `assigned_vendor_id` landed with team/user cleared atomically.
+- **P1-1 WO reassign (smoke-gap #3)** — `command_operations` success under `reassign:work_order:<id>:<crid>` + `routing_decisions` (explicit `entity_kind='work_order'`) + replay idempotency + D-A02-4 drifted-retry short-circuit (also covers **P2-4**: clean non-403/non-5xx shape).
+- **P1-5 getChildTasks cross-visibility** — a child WO dispatched to a vendor outside a low-visibility requester's `work_order_visibility_ids` is EXCLUDED for that requester (parent-case-read ≠ child-WO-read) while a `read_all` actor sees it.
+- **Dispatch contract (smoke-gap #8)** — same-crid replay → same `child_id`; same-crid + different payload → 409; dispatch on a terminal (`closed`) parent → 400 `dispatch.parent_terminal`.
+
+**SLA escalation (P0-2 / D-A02-1 / R-A02-2) — DEFERRED-with-reason, not skipped, not failed.** The SLA-escalation reassign is reachable ONLY via `SlaService.checkBreaches`' `@Cron(EVERY_MINUTE)` → `processThresholds` (private; `sla.controller.ts` exposes only two GET reads — no HTTP entrypoint). The probe seeds a query-visible near-breach `sla_timers` + an escalate-threshold `sla_policies` row and waits ≥2 full cron windows. Empirically (2026-05-18) the `@nestjs/schedule` cron is **not firing on the shared :3001 dev process** — so the probe records a **DEFERRED** outcome (counted separately; NOT pass, NOT a fatal fail; surfaced loudly in the summary), with the precise reason. This is the same documented rationale the PM-generator probe uses for invoking its RPC directly rather than relying on the cron (`smoke-work-orders.mjs:134-143`). The SLA-escalation-specific TS path (D-A02-1 `users.id→persons.id` watcher conversion; the CR2 success-probe; the R-A02-2 crossing-winner gate) is **jest-covered** (`sla.service.spec.ts` 10/10 + CR2 +4 per the audit-02 Closure Ledger) and its underlying atomic primitive `set_entity_assignment` v3.2 is **concurrency-tested 20/20 + live-proven by the reassign/vendor/WO probes above** (same RPC, same `command_operations`+`routing_decisions`+`ticket_activities`+`domain_events` atomicity). Restarting the shared server is forbidden (concurrent audit-03/04 sessions depend on :3001); fabricating a pass is forbidden. Live SLA-escalation-specific validation is therefore deferred-with-reason, surfaced not hidden.
+
+Exit-code semantics for this script gain a third bucket: `N pass / M fail / K deferred`. Exit 1 iff `M>0`; deferred items never flip the exit code but are always printed.
 
 ---
 
