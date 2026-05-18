@@ -1200,6 +1200,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'ticket.assign_forbidden',
   'ticket.cannot_reclassify_child',
   'ticket.terminal_cannot_reclassify',
+  'ticket.work_order_id_on_case_endpoint',
   'reclassify.target_not_found',
   'reclassify.target_inactive',
   'reclassify.target_same',
