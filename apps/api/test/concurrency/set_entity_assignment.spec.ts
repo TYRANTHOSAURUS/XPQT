@@ -1674,6 +1674,223 @@ describe('set_entity_assignment — combined RPC', () => {
     );
     expect(rd.rowCount).toBe(0);
   });
+
+  // ── v3.2 (audit02 CR1 / I2 — D-A02-3): asymmetric chosen_by/chosen_*
+  //    provenance guard. v3.1 extracted chosen_by and the three chosen_*
+  //    INDEPENDENTLY with no invariant. The DANGEROUS lie v3.2 closes is
+  //    chosen_by='unassigned' (resolver chose NOBODY — the D-A02-2 case)
+  //    with a non-NULL chosen_* (claims a target anyway); plus the
+  //    00418-conceded at-most-one gap (more than one chosen_* non-NULL).
+  //    v3.2 raises the registered set_entity_assignment.invalid_decision
+  //    (curated 400), never a raw 23xxx / generic 500.
+  //
+  //    DELIBERATELY one-directional: the converse "non-unassigned ⇒ ≥1
+  //    chosen_* non-NULL" is NOT enforced — it would regress the v3.1
+  //    contract that scenarios 13b + 14 codify (chosen_by='rule'/
+  //    'location_team' with NO chosen_* ⇒ OK). Scenario 18 below is the
+  //    positive control proving v3.2 still ACCEPTS that shape. Positive
+  //    controls also: scenario 15 (chosen_by='unassigned' + all chosen_*
+  //    NULL ⇒ OK) and scenario 16 (chosen_by='rule' + chosen_team_id set
+  //    ⇒ OK) — all must still pass unchanged on v3.2.
+
+  it('scenario 18 (D-A02-3 positive control): decision chosen_by=<non-unassigned> with ALL chosen_* NULL is STILL accepted (v3.1 contract preserved — converse NOT enforced)', async () => {
+    const base = await seedBaseFixture(pool, `v3_2-noprov-ok-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+
+    // chosen_by='location_team' with NO chosen_* keys — the exact shape
+    // scenario 13b relies on. v3.2's asymmetric guard must NOT reject it
+    // (provenance is carried by the decision/rule_id + assignment cols;
+    // mirroring into chosen_* is optional under the v3.1 contract).
+    const res = await runRpcCapture<AssignmentResult>(
+      pool,
+      'public.set_entity_assignment',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `v3_2-noprov-ok-${ticketId}`,
+        {
+          clear_routing_status: 'true',
+          decision: {
+            strategy: 'location',
+            chosen_by: 'location_team',
+            rule_id: null,
+            trace: [],
+            context: {},
+            chosen_team_id: null,
+            chosen_user_id: null,
+            chosen_vendor_id: null,
+          },
+        },
+      ],
+    );
+    expect(res.kind).toBe('ok');
+    if (res.kind !== 'ok') return;
+
+    const rd = await pool.query(
+      `select chosen_by, strategy, chosen_team_id, chosen_user_id, chosen_vendor_id
+         from public.routing_decisions
+        where tenant_id = $1 and ticket_id = $2 and chosen_by = 'location_team'`,
+      [base.tenantId, ticketId],
+    );
+    expect(rd.rowCount).toBe(1);
+    expect(rd.rows[0].strategy).toBe('location');
+    expect(rd.rows[0].chosen_team_id).toBeNull();
+    expect(rd.rows[0].chosen_user_id).toBeNull();
+    expect(rd.rows[0].chosen_vendor_id).toBeNull();
+  });
+
+  it('scenario 19 (D-A02-3): decision chosen_by=unassigned with a non-NULL chosen_team_id raises set_entity_assignment.invalid_decision (NOT 23xxx / 500)', async () => {
+    const base = await seedBaseFixture(pool, `v3_2-liar-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+
+    // A real in-tenant team so the §7c chosen_team_id existence guard
+    // PASSES — proving the biconditional guard (not the existence guard)
+    // is what rejects this self-contradictory "chose nobody but named a
+    // team" provenance row.
+    const teamId = randomUUID();
+    await withClient(pool, async (c) => {
+      await c.query('begin');
+      try {
+        await c.query("set local session_replication_role = 'replica'");
+        await c.query(
+          `insert into public.teams (id, tenant_id, name) values ($1, $2, 'D-A02-3 team')`,
+          [teamId, base.tenantId],
+        );
+        await c.query('commit');
+      } catch (e) {
+        await c.query('rollback');
+        throw e;
+      }
+    });
+    registerCleanup(async () => {
+      await withClient(pool, async (c) => {
+        await c.query('begin');
+        try {
+          await c.query("set local session_replication_role = 'replica'");
+          await c.query('delete from public.teams where id = $1', [teamId]);
+          await c.query('commit');
+        } catch (e) {
+          await c.query('rollback');
+          throw e;
+        }
+      });
+    });
+
+    const res = await runRpcCapture<AssignmentResult>(
+      pool,
+      'public.set_entity_assignment',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `v3_2-liar-${ticketId}`,
+        {
+          clear_routing_status: 'true',
+          decision: {
+            strategy: 'auto',
+            chosen_by: 'unassigned',
+            rule_id: null,
+            trace: [],
+            context: {},
+            chosen_team_id: teamId,
+            chosen_user_id: null,
+            chosen_vendor_id: null,
+          },
+        },
+      ],
+    );
+    expect(res.kind).toBe('error');
+    if (res.kind !== 'error') return;
+    expect(res.error.message).toMatch(
+      /set_entity_assignment\.invalid_decision/,
+    );
+    expect(res.error.message).not.toMatch(/23\d{3}/);
+
+    const rd = await pool.query(
+      `select id from public.routing_decisions where tenant_id = $1 and ticket_id = $2`,
+      [base.tenantId, ticketId],
+    );
+    expect(rd.rowCount).toBe(0);
+  });
+
+  it('scenario 20 (D-A02-3 at-most-one): decision with TWO non-NULL chosen_* (chosen_team_id AND chosen_user_id) raises set_entity_assignment.invalid_decision (NOT 23xxx / 500)', async () => {
+    const base = await seedBaseFixture(pool, `v3_2-multi-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const { userId } = await seedUser(pool, base.tenantId);
+
+    // Both a real in-tenant team AND a real in-tenant user, so the §7c
+    // existence guards PASS — proving the at-most-one guard (not an
+    // existence guard) is what rejects the "resolver picked two kinds"
+    // provenance lie. A resolver yields exactly one AssignmentTarget kind.
+    const teamId = randomUUID();
+    await withClient(pool, async (c) => {
+      await c.query('begin');
+      try {
+        await c.query("set local session_replication_role = 'replica'");
+        await c.query(
+          `insert into public.teams (id, tenant_id, name) values ($1, $2, 'D-A02-3 multi team')`,
+          [teamId, base.tenantId],
+        );
+        await c.query('commit');
+      } catch (e) {
+        await c.query('rollback');
+        throw e;
+      }
+    });
+    registerCleanup(async () => {
+      await withClient(pool, async (c) => {
+        await c.query('begin');
+        try {
+          await c.query("set local session_replication_role = 'replica'");
+          await c.query('delete from public.teams where id = $1', [teamId]);
+          await c.query('commit');
+        } catch (e) {
+          await c.query('rollback');
+          throw e;
+        }
+      });
+    });
+
+    const res = await runRpcCapture<AssignmentResult>(
+      pool,
+      'public.set_entity_assignment',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `v3_2-multi-${ticketId}`,
+        {
+          clear_routing_status: 'true',
+          decision: {
+            strategy: 'rule',
+            chosen_by: 'rule',
+            rule_id: null,
+            trace: [],
+            context: {},
+            chosen_team_id: teamId,
+            chosen_user_id: userId,
+            chosen_vendor_id: null,
+          },
+        },
+      ],
+    );
+    expect(res.kind).toBe('error');
+    if (res.kind !== 'error') return;
+    expect(res.error.message).toMatch(
+      /set_entity_assignment\.invalid_decision/,
+    );
+    expect(res.error.message).not.toMatch(/23\d{3}/);
+
+    const rd = await pool.query(
+      `select id from public.routing_decisions where tenant_id = $1 and ticket_id = $2`,
+      [base.tenantId, ticketId],
+    );
+    expect(rd.rowCount).toBe(0);
+  });
 });
 
 export {};
