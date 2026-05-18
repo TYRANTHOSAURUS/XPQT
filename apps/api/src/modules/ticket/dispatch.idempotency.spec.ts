@@ -1,8 +1,8 @@
 // B.2 dispatch idempotency-replay remediation — RUNNABLE GUARD.
 //
 // Mirrors the mechanism of the shipped 00407 booking-edit guard
-// (apps/api/src/modules/reservations/assemble-edit-plan.idempotency
-// .spec.ts GUARD 2): a static jest spec that readFileSync's the
+// (the `assemble-edit-plan.idempotency.spec.ts` GUARD 2 in the
+// booking-edit module): a static jest spec that readFileSync's the
 // migration .sql files from the monorepo root (cwd-robust candidate
 // walk) and regex-asserts a textual property of the *resolved* RPC
 // definition. Picked up by the standard `jest` run exactly like the
