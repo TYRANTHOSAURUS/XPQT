@@ -127,7 +127,7 @@ async function seedRequestType(
         await c.query(
           `insert into public.workflow_definitions
              (id, tenant_id, name, entity_type, version, status, graph_definition)
-           values ($1, $2, $3, 'ticket', 1, 'published', $4::jsonb)`,
+           values ($1, $2, $3, 'case', 1, 'published', $4::jsonb)`,
           [
             workflowDefinitionId,
             base.tenantId,

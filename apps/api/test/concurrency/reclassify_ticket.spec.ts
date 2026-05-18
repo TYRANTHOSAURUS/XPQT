@@ -105,7 +105,7 @@ async function seedRequestType(
         await c.query(
           `insert into public.workflow_definitions
              (id, tenant_id, name, entity_type, version, status, graph_definition)
-           values ($1, $2, $3, 'ticket', 1, 'published', $4::jsonb)`,
+           values ($1, $2, $3, 'case', 1, 'published', $4::jsonb)`,
           [
             workflowDefinitionId,
             base.tenantId,
@@ -604,7 +604,7 @@ describe('B.2.A.Step11 §3.10 — reclassify_ticket', () => {
     await pool.query(
       `insert into public.workflow_definitions
          (id, tenant_id, name, entity_type, version, status, graph_definition)
-       values ($1, $2, 'Alt Workflow', 'ticket', 1, 'published', '{"nodes":[{"id":"trigger-1","type":"trigger"}],"edges":[]}'::jsonb)`,
+       values ($1, $2, 'Alt Workflow', 'case', 1, 'published', '{"nodes":[{"id":"trigger-1","type":"trigger"}],"edges":[]}'::jsonb)`,
       [altWorkflowDef, base.tenantId],
     );
 
@@ -661,7 +661,7 @@ describe('B.2.A.Step11 §3.10 — reclassify_ticket', () => {
     await pool.query(
       `insert into public.workflow_definitions
          (id, tenant_id, name, entity_type, version, status, graph_definition)
-       values ($1, $2, 'Narrow Alt', 'ticket', 1, 'published', '{"nodes":[{"id":"trigger-1","type":"trigger"}],"edges":[]}'::jsonb)`,
+       values ($1, $2, 'Narrow Alt', 'case', 1, 'published', '{"nodes":[{"id":"trigger-1","type":"trigger"}],"edges":[]}'::jsonb)`,
       [altWorkflowDef, base.tenantId],
     );
     const ticket = await seedTicket(pool, base, {
@@ -721,7 +721,7 @@ describe('B.2.A.Step11 §3.10 — reclassify_ticket', () => {
     await pool.query(
       `insert into public.workflow_definitions
          (id, tenant_id, name, entity_type, version, status, graph_definition)
-       values ($1, $2, 'Shared WF', 'ticket', 1, 'published', '{"nodes":[{"id":"trigger-1","type":"trigger"}],"edges":[]}'::jsonb)`,
+       values ($1, $2, 'Shared WF', 'case', 1, 'published', '{"nodes":[{"id":"trigger-1","type":"trigger"}],"edges":[]}'::jsonb)`,
       [sharedWorkflowId, base.tenantId],
     );
     const rtOldId = randomUUID();
