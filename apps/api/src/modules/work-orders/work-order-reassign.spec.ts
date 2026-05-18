@@ -39,6 +39,8 @@ const CRID = 'crid-wo-1';
 // actors (tenant-validation.ts). SYSTEM_ACTOR paths skip validation, so
 // the other fixtures can keep readable string ids.
 const TEAM_X = '00000000-0000-4000-8000-00000000cccc';
+const USER_X = '00000000-0000-4000-8000-00000000dddd';
+const VENDOR_X = '00000000-0000-4000-8000-00000000eeee';
 
 type RpcCall = { fn: string; args: Record<string, unknown> };
 
@@ -295,6 +297,101 @@ describe('WorkOrderService.reassign — audit02 Slice C (P1-1)', () => {
 
     // No raw work_orders UPDATE, no standalone routing_decisions /
     // ticket_activities insert — v3 owns all of it atomically.
+    expect(deps.rawUpdates).toHaveLength(0);
+    expect(deps.routingDecisions).toHaveLength(0);
+    expect(deps.activities).toHaveLength(0);
+  });
+
+  // ── Target-kind mapping coverage (the silent-mis-assign class) ───────
+  // The team test above only exercises assigned_team_id. The
+  // user / vendor manual mapping (work-order.service.ts:950-952 →
+  // p_payload 1008-1010) is correct by inspection but unprotected: a
+  // future edit swapping the assigned_user_id ↔ assigned_vendor_id line
+  // would pass the rest of the suite. The WO reassign payload sends ALL
+  // THREE assignment keys explicitly (the matched kind → its id, the
+  // other two → explicit null) so v3 performs a clean overwrite.
+
+  it('routes a user reassign through v3 with p_payload.assigned_user_id set and team/vendor explicitly null', async () => {
+    const deps = makeDeps(
+      {
+        id: 'wo1',
+        tenant_id: TENANT,
+        status: 'assigned',
+        status_category: 'assigned',
+        assigned_team_id: 'team-old',
+        assigned_user_id: null,
+        assigned_vendor_id: null,
+      },
+      {
+        users: [{ id: USER_X, tenant_id: TENANT }],
+        hasAssignPermission: true,
+      },
+    );
+    const svc = makeSvc(deps);
+
+    const result = await svc.reassign(
+      'wo1',
+      { assigned_user_id: USER_X, reason: 'assign to a specific tech', actor_person_id: 'p-actor' },
+      'auth-uid-9',
+      CRID,
+    );
+
+    expect(result.assigned_user_id).toBe(USER_X);
+
+    const calls = assignCalls(deps.rpcCalls);
+    expect(calls).toHaveLength(1);
+    const args = calls[0].args;
+    expect(args.p_entity_kind).toBe('work_order');
+    const payload = args.p_payload as Record<string, unknown>;
+    expect(payload.assigned_user_id).toBe(USER_X);
+    expect(payload.assigned_team_id).toBeNull();
+    expect(payload.assigned_vendor_id).toBeNull();
+    expect(payload.reason).toBe('assign to a specific tech');
+    expect(payload.actor_person_id).toBe('p-actor');
+    // WO is manual-only — NEVER a `decision` key.
+    expect(payload).not.toHaveProperty('decision');
+
+    expect(deps.rawUpdates).toHaveLength(0);
+    expect(deps.routingDecisions).toHaveLength(0);
+    expect(deps.activities).toHaveLength(0);
+  });
+
+  it('routes a vendor reassign through v3 with p_payload.assigned_vendor_id set and team/user explicitly null', async () => {
+    const deps = makeDeps(
+      {
+        id: 'wo1',
+        tenant_id: TENANT,
+        status: 'assigned',
+        status_category: 'assigned',
+        assigned_team_id: 'team-old',
+        assigned_user_id: null,
+        assigned_vendor_id: null,
+      },
+      {
+        vendors: [{ id: VENDOR_X, tenant_id: TENANT }],
+        hasAssignPermission: true,
+      },
+    );
+    const svc = makeSvc(deps);
+
+    const result = await svc.reassign(
+      'wo1',
+      { assigned_vendor_id: VENDOR_X, reason: 'outsource to external vendor' },
+      'auth-uid-9',
+      CRID,
+    );
+
+    expect(result.assigned_vendor_id).toBe(VENDOR_X);
+
+    const calls = assignCalls(deps.rpcCalls);
+    expect(calls).toHaveLength(1);
+    const payload = calls[0].args.p_payload as Record<string, unknown>;
+    expect(payload.assigned_vendor_id).toBe(VENDOR_X);
+    expect(payload.assigned_team_id).toBeNull();
+    expect(payload.assigned_user_id).toBeNull();
+    expect(payload.reason).toBe('outsource to external vendor');
+    expect(payload).not.toHaveProperty('decision');
+
     expect(deps.rawUpdates).toHaveLength(0);
     expect(deps.routingDecisions).toHaveLength(0);
     expect(deps.activities).toHaveLength(0);

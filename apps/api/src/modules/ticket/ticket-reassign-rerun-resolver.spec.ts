@@ -34,6 +34,8 @@ const CRID = 'crid-case-1';
 const VALID_TEAM = '00000000-0000-4000-8000-00000000aaaa';
 const FOREIGN_TEAM = '00000000-0000-4000-8000-0000000fffff';
 const NEW_TEAM = '00000000-0000-4000-8000-00000000bbbb';
+const NEW_USER = '00000000-0000-4000-8000-00000000cccc';
+const NEW_VENDOR = '00000000-0000-4000-8000-00000000dddd';
 
 type Row = Record<string, unknown>;
 type RpcCall = { fn: string; args: Record<string, unknown> };
@@ -307,6 +309,214 @@ describe('TicketService.reassign — audit02 Slice C (P1-1)', () => {
     ]).toContain(decision.chosen_by);
 
     // No standalone routing_decisions / addActivity for the reassignment.
+    expect(
+      deps.insertCalls.filter((c) => c.table === 'routing_decisions'),
+    ).toHaveLength(0);
+  });
+
+  // ── Target-kind mapping coverage (the silent-mis-assign class) ───────
+  // The happy-path test above only exercises target.kind:'team'. The
+  // user / vendor / null-target → p_payload mapping
+  // (ticket.service.ts:1345-1347 + 1402-1404) is correct by inspection
+  // but unprotected: a future edit swapping the assigned_user_id ↔
+  // assigned_vendor_id line, or making the resolver-unassigned outcome
+  // omit a key instead of sending an explicit null, would pass the whole
+  // suite. These pin the exact per-kind payload contract.
+
+  it('rerun_resolver → user target maps to p_payload.assigned_user_id with team/vendor explicitly null (no pre-clear, evaluate once)', async () => {
+    const deps = makeSupabase({
+      users: [{ id: NEW_USER, tenant_id: TENANT.id }],
+    });
+    const evalResult = {
+      target: { kind: 'user', user_id: NEW_USER },
+      chosen_by: 'rule',
+      rule_id: 'rule-77',
+      rule_name: 'route-to-user',
+      strategy: 'rule',
+      trace: [{ step: 'rule', matched: true, reason: 'rule 77', target: null }],
+    };
+    const routingService = {
+      evaluate: jest.fn().mockResolvedValue(evalResult),
+      recordDecision: jest.fn(),
+    };
+    const { svc } = makeSvc(deps, routingService);
+
+    jest.spyOn(svc, 'getById').mockResolvedValue({
+      id: TICKET_ID,
+      tenant_id: TENANT.id,
+      ticket_kind: 'case',
+      ticket_type_id: null,
+      location_id: 'loc-1',
+      asset_id: null,
+      priority: 'high',
+      assigned_team_id: VALID_TEAM,
+      assigned_user_id: null,
+      assigned_vendor_id: null,
+      status_category: 'assigned',
+    } as never);
+    jest.spyOn(svc, 'addActivity').mockResolvedValue(undefined as never);
+
+    await svc.reassign(
+      TICKET_ID,
+      { rerun_resolver: true, reason: 'route to user', actor_person_id: 'p-1' },
+      'auth-uid',
+      CRID,
+    );
+
+    expect(routingService.evaluate).toHaveBeenCalledTimes(1);
+    // No pre-clear raw update — ticket never in an all-null transient.
+    expect(deps.updateCalls).toHaveLength(0);
+
+    const calls = assignCalls(deps.rpcCalls);
+    expect(calls).toHaveLength(1);
+    const payload = calls[0].args.p_payload as Record<string, unknown>;
+    expect(payload.assigned_user_id).toBe(NEW_USER);
+    expect(payload.assigned_team_id).toBeNull();
+    expect(payload.assigned_vendor_id).toBeNull();
+    expect(payload.reason).toBe('route to user');
+
+    // decision still passed through from the evaluation.
+    const decision = payload.decision as Record<string, unknown>;
+    expect(decision).toBeDefined();
+    expect(decision.strategy).toBe('rule');
+    expect(decision.chosen_by).toBe('rule');
+    expect(decision.rule_id).toBe('rule-77');
+
+    expect(
+      deps.insertCalls.filter((c) => c.table === 'routing_decisions'),
+    ).toHaveLength(0);
+  });
+
+  it('rerun_resolver → vendor target maps to p_payload.assigned_vendor_id with team/user explicitly null', async () => {
+    const deps = makeSupabase({
+      vendors: [{ id: NEW_VENDOR, tenant_id: TENANT.id }],
+    });
+    const evalResult = {
+      target: { kind: 'vendor', vendor_id: NEW_VENDOR },
+      chosen_by: 'request_type_default',
+      rule_id: null,
+      rule_name: null,
+      strategy: 'fixed',
+      trace: [{ step: 'request_type_default', matched: true, reason: 'rt default', target: null }],
+    };
+    const routingService = {
+      evaluate: jest.fn().mockResolvedValue(evalResult),
+      recordDecision: jest.fn(),
+    };
+    const { svc } = makeSvc(deps, routingService);
+
+    jest.spyOn(svc, 'getById').mockResolvedValue({
+      id: TICKET_ID,
+      tenant_id: TENANT.id,
+      ticket_kind: 'case',
+      ticket_type_id: null,
+      location_id: 'loc-1',
+      asset_id: null,
+      priority: 'high',
+      assigned_team_id: VALID_TEAM,
+      assigned_user_id: null,
+      assigned_vendor_id: null,
+      status_category: 'assigned',
+    } as never);
+    jest.spyOn(svc, 'addActivity').mockResolvedValue(undefined as never);
+
+    await svc.reassign(
+      TICKET_ID,
+      { rerun_resolver: true, reason: 'route to vendor', actor_person_id: 'p-1' },
+      'auth-uid',
+      CRID,
+    );
+
+    expect(routingService.evaluate).toHaveBeenCalledTimes(1);
+    expect(deps.updateCalls).toHaveLength(0);
+
+    const calls = assignCalls(deps.rpcCalls);
+    expect(calls).toHaveLength(1);
+    const payload = calls[0].args.p_payload as Record<string, unknown>;
+    expect(payload.assigned_vendor_id).toBe(NEW_VENDOR);
+    expect(payload.assigned_team_id).toBeNull();
+    expect(payload.assigned_user_id).toBeNull();
+    expect(payload.reason).toBe('route to vendor');
+
+    const decision = payload.decision as Record<string, unknown>;
+    expect(decision).toBeDefined();
+    expect(decision.strategy).toBe('fixed');
+    expect(decision.chosen_by).toBe('request_type_default');
+
+    expect(
+      deps.insertCalls.filter((c) => c.table === 'routing_decisions'),
+    ).toHaveLength(0);
+  });
+
+  it('rerun_resolver → resolver-unassigned (target:null) sends ALL THREE assignment keys PRESENT and each null (00416 key-present-null ⇒ clears; key-omitted ⇒ no-op)', async () => {
+    const deps = makeSupabase({});
+    // Resolver matched nothing → RoutingEvaluation.target is null. The
+    // unassigned outcome MUST clear via key-present-with-null, NOT by
+    // omitting the keys: 00416:218-220 treats `p_payload ? 'assigned_*'`
+    // as the clear directive (00416:255-257 → key-absent = "no change",
+    // key-present-null = "clear"). Omitting keys would silently leave
+    // the prior assignment intact.
+    const evalResult = {
+      target: null,
+      chosen_by: 'unassigned',
+      rule_id: null,
+      rule_name: null,
+      strategy: 'auto',
+      trace: [{ step: 'unassigned', matched: false, reason: 'no rule', target: null }],
+    };
+    const routingService = {
+      evaluate: jest.fn().mockResolvedValue(evalResult),
+      recordDecision: jest.fn(),
+    };
+    const { svc } = makeSvc(deps, routingService);
+
+    jest.spyOn(svc, 'getById').mockResolvedValue({
+      id: TICKET_ID,
+      tenant_id: TENANT.id,
+      ticket_kind: 'case',
+      ticket_type_id: null,
+      location_id: 'loc-1',
+      asset_id: null,
+      priority: 'high',
+      assigned_team_id: VALID_TEAM,
+      assigned_user_id: null,
+      assigned_vendor_id: null,
+      status_category: 'assigned',
+    } as never);
+    jest.spyOn(svc, 'addActivity').mockResolvedValue(undefined as never);
+
+    await svc.reassign(
+      TICKET_ID,
+      { rerun_resolver: true, reason: 'resolver unassigned', actor_person_id: 'p-1' },
+      'auth-uid',
+      CRID,
+    );
+
+    expect(routingService.evaluate).toHaveBeenCalledTimes(1);
+    expect(deps.updateCalls).toHaveLength(0);
+
+    const calls = assignCalls(deps.rpcCalls);
+    expect(calls).toHaveLength(1);
+    const payload = calls[0].args.p_payload as Record<string, unknown>;
+    // ALL THREE keys must be PRESENT (own-property), each value null —
+    // this is the clear contract per 00416. `toBeNull()` alone would
+    // also pass for an omitted key (undefined !== null but the
+    // assertions below pin presence explicitly).
+    expect(Object.prototype.hasOwnProperty.call(payload, 'assigned_team_id')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(payload, 'assigned_user_id')).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(payload, 'assigned_vendor_id')).toBe(true);
+    expect(payload.assigned_team_id).toBeNull();
+    expect(payload.assigned_user_id).toBeNull();
+    expect(payload.assigned_vendor_id).toBeNull();
+    expect(payload.reason).toBe('resolver unassigned');
+
+    // decision still passes through (resolver-unassigned is still an
+    // audited routing decision — chosen_by:'unassigned').
+    const decision = payload.decision as Record<string, unknown>;
+    expect(decision).toBeDefined();
+    expect(decision.chosen_by).toBe('unassigned');
+    expect(decision.strategy).toBe('auto');
+
     expect(
       deps.insertCalls.filter((c) => c.table === 'routing_decisions'),
     ).toHaveLength(0);

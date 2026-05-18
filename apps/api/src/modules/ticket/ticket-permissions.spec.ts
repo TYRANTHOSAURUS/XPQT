@@ -107,11 +107,14 @@ function makeDeps(
         ) {
           // validateAssigneesInTenant + assertTenantOwned probe path:
           //   `.select('id').eq('id', X).eq('tenant_id', Y).maybeSingle()` —
-          // returns a found-shape row so validation clears. `users` is also
-          // hit by `resolveAuthorPersonId` via .eq('auth_uid'), which can't
-          // be distinguished from the assignee probe by chained-.eq column
-          // name; returning null there is fine (resolveAuthorPersonId tolerates
-          // null with a system-attribution fallback).
+          // returns a found-shape row so validation clears. The reassign
+          // path no longer touches `addActivity`/`resolveAuthorPersonId`
+          // (audit02 Slice C: v3 `set_entity_assignment` owns the
+          // routing_decisions + ticket_activities rows atomically), so the
+          // only `users` access here is the assignee-validation probe;
+          // returning null for `users` is fine — these gate tests reject
+          // before validation matters, and the v3-committing tests stub
+          // getById/the RPC so the probe row is never required.
           return {
             select: () => ({
               eq: () => ({
