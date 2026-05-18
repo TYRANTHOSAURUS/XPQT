@@ -912,6 +912,20 @@ export class AssembleEditPlanService {
       approval,
     };
 
+    // audit-03 Slice 3 (P0-2 multi-slot residual, Path B): propagate the
+    // multi-slot skip up to the service edit path. Pre-fix this flag was
+    // DISCARDED here (only the 3 patch arrays were destructured from
+    // `linked`), so the documented multi-slot linked-row skip was SILENT
+    // below `buildLinkedRowPatches`'s `this.log.warn` — no durable,
+    // queryable record that a multi-room-with-services booking's caterer
+    // daglijst / setup work_orders were left at the OLD time. Set ONLY
+    // when true so single-slot plans stay byte-identical (and the field
+    // is `_`-prefixed + stripped before the RPC, so it never reaches the
+    // wire or the idempotency hash regardless — see edit-plan.types.ts).
+    if (linked.skippedMultiSlot) {
+      plan._skipped_multi_slot_linked_rows = true;
+    }
+
     return plan;
   }
 

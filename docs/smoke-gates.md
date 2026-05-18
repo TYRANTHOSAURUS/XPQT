@@ -67,6 +67,7 @@ Script: `apps/api/scripts/smoke-edit-booking.mjs`. Run via `pnpm --filter @prequ
 **Fixtures (psql-seeded):**
 - **Fixture A:** single booking + 1 slot, +130d on `ROOM_HUDDLE`.
 - **Fixture B:** single booking + 2 slots, +131d, primary on `ROOM_HUDDLE` + non-primary on `ROOM_BOARD` — `display_order` 0/1 seeded explicitly.
+- **Fixture E (audit-03 Slice 3, P0-2 multi-slot residual, Path B):** a **2-slot** booking (primary `ROOM_HUDDLE` + non-primary `ROOM_BOARD`) **plus the full linked-row graph** (1 catering order + 1 OLI + 1 boundary-aligned `asset_reservation` + 1 custom-window `asset_reservation` + 1 setup `work_order`), +135d.
 
 **20 scenarios across two endpoints:**
 
@@ -95,6 +96,8 @@ Script: `apps/api/scripts/smoke-edit-booking.mjs`. Run via `pnpm --filter @prequ
 **Also required (added 2026-05-16, booking-audit Slice 1):** any migration that touches `edit_booking` / `booking_edit_idempotency_payload_hash` / `booking_edit_strip_hash_server_fields`, or any change to `AssembleEditPlanService.buildLinkedRowPatches` or `ActorContext` actor threading (the `auth_uid` thread-through that previously made every editOne/editSlot call 404 `actor_not_found` — see `docs/follow-ups/audits/03-booking-reservation.md` D-1).
 
 **Fixture D is mandatory (P0-2/P0-3 closure, 2026-05-16):** this gate MUST include the linked-row Fixture D — a single booking + 1 catering order + 1 OLI + a boundary-aligned `asset_reservation` + a custom-window `asset_reservation` + 1 setup `work_order`, asserting that the post-edit instants propagate to all linked rows (see `docs/follow-ups/audits/03-booking-reservation.md` P0-2 / P0-3). A fixture with NO linked rows is insufficient: the empty-patch-array bug (Agent 3 P0-2) was invisible precisely because the prior fixtures (A/B) intentionally seeded no services/orders/work_orders. The §10.c–§10.d RPC cascade branches must be exercised against real linked rows, not no-ops.
+
+**Fixture E is mandatory (audit-03 Slice 3 — P0-2 multi-slot residual, Path B):** this gate MUST include the **multi-slot SAFETY** Fixture E + `runFixtureEProbe`. After an `editOne` window-shift on a >1-slot booking, the probe asserts (post-edit DB reads, epoch compare — NOT http-200-only): **(i)** every linked child (order window, both asset_reservations, setup work_order) **AND the non-primary slot** are **UNCHANGED vs seed** — proves NO silent corruption (children were NOT shifted to a window the other slots never moved to — the honest skip, not generalized propagation, which is deferred-with-owner as **D-11**); **(ii)** exactly one **durable, tenant-scoped** `audit_events` row, `event_type = 'booking.linked_rows_not_propagated'`, `entity_id == bookingId`, `details.{reason:multi_slot_no_attribution, edit_kind:one, slot_count:2}` — the skip is no longer SILENT; **(iii)** clean 2xx + the response carries **NO invented wire field** (no `warnings`, no `_skipped_multi_slot_linked_rows` — the marker is stripped at the producer→RPC boundary; no migration, no RPC change, no response-wire change). It is a real fail-closed gate: any child moved OR the durable signal absent ⇒ a failed `passAssertion` ⇒ `results.fail` ⇒ exit 1. See `docs/follow-ups/audit03-deferred-multislot-decision.md`.
 
 ---
 

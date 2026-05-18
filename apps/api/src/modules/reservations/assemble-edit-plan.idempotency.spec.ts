@@ -301,12 +301,26 @@ describe('Booking-edit idempotency-hash determinism (Slice 1 P0 guard)', () => {
     //       (audit-03 D-5). They are pure pre-state, fully re-derivable
     //       by the RPC from `new_chain_config` + live state; the RPC
     //       reads them from the UNSTRIPPED plan so §3.6.5 is unaffected.
-    // Any future field that is NOT caller intent MUST be appended here
-    // AND to the SQL exclusion set, or this guard fails. This is the
-    // exhaustive enumerated set; D-2's residual (a future non-`_`
-    // request-varying field) is now closed for these two pre-state
-    // names — they are explicitly enumerated-excluded and GUARD 2
-    // covers them.
+    // Any future field that is NOT caller intent AND reaches the hashed
+    // RPC payload MUST be appended here AND to the SQL exclusion set, or
+    // this guard fails. This is the exhaustive enumerated set; D-2's
+    // residual (a future non-`_` request-varying field) is now closed
+    // for these two pre-state names — they are explicitly enumerated-
+    // excluded and GUARD 2 covers them.
+    //
+    // EXEMPTION (audit-03 Slice 3, P0-2 multi-slot residual, Path B):
+    // `EditPlan._skipped_multi_slot_linked_rows` is `_`-prefixed and
+    // non-caller-intent, but is INTENTIONALLY NOT in this set. It is a
+    // SERVER-INTERNAL marker the service STRIPS at the producer→RPC
+    // boundary (`ReservationService.stripInternalMarkers`, applied at
+    // every `edit_booking` / `edit_booking_scope` call site) so it NEVER
+    // reaches the wire, the RPC, or the hashed payload. The "append to
+    // the SQL/TS strip set" rule applies ONLY to fields that DO reach the
+    // hashed payload — this one cannot, by construction, so adding it to
+    // the SQL exclusion set would be dead/misleading. GUARD 3's exact-
+    // equality assertion below stays valid precisely because this field
+    // is absent from the hashed payload (the GUARD 1/3 fixtures are
+    // single-slot ⇒ `buildLinkedRowPatches` never sets the marker).
     const expectedExclusionFields = [
       '_resolution_at',
       'old_outcome',

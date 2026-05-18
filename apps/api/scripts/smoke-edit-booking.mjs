@@ -182,6 +182,10 @@ const FIXTURE_A_DAYS_FROM_NOW = 130;
 const FIXTURE_B_DAYS_FROM_NOW = 131;
 const FIXTURE_C_DAYS_FROM_NOW = 132;
 const FIXTURE_D_DAYS_FROM_NOW = 133;
+// audit-03 Slice 3 (P0-2 multi-slot residual, Path B) — Fixture E:
+// 2-room (2 booking_slots) booking + the full linked-row graph. +135d
+// (skips 134 to leave clear air around Fixture D's window).
+const FIXTURE_E_DAYS_FROM_NOW = 135;
 
 // ─────────────────────────────────────────────────────────────────────
 // Idempotency-key shape — replicated from
@@ -600,6 +604,177 @@ function seedFixtureD() {
   return {
     bookingId,
     slotId,
+    assetTypeId,
+    assetBoundaryId,
+    assetCustomId,
+    catalogItemId,
+    orderId,
+    orderLineItemId,
+    arBoundaryId,
+    arCustomId,
+    workOrderId,
+    startAt,
+    endAt,
+    arCustomStart,
+    arCustomEnd,
+    woPlannedStart,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Fixture E — audit-03 Slice 3 (P0-2 multi-slot residual, Path B)
+// SAFETY probe. A 2-ROOM (2 booking_slots) non-recurring booking PLUS
+// the full linked-row graph: 1 catering order (+1 OLI), 1 boundary-
+// aligned asset_reservation, 1 custom-window asset_reservation, 1 setup
+// work_order. +135 days future, 1h duration.
+//
+// This is the HONEST-CONTRACT probe. `AssembleEditPlanService.
+// buildLinkedRowPatches` SKIPS linked-row time propagation for a >1-slot
+// booking (children key only off booking_id, no slot/space attribution
+// column — 00278:108-144). Path B does NOT generalize propagation (that
+// is deferred-with-owner as discovered finding D-11): a uniform whole-
+// booking move of a multi-slot booking is itself under-defined today
+// (editOne resolves/patches only the PRIMARY slot; the v5 RPC writes
+// bookings.start_at/end_at straight from the booking patch with NO
+// MIN/MAX over booking_slots — the "Step 2F" envelope recompute is
+// unbuilt). So the ONLY honest contract is: the booking/primary-slot
+// move commits, the OTHER slot + ALL linked children are LEFT UNCHANGED,
+// and a DURABLE tenant-scoped audit_events row records the residual gap.
+//
+// The probe asserts (post-edit DB reads, epoch compare, NOT http-200-
+// only): (i) every linked child UNCHANGED vs its seed window (proves NO
+// silent corruption — children NOT shifted to a window the other slots
+// never moved to); (ii) the durable signal exists (audit_events row
+// keyed by booking_id+tenant_id, event_type
+// 'booking.linked_rows_not_propagated'); (iii) clean 2xx + the response
+// carries NO invented wire field. Fails CLOSED if any child moved OR the
+// signal is absent.
+//
+// Same column/nullability citations as Fixture D (00005/00013/00142/
+// 00144/00213/00278). The 2-slot shape mirrors Fixture B. Cleaned up
+// generically by `deleteFixtures` (everything keys off booking_id).
+// ─────────────────────────────────────────────────────────────────────
+
+function seedFixtureE() {
+  const bookingId = crypto.randomUUID();
+  const primarySlotId = crypto.randomUUID();
+  const nonPrimarySlotId = crypto.randomUUID();
+  const assetTypeId = crypto.randomUUID();
+  const assetBoundaryId = crypto.randomUUID();
+  const assetCustomId = crypto.randomUUID();
+  const catalogItemId = crypto.randomUUID();
+  const orderId = crypto.randomUUID();
+  const orderLineItemId = crypto.randomUUID();
+  const arBoundaryId = crypto.randomUUID();
+  const arCustomId = crypto.randomUUID();
+  const workOrderId = crypto.randomUUID();
+
+  const anchor = new Date(Date.now() + FIXTURE_E_DAYS_FROM_NOW * 86400_000);
+  anchor.setUTCMinutes(0, 0, 0);
+  anchor.setUTCHours(13);
+  const slotStartMs = anchor.getTime();
+  const slotEndMs = slotStartMs + 60 * 60_000; // 1h booking
+  const startAt = new Date(slotStartMs).toISOString();
+  const endAt = new Date(slotEndMs).toISOString();
+
+  // Custom-window asset_reservation: slot.start + 15min → +45min
+  // (30-min, off both booking boundaries).
+  const arCustomStart = new Date(slotStartMs + 15 * 60_000).toISOString();
+  const arCustomEnd = new Date(slotStartMs + 45 * 60_000).toISOString();
+  // Setup work_order: planned_start_at = slot.start − 30min.
+  const woPlannedStart = new Date(slotStartMs - 30 * 60_000).toISOString();
+  const woSlaDue = new Date(slotEndMs).toISOString();
+  const woModuleNumber =
+    900_000_000_000_000 + Math.floor(Math.random() * 1_000_000_000);
+
+  const sql = `
+    set session_replication_role = 'replica';
+    insert into public.bookings
+      (id, tenant_id, title, requester_person_id, location_id,
+       start_at, end_at, timezone, status, source, calendar_etag,
+       cost_amount_snapshot, policy_snapshot, applied_rule_ids)
+    values
+      ('${bookingId}'::uuid, '${TENANT_ID}'::uuid, 'Smoke multi-slot fixture E',
+       '${THOMAS_PERSON}'::uuid, '${ROOM_HUDDLE}'::uuid,
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz, 'UTC',
+       'confirmed', 'desk', 'smoke-etag-e-${bookingId.slice(0, 8)}',
+       100.00, '{}'::jsonb, '{}'::uuid[]);
+    -- TWO slots: primary on ROOM_HUDDLE (display_order=0), non-primary
+    -- on ROOM_BOARD (display_order=1). Same window on both. >1 slot ⇒
+    -- buildLinkedRowPatches SKIPS linked-row propagation.
+    insert into public.booking_slots
+      (id, tenant_id, booking_id, slot_type, space_id,
+       start_at, end_at, status, display_order)
+    values
+      ('${primarySlotId}'::uuid, '${TENANT_ID}'::uuid, '${bookingId}'::uuid,
+       'room', '${ROOM_HUDDLE}'::uuid,
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz,
+       'confirmed', 0),
+      ('${nonPrimarySlotId}'::uuid, '${TENANT_ID}'::uuid, '${bookingId}'::uuid,
+       'room', '${ROOM_BOARD}'::uuid,
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz,
+       'confirmed', 1);
+
+    insert into public.asset_types (id, tenant_id, name)
+    values ('${assetTypeId}'::uuid, '${TENANT_ID}'::uuid, 'Smoke E asset type');
+    insert into public.assets
+      (id, tenant_id, asset_type_id, asset_role, name, status)
+    values
+      ('${assetBoundaryId}'::uuid, '${TENANT_ID}'::uuid, '${assetTypeId}'::uuid,
+       'pooled', 'Smoke E projector (boundary)', 'available'),
+      ('${assetCustomId}'::uuid, '${TENANT_ID}'::uuid, '${assetTypeId}'::uuid,
+       'pooled', 'Smoke E projector (custom)', 'available');
+
+    insert into public.catalog_items (id, tenant_id, name, category)
+    values ('${catalogItemId}'::uuid, '${TENANT_ID}'::uuid,
+            'Smoke E catalog item', 'catering');
+
+    insert into public.orders
+      (id, tenant_id, requester_person_id, booking_id, status,
+       requested_for_start_at, requested_for_end_at, delivery_location_id)
+    values
+      ('${orderId}'::uuid, '${TENANT_ID}'::uuid, '${THOMAS_PERSON}'::uuid,
+       '${bookingId}'::uuid, 'confirmed',
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz,
+       '${ROOM_HUDDLE}'::uuid);
+    insert into public.order_line_items
+      (id, order_id, tenant_id, catalog_item_id, quantity)
+    values
+      ('${orderLineItemId}'::uuid, '${orderId}'::uuid, '${TENANT_ID}'::uuid,
+       '${catalogItemId}'::uuid, 1);
+
+    insert into public.asset_reservations
+      (id, tenant_id, asset_id, start_at, end_at, status,
+       requester_person_id, booking_id)
+    values
+      ('${arBoundaryId}'::uuid, '${TENANT_ID}'::uuid, '${assetBoundaryId}'::uuid,
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz, 'confirmed',
+       '${THOMAS_PERSON}'::uuid, '${bookingId}'::uuid);
+    insert into public.asset_reservations
+      (id, tenant_id, asset_id, start_at, end_at, status,
+       requester_person_id, booking_id)
+    values
+      ('${arCustomId}'::uuid, '${TENANT_ID}'::uuid, '${assetCustomId}'::uuid,
+       '${arCustomStart}'::timestamptz, '${arCustomEnd}'::timestamptz,
+       'confirmed', '${THOMAS_PERSON}'::uuid, '${bookingId}'::uuid);
+
+    insert into public.work_orders
+      (id, tenant_id, title, status_category, parent_kind, booking_id,
+       module_number, planned_start_at, sla_id, sla_resolution_due_at)
+    values
+      ('${workOrderId}'::uuid, '${TENANT_ID}'::uuid,
+       'Smoke E setup work order', 'assigned', 'booking',
+       '${bookingId}'::uuid, ${woModuleNumber},
+       '${woPlannedStart}'::timestamptz,
+       'a3000000-0000-0000-0000-000000000001'::uuid,
+       '${woSlaDue}'::timestamptz);
+    set session_replication_role = 'origin';
+  `;
+  runPsql(sql);
+  return {
+    bookingId,
+    primarySlotId,
+    nonPrimarySlotId,
     assetTypeId,
     assetBoundaryId,
     assetCustomId,
@@ -1671,6 +1846,23 @@ async function readWorkOrderById(woId) {
   return data;
 }
 
+// audit-03 Slice 3 (P0-2 multi-slot residual, Path B) — read the durable
+// `booking.linked_rows_not_propagated` audit_events row(s) for a booking.
+// Tenant-gated (#0 rule). The service emits this POST-COMMIT, best-
+// effort + awaited, so it is deterministically readable once the editOne
+// HTTP call returns 2xx.
+async function readMultiSlotSkipAuditRows(bookingId) {
+  const { data, error } = await supa()
+    .from('audit_events')
+    .select('id, event_type, entity_type, entity_id, details')
+    .eq('tenant_id', TENANT_ID)
+    .eq('entity_type', 'booking')
+    .eq('entity_id', bookingId)
+    .eq('event_type', 'booking.linked_rows_not_propagated');
+  if (error) throw error;
+  return data ?? [];
+}
+
 // Same PGRST106 constraint as readOutboxRowsForBooking — the `outbox`
 // schema is not PostgREST-exposed. Tenant-gated psql scalar; json_agg
 // preserves the caller's `.find()`/`.length`/`.payload`/`.aggregate_id`
@@ -1828,6 +2020,143 @@ async function runFixtureDProbe(probe, fixtureD) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Fixture E SAFETY probe — audit-03 Slice 3 (P0-2 multi-slot residual,
+// Path B). The HONEST-CONTRACT gate. A 2-slot booking + full linked-row
+// graph; editOne window-shift it. Assert (post-edit DB reads, epoch
+// compare — NOT http-200-only):
+//   (i)   EVERY linked child (order window, both asset_reservations,
+//         setup work_order) + the NON-PRIMARY slot are UNCHANGED vs
+//         their seed windows → proves NO silent corruption (children
+//         were NOT shifted to a window the other slots never moved to).
+//   (ii)  the DURABLE signal exists — exactly one audit_events row,
+//         tenant-scoped, event_type 'booking.linked_rows_not_propagated',
+//         entity_id == bookingId, details.{reason,edit_kind,slot_count}.
+//   (iii) clean 2xx + the response carries NO invented wire field
+//         (no `warnings`, no `_skipped_multi_slot_linked_rows`).
+// Fails CLOSED: any child moved OR signal absent ⇒ a failed assertion ⇒
+// `results.fail` ⇒ exit 1. This is a real gate, not constructed-to-pass.
+// ─────────────────────────────────────────────────────────────────────
+
+async function runFixtureEProbe(probe, fixtureE) {
+  console.log('\n=== Fixture E SAFETY probe (audit-03 Slice 3 — P0-2 multi-slot, Path B) ===');
+
+  const TWO_H = 2 * 60 * 60_000;
+  const oldStartMs = new Date(fixtureE.startAt).getTime();
+  const oldEndMs = new Date(fixtureE.endAt).getTime();
+  const newStart = new Date(oldStartMs + TWO_H).toISOString();
+  const newEnd = new Date(oldEndMs + TWO_H).toISOString();
+
+  // Sanity — 2 slots seeded, linked rows at the OLD window.
+  const slotsBefore = await readSlotsForBooking(fixtureE.bookingId);
+  passAssertion(
+    'Fixture E setup: exactly 2 slots (primary ROOM_HUDDLE + non-primary ROOM_BOARD)',
+    slotsBefore.length === 2 &&
+      slotsBefore.some((s) => s.space_id === ROOM_HUDDLE) &&
+      slotsBefore.some((s) => s.space_id === ROOM_BOARD),
+    `slots=${slotsBefore.length}`,
+  );
+  const nonPrimaryBefore = slotsBefore.find(
+    (s) => s.id === fixtureE.nonPrimarySlotId,
+  );
+
+  // editOne window-shift +2h on the multi-slot booking.
+  const moveCrid = crypto.randomUUID();
+  const moveResult = await probe(
+    'Fixture E: editOne +2h on a MULTI-slot booking → 2xx',
+    {
+      url: `${API_BASE}/api/reservations/${fixtureE.bookingId}`,
+      body: { start_at: newStart, end_at: newEnd },
+      clientRequestId: moveCrid,
+    },
+  );
+  if (!moveResult.ok) return; // probe() already recorded the fail
+
+  // (iii) Response carries NO invented wire field.
+  const respJson = parseJsonSafe(moveResult.body);
+  passAssertion(
+    'Fixture E: response has NO invented wire field (no warnings / no _skipped_multi_slot_linked_rows)',
+    !!respJson &&
+      !('warnings' in respJson) &&
+      !('_skipped_multi_slot_linked_rows' in respJson),
+    `keys=${respJson ? Object.keys(respJson).join(',').slice(0, 160) : 'unparseable'}`,
+  );
+
+  // (i) NO silent corruption — every linked child UNCHANGED vs seed.
+  const orderAfter = await readOrderById(fixtureE.orderId);
+  passAssertion(
+    'Fixture E: order window UNCHANGED (NOT propagated — the honest skip)',
+    orderAfter &&
+      sameInstant(orderAfter.requested_for_start_at, fixtureE.startAt) &&
+      sameInstant(orderAfter.requested_for_end_at, fixtureE.endAt),
+    `start=${orderAfter?.requested_for_start_at} end=${orderAfter?.requested_for_end_at}`,
+  );
+
+  const arBoundary = await readAssetReservationById(fixtureE.arBoundaryId);
+  passAssertion(
+    'Fixture E: boundary-aligned asset_reservation UNCHANGED',
+    arBoundary &&
+      sameInstant(arBoundary.start_at, fixtureE.startAt) &&
+      sameInstant(arBoundary.end_at, fixtureE.endAt),
+    `start=${arBoundary?.start_at} end=${arBoundary?.end_at}`,
+  );
+
+  const arCustom = await readAssetReservationById(fixtureE.arCustomId);
+  passAssertion(
+    'Fixture E: custom-window asset_reservation UNCHANGED',
+    arCustom &&
+      sameInstant(arCustom.start_at, fixtureE.arCustomStart) &&
+      sameInstant(arCustom.end_at, fixtureE.arCustomEnd),
+    `start=${arCustom?.start_at} end=${arCustom?.end_at}`,
+  );
+
+  const woAfter = await readWorkOrderById(fixtureE.workOrderId);
+  passAssertion(
+    'Fixture E: setup work_order.planned_start_at UNCHANGED',
+    woAfter && sameInstant(woAfter.planned_start_at, fixtureE.woPlannedStart),
+    `got=${woAfter?.planned_start_at} want=${fixtureE.woPlannedStart}`,
+  );
+
+  // The non-primary slot must also be untouched (editOne moves only the
+  // PRIMARY slot — this is the D-11 "half-move" reality the probe pins).
+  const slotsAfter = await readSlotsForBooking(fixtureE.bookingId);
+  const nonPrimaryAfter = slotsAfter.find(
+    (s) => s.id === fixtureE.nonPrimarySlotId,
+  );
+  passAssertion(
+    'Fixture E: NON-primary slot UNCHANGED (editOne moved only the primary slot — D-11)',
+    nonPrimaryAfter &&
+      nonPrimaryBefore &&
+      sameInstant(nonPrimaryAfter.start_at, nonPrimaryBefore.start_at) &&
+      sameInstant(nonPrimaryAfter.end_at, nonPrimaryBefore.end_at),
+    `before=${nonPrimaryBefore?.start_at} after=${nonPrimaryAfter?.start_at}`,
+  );
+
+  // (ii) The DURABLE signal exists — exactly one tenant-scoped audit row.
+  const skipRows = await readMultiSlotSkipAuditRows(fixtureE.bookingId);
+  passAssertion(
+    "Fixture E: exactly 1 durable 'booking.linked_rows_not_propagated' audit row",
+    skipRows.length === 1,
+    `count=${skipRows.length}`,
+  );
+  const row = skipRows[0];
+  passAssertion(
+    'Fixture E: skip audit row is tenant-scoped + booking-keyed',
+    !!row &&
+      row.entity_type === 'booking' &&
+      row.entity_id === fixtureE.bookingId,
+    `entity_type=${row?.entity_type} entity_id=${row?.entity_id?.slice(0, 8)}`,
+  );
+  const d = row?.details ?? {};
+  passAssertion(
+    'Fixture E: skip audit details = {reason:multi_slot_no_attribution, edit_kind:one, slot_count:2}',
+    d.reason === 'multi_slot_no_attribution' &&
+      d.edit_kind === 'one' &&
+      d.slot_count === 2,
+    `details=${JSON.stringify(d).slice(0, 200)}`,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Op-discrimination probe — Step 2F.3 contract.
 // Fire editOne(crid=X) on Fixture A's booking AND editSlot(crid=X) on
 // Fixture B's non-primary slot. BOTH command_operations rows exist
@@ -1926,6 +2255,7 @@ async function main() {
   let fixtureB = null;
   let fixtureC = null;
   let fixtureD = null;
+  let fixtureE = null;
   try {
     console.log('Seeding fixture A (single booking + 1 slot, +130d)…');
     fixtureA = seedFixtureA();
@@ -1947,6 +2277,12 @@ async function main() {
       `  booking ${fixtureD.bookingId.slice(0, 8)}… / order ${fixtureD.orderId.slice(0, 8)}… / ar ${fixtureD.arBoundaryId.slice(0, 8)}…+${fixtureD.arCustomId.slice(0, 8)}… / wo ${fixtureD.workOrderId.slice(0, 8)}…`,
     );
 
+    console.log('Seeding fixture E (2-slot booking + linked rows, +135d — multi-slot safety)…');
+    fixtureE = seedFixtureE();
+    console.log(
+      `  booking ${fixtureE.bookingId.slice(0, 8)}… / primary ${fixtureE.primarySlotId.slice(0, 8)}… / non-primary ${fixtureE.nonPrimarySlotId.slice(0, 8)}… / order ${fixtureE.orderId.slice(0, 8)}… / wo ${fixtureE.workOrderId.slice(0, 8)}…`,
+    );
+
     const accessToken = await mintAdminToken();
     const headers = {
       Authorization: `Bearer ${accessToken}`,
@@ -1960,6 +2296,7 @@ async function main() {
     await runOpDiscriminationProbe(probe, fixtureA, fixtureB);
     await runApprovalFlipProbe(probe, fixtureC);
     await runFixtureDProbe(probe, fixtureD);
+    await runFixtureEProbe(probe, fixtureE);
   } finally {
     console.log('\nCleaning up fixtures…');
     const idsToDelete = [
@@ -1967,6 +2304,7 @@ async function main() {
       fixtureB?.bookingId,
       fixtureC?.bookingId,
       fixtureD?.bookingId,
+      fixtureE?.bookingId,
     ].filter(Boolean);
     if (idsToDelete.length > 0) {
       await deleteFixtures(idsToDelete);
