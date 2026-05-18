@@ -663,6 +663,13 @@ Maintainer rule: every agent that closes, partially closes, or deliberately defe
 | 2026-05-17 | **Slice 8 — live-smoke** | **PASSED — supersedes the 2026-05-16 "DEFERRED with owner + per-finding risk" row** | 10 probes authored into `smoke-tickets.mjs` (+1097) + `smoke-work-orders.mjs` (+418): P0-1 bulk/update 200/207/422+replay; P1-1 case+WO reassign (`command_operations`+`routing_decisions`+activity+domain-event+assignee-change); P0-2 SLA-escalation reassign (cron-driven, crossing anchor + `sla:escalation:*` cmd-op + assignee moved + recurrence-safe); P1-2 routing_status→idle atomic + no spurious activity; P1-5 getChildTasks cross-visibility (zero-role watcher EXCLUDES vendor child, admin INCLUDES — non-vacuous, asserts parent readable); vendor-assignment e2e; WO cross-tenant; dispatch idempotency-replay; reclassify; P1-3 satisfaction round-trip + WO-guard negative. Commit 051bbbe8. Registered: CLAUDE.md mandatory matrix + `docs/smoke-gates.md` (COVERED). See §2026-05-17 live-smoke Update. | **Independently re-run by the orchestrator (not just the authoring subagent), TWICE: `smoke:tickets` 122/0 exit 0, `smoke:work-orders` 125/0 exit 0, ZERO CONTENTION-DEFER triggered on any of 3 full runs.** Adversarial vacuousness review: NO CRITICAL, no fake-green, P1-5 security probe proven to go red on the exact revert mutation; 2 IMPORTANT folds applied (probe-9 audit assertion tightened to `metadata.event='reclassified'`; SLA CONTENTION-DEFER backstop made self-verifying). | **Runtime honesty:** not a truly *solo* runtime — the shared remote DB + concurrent `:3001` session/cron persisted. What was achieved: server-code-provenance isolation (`:3010` server built from THIS worktree; `:3001` runs a divergent branch) + per-run isolated fixtures + server-agnostic idempotent-outcome assertions + a scoped CONTENTION-DEFER escape hatch that **never triggered across 3 independent full runs** — i.e. the gate is proven robust UNDER the real concurrent conditions, a stronger result than a one-off solo pass. No genuine product regression found. The 2026-05-16 per-finding risk (HTTP→DB paths unverified end-to-end) is now **DISCHARGED** for all 10 enumerated probes. |
 | 2026-05-17 | **Best-in-class status** | **MET — by the project's own bar (live-API smoke is the ship gate)** | All 2026-05-16 P0/P1 closures now live-HTTP-smoked green; codex tertiary gate obtained (2026-05-16 "environmental" caveat closed); P2-1 interim shipped+reviewed; Code-I1 re-deferred with codex-validated prescription+owner+risk; living-contract docs (`smoke-gates.md`/CLAUDE.md/`visibility.md`/`assignments-routing-fulfillment.md`) synced; 02+00 ledgers reconciled append-only; cross-session items routed not absorbed (`audit-02-best-in-class-routing-2026-05-17.md`, with the brief's "B.2 CI-RED" premise corrected by evidence). | Per-slice `tsc`/`errors:check-app-errors`/web-tsc/design-polish green; `/full-review` 2-agent per substantive slice (folds verified against real code); **codex obtained** Q1–Q4; live smoke independently re-confirmed green ×3. Commits aac61b7a · 53ea0c66 · 7898b33e · 051bbbe8 (+ this row) on `worktree-audit-02-best-in-class`. | Remaining are explicitly-deferred-with-owner items, NOT audit-02 gaps: Code-I1 unique-index (next authorized DB-push window), P2-1 full split (integrator/data-model), P2-3 prefix renumber (integrator/data-model — `00410` `comment on function` forward-only fix rides the same window), P1-5 FE rollup (FE workstream). Branch ready for merge decision. |
 | 2026-05-18 | **Post-PR#20 concurrent-merge integrity re-verification** | **audit-02 SURVIVED + 1 regression fixed + 1 pre-existing B.2 defect discovered & routed** | A concurrent workstream merged PR#20 (booking-audit) on top of audit-02's PR#18 (origin/main 362c45f1→4c4ba587). Re-verified on the ACTUAL merged main: (a) all 5 audit-02 commits + PR#18 merge are ancestors; (b) PR#20's `error-codes.ts` +105 merge **dropped** audit-02's `ticket.work_order_id_on_case_endpoint` runtime-array entry (type-union survived → no tsc break, but P2-1 error would render generic at runtime) → **RESTORED** on branch `audit-02-pr20-reconcile-fix`; (c) remote `set_entity_assignment` v3 + `update_entity_combined` v7 bodies **re-verified intact** (PR#20's colliding 00406/00410 files do not redefine them); (d) gate re-run on merged-main surfaced a **pre-existing B.2 dispatch idempotency-replay defect** (server-stamped `timers.due_at` in `md5(p_payload)` @ 00341:153 + dispatch.service.ts:309 → spurious `payload_mismatch` 409 on legitimate replay when an SLA resolves; 3/3 deterministic). | tsc + errors:check-app-errors green on merged-main+fix; remote bodies via `pg_get_functiondef` (`t\|t` / `t\|t\|t`); dispatch defect root-caused (00341:153, dispatch.service.ts:255-265/309, 9 sla_policies) + reproduced 3×; safety invariant (no duplicate WO) hard-asserted ✓ 3×. | The dispatch defect is **NOT audit-02 / NOT this continuation / NOT a PR#20 code regression** (dispatch code unchanged; PR#20-era SLA-config data flipped a dormant latent bug active) — pre-existing B.2 subsystem defect, **discovered by the audit-02 gate doing its job**. Routed (not absorbed) → B.2/dispatch owner with confirmed root cause + the 00407-pattern fix prescription: `docs/follow-ups/audit-02-best-in-class-routing-2026-05-17.md` §5. Probe hardened with an evidenced, fingerprint-scoped `[KNOWN-DEFECT]` carve-out (mirrors the validated SLA CONTENTION-DEFER; safety still hard-asserted; no fake-green). audit-02's own scope remains MET. |
+| 2026-05-18 | **B.2 dispatch idempotency-replay** — the defect routed §5 in the row above | **CLOSED (code + remote migration verified + smoke 3×)** | Migration `00428_dispatch_idempotency_intent_hash.sql`: path-scoped `dispatch_strip_hash_server_fields(jsonb)` (strips `due_at` ONLY from elements of a key literally named `timers`; `routing_context.due_at` preserved) + `dispatch_idempotency_payload_hash(jsonb)`; `dispatch_child_work_order` reproduced VERBATIM from `00341` v3 + `dispatch_child_work_orders_batch` VERBATIM from `00342` v3 (byte-diff: exactly one `v_payload_hash` line changed per fn). Probe-8 `[KNOWN-DEFECT b2-dispatch-replay-sla-due_at]` carve-out REMOVED → strict hard gate. New runnable guard `apps/api/src/modules/ticket/dispatch.idempotency.spec.ts` (mirrors 00407 GUARD-2). **C1 caught & fixed:** batch was first reproduced from STALE `00337` v1 → `create-or-replace` last-writer would have clobbered `00342` v3 (the F-IMP-1 per-task `routing_rule_id` tenant-validate P0 cross-tenant guard + F-CRIT-1 `sla_timers` polymorphic cols); caught by `/full-review`, re-based on `00342`, live-verified preserved. | 00428 pushed to remote + `pg_get_functiondef`: both RPCs route through `dispatch_idempotency_payload_hash`, no raw `md5(p_*::text)`, C1 routing_rule tenant-validate + polymorphic cols PRESERVED, helper path-scoped. `smoke:work-orders` 3/3 exit 0 deterministic — probe-8 `✓ dispatch replay — same WO id both calls` all 3 (fresh fixtures). codex pre-impl design-check (GO-WITH-CHANGES, folded) + `/full-review` 2-agent (C1 caught & fixed) + codex tertiary (GO-WITH-CHANGES, folded); tsc + errors:check-app-errors green; guard 4/4. | **Supersedes the §5 routed deferral** (prior row + `audit-02-best-in-class-routing-2026-05-17.md` §5, now RESOLVED append-only). I1 accepted non-goals documented: replay-after-SLA-policy-edit 409 is by-design (config genuinely changed → fail-closed); forward-only — pre-00428 `command_operations` rows not rewritten so a pre-00428 dispatch replayed post-00428 may still 409, NOT a regression (that deploy-crossing replay was already broken by the very bug fixed). `smoke:tickets` prior interleaved-load flake (scattered P1-3/P0-2 probes, client-side ECONNRESET) characterized **FLAKE_INFRA** — 5/5 green in isolation; 00428 is dispatch-only and cannot affect those probes; NO smoke-tickets carve-out (green in isolation; weakening = fake-green). **NEW sibling I2** (same now()-in-hash on the WO + workflow-engine SLA-install path via `update_entity_combined` v7 `00427`:241 / `update_entity_sla` `00330`:115; producer `sla.service.ts:219`→`work-order.service.ts:584`/`workflow-engine.service.ts:1907`; NOT the case path — verified phantom) discovered by `/full-review`, independently verified, **user-approved ROUTE-not-fold** → `docs/follow-ups/i2-sla-install-idempotency-due_at-2026-05-18.md`. |
+| 2026-05-18 | **P2-1** — case-vs-WO `TicketService` split | **RE-DEFERRED (codex design-check attached; user-acknowledged) — interim guard = honest closure for this bar** | No code change this engagement. The brief mandated codex-design-first for P2-1; the codex design-check was run 2026-05-18 → **RE-DEFER**, and the user **acknowledged the re-deferral** 2026-05-18 (brief #3 bar permits a fresh user-acknowledged re-deferral with the design-check attached). The sole unsafe residual the audit identified (a WO id misbehaving on `PATCH /tickets/:id`) is **already neutralized** by the shipped interim reject guard (`ticket.work_order_id_on_case_endpoint` 400, covers bulk; commit `aac61b7a`, 2026-05-17 row above). The WO **mutation** surface is **already fully separated** into `apps/api/src/modules/work-orders/work-order.service.ts` (the audit's "1978-line multi-day refactor" framing predates that split). Self-contained design-check + architecture prescription: `docs/follow-ups/p2-1-case-wo-split-design-check-2026-05-18.md`. See `#### Update — 2026-05-18 — P2-1 codex design-check DONE → user-acknowledged RE-DEFER`. | N/A (re-deferral). codex confirmed **NO latent cross-tenant hole** in the `getById`/`loadTicketRow` WO-fallback (tenant-scoped + visibility-gated). What remains is purely layering/ownership hygiene (~1 engineer-week READ-path extraction) with regression risk to 6 shipped audit-02 slices (incl. 2 live RPC migrations) for ZERO P0/P1 content in a live multi-session shared tree — re-defer beats executing now. | **Owner = integrator / data-model (verdict Should-fix #16, ~1 eng-week).** Prescribed architecture (codex, for the owner): a DELIBERATE HYBRID — keep ONE explicit *named* polymorphic id-resolver (kind-agnostic READ contract, NOT the "neither" the audit criticized) + HARD-SPLIT commands/kind-specific reads (case `list`/`update`/`reassign`/inbox/`create`/`bulkUpdate` stay in `TicketService`; WO mutations + `getChildTasks` + `createBookingOriginWorkOrder` move to `WorkOrderService`). TWO must-not-regress invariants: (1) `PATCH /tickets/:id` keeps rejecting `ticket_kind==='work_order'` with `ticket.work_order_id_on_case_endpoint`; (2) child-WO listing keeps the parent-case `assertVisible(parent,'read')` precondition AND THEN filters children via `work_order_visibility_ids` (00374) — parent visibility must NEVER imply child-WO visibility (P1-5); `getChildTasks` may move to `WorkOrderService` only if it still uses the shared `TicketVisibilityService` for the parent gate. Only real wart: `createBookingOriginWorkOrder` placement (`ticket.service.ts` ~2070); 1 consumer to rewire: `setup-work-order-trigger.service.ts:37`. Interim guard + this design-check = honest closure for the audit-02 engagement bar (P2, non-completion-bar). Integrator #16 reconciliation folded into the final 02+00 ledger reconciliation step (00-integrator-verdict NOT edited here). |
+| 2026-05-18 | **Code-I1** — routing-eval handler non-idempotent `routing_decisions` audit inserts under outbox redelivery | **CLOSED (code + remote partial-unique-index verified + smoke 3×)** | Migration `00429_routing_decisions_outbox_event_unique_index.sql` pushed to the shared remote 2026-05-18; `pg_indexes` live-verified: `CREATE UNIQUE INDEX uq_routing_decisions_outbox_event ON public.routing_decisions USING btree (tenant_id, ((context ->> 'outbox_event_id')), chosen_by) WHERE (context ? 'outbox_event_id')`, `indisunique=t`. Index-only (remote pre-verified 0 dup groups / 0 null `chosen_by` → `CREATE UNIQUE INDEX` cannot fail on data; no dedup step). `routing-evaluation.handler.ts`: both `routing_decisions` inserts converted from supabase-js `.insert()` to raw parameterised `this.db.query(... on conflict (tenant_id,(context->>'outbox_event_id'),chosen_by) where context ? 'outbox_event_id' do nothing returning id)` (`DbService` injected — DbModule is `@Global`, same provider `outbox.worker.ts` uses, no module-import change). Per-site error semantics PRESERVED: Site 1 (§6 success) genuine DB error still THROWS (outbox retry contract), conflict-skipped replay (`rows.length===0`) → idempotent SUCCESS (debug, no throw); Site 2 (`markRoutingFailure`) genuine error stays WARN-ONLY (NOT escalated to throw — a throw in the failure-recording path could wedge the outbox), conflict-skipped → silent success. **The codex-tertiary NO-GO ("item 3") was mis-scoped** — verified by reading the handler L256-294: the cited control flow is ENTIRELY PRE-EXISTING and untouched by Code-I1; it is a separate `set_entity_assignment` idempotency-key/payload-stability defect, **routed not folded** as **I3** (user-approved). | 00429 pushed + `pg_indexes` live-verified (`indisunique=t`, expression partial index byte-matches the handler's explicit `ON CONFLICT` arbiter). codex pre-impl design-check → "Approach A explicit-conflict-target, GO-WITH-CHANGES" (B `.upsert` invalid for an expression partial index; C catch-23505 weaker); `/full-review` 2-agent (no CRITICAL; both designated high-risk items — DbService BYPASSRLS/tenant posture == supabase service_role, 12-col↔$1..$12 1:1 no transposition — verified correct; IMPORTANT-1 rollback-coupling + I-1 defensive init + N-3 folded); codex tertiary (smoke replay hardened: per-run scoped pre-clean + baseline isolation + `finally` outbox.events teardown scoped by case-id AND a2 tenant; NUL-byte sanitiser on jsonb-bound `trace`/`context`/`failure_reason`). `pnpm -C apps/api lint` + `pnpm errors:check-app-errors` green; `routing-evaluation.handler.spec.ts` 14/14 (10 pre-existing preserved + 4 new). `smoke:tickets` independently re-run isolated 3/3 exit 0 (123 pass / 0 fail each) — `a2ProbeRoutingEvalClear` gained `✓ routing-eval — same outbox event REDELIVERED, still exactly 1 routing_decisions row (Code-I1: ON CONFLICT DO NOTHING)`, deterministically green all 3 runs. | **Supersedes the 2026-05-17 "Code-I1 RE-DEFERRED" row** (left intact; this is appended). **Rollback-coupling note (folded IMPORTANT-1, also in the 00429 header):** the handler's EXPLICIT `ON CONFLICT` target hard-requires 00429's index — if the index is dropped while the handler change is deployed, EVERY routing eval throws "no unique or exclusion constraint matching the ON CONFLICT specification" → `audit_insert_failed` → outbox retry → dead-letter. Deploy index-first; forward-only; **never drop `uq_routing_decisions_outbox_event` independently.** **`smoke:tickets` FLAKE_INFRA only under concurrent/interleaved load** (green in isolation; mitigation = run the final gate isolated; no carve-out). **I3 routed** (codex-tertiary NO-GO finding, verified PRE-EXISTING + orthogonal by reading handler L256-294, user-approved ROUTE-not-fold): `set_entity_assignment` idempotency-key/payload-drift on an assignment-changing routing-eval retry → wrong `auto_routing_failed` audit + missing success breadcrumb (assignment still correctly applied; no corruption; pre-existing; not P0/P1) → `audit-02-best-in-class-routing-2026-05-17.md` (new row #8) + `docs/follow-ups/i3-routing-eval-assignment-rpc-payload-drift-2026-05-18.md`. |
+| 2026-05-18 | **P2-3** — duplicate migration-prefix epidemic | **CLOSED for this engagement's bar — renumber DONE upstream (PR #21); prefix guard now CI-ENFORCED (this session)** | Brief premise STALE on re-verification: the "11+" duplicate-prefix epidemic (incl. 00400/00406/00407/00410) + the Migration-smoke **RC1** red were ALREADY resolved by **PR #21 `ab980b28`** (`fix/ci-migration-prefixes`, merged 2026-05-18 by the integrator/data-model owner — exactly the "coordinate the historical renumber as its own reviewed PR with the owner" the brief prescribed; the colliding block was renumbered to a contiguous `00415–00427`). Independently verified on `audit-02-finish` (3-ahead/0-behind origin/main): **0 duplicate 5-digit prefixes** on disk AND on `origin/main` (427 files); `docs/follow-ups/ci-red-cascade-2026-05-18.md` present; `00428`/`00429` (this session's) unique. RC1 was a `schema_migrations` PK collision aborting `supabase db reset` (runtime, renumber-only-fixable — a detection guard could never have cleared it; PR #21's renumber did). **This session's contribution:** the recurrence guard `scripts/check-migration-prefixes.sh` existed + was wired into root `pnpm lint`, but **NO CI job ran root lint** (CI runs only per-package `@prequest/web|api` lints) → the guard was toothless and a future concurrent dup could slip in pre-merge (the exact RC1 mode). Added a `Migration prefix uniqueness guard` step (`run: bash scripts/check-migration-prefixes.sh`) to the `check` job in `.github/workflows/ci.yml` — the explicitly-recommended cheap fix (integrator verdict blocker #8 + audit ledger). | Guard verified exit 0 on current tree (427 files, 0 dups) so the new CI step is additive + green, not a new red. `ci.yml` re-validated as well-formed YAML after the edit (parsed; `check` job steps intact, new step between "Phase 8 naming-allowlist drift gate" and "Typecheck web"). Diff purely additive (12 ins / 0 del). User-authorized the CI-pipeline edit. Renumber/RC1 closure CI-verified upstream per `ci-red-cascade-2026-05-18.md` (PR #21: `check`+`migration-smoke` red→green); RC6/B.0 separately resolved (`e842ef12`, on main). | **Renumber: DONE upstream (PR #21) — NOT this session; the brief's "don't renumber unilaterally / coordinate with the owner" is now moot (the owner already did it correctly).** Recurrence guard: now CI-enforced (this session, user-approved). **Still open + correctly deferred (cosmetic, owner):** the `00410`→`00427_update_entity_combined_v7_satisfaction` `comment on function` mismatch (comment says satisfaction "handled symmetrically" but v7 raises `satisfaction_unsupported_for_work_order` for WOs) — zero behavioral impact; rides the **next** `update_entity_combined`/grant touch (no migration push solely for a comment), owner = whoever next touches that RPC. Relates to **#6**: the Migration-smoke CI red is already cleared upstream by PR #21's renumber (not by this guard); this guard prevents *recurrence*. Continuation-table NOT mirrored for P2-3 (deliberate — to stop perpetuating the known dual-ledger-table drift; consolidation is part of the final 02+00 reconciliation step). |
+| 2026-05-18 | **P1-5 FE-rollup** — sub-issue progress under-reports for scoped-out actors | **CLOSED (code: thin BE privileged-aggregate endpoint + FE single-source; security model verified clean; disclosure boundary documented honestly)** | New `TicketService.getChildTasksRollup(parentCaseId)` + `GET /tickets/:id/children/rollup` → `{done,total}` only: IDENTICAL precondition to `getChildTasks` (`assertVisible(parent,'read')` + SYSTEM bypass), **tenant-scoped both count queries** (`.eq('tenant_id', …)`, #0 invariant), `head:true` so zero row data, `done = status_category in ('resolved','closed')`. FE: `ticketKeys.childrenRollup` + `useWorkOrdersRollup` (useQuery+handleQueryError); `SubIssueProgress` + `sub-issues-section` single-source done/total from the rollup, child LIST stays `work_order_visibility_ids`-filtered (**P1-5 intact**), removed the `data.length===0⇒null` suppression, "Some sub-issues may be hidden" tooltip when `visible<total`, "No visible sub-issues" state. No DB migration (TS+FE only). | codex pre-impl design-check → **PREFERRED-WITH-CHANGES** (new sibling endpoint not array-mutation; rollup-key + invalidation; remove length===0 suppression; safety boundary {done,total}-only — all folded). `/full-review` 2-agent: **security model independently verified CLEAN** — code-reviewer exhaustively traced `assertVisible(parent,'read')`: NO ctx passes parent-read with `!user_id && !has_read_all`, so the one omitted `getChildTasks` line is unreachable dead-defense (no precondition drift / not more permissive); both counts tenant-scoped; `head:true` zero-row (supabase-js v2 precedent); done/total exact-match; `parentId`-from-context resolves for the detail-surface hooks. **3 real FE bugs folded:** C1 (`ticket-context-menu` quick-status close used `useUpdateTicket` which never invalidated `childrenRollup` → stale ring on the PRIMARY close path) + item-7 (`useWorkOrders.refetch` missed `childrenRollup` → reclassify-nonce drift) + item-5 (`hasHidden` flicker before list settles). web tsc/build + api tsc + errors:check green; ticket specs 20/20 + 32 pass/2 skip, none weakened. | **I1/I2 (spec-overclaim) — corrected, product-owner-approved (NOT papered):** `/full-review` plan-agent showed `visibility.md` §7 overclaimed "no per-row identity leak / equivalent to the tenant-wide reporting precedent" — at small N (`total=1,visible=0,done=1`) a parent-`read`-able actor (incl. the requester/watcher class at the *endpoint* level — the desk FE route redirects non-`agent`s so the practical FE surface is the scoped operator; requester is the direct-API edge) infers the single hidden child's existence + done-state (NOT identity/vendor/assignee — P1-5's core stays intact at every N). User chose **"document accurately + ship"**: §7 rewritten to state the **bounded** disclosure honestly (per-parent ≠ tenant-wide; what's exposed vs protected; why accepted = the slice's purpose is true progress for legitimate oversight & existence+done ≪ which-vendor) + a tracked **residual lever** (gate the endpoint on operator-tier perm instead of the broad `read` floor if the requester-class direct-API edge is ever deemed unacceptable — not a current defect). Continuation-table NOT mirrored (same dual-ledger-drift discipline as the P2-3 row; consolidated at final reconciliation). |
+| 2026-05-18 | **CI reds** — bisect/route | **DISPOSED — brief's red-list fully STALE (verified GREEN on origin/main); 1 branch-introduced red FIXED; 1 foreign infra red ROUTED-with-evidence** | gh-authed verification of `origin/main@218f781d`: the `ci` workflow run **`26027689859` = SUCCESS (3/3 jobs green)** — "Design check + typecheck" ✓, "B.0 concurrency harness" ✓ (ran for real 4m50s, not vacuous), "Migration smoke (db:reset + invariants)" ✓. `docs/follow-ups/ci-red-cascade-2026-05-18.md` RC1–RC6 ALL RESOLVED upstream: RC1–RC5 via PR #21 `ab980b28` (renumber + ripgrep + naming + eslint), RC6 (B.0 fixture drift) via PR #23 `e842ef12`. The brief's named reds map: "Design-check+typecheck"/"Migration-smoke" = RC1–RC5 (fixed), "B.0 concurrency" = RC6 (fixed), "B.2 config-reads" = RC2 (a *step* in `check`, not a job; fixed). **None are red on current main.** | **Branch-introduced red — FIXED (mine, not foreign):** `/full-review`-class CI investigation caught that this branch's `apps/api/src/modules/ticket/dispatch.idempotency.spec.ts:4` (added by `a47cdc48`, the #1 B.2 guard) carried a bare `…/reservations/…` path token in a comment → tripped `check` job's `pnpm naming:check-allowlist [api]` (Phase-8 gate pattern `\breservations\b`), not on the api allowlist. Reworded the comment to drop the path literal (kept the cross-ref by spec filename). Verified: `pnpm naming:check-allowlist` → **OK both scopes** (api 383 / web 149 refs); guard spec still **4/4**; `check-migration-prefixes.sh` exit 0; 00428/00429 trip no `ci-migration-asserts.sql` invariant + apply clean in fresh ordered db:reset; `errors:check-app-errors` green. So the branch re-greens `check` and adds no other red. | **Foreign infra red — ROUTED with evidence (not a code SHA):** the `deploy` workflow's **Deploy-api (Render)** job fails `Render trigger failed with HTTP 401` (bad/expired `RENDER_API_KEY` secret) — run `26027689837`. NOT code, NOT bisectable, pre-existing on EVERY main push since ≥PR #17, and `deploy.yml` triggers `push:[main]`+`workflow_dispatch` ONLY (never `pull_request`) so it does **not** gate this PR. Already recorded as cascade-doc owed-follow-up #3 ("deploy separately red — environment/secrets, unrelated"). **Owner = whoever holds the `RENDER_API_KEY` secret** (rotate/refresh it); evidence: `gh run view 26027689837` → `render` job `HTTP 401`. Satisfies brief #6 "fixed-or-routed-with-SHA" (routed-with-precise-evidence; it is a secret, not a commit). Continuation-table NOT mirrored (same dual-ledger-drift discipline; consolidated at final reconciliation). |
+| 2026-05-18 | **P2-2 residual** — `RoutingService.recordDecision` entity_kind via 00230/00232 derive-trigger | **DISPOSITIONED — LEAVE + DOCUMENTED (codex design-checked; accepted correct-convention split, NOT a defect)** | The 2026-05-16 P2-2 row already accepted this as a convention split; the brief asked to codex-design-check (only if pursuing full write-time uniformity) else leave+documented. Read-only investigation + live remote: the SOLE prod caller of `recordDecision` is the `rerun_resolver` reassign path (`ticket.service.ts:1436`) which always passes a CASE id (same id given to `set_entity_assignment` `p_entity_kind:'case'` at :1411); reclassify spec asserts recordDecision is NOT called by reclassify; case-create writes routing_decisions inside `create_ticket_with_automation` (not via recordDecision); dispatch/WO call `evaluate()` only. The live 00232 BEFORE-INSERT trigger (body verified) deterministically derives `entity_kind='case'`+`case_id` for that path (post-1c.10c `tickets` is case-only, no UUID overlap). Live `routing_decisions`: 973 rows, **0 null entity_kind, 0 bad entity_kind, 0 case-rows with null case_id**; 41 `manual_reassign` (the recordDecision path) rows all correct non-null `entity_kind='case'`. NOT a missing/wrong value. | codex design-check (2026-05-18, prompt-to-file) → **LEAVE-DOCUMENTED**: "no concrete correctness gap write-time uniformity would close … the 00232 trigger deterministically maps that id to entity_kind='case' … the concurrent-delete branch is an append-only-durability edge, not the original P2-2 missing/wrong-entity_kind defect … explicit-at-write would not make the audit semantically stronger enough to justify touching shared routing/create/reclassify surfaces now." | **No code change.** Disposition = accepted correct-convention split (explicit-at-write for the high-blast reassign + routing-eval sites — already closed; trigger-derive for the shared append-only `recordDecision` writer — correct + reliable + live-verified). **Full write-time uniformity ROUTED as an explicit out-of-audit-02 future-workstream note** (the lever is threading `entity_kind` into `recordDecision`'s signature — touches create/reclassify — or deprecating the 00230/00232 trigger; both out of audit-02 scope, zero correctness benefit). Documented here so it is not re-discovered as a bug. Continuation-table NOT mirrored (same dual-ledger-drift discipline; consolidated at final reconciliation). |
 
 ## Agent Handoff Prompt
 
@@ -945,3 +952,364 @@ work).
   "Fully done" for audit-02 ⇒ yes; the routed B.2 dispatch fix + the
   standing deferrals (Code-I1, P2-1 split, P2-3 renumber, P1-5 FE) are
   explicitly owned elsewhere with risk stated.
+
+#### Update — 2026-05-18 — B.2 dispatch idempotency-replay FIXED (00428) + C1 caught + I2 routed
+
+The pre-existing B.2 dispatch idempotency-replay defect routed in the prior
+2026-05-18 block (and `audit-02-best-in-class-routing-2026-05-17.md` §5) is
+now **FIXED, SHIPPED, and live-verified**. The probe carve-out it carried is
+**removed** — probe 8 is a strict hard gate again.
+
+- **Fix shipped + verified:** migration
+  `supabase/migrations/00428_dispatch_idempotency_intent_hash.sql` pushed to
+  the shared remote 2026-05-18 + `pg_get_functiondef`-verified live. New
+  `public.dispatch_strip_hash_server_fields(jsonb)` (recursive, immutable,
+  `language sql`, `search_path=public`; **path-scoped** — strips `due_at`
+  ONLY from elements of a key literally named `timers`, so an arbitrary
+  `routing_context.due_at` is preserved; `timer_type` /
+  `target_minutes` / `business_hours_calendar_id` stay in the hash identity)
+  + `public.dispatch_idempotency_payload_hash(jsonb)` =
+  `md5(coalesce(strip(p)::text,''))`. Mirrors the 00407 booking-edit
+  pattern. `dispatch_child_work_order` reproduced VERBATIM from the
+  verified-latest single v3 (`00341_dispatch_child_work_order_v3.sql`) and
+  `dispatch_child_work_orders_batch` VERBATIM from the verified-latest batch
+  v3 (`00342_dispatch_child_work_orders_batch_v3.sql`), each with ONLY the
+  `v_payload_hash` line changed (byte-diffs proved exactly one changed line
+  per function). Review chain: codex pre-impl design-check
+  (GO-WITH-CHANGES — path-scoped strip folded) → `/full-review` (2
+  adversarial agents) → codex tertiary (GO-WITH-CHANGES — folded);
+  lint + `errors:check-app-errors` green.
+- **C1 — a real caught regression (recorded, not a hypothetical):** the
+  batch RPC was INITIALLY reproduced from the **STALE**
+  `00337_dispatch_child_work_orders_batch.sql` (v1). Because
+  `create or replace` is last-writer-wins and 00428 is numerically last,
+  pushing as-drafted would have **silently clobbered** `00342_..._v3`,
+  reverting (a) the F-IMP-1 / codex-S8-I1 per-task `routing_rule_id` tenant
+  validation (`perform public.validate_entity_in_tenant(p_tenant_id,
+  'routing_rule',...)`) — a **P0 cross-tenant leak guard** — and (b) the
+  F-CRIT-1 `sla_timers` polymorphic columns
+  (`entity_kind`/`case_id`/`work_order_id`/`started_at`). Caught by the
+  `/full-review` code reviewer; re-based on `00342` v3; live
+  `pg_get_functiondef` confirms the routing_rule tenant-validate
+  (×5 `validate_entity_in_tenant`, incl. the routing_rule gate guarded by
+  `if v_routing_rule_id is not null`) + polymorphic cols are PRESERVED. This
+  is the exact stale-source-clobber class the project's last-writer-wins
+  migration model is vulnerable to — record it as a caught near-miss, not a
+  clean pass.
+- **Runnable structural guard:**
+  `apps/api/src/modules/ticket/dispatch.idempotency.spec.ts` (mirrors
+  00407's `assemble-edit-plan.idempotency.spec.ts` GUARD-2 static
+  migration-text scan): resolves the numerically-highest migration defining
+  each dispatch RPC + the strip helper; asserts the hash routes through
+  `dispatch_idempotency_payload_hash`, no raw
+  `md5(coalesce(p_(payload|tasks)::text`, helper is path-scoped (not
+  neutered / flat / identity); 4/4 pass; demonstrably catches the C1
+  stale-source-clobber class. Satisfies `feedback_runnable_guards_mandate`
+  (no paper tiger — verified to go red on the regression it guards).
+- **I1 accepted non-goals (recorded):** (a) a legitimate replay AFTER an
+  SLA-policy edit (`target_minutes`/`business_hours_calendar_id` changed
+  under the same `sla_id`) still 409s **by design** — those stay in the
+  hash identity; the intent's SLA config genuinely changed, so fail-closed
+  is correct. (b) 00428's header documents a forward-only caveat:
+  pre-00428 `command_operations` rows are not rewritten, so a dispatch
+  whose row was written pre-00428 then replayed post-00428 may still 409 —
+  NOT a regression (that deploy-crossing replay was already broken by the
+  very bug 00428 fixes).
+- **Probe carve-out REMOVED — strict hard gate restored:** the
+  `[KNOWN-DEFECT b2-dispatch-replay-sla-due_at]` probe-8 carve-out in
+  `apps/api/scripts/smoke-work-orders.mjs` (`a2ProbeDispatchReplay`) was
+  removed. Replay MUST return 200/201 with the same WO id;
+  `payload_mismatch` on replay is now a hard fail. Proven GREEN **3/3
+  deterministic** with fresh isolated fixtures: probe-8
+  `✓ dispatch replay — same WO id both calls` on all 3 runs; no
+  KNOWN-DEFECT line, no `✗`.
+- **`smoke-tickets` FLAKE_INFRA characterization (recorded so it is NOT
+  mistaken for a regression, and NO carve-out was added):** when run
+  interleaved with 3× `smoke-work-orders` under concurrent-session
+  shared-proxied-DB load, `smoke-tickets` flaked at **scattered** probes
+  (P1-3 `a2ProbeSatisfaction`; P0-2 `a2ProbeSlaEscalation`/`a2GetCase`)
+  with client-side `TypeError: fetch failed` / `ECONNRESET` (server healthy
+  throughout; the failing probe passed on retry). Characterized
+  **FLAKE_INFRA**: 5/5 fully green in ISOLATION (122 pass / 0 fail each,
+  610 assertions, zero network errors). Not a code defect; 00428 is
+  dispatch-only and cannot touch those probes; the Step-0 baseline was
+  0/0/0 on the same code pre-push. Mitigation = run the final tickets gate
+  in isolation. **No `smoke-tickets` carve-out was added** — it is green in
+  isolation; weakening it would be fake-green.
+- **I2 — a NEW sibling now()-in-hash bug discovered + ROUTED (not folded):**
+  the same idempotency-hash bug-class exists on the **work-order PATCH
+  SLA-install path AND the workflow-engine SLA-install path** (NOT the case
+  path — that is a verified phantom; `buildPatchesPayloadForCase` never
+  emits an `sla` branch, case SLA immutable). Producer
+  `sla.service.ts:219`→`:236`/`:250`, consumed at
+  `work-order.service.ts:584`/`:589` + `workflow-engine.service.ts:1907`,
+  hashed by `update_entity_combined` v7 (latest `00427`:241-245) /
+  `update_entity_sla` (latest `00330`:115). User-approved to **ROUTE not
+  fold** (it is the smoke-gated mega-RPC, high blast radius; needs its own
+  full review+smoke cycle). Routed to the B.2 / SLA-restart owner via the
+  routing doc (`audit-02-best-in-class-routing-2026-05-17.md`, new row) +
+  the self-contained follow-up doc
+  `docs/follow-ups/i2-sla-install-idempotency-due_at-2026-05-18.md`. Risk
+  if unfixed: spurious 409 on legitimate WO + workflow-engine SLA-install
+  retries with a stable `X-Client-Request-Id` — correctness/ergonomics
+  only, no data corruption (identical severity profile to the now-fixed
+  dispatch defect).
+- **Net:** the routed B.2 dispatch defect from the prior block is now
+  CLOSED on remote with a runnable guard and a strict (carve-out-free)
+  probe; one stale-source-clobber near-miss (C1) was caught in review
+  before push; one NEW genuine sibling defect (I2) was discovered by the
+  same `/full-review` and honestly routed (not silently absorbed) per
+  user direction.
+
+| Date | Finding / Slice | Status | Evidence | Verification | Notes |
+|---|---|---|---|---|---|
+| 2026-05-18 | **B.2 dispatch idempotency-replay** (routed 2026-05-18 §5) | **CLOSED — fixed on remote + strict probe restored** | `00428_dispatch_idempotency_intent_hash.sql` pushed + `pg_get_functiondef`-verified live (path-scoped `dispatch_strip_hash_server_fields` + `dispatch_idempotency_payload_hash`; both dispatch RPCs reproduced VERBATIM from verified-latest v3 — `00341`/`00342` — with one `v_payload_hash` line changed; byte-diff-proven). `smoke-work-orders.mjs` `[KNOWN-DEFECT]` probe-8 carve-out REMOVED → strict hard gate. New runnable guard `apps/api/src/modules/ticket/dispatch.idempotency.spec.ts` (4/4). | codex design-check → `/full-review` 2-agent → codex tertiary (all GO-WITH-CHANGES, folded); lint + errors:check green; **probe-8 GREEN 3/3 deterministic** (`✓ same WO id both calls`, fresh isolated fixtures, no KNOWN-DEFECT/✗); guard 4/4. | **C1 caught:** batch RPC was first reproduced from STALE `00337` v1 → would have silently clobbered `00342` v3's F-IMP-1 routing_rule tenant-validate (P0 cross-tenant guard) + F-CRIT-1 sla_timers polymorphic cols; caught by `/full-review`, re-based, live-verified preserved (×5 `validate_entity_in_tenant`, polymorphic cols). **I1 accepted non-goals:** post-SLA-policy-edit replay 409 by design; pre-00428 cmd_op rows not rewritten (forward-only, not a regression). **FLAKE_INFRA:** `smoke-tickets` flaked at scattered probes ONLY under concurrent shared-DB load (5/5 green isolated, 122/0); not code; NO carve-out added. **I2 routed** (NOT folded, user-approved): sibling now()-in-hash on WO + workflow-engine SLA-install via `update_entity_combined` v7 → `audit-02-best-in-class-routing-2026-05-17.md` (new row) + `docs/follow-ups/i2-sla-install-idempotency-due_at-2026-05-18.md`. |
+| 2026-05-18 | **Code-I1** — routing-eval handler non-idempotent audit inserts under outbox redelivery (the 2026-05-17 RE-DEFERRED finding) | **CLOSED — fixed on remote + smoke 3× + I3 routed** | `00429_routing_decisions_outbox_event_unique_index.sql` pushed + `pg_indexes`-verified live: partial UNIQUE index `uq_routing_decisions_outbox_event` on `(tenant_id, (context->>'outbox_event_id'), chosen_by) WHERE context ? 'outbox_event_id'`, `indisunique=t` (index-only — remote pre-verified 0 dup groups / 0 null `chosen_by`, no dedup). `routing-evaluation.handler.ts`: both `routing_decisions` inserts → raw parameterised `this.db.query(... ON CONFLICT … DO NOTHING RETURNING id)` with the EXPLICIT conflict target byte-matching the index; per-site error semantics preserved (§6 success genuine-error THROWS / conflict-skipped → idempotent success; `markRoutingFailure` genuine-error WARN-only / conflict-skipped → silent success). `DbService` injected (DbModule `@Global`, no module-import change). | codex pre-impl design-check (Approach A explicit-conflict-target GO-WITH-CHANGES; B/.upsert invalid for an expression partial index, C catch-23505 weaker) → `/full-review` 2-agent (no CRITICAL; high-risk items — DbService BYPASSRLS/tenant posture == service_role, 12-col↔$1..$12 1:1, ON CONFLICT byte-matches index — verified; IMPORTANT-1 rollback-coupling + I-1 + N-3 folded) → codex tertiary (smoke replay hardened: scoped pre-clean + baseline isolation + `finally` teardown scoped by case-id AND a2 tenant; NUL-byte sanitiser on jsonb-bound fields). lint + errors:check green; handler spec 14/14. **`smoke:tickets` independently re-run isolated 3/3 exit 0** (123/0 each) — `a2ProbeRoutingEvalClear` `✓ routing-eval — same outbox event REDELIVERED, still exactly 1 routing_decisions row` all 3. | **Supersedes the 2026-05-17 "Code-I1 RE-DEFERRED" row** (left intact; appended). **Rollback-coupling (folded IMPORTANT-1, in the 00429 header too):** the handler's explicit `ON CONFLICT` target hard-requires 00429's index — dropping the index while the handler is deployed throws on EVERY routing eval → `audit_insert_failed` → outbox retry → dead-letter. Deploy index-first; forward-only; **never drop `uq_routing_decisions_outbox_event` independently.** **codex-tertiary NO-GO "item 3" was mis-scoped** (verified by reading handler L256-294: the cited control flow is ENTIRELY PRE-EXISTING + untouched by Code-I1 — Code-I1 only converts the routing_decisions insert and preserves the genuine-error-throw trigger). **I3 routed** (user-approved ROUTE-not-fold): `set_entity_assignment` idempotency-key/payload-drift on an assignment-changing routing-eval retry → wrong `auto_routing_failed` audit + missing success breadcrumb (assignment still correctly applied; no corruption; pre-existing; orthogonal; not P0/P1) → `audit-02-best-in-class-routing-2026-05-17.md` (new row #8) + `docs/follow-ups/i3-routing-eval-assignment-rpc-payload-drift-2026-05-18.md`. **`smoke:tickets` FLAKE_INFRA only under concurrent/interleaved load** (green isolated; mitigation = run the final gate isolated; no carve-out). |
+| 2026-05-18 | **P2-1** — case-vs-WO `TicketService` split (codex-design-first per the brief) | **RE-DEFERRED (codex design-check attached; user-acknowledged) — interim guard = honest closure for this bar** | No code change this engagement. codex design-check run 2026-05-18 → RE-DEFER; user acknowledged the re-deferral 2026-05-18 (brief #3 bar permits a fresh user-acknowledged re-deferral with the design-check attached). The sole unsafe residual (a WO id misbehaving on `PATCH /tickets/:id`) is already neutralized by the shipped interim reject guard (`ticket.work_order_id_on_case_endpoint` 400, covers bulk; `aac61b7a`, 2026-05-17); the WO mutation surface is already fully separated into `work-orders/work-order.service.ts`. Self-contained design-check + prescription: `docs/follow-ups/p2-1-case-wo-split-design-check-2026-05-18.md`; see also `#### Update — 2026-05-18 — P2-1 codex design-check DONE → user-acknowledged RE-DEFER`. | N/A (re-deferral). codex confirmed NO latent cross-tenant hole in the `getById`/`loadTicketRow` WO-fallback (tenant-scoped + visibility-gated). Residual = ~1-eng-week READ-path layering hygiene with regression risk to 6 shipped audit-02 slices for ZERO P0/P1 — re-defer beats executing now in a live shared tree. | **Owner = integrator/data-model (Should-fix #16).** Prescribed: DELIBERATE HYBRID — one explicit *named* polymorphic READ resolver + HARD-SPLIT commands/kind-specific reads (case cmds stay in `TicketService`; WO mutations + `getChildTasks` + `createBookingOriginWorkOrder` → `WorkOrderService`). Invariants: (1) `PATCH /tickets/:id` keeps rejecting WO ids; (2) child-WO listing keeps parent `assertVisible(read)` THEN `work_order_visibility_ids` (00374) — parent visibility ≠ child-WO visibility (P1-5). Only wart: `createBookingOriginWorkOrder` placement (~2070); rewire `setup-work-order-trigger.service.ts:37`. Mirrors the canonical `## Closure Ledger` P2-1 2026-05-18 row (this continuation table is a tail-mirror of the 2026-05-18 set). |
+
+#### Update — 2026-05-18 — Code-I1 CLOSED (00429) + I3 routed
+
+The 2026-05-17 **Code-I1 RE-DEFERRED** finding (the routing-evaluation
+handler's own two `routing_decisions` inserts being non-idempotent under
+outbox redelivery — a replay could write a duplicate append-only audit
+row) is now **CLOSED, SHIPPED, and live-verified**. The 2026-05-17 RE-DEFER
+row + its `#### Update — 2026-05-17 — Code-I1 RE-DEFERRED` narrative are
+left intact above — this is appended, not rewritten. The ready-to-apply
+prescription recorded in the 2026-05-17 row was applied as written
+(partial unique index + `ON CONFLICT DO NOTHING`), tightened by review.
+
+- **Fix shipped + verified:** migration
+  `supabase/migrations/00429_routing_decisions_outbox_event_unique_index.sql`
+  pushed to the shared remote 2026-05-18 + `pg_indexes`-verified live:
+  `CREATE UNIQUE INDEX uq_routing_decisions_outbox_event ON
+  public.routing_decisions USING btree (tenant_id,
+  ((context ->> 'outbox_event_id')), chosen_by) WHERE
+  (context ? 'outbox_event_id')`, `indisunique=t`. The migration is
+  **index-only** — the remote was pre-verified to have **0 duplicate
+  groups and 0 null `chosen_by`** under the partial predicate, so
+  `CREATE UNIQUE INDEX` cannot fail on existing data; no dedup step was
+  needed or shipped. The 2026-05-17 prescription's exact-shape
+  `(tenant_id, (context->>'outbox_event_id'), chosen_by) where context ?
+  'outbox_event_id'` was honored.
+- **Handler converted to the canonical idempotent write:** both
+  `routing_decisions` inserts in
+  `apps/api/src/modules/outbox/handlers/routing-evaluation.handler.ts`
+  were converted from supabase-js `.insert()` to raw parameterised
+  `this.db.query(... insert into public.routing_decisions (<12 cols>)
+  values ($1..$12,$11::jsonb,$12::jsonb) on conflict
+  (tenant_id,(context->>'outbox_event_id'),chosen_by) where context ?
+  'outbox_event_id' do nothing returning id)`. `DbService` is injected
+  (DbModule is `@Global` — the same provider `outbox.worker.ts` already
+  uses; **no module-import change**). The EXPLICIT `ON CONFLICT` target
+  byte-matches the 00429 index for arbiter inference.
+- **Per-site error semantics PRESERVED (deliberate, asymmetric):**
+  Site 1 (§6 success) — a genuine DB error still THROWS (the outbox
+  retry contract is intact); a conflict-skipped replay
+  (`rows.length===0`) → idempotent SUCCESS (debug log, no throw/warn).
+  Site 2 (`markRoutingFailure`) — a genuine error stays WARN-ONLY
+  (NOT escalated to throw: a throw in the failure-recording path could
+  wedge the outbox); conflict-skipped → silent success. A defensive
+  `let decisionRows: {id:string}[] = []` init (folded I-1) and a
+  comment-accuracy fix (folded N-3) were applied.
+- **Review chain:** codex pre-impl design-check returned "Approach A
+  with EXPLICIT conflict target, GO-WITH-CHANGES" (folded); Approach B —
+  a supabase-js `.upsert` — was proven invalid for an *expression
+  partial* index, and Approach C — catch-23505 — is weaker.
+  `/full-review` (2 adversarial agents) returned no CRITICAL; both
+  designated high-risk items were verified correct: (a) `DbService`
+  connects as Postgres role `postgres` (`BYPASSRLS`) — the SAME
+  RLS-bypass/tenant posture as the supabase service_role the handler
+  used before, **no security regression**; (b) the 12-col ↔ `$1..$12`
+  mapping is 1:1 in BOTH inserts, no transposition; (c) `trace`/
+  `context` are always non-null jsonb so no new throw surface;
+  (d) outbox `event.id` is stable across redeliveries / `sweepStaleClaims`
+  so the fix is not inert; (e) no other writer sets
+  `context.outbox_event_id`, so the partial index constrains only this
+  handler. codex tertiary hardened the smoke replay (per-run scoped
+  pre-clean + baseline isolation + `finally` `outbox.events` teardown,
+  all scoped by case-id AND the a2 tenant) and applied a NUL-byte
+  sanitiser to the jsonb-bound `trace`/`context`/`failure_reason` so a
+  NUL in a free-text exception message cannot make `$n::jsonb` reject
+  and silently drop a failure audit row.
+- **Rollback-coupling (folded IMPORTANT-1 — also documented in the 00429
+  header):** the handler's EXPLICIT `ON CONFLICT` target **hard-requires**
+  00429's index. If the index is dropped while the handler change is
+  deployed, EVERY routing eval throws *"no unique or exclusion constraint
+  matching the ON CONFLICT specification"* → `audit_insert_failed` →
+  outbox retry → dead-letter. **Deploy index-first; forward-only; never
+  drop `uq_routing_decisions_outbox_event` independently.**
+- **Gates green:** `pnpm -C apps/api lint` (tsc --noEmit) +
+  `pnpm errors:check-app-errors` (0 raw throws / 35 modules) green;
+  `routing-evaluation.handler.spec.ts` 14/14 (10 pre-existing preserved
+  via FakeDb + 4 new Code-I1 tests — the FakeDb positional reconstruction
+  is a known column-transposition blind spot, mitigated by the manual
+  1:1 verify in `/full-review` + the live smoke replay).
+- **Smoke:** `smoke-tickets.mjs` `a2ProbeRoutingEvalClear` gained
+  `✓ routing-eval — same outbox event REDELIVERED, still exactly 1
+  routing_decisions row (Code-I1: ON CONFLICT DO NOTHING)`.
+  Independently re-run by the orchestrator (not just the authoring
+  subagent): **`smoke:tickets` 3/3 isolated, exit 0 (123 pass / 0 fail
+  each)**; the routing-eval+replay probe was deterministically green on
+  all 3 runs. `smoke-tickets` remains **FLAKE_INFRA only** under
+  concurrent/interleaved load (green in isolation; mitigation = run the
+  final gate isolated; no carve-out added — weakening it would be
+  fake-green).
+- **codex-tertiary NO-GO "item 3" was mis-scoped → routed as I3 (NOT a
+  Code-I1 regression):** codex tertiary returned NO-GO on Code-I1 citing
+  "item 3". Verified by reading the handler L256-294: the cited control
+  flow (`applyAssignment` conditional payload → `set_entity_assignment`
+  → `rpcRes.error` → `markRoutingFailure` + `return` BEFORE the §6
+  success audit insert) is **ENTIRELY PRE-EXISTING and untouched by
+  Code-I1** — Code-I1 only converts the `routing_decisions` insert and
+  preserves the genuine-error-throw trigger, so item 3 exists
+  IDENTICALLY before/after Code-I1. It is a separate defect in the
+  `set_entity_assignment` idempotency-key/payload-stability design,
+  orthogonal to the routing_decisions-dup Code-I1 scopes. The user
+  explicitly chose **"Ship Code-I1 + route item 3"**. Routed (not
+  folded) as **I3** → `docs/follow-ups/audit-02-best-in-class-routing-2026-05-17.md`
+  (new "Summary for owners" row #8) + the self-contained follow-up
+  `docs/follow-ups/i3-routing-eval-assignment-rpc-payload-drift-2026-05-18.md`.
+  Risk if I3 unfixed: on a partial-commit retry or a plain redelivery of
+  an **assignment-changing** routing-eval event, the assignment is
+  correctly applied but the audit trail wrongly records
+  `auto_routing_failed` and the success `routing_decisions` breadcrumb is
+  missing — audit-integrity/ops-confusion only, NO wrong assignment, NO
+  data corruption; pre-existing; not P0/P1 (same class/severity profile
+  as the original Code-I1 dup-audit-row).
+- **Net:** the 2026-05-17 Code-I1 re-deferral is now discharged on
+  remote with the prescribed partial unique index + an idempotent
+  `ON CONFLICT DO NOTHING` handler write, a live 3× smoke replay proof,
+  and a recorded forward-only rollback-coupling caveat; the
+  codex-tertiary NO-GO was proven to be a mis-scoped pre-existing
+  defect (I3) and honestly routed — not silently absorbed — per user
+  direction.
+
+#### Update — 2026-05-18 — P2-1 codex design-check DONE → user-acknowledged RE-DEFER
+
+The audit-02 brief mandated a **codex design-check before any further
+P2-1 action** ("codex-design-first for P2-1"). That design-check was run
+2026-05-18. The earlier P2-1 rows/blocks (the 2026-05-16 deferral, the
+`#### Update — 2026-05-16`, the 2026-05-17 `#### Update — 2026-05-17 —
+P2-1 cheap interim guard`, and their Closure Ledger rows) are **left
+intact** — this is appended, not rewritten.
+
+- **Verdict: RE-DEFER.** codex returned re-defer; the user
+  **acknowledged the re-deferral** 2026-05-18. The brief's #3 bar
+  explicitly permits "a fresh user-acknowledged re-deferral with the
+  design-check attached" — this block + the new self-contained
+  design-check doc are that attachment.
+- **Decisive rationale (codex):** the ONLY unsafe residual the audit
+  identified — a `work_order` id misbehaving on `PATCH /tickets/:id`
+  (case-only validation on a WO row) — is **already neutralized** by the
+  shipped interim reject guard (`TicketService.update()` raises the
+  registered `ticket.work_order_id_on_case_endpoint` 400, covers bulk;
+  commit `aac61b7a`, 2026-05-17). The WO **mutation** surface is
+  **already fully separated** into
+  `apps/api/src/modules/work-orders/work-order.service.ts` — the audit's
+  "1978-line multi-day refactor" framing **predates that split**. What
+  remains is purely layering/ownership hygiene: a ~1-engineer-week
+  READ-path extraction touching the polymorphic `getById` resolver +
+  P1-5 child-visibility + cross-module consumers, with regression risk
+  to **6 shipped audit-02 slices** (incl. 2 live RPC migrations) for
+  **ZERO P0/P1 content**, in a live multi-session shared tree. codex
+  confirmed **NO latent cross-tenant hole** in the
+  `getById`/`loadTicketRow` WO-fallback (tenant-scoped +
+  visibility-gated). Honest closure for THIS engagement's bar (P2,
+  non-completion-bar, sharp-edge neutralized) = the shipped interim
+  guard + this design-check, routed to the owner.
+- **Prescribed architecture FOR THE OWNER (if/when later executed):** a
+  DELIBERATE HYBRID — keep ONE explicit, *named* polymorphic id-resolver
+  for "id → visible entity" (genuinely kind-agnostic: `/tickets/:id`,
+  reclassify reloads, generic detail, activities don't know kind a
+  priori — a named shared READ contract, **NOT** the "neither" the audit
+  criticized) **+** HARD-SPLIT commands and kind-specific reads: case
+  `list`/`update`/`reassign`/inbox/`create`/`bulkUpdate` stay in
+  `TicketService`; WO mutations + `getChildTasks` (child-WO listing) +
+  `createBookingOriginWorkOrder` move to `WorkOrderService`. Consistent
+  with the shipped reject-not-route semantics (command endpoints stay
+  hard-split).
+- **TWO must-not-regress invariants the owner must preserve:** (1)
+  `PATCH /tickets/:id` must keep resolving the current row and rejecting
+  `ticket_kind==='work_order'` with the registered
+  `ticket.work_order_id_on_case_endpoint`; (2) child-WO listing must
+  keep the parent-case `assertVisible(parent,'read')` precondition AND
+  THEN filter children through the `work_order_visibility_ids` RPC
+  (00374) — parent-case visibility must **NEVER** imply child-WO
+  visibility (P1-5). Moving `getChildTasks` to `WorkOrderService` is
+  safe ONLY if it still depends on the shared `TicketVisibilityService`
+  for the parent precondition (the precondition is case-read logic, but
+  that is not a reason to keep the method in `TicketService`).
+- **Only real layering wart:** `createBookingOriginWorkOrder` living in
+  `TicketService` (`ticket.service.ts` ~`2070`) — ownership/cleanliness,
+  NOT a behavioral bug; one cross-module consumer to rewire:
+  `apps/api/src/modules/service-routing/setup-work-order-trigger.service.ts:37`.
+- **Owner:** integrator / data-model (verdict **Should-fix #16**;
+  ~1 engineer-week per the integrator estimate). **No code change this
+  engagement** — the interim guard already shipped (2026-05-17); this is
+  the codex-design-check attachment + the user-acknowledged re-defer.
+- **Self-contained prescription for whoever picks up Should-fix #16:**
+  `docs/follow-ups/p2-1-case-wo-split-design-check-2026-05-18.md` — the
+  question asked, the verdict + rationale, the verbatim hybrid
+  architecture, the precise residual surface (file:line), the two
+  invariants, the scoped task list, the ~1-week estimate, the owner, and
+  the "why re-defer is honest closure for the audit-02 bar" section. The
+  integrator verdict's #16 reconciliation is folded into the final 02+00
+  ledger reconciliation step (not edited here); the trail is complete
+  via this block + the design-check doc.
+
+#### Update — 2026-05-18 — Ledger reconciliation (dual-ledger-table drift resolved, append-only)
+
+This is the final reconciliation step for the audit-02-finish continuation.
+It exists because this file carries **two** ledger tables and they had
+deliberately drifted (each 2026-05-18 row in the continuation table notes
+"Continuation-table NOT mirrored … consolidated at final reconciliation").
+Nothing is deleted or rewritten — this block is the consolidation.
+
+- **Single source of truth:** the mid-file **`## Closure Ledger`** table
+  (the one whose maintainer-rule header begins *"Maintainer rule: every
+  agent that closes, partially closes, or deliberately defers a finding
+  …"*). It is authoritative and holds all seven 2026-05-18
+  audit-02-finish rows: **B.2 dispatch idempotency-replay (00428)**,
+  **Code-I1 routing-eval `routing_decisions` idempotency (00429) + I3
+  routed**, **P2-1 RE-DEFERRED (codex design-check attached;
+  user-acknowledged)**, **P2-3 (renumber DONE upstream PR#21; prefix
+  guard now CI-enforced this session)**, **P1-5 FE-rollup (privileged
+  `{done,total}` aggregate; disclosure boundary documented honestly)**,
+  **CI reds (brief red-list STALE → DISPOSED; 1 branch red FIXED; 1
+  foreign infra red ROUTED-with-evidence)**, **P2-2 residual
+  (DISPOSITIONED LEAVE+DOCUMENTED)**. Always read/extend the canonical
+  `## Closure Ledger` — not the table below.
+- **The second table is a FROZEN partial mirror — NOT authoritative, do
+  NOT extend it.** The headingless continuation table inside
+  `## 2026-05-17 — Best-in-class continuation pass` (immediately under
+  the *"Net: the routed B.2 dispatch defect …"* paragraph; columns
+  `Date | Finding / Slice | Status | Evidence | Verification | Notes`)
+  is a stale tail-mirror. It mirrors only **three** of the seven
+  2026-05-18 rows — **B.2 dispatch idempotency-replay**, **Code-I1**,
+  and **P2-1** — and is intentionally NOT being completed (extending it
+  would perpetuate the exact dual-ledger-table drift this block closes).
+  It is preserved verbatim for history only.
+- **Canonical-only rows the frozen continuation table OMITS** (present
+  in `## Closure Ledger`, deliberately never mirrored below — go to the
+  canonical table for these):
+  1. **P2-3** — duplicate migration-prefix epidemic (CLOSED for this
+     bar; renumber DONE upstream PR #21 `ab980b28`; prefix guard
+     `scripts/check-migration-prefixes.sh` now CI-enforced via the
+     `ci.yml` `check` job this session).
+  2. **P1-5 FE-rollup** — `getChildTasksRollup` privileged
+     `{done,total}` aggregate + `GET /tickets/:id/children/rollup` + FE
+     single-source; `visibility.md` §7 disclosure overclaim corrected to
+     a bounded-narrowing statement.
+  3. **CI reds** — brief red-list verified STALE on origin/main
+     `218f781d` (`ci` run `26027689859` SUCCESS 3/3); the one
+     branch-introduced naming-allowlist red FIXED; Deploy-api(Render)
+     HTTP-401 foreign-infra red ROUTED-with-evidence to the
+     `RENDER_API_KEY` secret owner.
+  4. **P2-2 residual** — `RoutingService.recordDecision` entity_kind via
+     the 00230/00232 derive-trigger: DISPOSITIONED LEAVE+DOCUMENTED
+     (codex design-checked; accepted correct-convention split, not a
+     defect); full write-time uniformity routed as an explicit
+     out-of-audit-02 future-workstream note.
+- **No row is duplicated by this block.** The seven canonical rows live
+  once, in `## Closure Ledger`. This is a pointer + freeze declaration,
+  not a third copy of the ledger.

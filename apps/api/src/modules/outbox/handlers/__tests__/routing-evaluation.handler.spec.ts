@@ -94,6 +94,59 @@ interface CapturedCalls {
   updates: Array<{ table: string; patch: unknown }>;
 }
 
+/**
+ * audit-02 Code-I1: the routing_decisions audit inserts moved from
+ * supabase-js (`this.supabase.admin.from('routing_decisions').insert`) to a
+ * raw parameterised insert via the injected DbService
+ * (`this.db.query(sql, params)`) so the handler can append an
+ * `ON CONFLICT ... DO NOTHING` matching the 00429 partial unique index.
+ *
+ * FakeDb reconstructs the inserted row from the positional `$1..$12`
+ * params (mirroring the production column order) and pushes it into the
+ * SAME `captured.inserts` array the supabase-js mock used — so every
+ * existing routing_decisions assertion below keeps working unchanged. The
+ * `rowsToReturn` knob simulates the ON CONFLICT outcome: a non-empty array
+ * = inserted (rowCount 1), `[]` = conflict-skipped (idempotent replay).
+ * `throwError` simulates a genuine DB error to exercise the preserved
+ * throw (Site 1) / warn-only (Site 2) error semantics.
+ */
+interface FakeDbOpts {
+  rowsToReturn?: { id: string }[];
+  throwError?: string;
+}
+
+function makeDb(captured: CapturedCalls, opts: FakeDbOpts = {}) {
+  const query = jest.fn(async (sql: string, params: unknown[]) => {
+    if (/insert\s+into\s+public\.routing_decisions/i.test(sql)) {
+      // Reconstruct the row from positional params (production order:
+      // tenant_id, ticket_id, entity_kind, case_id, strategy,
+      // chosen_team_id, chosen_user_id, chosen_vendor_id, chosen_by,
+      // rule_id, trace, context). trace/context arrive JSON-stringified
+      // (the handler does JSON.stringify before the ::jsonb cast) — parse
+      // them back so the existing object assertions keep working.
+      const row = {
+        tenant_id: params[0],
+        ticket_id: params[1],
+        entity_kind: params[2],
+        case_id: params[3],
+        strategy: params[4],
+        chosen_team_id: params[5],
+        chosen_user_id: params[6],
+        chosen_vendor_id: params[7],
+        chosen_by: params[8],
+        rule_id: params[9],
+        trace: JSON.parse(params[10] as string),
+        context: JSON.parse(params[11] as string),
+      };
+      captured.inserts.push({ table: 'routing_decisions', row });
+      if (opts.throwError) throw new Error(opts.throwError);
+      return { rows: opts.rowsToReturn ?? [{ id: 'rd-1' }], rowCount: 0 };
+    }
+    throw new Error('unexpected db.query sql: ' + sql);
+  });
+  return { query } as never;
+}
+
 function makeSupabase(opts: FakeSupabaseOpts) {
   const captured: CapturedCalls = {
     fromTables: [],
@@ -213,7 +266,11 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
         target: { kind: 'team', team_id: TEAM_ID },
         chosen_by: 'rule',
       });
-      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
 
       await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
 
@@ -282,7 +339,11 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
         requestTypeRow: { domain: 'facilities' },
       });
       const routing = makeRoutingService({ target: null, chosen_by: 'unassigned' });
-      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
 
       await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
 
@@ -317,7 +378,11 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
         target: { kind: 'team', team_id: TEAM_ID },
         chosen_by: 'rule',
       });
-      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
 
       await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
 
@@ -351,7 +416,11 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
         target: { kind: 'team', team_id: TEAM_ID },
         chosen_by: 'rule',
       });
-      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
 
       await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
 
@@ -365,7 +434,11 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
     it('returns void on ticket_not_found (hard-delete between emit + fire)', async () => {
       const supabase = makeSupabase({ ticketRow: null });
       const routing = makeRoutingService();
-      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
       await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
       expect(routing.evaluate).not.toHaveBeenCalled();
       expect(supabase.captured.rpcCalls).toHaveLength(0);
@@ -376,7 +449,11 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
     it('dead-letters on tenant smuggling', async () => {
       const supabase = makeSupabase({});
       const routing = makeRoutingService();
-      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
       const event = makeEvent({}, { tenant_id: 'f9999999-9999-4999-8999-999999999999' });
       await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
       expect(supabase.captured.fromTables).not.toContain('tickets');
@@ -390,7 +467,11 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
         requestTypeRow: { domain: 'facilities' },
       });
       const routing = makeRoutingService({ throwError: 'rule_evaluation_crashed' });
-      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
 
       await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
 
@@ -445,7 +526,11 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
         target: { kind: 'team', team_id: TEAM_ID },
         chosen_by: 'rule',
       });
-      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
 
       await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
 
@@ -480,7 +565,11 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
     it('throws plain Error on tickets read wobble', async () => {
       const supabase = makeSupabase({ ticketError: { message: 'connection wobble' } });
       const routing = makeRoutingService();
-      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
       await expect(handler.handle(makeEvent())).rejects.toThrow(/connection wobble/);
       await expect(handler.handle(makeEvent())).rejects.not.toBeInstanceOf(DeadLetterError);
     });
@@ -496,11 +585,125 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
         target: { kind: 'team', team_id: TEAM_ID },
         chosen_by: 'rule',
       });
-      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
       await handler.handle(makeEvent({ id: 'aaaaaaaa-1111-4111-8111-111111111111' }));
       const call = supabase.captured.rpcCalls.find((c) => c.fn === 'set_entity_assignment');
       const args = call!.args as { p_idempotency_key: string };
       expect(args.p_idempotency_key).toBe('routing-evaluation:aaaaaaaa-1111-4111-8111-111111111111');
+    });
+  });
+
+  // ── audit-02 Code-I1 — outbox-redelivery idempotency ────────────────
+  //
+  // The routing_decisions audit insert now goes through a raw
+  // `INSERT ... ON CONFLICT (tenant_id, (context->>'outbox_event_id'),
+  // chosen_by) WHERE context ? 'outbox_event_id' DO NOTHING` (00429). On a
+  // redelivered event the second insert is conflict-skipped (zero rows
+  // returned). These tests pin the PRESERVED per-site error semantics plus
+  // the ADDED conflict→success path.
+  describe('Code-I1 outbox-redelivery idempotency', () => {
+    it('Site 1 success path: conflict-skipped (0 rows) is treated as SUCCESS — does NOT throw, does NOT warn', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      // db returns [] → ON CONFLICT DO NOTHING skipped the row (replay).
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured, { rowsToReturn: [] }),
+      );
+      const warnSpy = jest.spyOn(
+        (handler as never as { log: { warn: (m: string) => void } }).log,
+        'warn',
+      );
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+      // The handler still attempted the insert (captured) but the conflict
+      // skip is NOT escalated to a throw or a warn.
+      expect(
+        supabase.captured.inserts.filter((i) => i.table === 'routing_decisions'),
+      ).toHaveLength(1);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('Site 1 success path: a GENUINE db error still THROWS (preserved retry contract)', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured, { throwError: 'connection reset by peer' }),
+      );
+      await expect(handler.handle(makeEvent())).rejects.toThrow(
+        /audit_insert_failed.*connection reset by peer/,
+      );
+    });
+
+    it('Site 2 markRoutingFailure: conflict-skipped (0 rows) is SILENT success — no throw, no warn', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+      });
+      const routing = makeRoutingService({ throwError: 'rule_evaluation_crashed' });
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured, { rowsToReturn: [] }),
+      );
+      const warnSpy = jest.spyOn(
+        (handler as never as { log: { warn: (m: string) => void } }).log,
+        'warn',
+      );
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+      // Failure breadcrumb insert attempted (the sentinel row), conflict
+      // skip not warned.
+      const fails = supabase.captured.inserts.filter(
+        (i) =>
+          i.table === 'routing_decisions' &&
+          (i.row as { chosen_by: string }).chosen_by === 'auto_routing_failed',
+      );
+      expect(fails).toHaveLength(1);
+      expect(
+        warnSpy.mock.calls.filter((c) => /routing_decisions insert failed/.test(String(c[0]))),
+      ).toHaveLength(0);
+    });
+
+    it('Site 2 markRoutingFailure: a GENUINE db error stays WARN-ONLY (does NOT throw — would wedge the outbox)', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+      });
+      const routing = makeRoutingService({ throwError: 'rule_evaluation_crashed' });
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured, { throwError: 'pg pool exhausted' }),
+      );
+      const warnSpy = jest.spyOn(
+        (handler as never as { log: { warn: (m: string) => void } }).log,
+        'warn',
+      );
+      // Must NOT throw — the failure-recording path swallows insert errors.
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+      expect(
+        warnSpy.mock.calls.some((c) =>
+          /routing_decisions insert failed.*pg pool exhausted/.test(String(c[0])),
+        ),
+      ).toBe(true);
     });
   });
 });

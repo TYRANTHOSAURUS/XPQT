@@ -1715,6 +1715,72 @@ export class TicketService {
   }
 
   /**
+   * Audit-02 P1-5 FE-rollup fix. `getChildTasks` returns the
+   * `work_order_visibility_ids`-filtered child list; the desk progress
+   * ring/badge was computed CLIENT-SIDE from that filtered array, so a
+   * scoped desk operator (route guard is the coarse `requiredRole="agent"`,
+   * NOT `tickets:read_all`) saw an UNDER-REPORTED "2 of 3" whenever a child
+   * was hidden from them by the per-child WO predicate.
+   *
+   * This is the server-side PRIVILEGED aggregate, deliberately DECOUPLED
+   * from the visibility-filtered list. The visibility model is identical to
+   * the sanctioned reporting-service privileged-count precedent
+   * (docs/visibility.md §7): parent-case `read` gates the read, the count is
+   * tenant-scoped, and ONLY `{ done, total }` crosses the boundary — never
+   * the hidden children's ids / titles / assignees / vendors / priorities /
+   * SLA / timestamps.
+   *
+   * Precondition is IDENTICAL to `getChildTasks`: same context-load + same
+   * `assertVisible(parentTicketId, ctx, 'read')` (same 403/404 behavior for
+   * an unreadable / nonexistent parent). What it does NOT do is the
+   * per-child `work_order_visibility_ids` filter — that is the entire point
+   * of the privileged aggregate.
+   */
+  async getChildTasksRollup(
+    parentTicketId: string,
+    actorAuthUid: string,
+  ): Promise<{ done: number; total: number }> {
+    const tenant = TenantContext.current();
+
+    // ── Precondition: mirror getChildTasks exactly ──────────────────
+    // Parent-case `read` visibility is a PRECONDITION to roll up its
+    // children at all (you can't aggregate a case's children if you
+    // can't see the case). SYSTEM_ACTOR / `tickets:read_all` bypass the
+    // per-child filter in getChildTasks; here there is no per-child
+    // filter to bypass — the aggregate is privileged by design — but the
+    // parent-`read` gate still runs identically.
+    if (actorAuthUid !== SYSTEM_ACTOR) {
+      const ctx = await this.visibility.loadContext(actorAuthUid, tenant.id);
+      await this.visibility.assertVisible(parentTicketId, ctx, 'read');
+    }
+
+    // ── Privileged tenant-scoped aggregate ──────────────────────────
+    // NO per-child `work_order_visibility_ids` filter (that's the whole
+    // point — this is the privileged rollup, like reporting.service.ts).
+    // The `tenant_id` predicate is MANDATORY (#0 invariant) even though
+    // supabase.admin bypasses RLS. Returns ONLY counts — no row data, no
+    // child identities/metadata ever crosses the boundary. `done` matches
+    // the FE's prior client-side definition exactly:
+    // status_category in ('resolved','closed').
+    const { count: total, error: totalErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('id', { count: 'exact', head: true })
+      .eq('parent_ticket_id', parentTicketId)
+      .eq('tenant_id', tenant.id);
+    if (totalErr) throw mapRpcErrorToAppError(totalErr);
+
+    const { count: done, error: doneErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('id', { count: 'exact', head: true })
+      .eq('parent_ticket_id', parentTicketId)
+      .eq('tenant_id', tenant.id)
+      .in('status_category', ['resolved', 'closed']);
+    if (doneErr) throw mapRpcErrorToAppError(doneErr);
+
+    return { done: done ?? 0, total: total ?? 0 };
+  }
+
+  /**
    * Audit 02 / P0-1 + P2-5: bulk update is no longer a raw
    * `.from('tickets').update(dto).in('id', ids)` back door. Every id is
    * routed through the canonical single-path `update()`, which owns the
