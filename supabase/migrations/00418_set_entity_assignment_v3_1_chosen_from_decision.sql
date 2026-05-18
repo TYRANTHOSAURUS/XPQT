@@ -443,6 +443,13 @@ begin
     --    the registered 400, NOT a raw 23503 / 500. Caller idiom mirrors
     --    RoutingService.recordDecision (routing.service.ts:71-73):
     --    NULL on the resolver-unassigned outcome.
+    --    At-most-one invariant: real callers (routing-evaluation handler,
+    --    ticket.service rerun_resolver) derive chosen_* from a discriminated
+    --    AssignmentTarget union, so at most one is ever non-null. v3.1 does
+    --    NOT enforce this — a direct RPC caller passing multiple chosen_*
+    --    simultaneously would write a self-contradictory routing_decisions
+    --    audit row. Accepted: current callers are correct-by-construction;
+    --    add a CHECK / at-most-one guard here if a non-resolver caller lands.
     v_decision_chosen_team   := nullif(v_decision->>'chosen_team_id',   '')::uuid;
     v_decision_chosen_user   := nullif(v_decision->>'chosen_user_id',   '')::uuid;
     v_decision_chosen_vendor := nullif(v_decision->>'chosen_vendor_id', '')::uuid;
