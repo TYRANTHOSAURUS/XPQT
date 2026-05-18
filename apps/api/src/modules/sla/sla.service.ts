@@ -891,6 +891,20 @@ export class SlaService {
     return changed;
   }
 
+  /**
+   * Insert the crossing row and report whether THIS call won the insert.
+   *
+   * R-A02-2 (audit02 CR1): the `sla_threshold_crossings` UNIQUE
+   * (sla_timer_id, at_percent, timer_type) constraint (00043:16) is the
+   * idempotency gate for the non-idempotent escalation side-effects
+   * (writeActivity / notification / emitEvent). The caller only fires
+   * those side-effects when this returns `true` (the row was inserted by
+   * this tick). A `23505` is swallowed — another overlapping cron tick
+   * already recorded this crossing — and reported as `false` (lost the
+   * race; the winner already fired the side-effects). Still NEVER throws
+   * on 23505 (a lost race is the expected outcome, not an error). Any
+   * other DB error still throws.
+   */
   private async writeCrossing(row: {
     tenant_id: string;
     sla_timer_id: string;
@@ -901,12 +915,15 @@ export class SlaService {
     target_type: ThresholdTargetType;
     target_id: string | null;
     notification_id: string | null;
-  }) {
+  }): Promise<boolean> {
     const { error } = await this.supabase.admin
       .from('sla_threshold_crossings')
       .insert(row);
-    // Ignore unique_violation (23505) — another cron tick beat us to it.
-    if (error && (error as { code?: string }).code !== '23505') throw error;
+    if (!error) return true;
+    // Lost the race — another cron tick beat us to the crossing insert.
+    // 23505 is the expected outcome under overlapping ticks, not an error.
+    if ((error as { code?: string }).code === '23505') return false;
+    throw error;
   }
 
   private async writeActivity(
@@ -945,34 +962,58 @@ export class SlaService {
   }
 
   /**
-   * Fire a single threshold for a single timer. Writes a crossing row, sends
-   * notifications, and — for `escalate` — reassigns the ticket via the
-   * canonical `set_entity_assignment` v3 RPC (00416).
+   * Fire a single threshold for a single timer. Reassigns the ticket via
+   * the canonical `set_entity_assignment` v3 RPC (00416) for `escalate`,
+   * then claims the `sla_threshold_crossings` row and — only if it won the
+   * claim — writes the SLA activity breadcrumb, sends the escalation
+   * notification, backfills the crossing's `notification_id`, and emits the
+   * domain event.
    *
-   * Write order: reassign (v3 RPC) → activity → notify → crossing → event.
+   * Write order: reassign (v3 RPC) → writeCrossing (claim) →
+   * [if won] writeActivity → notify → UPDATE crossing.notification_id →
+   * emitEvent.
    *
-   * Idempotency boundary (audit02 Slice B / P0-2):
-   *   - The escalation **assignment + watchers + audit (routing_decisions /
-   *     ticket_activities / ticket_assigned event) write** is idempotent in
-   *     Postgres via v3's `command_operations` gate, keyed on the
-   *     deterministic `sla:escalation:<timer>:<pct>:<type>` key. A re-fired
-   *     cron tick replays the cached result — no double assignment, no
-   *     duplicate audit/event rows.
-   *   - The `sla_threshold_crossings` UNIQUE (sla_timer_id, at_percent,
-   *     timer_type) constraint (00043:16) governs crossing/notification
-   *     dedup. The crossing insert happens AFTER notify (write order above),
-   *     so it does NOT gate the notification. R-A02-2: two overlapping cron
-   *     ticks racing the same (timer, threshold) before the crossing row is
-   *     committed can double-send the escalation notification even though
-   *     the assignment write itself is now an idempotent replay. Narrow
-   *     window (cron tick must run >60s to overlap; processThresholds also
-   *     pre-filters fired crossings into firedKeys, a best-effort
-   *     read-then-act gate). Accepted: distributed transactions across
-   *     Supabase + the notification service are not justified at this scale.
-   *     This is NOT full-tick idempotency — only the assignment write is.
-   *   - `writeActivity` is still gated on `reassigned`; v3 returning a
-   *     cached/no-op result keeps `changed=false` on replay so the legacy
-   *     SLA activity row is not re-written.
+   * Idempotency boundary (audit02 CR1 — R-A02-2 CLOSED):
+   *
+   *   - **Assignment + watchers + audit write** (routing_decisions /
+   *     ticket_activities / ticket_assigned event inside v3) is idempotent
+   *     in Postgres via v3's `command_operations` gate, keyed on the
+   *     deterministic `sla:escalation:<timer>:<pct>:<type>` key. EVERY
+   *     overlapping tick may call the RPC; a re-fired tick replays the
+   *     cached result — no double assignment, no duplicate audit/event
+   *     rows. NOTE: the RPC return CANNOT be used to detect a replay — the
+   *     cached `command_operations.cached_result` is returned verbatim
+   *     (00418:217-218) and carries `noop:false` on BOTH a fresh write
+   *     (00418:789) and a cached replay; only the F17 no-op early-return
+   *     path (00418:511-524) returns `noop:true`. So `applyReassignment`'s
+   *     `changed` (computed pre-RPC from a stale ticket read) is NOT a
+   *     replay signal and is NOT used to gate the side-effects.
+   *
+   *   - **Non-idempotent human-facing side-effects** (`writeActivity`,
+   *     `notifications.send`, `emitEvent`) are gated on winning the
+   *     `sla_threshold_crossings` UNIQUE (sla_timer_id, at_percent,
+   *     timer_type) insert (00043:16). `writeCrossing` runs AFTER the RPC
+   *     succeeds and returns `won`; only the tick that inserted the
+   *     crossing fires the side-effects. A losing tick: assignment already
+   *     idempotently applied, crossing already recorded by the winner,
+   *     side-effects already fired by the winner → it correctly does
+   *     nothing further. No double notification, no duplicate activity.
+   *
+   *   - **No-permanent-suppression invariant.** `writeCrossing` is called
+   *     STRICTLY AFTER `applyReassignment` succeeds. If the RPC throws,
+   *     `fireThreshold` throws BEFORE any crossing is written → a later
+   *     tick retries cleanly (no crossing ⇒ not suppressed). The crossing
+   *     is never written before the assignment is durable.
+   *
+   *   - **Best-effort post-crossing side-effects.** Once the crossing is
+   *     won, the durable state (assignment + crossing) is committed. The
+   *     activity / notification / event side-effects are best-effort: a
+   *     failure there is caught + logged and does NOT throw out of
+   *     `fireThreshold` — a thrown notify failure would trigger a retry
+   *     that the now-recorded crossing would (correctly) suppress, leaking
+   *     a "no notification ever sent, no retry possible" hole. Logging only,
+   *     no rollback (nothing to roll back; the durable writes already
+   *     committed). Matches the project's `console.error('[sla] …')` idiom.
    */
   private async fireThreshold(
     timer: SlaTimerRow,
@@ -982,9 +1023,11 @@ export class SlaService {
     const policyName = await this.loadPolicyName(timer.sla_policy_id, timer.tenant_id);
     const resolved = await this.resolveTarget(threshold, ticket.id, timer.tenant_id);
 
-    // Skip path — record a crossing so we don't retry forever.
+    // Skip path — claim a crossing so we don't retry forever. The
+    // crossing-winner gates the (best-effort) skip event so two
+    // overlapping ticks don't double-emit it.
     if (!resolved) {
-      await this.writeCrossing({
+      const wonSkip = await this.writeCrossing({
         tenant_id: ticket.tenant_id,
         sla_timer_id: timer.id,
         ticket_id: ticket.id,
@@ -995,12 +1038,16 @@ export class SlaService {
         target_id: null,
         notification_id: null,
       });
-      await this.emitEvent(ticket.tenant_id, ticket.id, 'sla_threshold_crossed', {
-        timer_type: timer.timer_type,
-        at_percent: threshold.at_percent,
-        action: 'skipped_no_manager',
-        target_type: threshold.target_type,
-      });
+      if (wonSkip) {
+        await this.bestEffortSideEffect('skip-emitEvent', timer, () =>
+          this.emitEvent(ticket.tenant_id, ticket.id, 'sla_threshold_crossed', {
+            timer_type: timer.timer_type,
+            at_percent: threshold.at_percent,
+            action: 'skipped_no_manager',
+            target_type: threshold.target_type,
+          }),
+        );
+      }
       return;
     }
 
@@ -1016,6 +1063,14 @@ export class SlaService {
       dueAt: timer.due_at,
     });
 
+    // 1. Assignment write (idempotent via v3 command_operations). EVERY
+    //    overlapping tick may call this; a replay is a safe no-op. The
+    //    `reassigned` flag (computed pre-RPC inside applyReassignment from
+    //    a stale ticket read) is NOT a replay signal — it only decides
+    //    whether an actual assignment delta happened, which gates the SLA
+    //    breadcrumb's semantics (escalate-that-changed-assignee). If the
+    //    RPC throws, this throws BEFORE any crossing is written → a later
+    //    tick retries cleanly (no-permanent-suppression invariant).
     let reassigned = false;
     if (threshold.action === 'escalate') {
       reassigned = await this.applyReassignment(
@@ -1026,28 +1081,13 @@ export class SlaService {
         threshold,
         policyName,
       );
-      if (reassigned) {
-        await this.writeActivity(ticket, threshold, policyName);
-      }
     }
 
-    let firstNotificationId: string | null = null;
-    const notifyArgs = {
-      notification_type: 'sla_threshold_crossed',
-      related_entity_type: 'ticket',
-      related_entity_id: ticket.id,
-      subject,
-      body,
-    };
-    if (resolved.teamId) {
-      const sent = await this.notifications.sendToTeam(resolved.teamId, notifyArgs);
-      firstNotificationId = ((sent?.[0] as { id?: string } | undefined)?.id) ?? null;
-    } else if (resolved.personId) {
-      const sent = await this.notifications.send({ ...notifyArgs, recipient_person_id: resolved.personId });
-      firstNotificationId = ((sent?.[0] as { id?: string } | undefined)?.id) ?? null;
-    }
-
-    await this.writeCrossing({
+    // 2. Claim the crossing. STRICTLY AFTER the durable assignment write.
+    //    The UNIQUE (sla_timer_id, at_percent, timer_type) constraint
+    //    (00043:16) makes this the single idempotency gate for the
+    //    non-idempotent human-facing side-effects below.
+    const won = await this.writeCrossing({
       tenant_id: ticket.tenant_id,
       sla_timer_id: timer.id,
       ticket_id: ticket.id,
@@ -1056,17 +1096,111 @@ export class SlaService {
       action: threshold.action,
       target_type: threshold.target_type,
       target_id: resolved.personId ?? resolved.teamId ?? null,
-      notification_id: firstNotificationId,
+      // Backfilled by the winner after the notification is sent (below).
+      notification_id: null,
     });
 
-    await this.emitEvent(ticket.tenant_id, ticket.id, 'sla_threshold_crossed', {
-      timer_type: timer.timer_type,
-      at_percent: threshold.at_percent,
-      action: threshold.action,
-      target_type: threshold.target_type,
-      target_id: resolved.personId ?? resolved.teamId,
-      reassigned,
-    });
+    // 3. Only the crossing-winner fires the non-idempotent side-effects.
+    //    A losing tick: assignment already idempotently applied, crossing
+    //    already recorded by the winner, side-effects already fired by the
+    //    winner → nothing further to do. All side-effects are best-effort:
+    //    the durable state (assignment + crossing) is committed, so a
+    //    failure here must NOT throw (a thrown failure → retry → now
+    //    suppressed by the crossing → permanent side-effect hole).
+    if (!won) return;
+
+    if (threshold.action === 'escalate' && reassigned) {
+      await this.bestEffortSideEffect('writeActivity', timer, () =>
+        this.writeActivity(ticket, threshold, policyName),
+      );
+    }
+
+    const notifyArgs = {
+      notification_type: 'sla_threshold_crossed',
+      related_entity_type: 'ticket',
+      related_entity_id: ticket.id,
+      subject,
+      body,
+    };
+    const firstNotificationId = await this.bestEffortSideEffect(
+      'notify',
+      timer,
+      async () => {
+        if (resolved.teamId) {
+          const sent = await this.notifications.sendToTeam(resolved.teamId, notifyArgs);
+          return ((sent?.[0] as { id?: string } | undefined)?.id) ?? null;
+        }
+        if (resolved.personId) {
+          const sent = await this.notifications.send({
+            ...notifyArgs,
+            recipient_person_id: resolved.personId,
+          });
+          return ((sent?.[0] as { id?: string } | undefined)?.id) ?? null;
+        }
+        return null;
+      },
+    );
+
+    // Backfill the winner's notification_id onto the crossing row it
+    // claimed. notification_id is informational only (read by
+    // listCrossingsForTicket for the ticket-detail escalations panel —
+    // sla.service.ts:1184; no FK-driven logic), so a best-effort follow-up
+    // UPDATE is sufficient and a miss leaves it null without affecting
+    // dedup correctness.
+    if (firstNotificationId) {
+      await this.bestEffortSideEffect('crossing-notification-id', timer, async () => {
+        await this.supabase.admin
+          .from('sla_threshold_crossings')
+          .update({ notification_id: firstNotificationId })
+          .eq('tenant_id', ticket.tenant_id)
+          .eq('sla_timer_id', timer.id)
+          .eq('at_percent', threshold.at_percent)
+          .eq('timer_type', timer.timer_type);
+      });
+    }
+
+    await this.bestEffortSideEffect('emitEvent', timer, () =>
+      this.emitEvent(ticket.tenant_id, ticket.id, 'sla_threshold_crossed', {
+        timer_type: timer.timer_type,
+        at_percent: threshold.at_percent,
+        action: threshold.action,
+        target_type: threshold.target_type,
+        target_id: resolved.personId ?? resolved.teamId,
+        reassigned,
+      }),
+    );
+  }
+
+  /**
+   * Run a post-crossing side-effect best-effort: on failure log + swallow,
+   * never rethrow. R-A02-2: once the crossing is won the durable state
+   * (assignment + crossing) is already committed; a thrown side-effect
+   * failure would trigger a cron retry that the recorded crossing would
+   * (correctly) suppress — leaking a permanent "side-effect never ran, no
+   * retry possible" hole. Logging-only is the right failure mode. Matches
+   * the project's `console.error('[sla] …')` idiom (sla.service.ts:499);
+   * the sla module is gated by `errors:check-app-errors` so no raw
+   * `throw new Error` is introduced here.
+   */
+  private async bestEffortSideEffect<T>(
+    label: string,
+    timer: { id: string; tenant_id: string; ticket_id: string },
+    fn: () => Promise<T>,
+  ): Promise<T | null> {
+    try {
+      return await fn();
+    } catch (err) {
+      console.error(
+        `[sla] post-crossing side-effect '${label}' failed (best-effort; durable state stands)`,
+        {
+          timer_id: timer.id,
+          tenant_id: timer.tenant_id,
+          ticket_id: timer.ticket_id,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+      return null;
+    }
   }
 
   /**

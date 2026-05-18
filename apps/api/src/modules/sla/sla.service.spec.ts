@@ -502,3 +502,227 @@ describe('SlaService.applyReassignment — audit02 Slice B (P0-2)', () => {
     expect(payload.assigned_user_id).toBeNull();
   });
 });
+
+describe('SlaService.fireThreshold — R-A02-2 crossing-insert gates side-effects', () => {
+  // R-A02-2 (audit02 CR1): the sla_threshold_crossings UNIQUE
+  // (sla_timer_id, at_percent, timer_type) constraint is now the
+  // idempotency gate for the NON-idempotent human-facing side-effects
+  // (writeActivity + notification + emitEvent). applyReassignment stays
+  // idempotent via command_operations and may be called by every tick;
+  // only the tick that WINS the crossing insert fires the side-effects.
+  //
+  // No-permanent-suppression invariant: writeCrossing runs strictly AFTER
+  // applyReassignment succeeds. If the RPC throws, fireThreshold throws
+  // BEFORE any crossing is written ⇒ a later tick retries cleanly.
+  //
+  // Best-effort side-effects: after winning the crossing, a notification /
+  // activity / event failure is caught+logged and does NOT throw out of
+  // fireThreshold (durable state — assignment + crossing — already
+  // committed; a retry would now be (correctly) suppressed by the crossing).
+
+  type TimerRow = {
+    id: string;
+    tenant_id: string;
+    ticket_id: string;
+    sla_policy_id: string;
+    timer_type: 'response' | 'resolution';
+    due_at: string;
+  };
+
+  function makeFireDeps(opts: {
+    // controls writeCrossing INSERT outcome per call index
+    crossingInsertResults: Array<{ code?: string } | null>;
+  }) {
+    const inserts: Array<{ table: string; row: Record<string, unknown> }> = [];
+    const updates: Array<{ table: string; patch: Record<string, unknown> }> = [];
+    const rpcCalls: Array<{ fn: string }> = [];
+    let crossingInsertIdx = 0;
+
+    const supabase = {
+      admin: {
+        rpc: async (fn: string) => {
+          rpcCalls.push({ fn });
+          return { data: { noop: false }, error: null };
+        },
+        from: (table: string) => {
+          if (table === 'sla_threshold_crossings') {
+            return {
+              insert: (row: Record<string, unknown>) => {
+                inserts.push({ table, row });
+                const err = opts.crossingInsertResults[crossingInsertIdx] ?? null;
+                crossingInsertIdx += 1;
+                return Promise.resolve({ error: err });
+              },
+              update: (patch: Record<string, unknown>) => {
+                const chain: Record<string, unknown> = {
+                  eq: () => chain,
+                  then: (resolve: (v: unknown) => void) => {
+                    updates.push({ table, patch });
+                    return resolve({ error: null });
+                  },
+                };
+                return chain;
+              },
+            };
+          }
+          if (table === 'ticket_activities' || table === 'domain_events') {
+            return {
+              insert: (row: Record<string, unknown>) => {
+                inserts.push({ table, row });
+                return Promise.resolve({ error: null });
+              },
+            };
+          }
+          throw new Error(`unexpected table in fire mock: ${table}`);
+        },
+      },
+    };
+    return { supabase, inserts, updates, rpcCalls };
+  }
+
+  function makeSvc(
+    supabase: unknown,
+    notifications: { send: jest.Mock; sendToTeam: jest.Mock },
+  ) {
+    const svc = new SlaService(supabase as any, {} as any, notifications as any);
+    // Stub the read helpers — the reorder/gating logic is the unit under
+    // test, not the cross-table reads.
+    jest.spyOn(svc as any, 'loadTicketForFire').mockResolvedValue({
+      id: 'tic-1',
+      tenant_id: 'ten-1',
+      title: 'Broken AC',
+      assigned_user_id: 'user-old',
+      assigned_team_id: null,
+      requester_person_id: 'req-1',
+      watchers: [],
+      kind: 'case',
+    });
+    jest.spyOn(svc as any, 'loadPolicyName').mockResolvedValue('P1 SLA');
+    jest
+      .spyOn(svc as any, 'resolveTarget')
+      .mockResolvedValue({ personId: 'person-new' });
+    jest
+      .spyOn(svc as any, 'resolveTargetName')
+      .mockResolvedValue('Alice Manager');
+    jest.spyOn(svc as any, 'applyReassignment').mockResolvedValue(true);
+    return svc;
+  }
+
+  const timer: TimerRow = {
+    id: 'timer-1',
+    tenant_id: 'ten-1',
+    ticket_id: 'tic-1',
+    sla_policy_id: 'pol-1',
+    timer_type: 'response',
+    due_at: new Date().toISOString(),
+  };
+  const threshold = {
+    at_percent: 100,
+    timer_type: 'response' as const,
+    action: 'escalate' as const,
+    target_type: 'manager_of_requester' as const,
+    target_id: null,
+  };
+
+  it('two sequential ticks: only the crossing-winner fires writeActivity + notification + event; loser does nothing further', async () => {
+    // 1st insert succeeds (won), 2nd hits 23505 (lost).
+    const { supabase, inserts, updates, rpcCalls } = makeFireDeps({
+      crossingInsertResults: [null, { code: '23505' }],
+    });
+    const notifications = {
+      send: jest.fn().mockResolvedValue([{ id: 'notif-1' }]),
+      sendToTeam: jest.fn().mockResolvedValue([]),
+    };
+    const svc = makeSvc(supabase, notifications);
+    const writeActivitySpy = jest.spyOn(svc as any, 'writeActivity');
+
+    await (svc as any).fireThreshold(timer, threshold);
+    await (svc as any).fireThreshold(timer, threshold);
+
+    // applyReassignment called on BOTH ticks (idempotent via command_operations).
+    const applySpy = svc.applyReassignment as unknown as jest.Mock;
+    expect(applySpy).toHaveBeenCalledTimes(2);
+
+    // Side-effects fired EXACTLY ONCE (only the winner).
+    expect(writeActivitySpy).toHaveBeenCalledTimes(1);
+    expect(notifications.send).toHaveBeenCalledTimes(1);
+
+    // Two crossing INSERT attempts (one per tick), but only ONE
+    // ticket_activities + ONE domain_events row.
+    const crossingInserts = inserts.filter(
+      (i) => i.table === 'sla_threshold_crossings',
+    );
+    expect(crossingInserts).toHaveLength(2);
+    expect(inserts.filter((i) => i.table === 'ticket_activities')).toHaveLength(
+      1,
+    );
+    expect(inserts.filter((i) => i.table === 'domain_events')).toHaveLength(1);
+
+    // Winner backfills notification_id onto the crossing row.
+    const crossingUpdates = updates.filter(
+      (u) => u.table === 'sla_threshold_crossings',
+    );
+    expect(crossingUpdates).toHaveLength(1);
+    expect(crossingUpdates[0].patch.notification_id).toBe('notif-1');
+
+    // applyReassignment (stubbed) is the idempotent v3 boundary; it is
+    // invoked on BOTH ticks (asserted above). rpcCalls stays empty because
+    // the stub short-circuits the real RPC — the idempotency contract is
+    // owned by command_operations inside set_entity_assignment, proven by
+    // the concurrency suite, not re-proven here.
+    expect(rpcCalls.filter((c) => c.fn === 'set_entity_assignment')).toHaveLength(
+      0,
+    );
+  });
+
+  it('no-permanent-suppression: applyReassignment throws ⇒ NO crossing row written ⇒ a later retry tick can still fire', async () => {
+    const { supabase, inserts } = makeFireDeps({
+      // first tick never reaches insert; retry tick wins.
+      crossingInsertResults: [null],
+    });
+    const notifications = {
+      send: jest.fn().mockResolvedValue([{ id: 'notif-2' }]),
+      sendToTeam: jest.fn().mockResolvedValue([]),
+    };
+    const svc = makeSvc(supabase, notifications);
+    const applySpy = svc.applyReassignment as unknown as jest.Mock;
+    applySpy.mockRejectedValueOnce(new Error('rpc transient failure'));
+
+    // Tick 1: RPC throws → fireThreshold rejects, NO crossing written.
+    await expect((svc as any).fireThreshold(timer, threshold)).rejects.toThrow();
+    expect(
+      inserts.filter((i) => i.table === 'sla_threshold_crossings'),
+    ).toHaveLength(0);
+    expect(notifications.send).not.toHaveBeenCalled();
+
+    // Tick 2 (retry): RPC now succeeds, crossing not yet recorded → it CAN
+    // fire (not permanently suppressed).
+    await (svc as any).fireThreshold(timer, threshold);
+    expect(
+      inserts.filter((i) => i.table === 'sla_threshold_crossings'),
+    ).toHaveLength(1);
+    expect(notifications.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('best-effort: crossing won but notification throws ⇒ fireThreshold does NOT throw; durable state stands', async () => {
+    const { supabase, inserts } = makeFireDeps({
+      crossingInsertResults: [null],
+    });
+    const notifications = {
+      send: jest.fn().mockRejectedValue(new Error('notification service down')),
+      sendToTeam: jest.fn().mockResolvedValue([]),
+    };
+    const svc = makeSvc(supabase, notifications);
+
+    await expect(
+      (svc as any).fireThreshold(timer, threshold),
+    ).resolves.toBeUndefined();
+
+    // Crossing (durable) was claimed; the RPC (durable) ran.
+    expect(
+      inserts.filter((i) => i.table === 'sla_threshold_crossings'),
+    ).toHaveLength(1);
+    const applySpy = svc.applyReassignment as unknown as jest.Mock;
+    expect(applySpy).toHaveBeenCalledTimes(1);
+  });
+});
