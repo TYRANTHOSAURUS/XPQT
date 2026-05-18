@@ -1256,3 +1256,60 @@ intact** — this is appended, not rewritten.
   integrator verdict's #16 reconciliation is folded into the final 02+00
   ledger reconciliation step (not edited here); the trail is complete
   via this block + the design-check doc.
+
+#### Update — 2026-05-18 — Ledger reconciliation (dual-ledger-table drift resolved, append-only)
+
+This is the final reconciliation step for the audit-02-finish continuation.
+It exists because this file carries **two** ledger tables and they had
+deliberately drifted (each 2026-05-18 row in the continuation table notes
+"Continuation-table NOT mirrored … consolidated at final reconciliation").
+Nothing is deleted or rewritten — this block is the consolidation.
+
+- **Single source of truth:** the mid-file **`## Closure Ledger`** table
+  (the one whose maintainer-rule header begins *"Maintainer rule: every
+  agent that closes, partially closes, or deliberately defers a finding
+  …"*). It is authoritative and holds all seven 2026-05-18
+  audit-02-finish rows: **B.2 dispatch idempotency-replay (00428)**,
+  **Code-I1 routing-eval `routing_decisions` idempotency (00429) + I3
+  routed**, **P2-1 RE-DEFERRED (codex design-check attached;
+  user-acknowledged)**, **P2-3 (renumber DONE upstream PR#21; prefix
+  guard now CI-enforced this session)**, **P1-5 FE-rollup (privileged
+  `{done,total}` aggregate; disclosure boundary documented honestly)**,
+  **CI reds (brief red-list STALE → DISPOSED; 1 branch red FIXED; 1
+  foreign infra red ROUTED-with-evidence)**, **P2-2 residual
+  (DISPOSITIONED LEAVE+DOCUMENTED)**. Always read/extend the canonical
+  `## Closure Ledger` — not the table below.
+- **The second table is a FROZEN partial mirror — NOT authoritative, do
+  NOT extend it.** The headingless continuation table inside
+  `## 2026-05-17 — Best-in-class continuation pass` (immediately under
+  the *"Net: the routed B.2 dispatch defect …"* paragraph; columns
+  `Date | Finding / Slice | Status | Evidence | Verification | Notes`)
+  is a stale tail-mirror. It mirrors only **three** of the seven
+  2026-05-18 rows — **B.2 dispatch idempotency-replay**, **Code-I1**,
+  and **P2-1** — and is intentionally NOT being completed (extending it
+  would perpetuate the exact dual-ledger-table drift this block closes).
+  It is preserved verbatim for history only.
+- **Canonical-only rows the frozen continuation table OMITS** (present
+  in `## Closure Ledger`, deliberately never mirrored below — go to the
+  canonical table for these):
+  1. **P2-3** — duplicate migration-prefix epidemic (CLOSED for this
+     bar; renumber DONE upstream PR #21 `ab980b28`; prefix guard
+     `scripts/check-migration-prefixes.sh` now CI-enforced via the
+     `ci.yml` `check` job this session).
+  2. **P1-5 FE-rollup** — `getChildTasksRollup` privileged
+     `{done,total}` aggregate + `GET /tickets/:id/children/rollup` + FE
+     single-source; `visibility.md` §7 disclosure overclaim corrected to
+     a bounded-narrowing statement.
+  3. **CI reds** — brief red-list verified STALE on origin/main
+     `218f781d` (`ci` run `26027689859` SUCCESS 3/3); the one
+     branch-introduced naming-allowlist red FIXED; Deploy-api(Render)
+     HTTP-401 foreign-infra red ROUTED-with-evidence to the
+     `RENDER_API_KEY` secret owner.
+  4. **P2-2 residual** — `RoutingService.recordDecision` entity_kind via
+     the 00230/00232 derive-trigger: DISPOSITIONED LEAVE+DOCUMENTED
+     (codex design-checked; accepted correct-convention split, not a
+     defect); full write-time uniformity routed as an explicit
+     out-of-audit-02 future-workstream note.
+- **No row is duplicated by this block.** The seven canonical rows live
+  once, in `## Closure Ledger`. This is a pointer + freeze declaration,
+  not a third copy of the ledger.

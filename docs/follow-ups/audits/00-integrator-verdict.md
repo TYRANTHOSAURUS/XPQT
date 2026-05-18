@@ -303,6 +303,8 @@ Maintainer rule: every agent that closes, partially closes, or deliberately defe
 | 2026-05-17 | Booking Slice 7 — P2-1 retire `BookingTransactionBoundary`/`InProcessBookingTransactionBoundary`/`BookingCompensationService` + discovered P1 **D-8** | **closed** (P2-1 + D-8); D-9 deferred-with-owner | DELETED the 3 boundary/compensation classes + spec; `recurrence.service.ts` `runWithCompensation`→try/catch+`deleteOrphanOccurrence` (verbatim port; `delete_booking_with_guard` STAYS, called directly); `booking-flow.service.ts`/`reservations.module.ts`/specs cleaned; NO new RPC/migration (plan-review killed an infeasible clone-RPC). **D-8** (pre-existing P1, git-blame 2026-04-25): synthetic `system:*` actors (recurrence + Outlook) 500'd the `uuid` create-RPC booker bind → recurring bookings materialised ZERO occurrences via HTTP since 2026-04-25 — fixed via shared `booked-by-user-id.util.ts` guard at all 3 binds (incl. the latent multi-room twin). new `smoke:recurrence-clone`; see audit 03 ledger + Update 2026-05-17 (Slice 7) + `docs/follow-ups/slice7-retire-tx-boundary-plan.md` | `pnpm smoke:recurrence-clone` **14/0 exit 0** (orchestrator-run; real POST→confirmed master→startSeries→recurrence_series→materialize→2 occurrences→clone, repeats-filter+time-shift+tenant-scoped — proves boundary removal + D-8 don't break the clone path); `tsc` 0; `jest src/modules/reservations` 262/262 (no Slice-7 failure); `errors` 0/35; V1(I1 byte-identical)+V2(AR-23P01 caught) re-verified vs live code | 2-agent plan-review caught + KILLED the infeasible new-clone-RPC direction PRE-coding (would have SQL-reimplemented a JSONLogic resolver). Impl-review + focused D-8-fold review: no CRITICAL; multi-room latent twin (IMPORTANT) + over-claiming comment (NIT) folded. 6 honest smoke fix-cycle iterations, each empirically root-caused (NOT papered over) → D-8 proven via the dev-server log. D-9 (materialize `e.response?.code` dead branches — correctness UNAFFECTED, observability-only, pre-existing) deferred-with-owner. |
 | 2026-05-17 | Booking Slice 8 — P2-2 (`source='auto'` shim) + P2-4 (`recurrence_overridden` two-places) design-tightening; P2-3 (two `create_booking` generations) | **closed** (P2-2, P2-4); **P2-3 deferred-with-rationale** | P2-2: `ReservationSource` drops `'auto'`, resolution hoisted to producers (recurrence→'recurrence', multi-room inline, booking-flow consumer-blocks collapsed, controller cast dropped). P2-4: `ScopeEditPlanBookingPatch=Omit<…,'recurrence_overridden'>`+scope-boundary destructure-reconstruct projection (shared builder UNCHANGED). NO migration, NO @prequest/shared, P2-3/`create_booking`/`createWithAttachPlan`/`:372-383` UNTOUCHED. See audit 03 ledger + Update 2026-05-17 (Slice 8) + `docs/follow-ups/slice8-p2-cleanup-plan.md` | `tsc --noEmit` 0 (THE type-only gate); `jest src/modules/reservations` 262/262 (the 4 `reservation-edit-scope.spec.ts` splitSeries-arity fails are PRE-EXISTING — stash-isolation-proven, the in-flight Slice-4-parallel fix, NOT Slice-8); `errors` 0/35; residual-`'auto'` sweep EMPTY | 2-agent plan-review (checkpoint 1) caught a P0 PRE-coding: routing the no-services single-room path through `createWithAttachPlan`-empty-plan drops the `booking-flow.service.ts:372-383` `pending_approval` workflow/`createApprovalRows` fan-out (the no-services `buildAttachPlan` hard-codes `approvals:[]`) → every approval-gated no-services create incl. recurrence occurrences would persist un-approvable. ⇒ **P2-3 deferred-with-rationale** (audit permits "OR document why it stays"; legacy `create_booking` is a single ATOMIC fn — consistency-not-correctness; owner = future create-path-consolidation slice that relocates the fan-out FIRST). 2-agent impl-review: no CRITICAL/IMPORTANT; P2-2 semantically lossless (Outlook-sync passes `'calendar_sync'` explicitly, never relied on the removed default). Codex 0-byte-hung→skipped per protocol. |
 | 2026-05-17 | Booking-reservation audit (03) — CLOSING STATUS (Slice 9, doc-only) | **audit closed best-in-class for this workstream** | P3 disposition + consolidated deferred-findings register appended to audit 03 ledger + Update 2026-05-17 (Slice 9); closing decision doc `docs/follow-ups/slice9-closing-status.md` | n/a (doc-only; the underlying closures were each smoke/tsc/jest-verified in their slices — see the per-slice 00 rows above) | **Every actionable P0/P1/P2 in audit 03 is CLOSED+smoke/tsc-gated OR explicitly deferred-with-owner+risk.** Closed+gated: P0-1/2/3, P1-1..5, P2-1 (live smokes), P2-2/P2-4 (tsc type-only), P3-4 (by P2-2). Deferred-with-owner+rationale: P2-3 (create-path-consolidation slice — prerequisite fan-out relocation, else P0), D-5/D-6 producer-determinism (dedicated slice, fix design recorded), D-9 (observability), P3-1/P3-2/P3-3 (Phase-C / decomposition / naming-sweep — zero correctness). `BookingTransactionBoundary` family RETIRED; ONE atomic-RPC pattern + `delete_booking_with_guard` primitive. Orchestrator self-audit: NO actionable finding silently buried/re-classified. Migrations 00407-00414 on remote. |
+| 2026-05-18 | **audit-02-finish continuation — 7-item closure** (branch `audit-02-finish`, off origin/main `218f781d`) | **All 7 brief items closed/dispositioned; #16 + blocker #8 status advanced; no P0/P1 introduced** | Per-item detail in the `## 2026-05-18 — audit-02-finish continuation reconciliation` section below + the canonical `## Closure Ledger` of `docs/follow-ups/audits/02-tickets-work-orders.md` (7 rows, 2026-05-18). Commits `a47cdc48`·`21e52e4a`·`0d990ed0`·`aadb4718`·`9ac033fa`·`71ed3d4a`·`99fe3f89`. Migrations `00428`+`00429` pushed + remote-verified. | codex design-check + `/full-review` 2-agent + codex tertiary per substantive item; `smoke:work-orders` 3/3 + `smoke:tickets` 3/3 isolated exit 0; lint + `errors:check-app-errors` green; `ci` run `26027689859` SUCCESS 3/3 on origin/main `218f781d`. | 02-tickets dual-ledger drift consolidated append-only (canonical `## Closure Ledger` declared SSoT; continuation table FROZEN). 2 sub-findings routed not absorbed (I2/I3 — see section below). #16 (P2-1) + blocker #8 (P2-3) status updated below. |
+| 2026-05-18 | **Sub-findings routed (not absorbed)** — I2 + I3 | **ROUTED with self-contained follow-up docs + owner + risk** | I2: `now()`-in-hash on the WO + workflow-engine SLA-install path (`update_entity_combined` v7 `00427`:241 / `update_entity_sla` `00330`:115) → `docs/follow-ups/i2-sla-install-idempotency-due_at-2026-05-18.md`. I3: `set_entity_assignment` idempotency-key/payload-drift on an assignment-changing routing-eval retry → `docs/follow-ups/i3-routing-eval-assignment-rpc-payload-drift-2026-05-18.md` (+ `audit-02-best-in-class-routing-2026-05-17.md` row #8). | I2 user-approved ROUTE-not-fold (smoke-gated mega-RPC, high blast radius). I3 = codex-tertiary NO-GO "item 3", verified PRE-EXISTING + orthogonal by reading `routing-evaluation.handler.ts` L256-294, user-approved ROUTE. | Both same severity profile as the now-fixed dispatch defect: spurious 409 / wrong `auto_routing_failed` audit + missing breadcrumb; assignment still correctly applied; NO data corruption; pre-existing; NOT P0/P1. Owner I2 = B.2/SLA-restart; owner I3 = routing/SLA. |
 
 ## Agent Handoff Prompt
 
@@ -340,3 +342,110 @@ Completion bar:
 - Specialist audit docs 01 through 08 agree with the final state.
 - Final response includes: closed items, deferred items, verification run, and remaining best-in-class gaps.
 ```
+
+---
+
+## 2026-05-18 — audit-02-finish continuation reconciliation
+
+This verdict was NOT touched by the audit-02-finish session; this section is
+appended-only (no existing verdict item, the Top-10 table, or the
+Should-fix/blocker lists are rewritten). Authoritative per-finding evidence
+lives in the canonical `## Closure Ledger` of
+`docs/follow-ups/audits/02-tickets-work-orders.md` (its mid-file
+maintainer-ruled table — the second, headingless continuation table there is a
+FROZEN partial mirror, not authoritative; see that file's
+`#### Update — 2026-05-18 — Ledger reconciliation`). Branch `audit-02-finish`,
+off origin/main `218f781d`.
+
+**7-item closure (one line each):**
+
+1. `a47cdc48` — **B.2 dispatch idempotency-replay**: FIXED. Migration `00428`
+   (path-scoped strip helper + `dispatch_idempotency_payload_hash`; both
+   dispatch RPCs byte-verbatim from v3 `00341`/`00342` w/ only the hash line
+   changed; C1 stale-`00337`-source caught by `/full-review`); pushed +
+   `pg_get_functiondef`-verified; probe-8 carve-out removed → strict gate;
+   `smoke:work-orders` 3/3.
+2. `21e52e4a` — **Code-I1** routing-eval `routing_decisions` idempotency under
+   outbox redelivery: FIXED. Migration `00429` (partial UNIQUE
+   `uq_routing_decisions_outbox_event`) pushed + `pg_indexes`-verified;
+   handler inserts → raw `ON CONFLICT DO NOTHING`; per-site error semantics
+   preserved; `smoke:tickets` 3/3.
+3. `0d990ed0` — **P2-1** case-vs-WO `TicketService` split: codex design-check
+   DONE → user-acknowledged RE-DEFER (interim guard `aac61b7a` =
+   honest closure for this bar; prescribed hybrid arch + 2 invariants in the
+   design-check doc). No code change. **= Should-fix #16 status, below.**
+4. `aadb4718` — **P2-3** duplicate migration prefixes: brief premise STALE —
+   renumber DONE upstream **PR #21 `ab980b28`** (0 dup prefixes verified, 427
+   files); this session CI-enforced the existing
+   `scripts/check-migration-prefixes.sh` (new `ci.yml` `check`-job step).
+   **= blocker #8 status, below.**
+5. `9ac033fa` — **P1-5 FE-rollup**: FIXED. Thin privileged
+   `TicketService.getChildTasksRollup` + `GET /tickets/:id/children/rollup`
+   (`{done,total}` only, tenant-scoped, parent-read-gated, no row data); FE
+   single-sources from rollup, list stays visibility-filtered; `visibility.md`
+   §7 disclosure overclaim corrected to a bounded-narrowing statement
+   (product-owner-approved). No migration.
+6. `71ed3d4a` — **CI reds**: brief red-list FULLY STALE — `ci` run
+   `26027689859` SUCCESS 3/3 on origin/main `218f781d` (cascade RC1-6 resolved
+   upstream PR#21+PR#23). The one branch-introduced red (naming-allowlist[api]
+   stray `reservations/` token in `dispatch.idempotency.spec.ts:4`) FIXED.
+   Deploy-api(Render) HTTP-401 = pre-existing foreign-infra (bad
+   `RENDER_API_KEY`, never PR-gates) → ROUTED-with-evidence (deploy run
+   `26027689837`) to the secret owner.
+7. `99fe3f89` — **P2-2 residual** (`RoutingService.recordDecision` entity_kind
+   via 00230/00232 derive-trigger): codex design-check → LEAVE+DOCUMENTED
+   (accepted correct-convention split; sole `recordDecision` caller is the
+   always-case rerun-reassign path; live 00232 trigger deterministic; 973 rows
+   0 null/0 bad `entity_kind`). Full write-time uniformity routed
+   out-of-audit-02. No code change.
+
+**Newly-routed sub-findings (routed, NOT absorbed):**
+
+- **I2** — same `now()`-in-idempotency-hash bug-class on the **WO +
+  workflow-engine SLA-install** path (`update_entity_combined` v7 `00427`:241
+  / `update_entity_sla` `00330`:115; NOT the case path — verified phantom).
+  User-approved ROUTE-not-fold (smoke-gated mega-RPC, high blast radius).
+  Owner = **B.2 / SLA-restart**. Doc:
+  `docs/follow-ups/i2-sla-install-idempotency-due_at-2026-05-18.md`. Risk if
+  unfixed: spurious `payload_mismatch` 409 on a legitimate WO/workflow
+  SLA-install retry — correctness/ergonomics only, NO data corruption;
+  pre-existing; not P0/P1.
+- **I3** — `set_entity_assignment` idempotency-key/payload-drift on an
+  assignment-changing routing-eval **retry** (the codex-tertiary NO-GO
+  "item 3", verified PRE-EXISTING + orthogonal by reading
+  `routing-evaluation.handler.ts` L256-294; user-approved ROUTE). Owner =
+  **routing / SLA**. Doc:
+  `docs/follow-ups/i3-routing-eval-assignment-rpc-payload-drift-2026-05-18.md`
+  (+ `audit-02-best-in-class-routing-2026-05-17.md` row #8). Risk if unfixed:
+  wrong `auto_routing_failed` audit + missing success breadcrumb; assignment
+  still correctly applied, NO corruption; pre-existing; not P0/P1.
+
+**Status update — Should-fix #16 (P2-1, service-layer case-vs-WO split):**
+codex-design-checked 2026-05-18 → **user-acknowledged RE-DEFER**. The sole
+unsafe residual the audit identified (WO id misbehaving on `PATCH
+/tickets/:id`) is already neutralized by the shipped interim reject guard
+(`ticket.work_order_id_on_case_endpoint` 400, `aac61b7a`, covers bulk); the WO
+**mutation** surface is already fully separated into
+`work-orders/work-order.service.ts`. What remains = ~1-eng-week READ-path
+layering hygiene, ZERO P0/P1, regression risk to 6 shipped audit-02 slices.
+Prescribed architecture (DELIBERATE HYBRID: one named polymorphic READ
+resolver + hard-split commands/kind-specific reads) + 2 must-not-regress
+invariants captured self-contained in
+`docs/follow-ups/p2-1-case-wo-split-design-check-2026-05-18.md`. **Owner still
+= integrator / data-model (this list's #16); status DEFERRED → RE-DEFERRED
+(design-check attached, user-acknowledged). No code change this engagement.**
+
+**Status update — blocker #8 (duplicate migration prefixes):** the historical
+renumber the 2026-05-16 ledger row deferred to this blocker's owner is **DONE
+upstream** — **PR #21 `ab980b28`** (`fix/ci-migration-prefixes`, merged
+2026-05-18 by the integrator/data-model owner; the colliding block renumbered
+to a contiguous `00415–00427`; independently verified **0 duplicate 5-digit
+prefixes** on disk AND on origin/main, 427 files). The cheap fix #8
+recommended (the `scripts/check-migration-prefixes.sh` CI guard) is now
+**CI-ENFORCED this session** — a `Migration prefix uniqueness guard` step added
+to the `ci.yml` `check` job (root lint was never CI-run; the guard was
+toothless). **blocker #8 effectively closed** (renumber DONE upstream +
+recurrence guard now CI-enforced). Cosmetic residual still owner-deferred: the
+`00410`→`00427_update_entity_combined_v7_satisfaction` `comment on function`
+mismatch (zero behavioral impact; rides the next `update_entity_combined`
+touch).
