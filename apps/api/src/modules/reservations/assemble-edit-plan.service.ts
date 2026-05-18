@@ -60,6 +60,7 @@ import { ConflictGuardService } from './conflict-guard.service';
 import { BookingFlowService } from './booking-flow.service';
 import { RuleResolverService } from '../room-booking-rules/rule-resolver.service';
 import {
+  canonicalApproverSort,
   chainConfigsEqual,
   computeCostFromHours,
   loadCurrentApprovalChain,
@@ -1334,8 +1335,24 @@ export class AssembleEditPlanService {
       // future code path skips the fail-fast in `assembleSlotEditPlan`.
       return null;
     }
+    // audit-03 Slice 2 (D-5, STEP 3): canonical-sort the approver array
+    // before serialisation. The rule-resolver approver fan-out has NO
+    // guaranteed order; without this, the SAME logical edit retried
+    // under the same idempotency key serialises `required_approvers` in
+    // a different order → a different post-strip md5 → a spurious
+    // `command_operations.payload_mismatch` 409 (a SEPARATE latent
+    // ≥2-approver order-instability, sibling to the pre-state-field D-5
+    // bug). The RPC's chain insert treats `required_approvers` as a SET
+    // not a sequence (verified in plan review), so canonicalising the
+    // order CANNOT change the approval decision / threshold /
+    // parallel-group — it only makes the hashed payload byte-stable.
+    // `canonicalApproverSort` is the SAME comparator `chainConfigsEqual`
+    // already uses, so plan equality and the hash agree on ordering.
     return {
-      required_approvers: approvers.map((a) => ({ type: a.type, id: a.id })),
+      required_approvers: canonicalApproverSort(approvers).map((a) => ({
+        type: a.type,
+        id: a.id,
+      })),
       threshold: config.threshold ?? 'all',
     };
   }

@@ -1135,67 +1135,52 @@ async function runScopeProbes(headers, probe, fixture) {
 
     // (iii) RETRY the exact same editScope (same crid, same body).
     //
-    // PRE-EXISTING edit_booking_scope NON-DETERMINISM (NOT a Slice 4
-    // regression — documented honestly, not silently passed):
-    // `edit_booking_scope` (00395 v3 / 00399, OUT of Slice 4 scope)
-    // hashes its `p_plans` argument, and the assembler stamps a fresh
-    // wall-clock `_resolution_at` into every plan on each call. So a
-    // same-body editScope retry re-assembles plans that hash
-    // DIFFERENTLY → the edit RPC raises
-    // `command_operations.payload_mismatch` (409). This is a real
-    // pre-existing edit-pipeline bug; the smoke never surfaced it
-    // before because the harness died earlier on the
-    // `command_operations.id` column bug (fixed in this slice). It is
-    // tracked in docs/follow-ups/slice4-split-recurrence-decision.md
-    // §Newly-surfaced pre-existing failures (owner: booking-audit
-    // workstream — edit_booking_scope payload-hash determinism).
+    // D-5 LIVE COMPLETENESS GATE (audit-03 Slice 2 — AUTHORITATIVE).
+    // This probe is the authoritative live-DB completeness check for the
+    // D-5 fix (migration 00428 + producer canonical-approver-sort): it
+    // exercises a REAL same-intent `edit_booking_scope` COMMIT→RETRY
+    // against the running server. The COMMIT's §3.6.5 reconciliation
+    // mutates `approvals`; before the fix, the RETRY's producer re-read
+    // the mutated live chain and flipped `approval.old_outcome` +
+    // `approval.chain_config_changed`, so the re-assembled `p_plans`
+    // hashed DIFFERENTLY → `command_operations.payload_mismatch` 409 and
+    // the op was permanently lost. 00428 excludes those two pre-state
+    // fields (plus `_resolution_at`) from the idempotency hash, so the
+    // RETRY now hashes identically → the RPC's command_operations gate
+    // CACHE-HITS and returns the original success body (the RPC still
+    // reads the two fields from the UNSTRIPPED plan so §3.6.5
+    // reconciliation is unaffected). This live gate is authoritative
+    // OVER the modeled jest GUARD-3 (assemble-edit-plan.idempotency
+    // .spec.ts) — the jest guard models the producer; this talks to the
+    // real DB. Validated in the audit-03 batch push pass once 00428 is
+    // on remote.
     //
-    // CRUCIAL: this does NOT undermine the Slice 4 fix. `splitSeries`
-    // runs BEFORE the assembler, so on retry the split RPC IS invoked
-    // with the SAME (pivot, crid) → its OWN command_operations gate
-    // cache-hits → it returns the same new_series_id and mints NO
-    // second series. The editScope envelope being a 409 (the
-    // pre-existing edit bug) is irrelevant to the split's idempotency,
-    // which is observable directly at the DB level. We therefore
-    // EXPECT the editScope retry to 409 (the pre-existing behavior)
-    // and assert the split-level invariants — those are what P1-2
-    // actually requires and what Slice 4 actually fixed.
-    //
-    // FIXME(D-5 / audit-03 R-e / orchestrator task #14): this expect:409
-    // encodes a KNOWN pre-existing bug, not desired behavior. Root cause
-    // (live-DB verified 2026-05-17): edit_booking_scope ALREADY hashes via
-    // booking_edit_idempotency_payload_hash (00407:1256); the strip helper
-    // only removes `_`-prefixed keys, but the SCOPE producer
-    // (assemble-edit-plan.service.ts p_plans build) emits ≥1 NON-`_`
-    // value that varies across re-assembly. When that producer-determinism
-    // fix lands, FLIP this probe to expect cached success (no 409).
+    // `splitSeries` runs BEFORE the assembler, so on retry the split RPC
+    // is invoked with the SAME (pivot, crid) → its OWN
+    // command_operations gate cache-hits (the core P1-2 invariant,
+    // asserted directly at the DB level below regardless of the
+    // envelope outcome).
     const tafRetryResult = await probe(
-      'Slice4 split: RETRY same editScope → 409 (pre-existing edit_booking_scope payload-hash non-determinism, NOT a split regression)',
+      'Slice4 split: RETRY same editScope → cached success (D-5 fixed: idempotent replay, no payload_mismatch)',
       {
         url: dryRunSeriesUrl,
         body: { scope: 'this_and_following', space_id: ROOM_BOARD },
         clientRequestId: tafCommitCrid,
-        expect: 'conflict',
+        expect: 'success',
       },
     );
     if (tafRetryResult.ok) {
-      try {
-        const retryParsed = JSON.parse(tafRetryResult.body);
-        if (retryParsed.code === 'command_operations.payload_mismatch') {
-          results.pass += 1;
-          console.log(
-            `  ✓ Slice4 split retry: editScope 409 payload_mismatch (pre-existing edit bug, documented)`,
-          );
-        } else {
-          results.fail += 1;
-          results.failed.push('Slice4 split retry: unexpected 409 code');
-          console.log(
-            `  ✗ Slice4 split retry: 409 code=${retryParsed.code} (expected command_operations.payload_mismatch)`,
-          );
-        }
-      } catch {
+      if (tafRetryResult.body === tafCommitResult.body) {
+        results.pass += 1;
+        console.log(
+          `  ✓ Slice4 split retry: editScope cached success — body byte-identical (D-5 fixed; idempotent replay)`,
+        );
+      } else {
         results.fail += 1;
-        results.failed.push('Slice4 split retry: 409 body parse');
+        results.failed.push('Slice4 split retry: D-5 cached-body mismatch');
+        console.log(
+          `  ✗ Slice4 split retry: editScope 200 but body differs from first commit — RPC re-executed (D-5 NOT idempotent)`,
+        );
       }
     }
 
