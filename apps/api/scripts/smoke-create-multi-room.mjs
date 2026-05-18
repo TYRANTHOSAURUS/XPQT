@@ -307,6 +307,10 @@ async function deleteFixtures(state) {
   const assetIds = fixtureIds.map((f) => `'${f.assetId}'::uuid`).join(', ') || `'00000000-0000-0000-0000-000000000000'::uuid`;
   const assetTypeIds = fixtureIds.map((f) => `'${f.assetTypeId}'::uuid`).join(', ') || `'00000000-0000-0000-0000-000000000000'::uuid`;
   const ruleIds = state.ruleIds.map((id) => `'${id}'::uuid`).join(', ') || `'00000000-0000-0000-0000-000000000000'::uuid`;
+  // audit-03 P2-3 — dedicated teams seeded for the team-approver probe (j).
+  const teamIds =
+    (state.teamIds ?? []).map((id) => `'${id}'::uuid`).join(', ') ||
+    `'00000000-0000-0000-0000-000000000000'::uuid`;
   // FIX 4 — ONLY the idempotency keys THIS run minted (never a tenant-wide
   // `like 'booking.create:%'` sweep — that would clobber sibling smokes'
   // ledger rows on the shared remote). Escape single quotes defensively
@@ -336,6 +340,12 @@ async function deleteFixtures(state) {
     delete from outbox.events
       where tenant_id = '${TENANT_ID}'::uuid
         and aggregate_id in (select id from _smoke_mr_bk);
+    delete from public.inbox_notifications
+      where tenant_id = '${TENANT_ID}'::uuid
+        and event_kind = 'booking.approval_required'
+        and (payload->>'booking_id') in (
+          select id::text from _smoke_mr_bk
+        );
     delete from public.approvals
       where tenant_id = '${TENANT_ID}'::uuid
         and target_entity_type = 'booking'
@@ -369,6 +379,10 @@ async function deleteFixtures(state) {
       where tenant_id = '${TENANT_ID}'::uuid and id in (${assetTypeIds});
     delete from public.room_booking_rules
       where tenant_id = '${TENANT_ID}'::uuid and id in (${ruleIds});
+    delete from public.team_members
+      where tenant_id = '${TENANT_ID}'::uuid and team_id in (${teamIds});
+    delete from public.teams
+      where tenant_id = '${TENANT_ID}'::uuid and id in (${teamIds});
     delete from public.spaces
       where id in (${sl});
     set session_replication_role = 'origin';
@@ -410,6 +424,17 @@ async function mintAdminToken() {
 function resolveAdminUserId() {
   return scalar(
     `select id from public.users where tenant_id='${TENANT_ID}'::uuid and auth_uid='${ADMIN_AUTH_UID}'::uuid limit 1;`,
+  );
+}
+
+// audit-03 P2-3 — the admin user's person_id. Used as the deterministic
+// PERSON approver for probe (i): the 00402 inbox trigger joins
+// `users WHERE person_id = approvals.approver_person_id`, so the approver
+// MUST map to a real users row for an inbox_notifications row to land. The
+// admin user is guaranteed present (the smoke just minted its JWT).
+function resolveAdminPersonId() {
+  return scalar(
+    `select person_id from public.users where tenant_id='${TENANT_ID}'::uuid and auth_uid='${ADMIN_AUTH_UID}'::uuid and person_id is not null limit 1;`,
   );
 }
 
@@ -550,6 +575,17 @@ function countAttachOps(idemKey) {
   return num(
     `select count(*) from public.attach_operations
       where tenant_id='${TENANT_ID}'::uuid and idempotency_key='${idemKey}';`,
+  );
+}
+// audit-03 P2-3 — inbox_notifications fanned out by the 00402 AFTER INSERT
+// trigger when an approvals row lands with approval_chain_id IS NOT NULL.
+// payload.booking_id = approvals.target_entity_id (the booking id).
+function countInboxForBooking(bookingId) {
+  return num(
+    `select count(*) from public.inbox_notifications
+      where tenant_id='${TENANT_ID}'::uuid
+        and event_kind='booking.approval_required'
+        and (payload->>'booking_id')='${bookingId}';`,
   );
 }
 // Count orphans across ALL the dedicated rooms (no booking_id needed —
@@ -1153,6 +1189,491 @@ async function runSingleRoomRoomRuleProbe(probe, fx, adminUserId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// audit-03 P2-3 — NO-SERVICES single-room consolidation probes (h)-(k).
+//
+// smoke-recurrence-clone.mjs seeds WITH services + forces `confirmed`, so
+// the no-services pending-approval path was NEVER live-covered. P2-3 cut
+// it over from the legacy `create_booking` RPC + best-effort
+// `createApprovalRows` onto the combined `create_booking_with_attach_plan`
+// (migration 00429 extended its step-10 approvals INSERT 7→11 cols). These
+// probes are the fail-closed gate for that cutover:
+//
+//   (h) no-services + NO approval rule → 2xx confirmed, 0 approval rows
+//   (i) no-services + FLAT person-approver require_approval room rule →
+//       pending_approval, ≥1 approvals row with approval_chain_id NOT NULL
+//       + chain_threshold matching rule config + approver_person_id set,
+//       ≥1 inbox_notifications row (THE exact P0 signal: pre-P2-3 a
+//       no-services pending-approval booking via the combined RPC had
+//       approval_chain_id=NULL and the 00402 trigger silently skipped it),
+//       grant_booking_approval resolves it.
+//   (j) FLAT team-approver rule → approver_team_id persisted + inbox
+//       notified (the team branch of the 00402 trigger).
+//   (k) C1-recurrence: a recurrence-tagged combined-RPC create with a
+//       chain-bearing approval persists chain_id on the occurrence (the
+//       00429 INSERT must not drop chain cols for recurrence_index rows).
+//
+// Self-contained fixtures (dedicated room-scoped rules + a dedicated team
+// + the admin user as the deterministic approver so the 00402 trigger's
+// users/team_members join actually finds a row). Real fail-closed:
+// passAssertion feeds results.fail → main() exits 1.
+// ─────────────────────────────────────────────────────────────────────
+
+async function runNoServicesApprovalProbes(probe, adminUserId) {
+  console.log(
+    '\n=== (h)-(k) NO-SERVICES single-room consolidation (audit-03 P2-3) ===',
+  );
+  const adminPersonId = resolveAdminPersonId();
+  if (!adminPersonId) {
+    passAssertion(
+      '(h-k) admin user has a person_id (deterministic approver fixture)',
+      false,
+      'resolveAdminPersonId() returned empty — cannot run the P2-3 probes',
+    );
+    return { spaceIds: [], ruleIds: [], teamIds: [] };
+  }
+
+  // 3 dedicated rooms: [h]=no-rule, [i]=person-rule, [j]=team-rule.
+  const spaceIds = mkSpaceIds('p23', 3);
+  const ruleIdPerson = crypto.randomUUID();
+  const ruleIdTeam = crypto.randomUUID();
+  const teamId = crypto.randomUUID();
+  const ruleIds = [ruleIdPerson, ruleIdTeam];
+  const teamIds = [teamId];
+
+  runPsql(
+    `set session_replication_role='replica';\n` +
+      spaceSeedSql(spaceIds, 'p23') +
+      `
+      -- (i) FLAT person-approver require_approval rule, scoped to room[1],
+      -- high priority (low number) so it deterministically wins. The
+      -- approver IS the admin person so the 00402 users-join finds a row.
+      insert into public.room_booking_rules
+        (id, tenant_id, name, target_scope, target_id, applies_when,
+         effect, approval_config, priority, active)
+      values
+        ('${ruleIdPerson}'::uuid, '${TENANT_ID}'::uuid,
+         'Smoke P2-3 person approval', 'room', '${spaceIds[1]}'::uuid,
+         '{"op":"eq","left":1,"right":1}'::jsonb,
+         'require_approval',
+         '{"required_approvers":[{"type":"person","id":"${adminPersonId}"}],"threshold":"all"}'::jsonb,
+         1, true);
+
+      -- (j) dedicated team + membership (admin user) so the 00402 team
+      -- branch (team_members JOIN users) actually fans out an inbox row.
+      insert into public.teams (id, tenant_id, name, active)
+      values ('${teamId}'::uuid, '${TENANT_ID}'::uuid,
+              'Smoke P2-3 approver team', true);
+      insert into public.team_members (tenant_id, team_id, user_id)
+      values ('${TENANT_ID}'::uuid, '${teamId}'::uuid,
+              '${adminUserId}'::uuid);
+
+      -- (j) FLAT team-approver require_approval rule, scoped to room[2].
+      insert into public.room_booking_rules
+        (id, tenant_id, name, target_scope, target_id, applies_when,
+         effect, approval_config, priority, active)
+      values
+        ('${ruleIdTeam}'::uuid, '${TENANT_ID}'::uuid,
+         'Smoke P2-3 team approval', 'room', '${spaceIds[2]}'::uuid,
+         '{"op":"eq","left":1,"right":1}'::jsonb,
+         'require_approval',
+         '{"required_approvers":[{"type":"team","id":"${teamId}"}],"threshold":"all"}'::jsonb,
+         1, true);
+      ` +
+      `\nset session_replication_role='origin';`,
+  );
+
+  const RES_URL = `${API_BASE}/api/reservations`;
+
+  // ── (h) NO approval rule → confirmed, 0 approval rows ────────────────
+  {
+    const { start, end } = isoAnchor(FIXTURE_DAYS, 10); // business hours
+    const crid = crypto.randomUUID();
+    const idemKey = buildCreateBookingIdempotencyKey(adminUserId, crid);
+    const res = await probe(
+      '(h) no-services, no approval rule → 2xx confirmed, 0 approvals',
+      {
+        url: RES_URL,
+        body: {
+          reservation_type: 'room',
+          space_id: spaceIds[0],
+          requester_person_id: THOMAS_PERSON,
+          start_at: start,
+          end_at: end,
+          attendee_count: 2,
+          source: 'desk',
+        },
+        clientRequestId: crid,
+        expect: 'success',
+      },
+    );
+    if (res.ok) {
+      const parsed = parseJsonSafe(res.body);
+      const bookingId =
+        parsed?.booking?.id ?? parsed?.booking_id ?? parsed?.id ??
+        bookingIdForSpaces([spaceIds[0]]);
+      passAssertion(
+        '(h) booking landed status=confirmed',
+        bookingStatus(bookingId) === 'confirmed',
+        `status=${bookingStatus(bookingId)}`,
+      );
+      passAssertion(
+        '(h) ZERO approval rows (no approval rule matched)',
+        countApprovals(bookingId) === 0,
+        `approvals=${countApprovals(bookingId)}`,
+      );
+      passAssertion(
+        '(h) routed through the combined RPC (exactly 1 attach_operations row)',
+        countAttachOps(idemKey) === 1,
+        `attach_ops=${countAttachOps(idemKey)}`,
+      );
+      passAssertion(
+        '(h) ≥1 booking_slot committed',
+        countSlots(bookingId) >= 1,
+        `slots=${countSlots(bookingId)}`,
+      );
+    }
+  }
+
+  // ── (i) FLAT person-approver rule → pending_approval + chain_id +
+  //        inbox notified + grant resolves ──────────────────────────────
+  {
+    const { start, end } = isoAnchor(FIXTURE_DAYS, 12);
+    const crid = crypto.randomUUID();
+    const idemKey = buildCreateBookingIdempotencyKey(adminUserId, crid);
+    const res = await probe(
+      '(i) no-services + FLAT person approval rule → 2xx pending_approval',
+      {
+        url: RES_URL,
+        body: {
+          reservation_type: 'room',
+          space_id: spaceIds[1],
+          requester_person_id: THOMAS_PERSON,
+          start_at: start,
+          end_at: end,
+          attendee_count: 2,
+          source: 'desk',
+        },
+        clientRequestId: crid,
+        expect: 'success',
+      },
+    );
+    if (res.ok) {
+      const parsed = parseJsonSafe(res.body);
+      const bookingId =
+        parsed?.booking?.id ?? parsed?.booking_id ?? parsed?.id ??
+        bookingIdForSpaces([spaceIds[1]]);
+      passAssertion(
+        '(i) booking landed status=pending_approval (FLAT rule matched)',
+        bookingStatus(bookingId) === 'pending_approval',
+        `status=${bookingStatus(bookingId)}`,
+      );
+      passAssertion(
+        '(i) ≥1 approval row (no-services FLAT path is NOT a stuck booking)',
+        countApprovals(bookingId) >= 1,
+        `approvals=${countApprovals(bookingId)}`,
+      );
+      // THE P0 signal: chain_id NOT NULL + chain_threshold matches the rule
+      // config ('all') + person approver set. Pre-P2-3 the combined RPC's
+      // 7-col INSERT left approval_chain_id NULL → the 00402 trigger
+      // skipped it → silently un-notified.
+      passAssertion(
+        "(i) every approval row: chain_id NOT NULL, chain_threshold='all', approver_person_id set, pending",
+        scalar(
+          `select (
+              count(*) >= 1
+              and count(*) filter (
+                where target_entity_type='booking' and status='pending'
+                  and approval_chain_id is not null
+                  and chain_threshold='all'
+                  and approver_person_id is not null
+              ) = count(*)
+            )::text
+            from public.approvals
+           where tenant_id='${TENANT_ID}'::uuid
+             and target_entity_id='${bookingId}'::uuid;`,
+        ) === 'true',
+        'an approval row is missing chain_id / chain_threshold / approver_person_id',
+      );
+      // THE exact P0 regression signal: the 00402 AFTER INSERT trigger
+      // fanned out an inbox notification (only possible because chain_id is
+      // now non-null on the in-transaction insert).
+      passAssertion(
+        '(i) ≥1 inbox_notifications row (00402 fan-out fired — the P2-3 fix)',
+        countInboxForBooking(bookingId) >= 1,
+        `inbox=${countInboxForBooking(bookingId)}`,
+      );
+      passAssertion(
+        '(i) routed through the combined RPC (exactly 1 attach_operations row)',
+        countAttachOps(idemKey) === 1,
+        `attach_ops=${countAttachOps(idemKey)}`,
+      );
+      // grant_booking_approval resolves the chain (the approval is real +
+      // wired, not an orphan row).
+      const approvalRow = runPsqlQuery(
+        `select id::text from public.approvals
+          where tenant_id='${TENANT_ID}'::uuid
+            and target_entity_id='${bookingId}'::uuid
+          order by id limit 1;`,
+      );
+      if (approvalRow) {
+        try {
+          // Signature (00426): (p_approval_id, p_tenant_id, p_actor_user_id,
+          // p_decision IN ('approved','rejected'), p_comments,
+          // p_idempotency_key (required, non-empty)).
+          runPsql(
+            `select public.grant_booking_approval(
+               '${approvalRow}'::uuid, '${TENANT_ID}'::uuid,
+               '${adminUserId}'::uuid, 'approved', null,
+               'smoke.p23.grant:${approvalRow}');`,
+          );
+          passAssertion(
+            '(i) grant_booking_approval resolved the chain (no longer all-pending)',
+            num(
+              `select count(*) from public.approvals
+                where tenant_id='${TENANT_ID}'::uuid
+                  and target_entity_id='${bookingId}'::uuid
+                  and status='pending';`,
+            ) <
+              num(
+                `select count(*) from public.approvals
+                  where tenant_id='${TENANT_ID}'::uuid
+                    and target_entity_id='${bookingId}'::uuid;`,
+              ) + 1,
+            'grant_booking_approval did not change pending count',
+          );
+        } catch (e) {
+          passAssertion(
+            '(i) grant_booking_approval executed without error',
+            false,
+            `grant raised: ${String(e.message).slice(0, 160)}`,
+          );
+        }
+      }
+    }
+  }
+
+  // ── (j) FLAT team-approver rule → approver_team_id + inbox notified ──
+  {
+    const { start, end } = isoAnchor(FIXTURE_DAYS, 14);
+    const crid = crypto.randomUUID();
+    const idemKey = buildCreateBookingIdempotencyKey(adminUserId, crid);
+    const res = await probe(
+      '(j) no-services + FLAT TEAM approval rule → 2xx pending_approval',
+      {
+        url: RES_URL,
+        body: {
+          reservation_type: 'room',
+          space_id: spaceIds[2],
+          requester_person_id: THOMAS_PERSON,
+          start_at: start,
+          end_at: end,
+          attendee_count: 2,
+          source: 'desk',
+        },
+        clientRequestId: crid,
+        expect: 'success',
+      },
+    );
+    if (res.ok) {
+      const parsed = parseJsonSafe(res.body);
+      const bookingId =
+        parsed?.booking?.id ?? parsed?.booking_id ?? parsed?.id ??
+        bookingIdForSpaces([spaceIds[2]]);
+      passAssertion(
+        '(j) booking landed status=pending_approval (team rule matched)',
+        bookingStatus(bookingId) === 'pending_approval',
+        `status=${bookingStatus(bookingId)}`,
+      );
+      passAssertion(
+        "(j) approval row: approver_team_id set, approver_person_id NULL, chain_id NOT NULL",
+        scalar(
+          `select (
+              count(*) >= 1
+              and count(*) filter (
+                where approver_team_id is not null
+                  and approver_person_id is null
+                  and approval_chain_id is not null
+                  and status='pending'
+              ) = count(*)
+            )::text
+            from public.approvals
+           where tenant_id='${TENANT_ID}'::uuid
+             and target_entity_id='${bookingId}'::uuid;`,
+        ) === 'true',
+        'team approval row missing approver_team_id / chain_id, or has a person id',
+      );
+      passAssertion(
+        '(j) ≥1 inbox_notifications row (00402 TEAM branch fanned out)',
+        countInboxForBooking(bookingId) >= 1,
+        `inbox=${countInboxForBooking(bookingId)}`,
+      );
+      passAssertion(
+        '(j) routed through the combined RPC (exactly 1 attach_operations row)',
+        countAttachOps(idemKey) === 1,
+        `attach_ops=${countAttachOps(idemKey)}`,
+      );
+    }
+  }
+
+  // ── (k) C1-recurrence: a recurrence-tagged combined-RPC create with a
+  //        chain-bearing approval must persist chain_id on the occurrence.
+  //
+  // Recurrence occurrences are materialised by RecurrenceService calling
+  // bookingFlow.create → createWithAttachPlan per occurrence. An off-hours
+  // occurrence can land pending_approval; its approval rows MUST keep the
+  // chain cols (the 00429 INSERT must not special-case recurrence_index).
+  // We assert this at the RPC boundary directly (deterministic, no
+  // dependence on the fragile master-confirmed/occurrence-approval-gated
+  // materialiser arrangement): invoke create_booking_with_attach_plan with
+  // a recurrence_series_id + recurrence_index + a chain-bearing approval
+  // and assert the persisted row carries the chain cols + the occurrence's
+  // recurrence_index. ──────────────────────────────────────────────────
+  {
+    const occBookingId = crypto.randomUUID();
+    const occSlotId = crypto.randomUUID();
+    const seriesId = crypto.randomUUID();
+    const approvalId = crypto.randomUUID();
+    const chainId = crypto.randomUUID();
+    const idemKey = `smoke.p23.recurrence:${seriesId}:7`;
+    mintedIdempotencyKeys.add(idemKey);
+    const { start, end } = isoAnchor(FIXTURE_DAYS, 16);
+
+    const bookingInput = {
+      booking_id: occBookingId,
+      slot_ids: [occSlotId],
+      requester_person_id: THOMAS_PERSON,
+      host_person_id: null,
+      booked_by_user_id: null,
+      location_id: spaceIds[0],
+      start_at: start,
+      end_at: end,
+      timezone: 'UTC',
+      status: 'pending_approval',
+      source: 'recurrence',
+      title: 'Smoke P2-3 recurrence occurrence',
+      description: null,
+      cost_center_id: null,
+      cost_amount_snapshot: null,
+      policy_snapshot: {},
+      applied_rule_ids: [],
+      config_release_id: null,
+      recurrence_series_id: seriesId,
+      recurrence_index: 7,
+      template_id: null,
+      slots: [
+        {
+          id: occSlotId,
+          slot_type: 'room',
+          space_id: spaceIds[0],
+          start_at: start,
+          end_at: end,
+          attendee_count: 2,
+          attendee_person_ids: [],
+          setup_buffer_minutes: 0,
+          teardown_buffer_minutes: 0,
+          check_in_required: false,
+          check_in_grace_minutes: 15,
+          display_order: 0,
+        },
+      ],
+    };
+    const attachPlan = {
+      version: 1,
+      any_pending_approval: true,
+      any_deny: false,
+      deny_messages: [],
+      orders: [],
+      asset_reservations: [],
+      order_line_items: [],
+      approvals: [
+        {
+          id: approvalId,
+          target_entity_type: 'booking',
+          target_entity_id: occBookingId,
+          approver_person_id: adminPersonId,
+          approver_team_id: null,
+          approval_chain_id: chainId,
+          parallel_group: `parallel-${occBookingId}`,
+          chain_threshold: 'all',
+          scope_breakdown: {
+            reservation_ids: [],
+            order_ids: [],
+            order_line_item_ids: [],
+            ticket_ids: [],
+            asset_reservation_ids: [],
+            reasons: [],
+          },
+          status: 'pending',
+        },
+      ],
+      bundle_audit_payload: {
+        bundle_id: occBookingId,
+        booking_id: occBookingId,
+        order_ids: [],
+        order_line_item_ids: [],
+        asset_reservation_ids: [],
+        approval_ids: [approvalId],
+        any_pending_approval: true,
+      },
+    };
+
+    let rpcOk = false;
+    let rpcErr = '';
+    try {
+      const { error } = await supa().rpc('create_booking_with_attach_plan', {
+        p_booking_input: bookingInput,
+        p_attach_plan: attachPlan,
+        p_tenant_id: TENANT_ID,
+        p_idempotency_key: idemKey,
+      });
+      rpcOk = !error;
+      rpcErr = error ? JSON.stringify(error).slice(0, 200) : '';
+    } catch (e) {
+      rpcErr = String(e.message).slice(0, 200);
+    }
+    passAssertion(
+      '(k) recurrence-tagged combined-RPC create succeeded',
+      rpcOk,
+      `rpcErr=${rpcErr}`,
+    );
+    if (rpcOk) {
+      passAssertion(
+        '(k) occurrence persisted with recurrence_series_id + recurrence_index=7',
+        scalar(
+          `select (recurrence_series_id='${seriesId}'::uuid
+                   and recurrence_index=7)::text
+             from public.bookings
+            where tenant_id='${TENANT_ID}'::uuid and id='${occBookingId}'::uuid;`,
+        ) === 'true',
+        'occurrence missing recurrence tags',
+      );
+      // C1-recurrence core: the 00429 INSERT kept the chain cols on a
+      // recurrence_index row (no special-casing) → chain_id present →
+      // 00402 trigger fired for the occurrence's approval too.
+      passAssertion(
+        '(k) occurrence approval row carries chain_id + chain_threshold (C1-recurrence)',
+        scalar(
+          `select (approval_chain_id='${chainId}'::uuid
+                   and chain_threshold='all'
+                   and parallel_group='parallel-${occBookingId}')::text
+             from public.approvals
+            where tenant_id='${TENANT_ID}'::uuid and id='${approvalId}'::uuid;`,
+        ) === 'true',
+        'occurrence approval lost chain cols (00429 dropped them for recurrence)',
+      );
+      passAssertion(
+        '(k) ≥1 inbox_notifications row for the recurrence occurrence',
+        countInboxForBooking(occBookingId) >= 1,
+        `inbox=${countInboxForBooking(occBookingId)}`,
+      );
+    }
+  }
+
+  // spaceIds + ruleIds + teamIds returned so deleteFixtures sweeps them.
+  return { spaceIds, ruleIds, teamIds };
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────
 
@@ -1185,7 +1706,7 @@ async function main() {
     process.exit(2);
   }
 
-  const state = { allSpaceIds: [], fixtureIds: [], ruleIds: [] };
+  const state = { allSpaceIds: [], fixtureIds: [], ruleIds: [], teamIds: [] };
 
   try {
     const adminUserId = resolveAdminUserId();
@@ -1228,6 +1749,11 @@ async function main() {
     state.allSpaceIds.push(...appr.spaceIds);
     const sr = await runSingleRoomRoomRuleProbe(probe, fx, adminUserId);
     state.allSpaceIds.push(...sr.spaceIds);
+    // audit-03 P2-3 — no-services consolidation probes (h)-(k).
+    const p23 = await runNoServicesApprovalProbes(probe, adminUserId);
+    state.allSpaceIds.push(...p23.spaceIds);
+    state.ruleIds.push(...p23.ruleIds);
+    state.teamIds.push(...p23.teamIds);
   } finally {
     console.log('\nCleaning up fixtures…');
     await deleteFixtures(state);

@@ -139,6 +139,25 @@ describe('ApprovalRoutingService.assemblePlan', () => {
     // Ids match planUuid(key, 'approval', approver_person_id) per §7.4.
     expect(rowsA[0].id).toBe(planUuid('idem-key-stable', 'approval', 'person-alice'));
     expect(rowsA[1].id).toBe(planUuid('idem-key-stable', 'approval', 'person-bob'));
+
+    // ── audit-03 P2-3 (C2) — chain-aware columns ───────────────────────
+    // ONE shared, DETERMINISTIC approval_chain_id (NOT randomUUID — it must
+    // be byte-stable across the two builds above so the idempotency-hashed
+    // p_attach_plan matches on a same-intent retry; randomUUID here was the
+    // root of the silent-un-notified P0 the P2-3 consolidation surfaced).
+    const sharedChain = planUuid('idem-key-stable', 'approval', '__chain__');
+    expect(rowsA[0].approval_chain_id).toBe(sharedChain);
+    expect(rowsA[1].approval_chain_id).toBe(sharedChain);
+    expect(rowsB[0].approval_chain_id).toBe(sharedChain); // byte-stable
+    // chain_threshold='all' (createApprovalRows default; the service-rule
+    // path aggregates per-line approvers with no single threshold concept).
+    expect(rowsA[0].chain_threshold).toBe('all');
+    // threshold='all' ⇒ parallel_group = 'parallel-' + target_entity_id
+    // (target_entity_id is the planUuid-derived booking id ⇒ deterministic).
+    expect(rowsA[0].parallel_group).toBe(`parallel-${BOOKING_ID}`);
+    // This path only ever resolves PERSON approvers — never team.
+    expect(rowsA[0].approver_team_id).toBeNull();
+    expect(rowsA[1].approver_team_id).toBeNull();
   });
 
   it('merges scope_breakdown when one approver fires across multiple lines', async () => {

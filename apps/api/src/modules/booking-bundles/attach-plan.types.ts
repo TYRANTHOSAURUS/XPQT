@@ -206,9 +206,61 @@ export interface AttachPlanApproval {
   target_entity_type: 'booking';
   /** = booking_input.booking_id. */
   target_entity_id: string;
-  approver_person_id: string;
+  /**
+   * Person-approver id. NULL on a team-only row (the no-services FLAT path
+   * can emit `type==='team'` rule approvers; the with-services
+   * `assemblePlan` path is always person — see C2 note there). The 00429
+   * RPC binds `(v_approval->>'approver_person_id')::uuid` which is NULL for
+   * an absent/JSON-null key (verbatim-00372 expr; behaviour unchanged for
+   * the pre-existing person-only rows).
+   */
+  approver_person_id: string | null;
   scope_breakdown: AttachPlanApprovalScopeBreakdown;
   status: 'pending';
+
+  // ── audit-03 P2-3 (C2) — chain-aware columns ───────────────────────────
+  //
+  // Optional on the wire so a pre-00429 plan (or a caller that hasn't
+  // adopted them) still serialises to the legacy 7-col shape. The 00429
+  // RPC reads them via `nullif(...,'')::T` (absent → NULL) EXCEPT
+  // `chain_threshold` which coalesces to 'all' (C1: NOT NULL DEFAULT).
+  //
+  // Why these now belong on the plan: the combined RPC's step-10 INSERT
+  // historically wrote only 7 cols, so `approval_chain_id` was always
+  // NULL → the 00402 inbox trigger `return new`-skipped EVERY combined-RPC
+  // approval row (silently un-notified — the systemic pre-existing P0 the
+  // P2-3 consolidation surfaces). Carrying a deterministic shared
+  // `approval_chain_id` makes the canonical with-services + no-services
+  // pending-approval paths inbox-notified, matching the legacy
+  // `createApprovalRows` semantics the no-services path used to have.
+
+  /**
+   * One shared id per assemblePlan/buildAttachPlan call (all approvers on a
+   * single booking share it). Deterministic — derived from the create
+   * idempotency key so a same-intent retry rebuilds a byte-identical plan
+   * (D-5/D-6 discipline). NEVER `randomUUID()`.
+   */
+  approval_chain_id?: string;
+  /**
+   * `'parallel-' + booking_id` when `chain_threshold==='all'`, else null.
+   * `booking_id` is itself planUuid-derived → deterministic.
+   */
+  parallel_group?: string | null;
+  /**
+   * Mirrors `createApprovalRows`: `config.threshold ?? 'all'`. Absent ⇒ the
+   * RPC coalesces to `'all'` (C1). The with-services service-rule path has
+   * no single per-chain threshold concept (approvers are aggregated from
+   * per-line outcomes; each is an independently-required approver), so it
+   * uses `'all'` — the same semantic as the legacy default.
+   */
+  chain_threshold?: 'all' | 'any';
+  /**
+   * Team-approver variant. The with-services `assemblePlan` path only ever
+   * resolves to person approvers (person/role→persons/derived→persons), so
+   * this is always null there; the no-services FLAT path (buildAttachPlan)
+   * sets it for `type==='team'` rule approvers.
+   */
+  approver_team_id?: string | null;
 }
 
 export interface AttachPlanApprovalScopeBreakdown {

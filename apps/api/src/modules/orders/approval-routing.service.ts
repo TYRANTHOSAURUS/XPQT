@@ -198,6 +198,35 @@ export class ApprovalRoutingService {
       grouped.set(t.approver_person_id, entry);
     }
 
+    // audit-03 P2-3 (C2) — ONE shared, DETERMINISTIC approval_chain_id per
+    // assemblePlan call. Without it the combined RPC's step-10 INSERT
+    // persisted approval_chain_id=NULL and the 00402 inbox trigger
+    // `return new`-skipped EVERY with-services pending-approval row →
+    // approvers silently un-notified (systemic pre-existing P0; corroborated
+    // by the in-code admission at booking-flow.service.ts ~:592-598). The
+    // chain id MUST be deterministic (NOT randomUUID — that would change
+    // the idempotency-hashed p_attach_plan between same-intent retries and
+    // trip attach_operations.payload_mismatch 409, the exact D-5/D-6 bug
+    // class). `planUuid('approval', sentinel)` reuses the existing
+    // PlanRowKind enum; the '__chain__' stableIndex cannot collide with a
+    // real approver_person_id (those are UUIDs, never the literal
+    // '__chain__'). chain_threshold='all' is the createApprovalRows default
+    // and the correct semantic here: the service-rule path aggregates
+    // approvers from per-line outcomes with NO single per-chain threshold
+    // — each row is an independently-required approver (≡ all-of). With
+    // threshold='all', parallel_group = 'parallel-' + booking_id, mirroring
+    // createApprovalRows; booking_id (= args.target_entity_id) is itself
+    // planUuid-derived → deterministic. This path only ever resolves person
+    // approvers (person / role→persons / derived→persons; see
+    // resolveApproverTarget), so approver_team_id is always null here.
+    const sharedApprovalChainId = planUuid(
+      args.idempotencyKey,
+      'approval',
+      '__chain__',
+    );
+    const chainThreshold: 'all' = 'all';
+    const parallelGroup = `parallel-${args.target_entity_id}`;
+
     // Step 4 — build plan rows + canonical sort. The stableIndex IS the
     // approver_person_id (§7.4 v8 row-kind table); sort applies the
     // determinism invariant on output.
@@ -208,6 +237,10 @@ export class ApprovalRoutingService {
         target_entity_type: 'booking',
         target_entity_id: args.target_entity_id,
         approver_person_id: approverPersonId,
+        approval_chain_id: sharedApprovalChainId,
+        parallel_group: parallelGroup,
+        chain_threshold: chainThreshold,
+        approver_team_id: null,
         scope_breakdown: {
           reservation_ids: entry.scope.reservation_ids ?? [],
           order_ids: entry.scope.order_ids ?? [],
