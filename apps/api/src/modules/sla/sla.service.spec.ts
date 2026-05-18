@@ -1,4 +1,5 @@
 import { SlaService } from './sla.service';
+import { buildSlaEscalationIdempotencyKey } from '@prequest/shared';
 
 // Hand-rolled supabase chain mock for the sla_policies lookup used by
 // applyWaitingStateTransition. Captures the .eq() filters so tests can assert
@@ -304,5 +305,200 @@ describe('SlaService.stopTimers', () => {
       stopped_at: null,
       completed_at: null,
     });
+  });
+});
+
+describe('SlaService.applyReassignment — audit02 Slice B (P0-2)', () => {
+  // SLA escalation reassignment MUST route the assignment + watchers write
+  // through the canonical `set_entity_assignment` v3 RPC (00416), not a raw
+  // `tickets`/`work_orders` UPDATE. The RPC owns idempotency
+  // (command_operations), routing_decisions, ticket_activities, and the
+  // ticket_assigned domain event in one transaction.
+  //
+  // D-A02-1: tickets.watchers / work_orders.watchers are uuid[] of
+  // persons.id (00011_tickets.sql:26). The outgoing assignee that "now
+  // watches" is ticket.assigned_user_id — a users.id. v3's watcher
+  // validator is persons-scoped and rejects a users.id. So the outgoing
+  // assignee MUST be resolved users.id → person_id before being added to
+  // the watcher set.
+
+  type RpcCall = { fn: string; args: Record<string, unknown> };
+
+  function makeReassignDeps(opts: {
+    userRowByPersonId?: Record<string, { id: string; person_id: string } | null>;
+    personIdByUserId?: Record<string, { person_id: string } | null>;
+  }) {
+    const rpcCalls: RpcCall[] = [];
+    const rawUpdates: Array<{ table: string; patch: Record<string, unknown> }> = [];
+
+    const supabase = {
+      admin: {
+        rpc: async (fn: string, args: Record<string, unknown>) => {
+          rpcCalls.push({ fn, args });
+          return { data: { noop: false }, error: null };
+        },
+        from: (table: string) => {
+          if (table === 'users') {
+            const filters: Record<string, unknown> = {};
+            const chain: Record<string, unknown> = {
+              select: () => chain,
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: async () => {
+                // person_id → user row (forward lookup, existing code)
+                if (filters.person_id !== undefined) {
+                  return {
+                    data:
+                      opts.userRowByPersonId?.[filters.person_id as string] ?? null,
+                    error: null,
+                  };
+                }
+                // id (users.id) → person_id (D-A02-1 reverse lookup)
+                if (filters.id !== undefined) {
+                  return {
+                    data: opts.personIdByUserId?.[filters.id as string] ?? null,
+                    error: null,
+                  };
+                }
+                return { data: null, error: null };
+              },
+            };
+            return chain;
+          }
+          // Any raw tickets/work_orders update is a regression for the
+          // assignment+watchers write.
+          if (table === 'tickets' || table === 'work_orders') {
+            const chain: Record<string, unknown> = {
+              update: (patch: Record<string, unknown>) => {
+                rawUpdates.push({ table, patch });
+                const c2: Record<string, unknown> = {
+                  eq: () => c2,
+                  select: () => c2,
+                  maybeSingle: async () => ({ data: { id: 'x' }, error: null }),
+                };
+                return c2;
+              },
+            };
+            return chain;
+          }
+          throw new Error(`unexpected table in mock: ${table}`);
+        },
+      },
+    };
+
+    return { supabase, rpcCalls, rawUpdates };
+  }
+
+  it('routes the escalation assignment+watchers write through set_entity_assignment v3 with the deterministic SLA key, resolved entity kind, a non-null reason, and a person-id (not users.id) outgoing watcher', async () => {
+    const { supabase, rpcCalls, rawUpdates } = makeReassignDeps({
+      // resolved.personId → the new assignee's user row
+      userRowByPersonId: { 'person-new': { id: 'user-new', person_id: 'person-new' } },
+      // D-A02-1: outgoing assigned_user_id 'user-old' → its person_id
+      personIdByUserId: { 'user-old': { person_id: 'person-old' } },
+    });
+    const svc = new SlaService(supabase as any, {} as any, {} as any);
+
+    const ticket = {
+      id: 'tic-1',
+      tenant_id: 'ten-1',
+      assigned_user_id: 'user-old',
+      assigned_team_id: null as string | null,
+      watchers: ['person-existing'] as string[] | null,
+    };
+    const timer = {
+      id: 'timer-1',
+      timer_type: 'response' as const,
+    };
+    const threshold = {
+      at_percent: 100,
+      timer_type: 'response' as const,
+      action: 'escalate' as const,
+      target_type: 'user' as const,
+      target_id: 'person-new',
+    };
+
+    const changed = await (svc as any).applyReassignment(
+      ticket,
+      { personId: 'person-new' },
+      'case',
+      timer,
+      threshold,
+      'Priority P1 SLA',
+    );
+
+    expect(changed).toBe(true);
+
+    // Exactly one set_entity_assignment RPC for the assignment write.
+    const assignCalls = rpcCalls.filter((c) => c.fn === 'set_entity_assignment');
+    expect(assignCalls).toHaveLength(1);
+    const args = assignCalls[0].args;
+
+    expect(args.p_entity_id).toBe('tic-1');
+    expect(args.p_entity_kind).toBe('case');
+    expect(args.p_tenant_id).toBe('ten-1');
+    expect(args.p_actor_user_id).toBeNull();
+    expect(args.p_idempotency_key).toBe(
+      buildSlaEscalationIdempotencyKey('timer-1', 100, 'response'),
+    );
+
+    const payload = args.p_payload as Record<string, unknown>;
+    expect(payload.assigned_user_id).toBe('user-new');
+    expect(typeof payload.reason).toBe('string');
+    expect((payload.reason as string).length).toBeGreaterThan(0);
+
+    // D-A02-1: outgoing assignee added as its person_id, never the raw
+    // users.id; existing person-id watcher preserved.
+    const watchers = payload.watchers as string[];
+    expect(watchers).toEqual(expect.arrayContaining(['person-existing', 'person-old']));
+    expect(watchers).not.toContain('user-old');
+
+    // No raw tickets/work_orders UPDATE for the assignment/watchers write.
+    expect(rawUpdates).toHaveLength(0);
+  });
+
+  it('uses work_order entity kind when the SLA target is a work_order', async () => {
+    const { supabase, rpcCalls } = makeReassignDeps({
+      userRowByPersonId: { 'person-new': { id: 'user-new', person_id: 'person-new' } },
+      personIdByUserId: {},
+    });
+    const svc = new SlaService(supabase as any, {} as any, {} as any);
+
+    const ticket = {
+      id: 'wo-1',
+      tenant_id: 'ten-1',
+      assigned_user_id: null as string | null,
+      assigned_team_id: null as string | null,
+      watchers: null as string[] | null,
+    };
+    const timer = { id: 'timer-9', timer_type: 'resolution' as const };
+    const threshold = {
+      at_percent: 80,
+      timer_type: 'resolution' as const,
+      action: 'escalate' as const,
+      target_type: 'team' as const,
+      target_id: 'team-x',
+    };
+
+    const changed = await (svc as any).applyReassignment(
+      ticket,
+      { teamId: 'team-x' },
+      'work_order',
+      timer,
+      threshold,
+      'Default SLA',
+    );
+
+    expect(changed).toBe(true);
+    const assignCalls = rpcCalls.filter((c) => c.fn === 'set_entity_assignment');
+    expect(assignCalls).toHaveLength(1);
+    expect(assignCalls[0].args.p_entity_kind).toBe('work_order');
+    expect(assignCalls[0].args.p_idempotency_key).toBe(
+      buildSlaEscalationIdempotencyKey('timer-9', 80, 'resolution'),
+    );
+    const payload = assignCalls[0].args.p_payload as Record<string, unknown>;
+    expect(payload.assigned_team_id).toBe('team-x');
+    expect(payload.assigned_user_id).toBeNull();
   });
 });

@@ -12,7 +12,8 @@ import type {
 } from './sla-threshold.types';
 import { crossingKey } from './sla-threshold.types';
 import { percentElapsed, selectApplicableThresholds } from './sla-threshold.helpers';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
+import { buildSlaEscalationIdempotencyKey } from '@prequest/shared';
 
 @Injectable()
 export class SlaService {
@@ -653,14 +654,20 @@ export class SlaService {
       .eq('tenant_id', tenantId)
       .maybeSingle();
     if (caseRes.data) {
-      return caseRes.data as {
-        id: string;
-        tenant_id: string;
-        title: string;
-        assigned_user_id: string | null;
-        assigned_team_id: string | null;
-        requester_person_id: string | null;
-        watchers: string[] | null;
+      return {
+        ...(caseRes.data as {
+          id: string;
+          tenant_id: string;
+          title: string;
+          assigned_user_id: string | null;
+          assigned_team_id: string | null;
+          requester_person_id: string | null;
+          watchers: string[] | null;
+        }),
+        // audit02 Slice B: the resolved entity kind drives v3's
+        // p_entity_kind (case ⇒ public.tickets, work_order ⇒
+        // public.work_orders — 00416:229-241).
+        kind: 'case' as const,
       };
     }
     const woRes = await this.supabase.admin
@@ -675,14 +682,17 @@ export class SlaService {
         detail: `SLA target ${ticketId} not found in tickets or work_orders`,
       });
     }
-    return woRes.data as {
-      id: string;
-      tenant_id: string;
-      title: string;
-      assigned_user_id: string | null;
-      assigned_team_id: string | null;
-      requester_person_id: string | null;
-      watchers: string[] | null;
+    return {
+      ...(woRes.data as {
+        id: string;
+        tenant_id: string;
+        title: string;
+        assigned_user_id: string | null;
+        assigned_team_id: string | null;
+        requester_person_id: string | null;
+        watchers: string[] | null;
+      }),
+      kind: 'work_order' as const,
     };
   }
 
@@ -747,28 +757,93 @@ export class SlaService {
   }
 
   /**
-   * Reassign ticket based on resolved target. Returns true if an assignment actually changed.
-   * For user/manager target: set assigned_user_id, keep assigned_team_id; move previous user to watchers.
-   * For team target: set assigned_team_id, null assigned_user_id; move previous user to watchers.
+   * Resolve a `users.id` (the value stored in tickets/work_orders
+   * `assigned_user_id`) back to its `persons.id` (the value stored in the
+   * `watchers` uuid[]). D-A02-1: tickets.watchers / work_orders.watchers
+   * are uuid[] whose elements are persons.id (00011_tickets.sql:26 — "person
+   * IDs"). The outgoing assignee that "now watches" after an SLA escalation
+   * is `assigned_user_id`, a users.id. set_entity_assignment v3's watcher
+   * validator is persons-scoped (00416:310-322 — public.persons predicate)
+   * and rejects a users.id. Pre-fix `applyReassignment` appended the raw
+   * users.id into the watcher array — a type-wrong write that silently
+   * corrupted the watcher set and would now be rejected by v3.
+   *
+   * tenantId required: supabase.admin bypasses RLS. The reverse of the
+   * existing person_id→users.id lookup below (line 779-784) and the
+   * auth_uid→person map at 00416:553-557 — symmetric, tenant-scoped (F18).
+   */
+  private async resolvePersonIdForUser(
+    userId: string,
+    tenantId: string,
+  ): Promise<string | null> {
+    const { data } = await this.supabase.admin
+      .from('users')
+      .select('person_id')
+      .eq('id', userId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    return (data?.person_id as string | null) ?? null;
+  }
+
+  /**
+   * Reassign ticket based on resolved target. Returns true if an assignment
+   * actually changed.
+   * For user/manager target: set assigned_user_id, keep assigned_team_id;
+   *   move previous user to watchers.
+   * For team target: set assigned_team_id, null assigned_user_id; move
+   *   previous user to watchers.
+   *
+   * audit02 Slice B (P0-2): the assignment + watchers write goes through the
+   * canonical `set_entity_assignment` v3 RPC (00416), NOT a raw
+   * tickets/work_orders UPDATE. v3 commits the row UPDATE +
+   * command_operations idempotency (keyed on the deterministic
+   * `sla:escalation:<timer>:<pct>:<type>` key) + a routing_decisions audit
+   * row (fires because `reason` is non-null) + ticket_activities + a
+   * `ticket_assigned` domain event, all in one transaction. The
+   * `command_operations` gate also makes a re-fired cron tick a safe no-op
+   * replay for the assignment (the crossing unique constraint still governs
+   * crossing/notification dedup — see fireThreshold docstring + R-A02-2).
    */
   private async applyReassignment(
-    ticket: { id: string; tenant_id: string; assigned_user_id: string | null; assigned_team_id: string | null; watchers: string[] | null },
+    ticket: {
+      id: string;
+      tenant_id: string;
+      assigned_user_id: string | null;
+      assigned_team_id: string | null;
+      watchers: string[] | null;
+    },
     resolved: { personId?: string; teamId?: string },
+    kind: 'case' | 'work_order',
+    timer: { id: string; timer_type: TimerType },
+    threshold: EscalationThreshold,
+    policyName: string,
   ): Promise<boolean> {
-    const updates: Record<string, unknown> = {};
+    const assignment: Record<string, unknown> = {};
     let changed = false;
     const newWatchers = new Set<string>((ticket.watchers as string[] | null) ?? []);
 
+    // D-A02-1: the outgoing assignee (a users.id) must be resolved to its
+    // persons.id before being added to the watcher set — watchers are
+    // persons-scoped and v3 rejects a users.id.
+    const addOutgoingAssigneeAsWatcher = async () => {
+      if (!ticket.assigned_user_id) return;
+      const outgoingPersonId = await this.resolvePersonIdForUser(
+        ticket.assigned_user_id,
+        ticket.tenant_id,
+      );
+      if (outgoingPersonId) newWatchers.add(outgoingPersonId);
+    };
+
     if (resolved.teamId) {
       if (ticket.assigned_team_id !== resolved.teamId) {
-        updates.assigned_team_id = resolved.teamId;
-        updates.assigned_user_id = null;
-        if (ticket.assigned_user_id) newWatchers.add(ticket.assigned_user_id);
+        assignment.assigned_team_id = resolved.teamId;
+        assignment.assigned_user_id = null;
+        await addOutgoingAssigneeAsWatcher();
         changed = true;
       }
     } else if (resolved.personId) {
-      // tickets.assigned_user_id references users(id). resolved.personId is a persons id;
-      // look up the user row.
+      // tickets.assigned_user_id references users(id). resolved.personId is a
+      // persons id; look up the user row.
       //
       // HIGH severity tenant-scope: this user lookup feeds a WRITE
       // (assigned_user_id on the case/work_order). Without the tenant
@@ -784,16 +859,34 @@ export class SlaService {
         .maybeSingle();
       const newAssigneeUserId = (user?.id as string) ?? null;
       if (newAssigneeUserId && ticket.assigned_user_id !== newAssigneeUserId) {
-        updates.assigned_user_id = newAssigneeUserId;
-        if (ticket.assigned_user_id) newWatchers.add(ticket.assigned_user_id);
+        assignment.assigned_user_id = newAssigneeUserId;
+        await addOutgoingAssigneeAsWatcher();
         changed = true;
       }
     }
 
     if (changed) {
-      updates.watchers = Array.from(newWatchers);
-      // Step 1c.10c: route to tickets (case) or work_orders.
-      await this.updateTicketOrWorkOrder(ticket.id, updates, ticket.tenant_id);
+      const idempotencyKey = buildSlaEscalationIdempotencyKey(
+        timer.id,
+        threshold.at_percent,
+        timer.timer_type,
+      );
+      const { error } = await this.supabase.admin.rpc('set_entity_assignment', {
+        p_entity_id: ticket.id,
+        p_entity_kind: kind,
+        p_tenant_id: ticket.tenant_id,
+        // System-driven: the SLA cron is the actor. Null lets v3's
+        // actor_person resolve fall through cleanly (00416:550-558).
+        p_actor_user_id: null,
+        p_idempotency_key: idempotencyKey,
+        p_payload: {
+          ...assignment,
+          actor_person_id: null,
+          reason: `SLA escalation: ${policyName} at ${threshold.at_percent}% of ${timer.timer_type}`,
+          watchers: Array.from(newWatchers),
+        },
+      });
+      if (error) throw mapRpcErrorToAppError(error);
     }
     return changed;
   }
@@ -852,16 +945,34 @@ export class SlaService {
   }
 
   /**
-   * Fire a single threshold for a single timer. Writes a crossing row (idempotency
-   * anchor), sends notifications, and — for `escalate` — reassigns the ticket.
-   * Swallows `23505` (unique_violation) so racing cron ticks are safe.
+   * Fire a single threshold for a single timer. Writes a crossing row, sends
+   * notifications, and — for `escalate` — reassigns the ticket via the
+   * canonical `set_entity_assignment` v3 RPC (00416).
    *
-   * Not atomic. Write order: reassign → activity → notify → crossing → event.
-   * If the crossing insert fails after a notification has been sent, the next tick
-   * will retry the whole path and may duplicate the notification. `applyReassignment`
-   * is no-op on retry (already-matching state returns changed=false), so the activity
-   * entry is not re-written. The duplication window is rare and the alternative
-   * (distributed transactions across Supabase) is not justified at this scale.
+   * Write order: reassign (v3 RPC) → activity → notify → crossing → event.
+   *
+   * Idempotency boundary (audit02 Slice B / P0-2):
+   *   - The escalation **assignment + watchers + audit (routing_decisions /
+   *     ticket_activities / ticket_assigned event) write** is idempotent in
+   *     Postgres via v3's `command_operations` gate, keyed on the
+   *     deterministic `sla:escalation:<timer>:<pct>:<type>` key. A re-fired
+   *     cron tick replays the cached result — no double assignment, no
+   *     duplicate audit/event rows.
+   *   - The `sla_threshold_crossings` UNIQUE (sla_timer_id, at_percent,
+   *     timer_type) constraint (00043:16) governs crossing/notification
+   *     dedup. The crossing insert happens AFTER notify (write order above),
+   *     so it does NOT gate the notification. R-A02-2: two overlapping cron
+   *     ticks racing the same (timer, threshold) before the crossing row is
+   *     committed can double-send the escalation notification even though
+   *     the assignment write itself is now an idempotent replay. Narrow
+   *     window (cron tick must run >60s to overlap; processThresholds also
+   *     pre-filters fired crossings into firedKeys, a best-effort
+   *     read-then-act gate). Accepted: distributed transactions across
+   *     Supabase + the notification service are not justified at this scale.
+   *     This is NOT full-tick idempotency — only the assignment write is.
+   *   - `writeActivity` is still gated on `reassigned`; v3 returning a
+   *     cached/no-op result keeps `changed=false` on replay so the legacy
+   *     SLA activity row is not re-written.
    */
   private async fireThreshold(
     timer: SlaTimerRow,
@@ -907,7 +1018,14 @@ export class SlaService {
 
     let reassigned = false;
     if (threshold.action === 'escalate') {
-      reassigned = await this.applyReassignment(ticket, resolved);
+      reassigned = await this.applyReassignment(
+        ticket,
+        resolved,
+        ticket.kind,
+        { id: timer.id, timer_type: timer.timer_type },
+        threshold,
+        policyName,
+      );
       if (reassigned) {
         await this.writeActivity(ticket, threshold, policyName);
       }
