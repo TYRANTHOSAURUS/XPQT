@@ -189,3 +189,18 @@ apps/web/src/api/room-booking/mutations.ts:251: * `apps/api/src/modules/reservat
 packages/shared/src/idempotency.ts:340: *   - `'scope'` → `POST  /reservations/:id/edit-scope` (editScope → edit_booking_scope)
 packages/shared/src/idempotency.ts:338: *   - `'one'`   → `PATCH /reservations/:id`            (editOne → edit_booking)
 packages/shared/src/idempotency.ts:339: *   - `'slot'`  → `PATCH /reservations/:id/slots/:sid` (editSlot → edit_booking)
+
+# === CI-hygiene 2026-05-18: pre-existing origin/main refs unmasked once the
+#     ripgrep CI gap was fixed. These predate this PR. The two former
+#     scheduler-floor-view.tsx local vars were RENAMED (not allowlisted).
+#     The rest are genuine doc/URL references to the real (un-renamed)
+#     reservations API module + endpoint. Classified per
+#     docs/follow-ups/phase-8-frontend-rename-triage.md.
+# KEEP_HISTORICAL_COMMENT — dated 2026-05-02 canonicalisation rationale comment.
+apps/web/src/pages/desk/bookings.tsx:431:                chip used to gate on `item.booking_bundle_id`, which under
+# KEEP_HISTORICAL_COMMENT — JSDoc path reference to the real reservations module.
+packages/shared/src/idempotency.ts:480: *   - apps/api/src/modules/reservations/recurrence.service.ts
+# KEEP_WIRE_SHAPE — real URL path string in idempotency JSDoc.
+packages/shared/src/idempotency.ts:521: * The attach runs from `POST /reservations/:id/services`
+# KEEP_HISTORICAL_COMMENT — JSDoc path reference to the real reservations dto.
+packages/shared/src/idempotency.ts:558: * `apps/api/src/modules/reservations/dto/types.ts:378` (kept structurally

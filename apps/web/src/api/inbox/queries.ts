@@ -46,7 +46,12 @@ import {
 export function inboxListOptions(args: InboxListArgs = {}) {
   const limit = args.limit ?? INBOX_DEFAULT_LIMIT;
   return queryOptions({
-    queryKey: inboxKeys.list(args),
+    // Key on the RESOLVED limit (not raw `args`) so the cache bucket
+    // matches the data actually fetched and the exhaustive-deps rule can
+    // see `limit`. Bell passes {limit:5} (unchanged); the no-arg default
+    // path moves from {} to {limit:20} — same documented "default 20"
+    // bucket, in-memory only, Realtime still busts via inboxKeys.all.
+    queryKey: inboxKeys.list({ limit }),
     queryFn: ({ signal }) =>
       apiFetch<InboxListResponse>('/me/inbox', { signal, query: { limit } }),
     // 30s cache — Realtime invalidates on INSERT, focus refetch covers
@@ -81,9 +86,7 @@ export function useInboxInfinite(args: InboxListArgs = {}) {
     ReturnType<typeof inboxKeys.list>,
     string | null
   >({
-    queryKey: inboxKeys.list(args),
-    initialPageParam: null,
-    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    queryKey: inboxKeys.list({ limit }),
     queryFn: ({ signal, pageParam }) =>
       apiFetch<InboxListResponse>('/me/inbox', {
         signal,
@@ -92,6 +95,8 @@ export function useInboxInfinite(args: InboxListArgs = {}) {
           cursor: pageParam ?? undefined,
         },
       }),
+    initialPageParam: null,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
     staleTime: 30_000,
   });
 

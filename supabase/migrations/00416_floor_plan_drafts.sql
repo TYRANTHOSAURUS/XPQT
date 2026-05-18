@@ -1,4 +1,4 @@
--- 00368_floor_plan_drafts.sql
+-- 00416_floor_plan_drafts.sql
 -- Per-floor in-progress edits. One draft per floor. Polygons stored as jsonb
 -- so the booking surface keeps reading the published spaces.floor_plan_polygon
 -- without ever seeing half-edited state. Spec §3.3.

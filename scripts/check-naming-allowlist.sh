@@ -43,6 +43,17 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# Fail LOUDLY if ripgrep is missing. This script uses `set -uo pipefail`
+# without `set -e`, so a missing `rg` would otherwise silently yield an
+# empty scan and `comm -23` would report every allowlisted ref as a "new"
+# violation — a spurious failure that misdirects diagnosis. Exit 2 makes
+# the real cause unambiguous (CI installs rg before this runs).
+if ! command -v rg >/dev/null 2>&1; then
+  echo "ERROR: ripgrep (rg) is required but not found on PATH." >&2
+  echo "  Install it (CI: apt-get install -y ripgrep; macOS: brew install ripgrep)." >&2
+  exit 2
+fi
+
 # Same pattern for both scopes. Note: `reservation_id\b` is intentionally
 # NOT \b-anchored on the left so that sibling-table column names like
 # `linked_asset_reservation_id` and `parent_reservation_id` are also

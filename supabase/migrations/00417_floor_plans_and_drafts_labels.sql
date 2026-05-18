@@ -1,4 +1,4 @@
--- 00369_floor_plans_and_drafts_labels.sql
+-- 00417_floor_plans_and_drafts_labels.sql
 -- Non-polygon annotations placed on the canvas (e.g. "Lounge", "Reception").
 -- Shape: [{ "text": "Lounge", "x": 690, "y": 250, "size": 11 }]. Spec §5.6.
 

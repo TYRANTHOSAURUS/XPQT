@@ -1,4 +1,4 @@
--- 00373_extend_service_desk_lead_floor_plans_admin.sql
+-- 00421_extend_service_desk_lead_floor_plans_admin.sql
 --
 -- Adds `floor_plans.admin` to the seeded "Service Desk Lead" role template
 -- across all existing tenants. Aligns the database with the TypeScript SoT

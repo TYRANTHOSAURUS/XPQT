@@ -30,6 +30,17 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# Fail LOUDLY if ripgrep is missing. This script uses `set -uo pipefail`
+# without `set -e`, so a missing `rg` would otherwise silently yield an
+# empty snapshot and the allowlist diff would report the entire allowlist
+# as removed — a spurious failure that misdirects diagnosis. Exit 2 makes
+# the real cause unambiguous (CI installs rg before this runs).
+if ! command -v rg >/dev/null 2>&1; then
+  echo "ERROR: ripgrep (rg) is required but not found on PATH." >&2
+  echo "  Install it (CI: apt-get install -y ripgrep; macOS: brew install ripgrep)." >&2
+  exit 2
+fi
+
 # In --staged mode skip cleanly if no B.2-scope source files are staged.
 # Same shape as check-design.sh.
 if [ "${1:-}" = "--staged" ]; then

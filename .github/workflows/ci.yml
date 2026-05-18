@@ -49,6 +49,19 @@ jobs:
         # we need the compiled dist/ before any typecheck.
         run: pnpm --filter @prequest/shared run build
 
+      - name: Install ripgrep
+        # scripts/check-b2-config-reads.sh and scripts/check-naming-allowlist.sh
+        # shell out to `rg`. ripgrep is NOT preinstalled on the GitHub-hosted
+        # ubuntu runner image. Those scripts run `set -uo pipefail` WITHOUT
+        # `set -e`, so a missing `rg` does not abort — it silently yields an
+        # empty snapshot, which makes the allowlist diff report the ENTIRE
+        # allowlist as removed and the gate fails with a spurious all-`-`
+        # diff (this masked two further pre-existing failures for a long
+        # time). Installing rg makes the snapshot real; the scripts also now
+        # hard-fail loudly if rg is absent (defense in depth). Must run
+        # before the first rg-dependent step (B.2 config-reads).
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Design check (fonts, motion, format helpers, widths)
         run: pnpm design:check
 

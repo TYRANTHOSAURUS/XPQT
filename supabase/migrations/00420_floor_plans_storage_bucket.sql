@@ -1,4 +1,4 @@
--- 00372_floor_plans_storage_bucket.sql
+-- 00420_floor_plans_storage_bucket.sql
 -- Private bucket, tenant-prefixed paths, RLS-enforced on every action.
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)

@@ -19,7 +19,6 @@ Object.defineProperty(window, 'matchMedia', {
 // jsdom doesn't implement ResizeObserver — stub it so cmdk + Radix UI
 // primitives that observe their popover/list dimensions don't throw.
 class ResizeObserverStub implements ResizeObserver {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   constructor(_callback: ResizeObserverCallback) {}
   observe(): void {}
   unobserve(): void {}

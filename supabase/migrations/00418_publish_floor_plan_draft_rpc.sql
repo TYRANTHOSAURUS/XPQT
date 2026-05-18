@@ -1,4 +1,4 @@
--- 00370_publish_floor_plan_draft_rpc.sql
+-- 00418_publish_floor_plan_draft_rpc.sql
 -- Atomic publish flow per CLAUDE.md ("multi-step writes via PL/pgSQL").
 -- Single-execution guarantee via DELETE ... RETURNING * at the start (codex CRITICAL #1).
 -- Writes a snapshot to floor_plan_publish_history (for rollback), updates floor_plans

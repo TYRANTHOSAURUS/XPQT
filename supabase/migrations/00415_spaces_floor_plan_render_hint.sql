@@ -1,4 +1,4 @@
--- 00367_spaces_floor_plan_render_hint.sql
+-- 00415_spaces_floor_plan_render_hint.sql
 -- Adds render hint + canonicalizes polygon shape. Spec §3.2 + §3.4.
 
 alter table public.spaces

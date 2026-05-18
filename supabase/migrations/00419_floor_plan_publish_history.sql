@@ -1,4 +1,4 @@
--- 00371_floor_plan_publish_history.sql
+-- 00419_floor_plan_publish_history.sql
 -- One snapshot per publish. Enables "Restore previous publish" admin action.
 -- Retention: app-level prunes to last N=5 per floor (UI surfaces all of them).
 
