@@ -1664,6 +1664,14 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't update",
     detail: "Server can't rerun routing — this is an internal-only signal that an orchestration step was skipped.",
   },
+  'set_entity_assignment.invalid_watcher': {
+    title: "Couldn't update",
+    detail: 'One or more watchers are not part of this tenant.',
+  },
+  'set_entity_assignment.invalid_decision': {
+    title: "Couldn't update",
+    detail: 'The routing decision is missing a valid strategy or provenance.',
+  },
   // B.2.A §3.3 update_entity_sla RPC (00328)
   'update_entity_sla.unknown_kind': { title: "Couldn't update SLA", detail: 'Unknown entity kind.' },
   'update_entity_sla.not_found': { title: "Couldn't find that ticket" },

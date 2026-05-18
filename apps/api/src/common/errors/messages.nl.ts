@@ -1654,6 +1654,14 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon niet bijwerken',
     detail: 'Server kan routing niet opnieuw draaien — interne fout: een orchestratiestap is overgeslagen.',
   },
+  'set_entity_assignment.invalid_watcher': {
+    title: 'Kon niet bijwerken',
+    detail: 'Een of meer volgers horen niet bij deze tenant.',
+  },
+  'set_entity_assignment.invalid_decision': {
+    title: 'Kon niet bijwerken',
+    detail: 'De routingbeslissing mist een geldige strategie of herkomst.',
+  },
   // B.2.A §3.3 update_entity_sla RPC (00328)
   'update_entity_sla.unknown_kind': { title: 'Kon SLA niet bijwerken', detail: 'Onbekend entiteitstype.' },
   'update_entity_sla.not_found': { title: 'Ticket niet gevonden' },

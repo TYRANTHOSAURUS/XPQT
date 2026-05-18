@@ -581,6 +581,11 @@ export type KnownErrorCode =
   | 'set_entity_assignment.unknown_kind'
   | 'set_entity_assignment.not_found'
   | 'set_entity_assignment.resolver_rerun_not_supported_at_rpc'
+  // Audit 02 Slice A — set_entity_assignment v3 (00416). Optional
+  // p_payload->'watchers' / p_payload->'decision' keys; validation
+  // raises mirror update_entity_combined.invalid_watcher's shape.
+  | 'set_entity_assignment.invalid_watcher'
+  | 'set_entity_assignment.invalid_decision'
 
   // ─── B.2.A §3.3 update_entity_sla RPC (00328) ────────────────────────────
   | 'update_entity_sla.unknown_kind'
@@ -1659,6 +1664,8 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'set_entity_assignment.unknown_kind',
   'set_entity_assignment.not_found',
   'set_entity_assignment.resolver_rerun_not_supported_at_rpc',
+  'set_entity_assignment.invalid_watcher',
+  'set_entity_assignment.invalid_decision',
   'update_entity_sla.unknown_kind',
   'update_entity_sla.not_found',
   'update_entity_sla.timers_required',
