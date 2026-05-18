@@ -1396,6 +1396,284 @@ describe('set_entity_assignment — combined RPC', () => {
     expect(rdOk.rows[0].strategy).toBe('rule');
     expect(rdOk.rows[0].chosen_by).toBe('rule');
   });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Audit 02 Slice D follow-up — D-A02-2 (migration 00418, v3.1).
+  //
+  // Bug: 00416 v3's decision-path routing_decisions INSERT sourced
+  // chosen_team_id/chosen_user_id/chosen_vendor_id from v_new_* (the
+  // post-write assignment columns). When the `assigned_*` keys are ABSENT
+  // from p_payload, v_new_* := v_prev_* (00416:255-257) — so a resolver
+  // `unassigned` outcome (decision.chosen_by='unassigned', no assigned_*
+  // keys) against an ALREADY-ASSIGNED ticket wrote the ticket's STALE
+  // current assignee into routing_decisions.chosen_* on a row whose
+  // chosen_by='unassigned'. The OLD standalone handler insert
+  // (4b77af30~1) wrote chosen_*=NULL here. Silent audit regression.
+  //
+  // Fix (v3.1, 00418): on the decision path, chosen_* is sourced from the
+  // decision object (nullif(v_decision->>'chosen_team_id','')::uuid etc.)
+  // — the resolver's chosen target — NOT v_new_*. Provenance is now
+  // decoupled from the assignment write. Non-decision path byte-identical.
+  // ──────────────────────────────────────────────────────────────────────
+
+  it('scenario 15 (D-A02-2): unassigned-outcome decision (no assigned_* keys) against an assigned ticket — chosen_* ALL NULL, assignment UNCHANGED', async () => {
+    const base = await seedBaseFixture(pool, `v3_1-unassigned-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+    const { userId: teamMember } = await seedUser(pool, base.tenantId);
+
+    // Seed a real team T and pre-assign the ticket to it.
+    const teamId = randomUUID();
+    await withClient(pool, async (c) => {
+      await c.query('begin');
+      try {
+        await c.query("set local session_replication_role = 'replica'");
+        await c.query(
+          `insert into public.teams (id, tenant_id, name) values ($1, $2, 'D-A02-2 team T')`,
+          [teamId, base.tenantId],
+        );
+        await c.query('commit');
+      } catch (e) {
+        await c.query('rollback');
+        throw e;
+      }
+    });
+    registerCleanup(async () => {
+      await withClient(pool, async (c) => {
+        await c.query('begin');
+        try {
+          await c.query("set local session_replication_role = 'replica'");
+          await c.query('delete from public.teams where id = $1', [teamId]);
+          await c.query('commit');
+        } catch (e) {
+          await c.query('rollback');
+          throw e;
+        }
+      });
+    });
+    void teamMember;
+
+    // Step 1: assign the ticket to team T (silent path).
+    const assign = await runRpcCapture<AssignmentResult>(
+      pool,
+      'public.set_entity_assignment',
+      [ticketId, 'case', base.tenantId, null, `v3_1-unassigned-${ticketId}-1`, { assigned_team_id: teamId }],
+    );
+    expect(assign.kind).toBe('ok');
+    if (assign.kind !== 'ok') return;
+    expect(assign.value.new_assigned_team_id).toBe(teamId);
+
+    // Step 2: the routing-evaluation handler's unassigned-outcome shape —
+    // decision present with chosen_by='unassigned' and chosen_* all null,
+    // NO assigned_* keys (assignment preservation), clear_routing_status.
+    const unassigned = await runRpcCapture<AssignmentResult>(
+      pool,
+      'public.set_entity_assignment',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `v3_1-unassigned-${ticketId}-2`,
+        {
+          clear_routing_status: 'true',
+          decision: {
+            strategy: 'auto',
+            chosen_by: 'unassigned',
+            rule_id: null,
+            trace: [],
+            context: {},
+            chosen_team_id: null,
+            chosen_user_id: null,
+            chosen_vendor_id: null,
+          },
+        },
+      ],
+    );
+    expect(unassigned.kind).toBe('ok');
+    if (unassigned.kind !== 'ok') return;
+
+    // (i) Assignment UNCHANGED — assigned_* keys absent ⇒ no change.
+    const t = await pool.query(
+      'select assigned_team_id, assigned_user_id, assigned_vendor_id from public.tickets where id = $1',
+      [ticketId],
+    );
+    expect(t.rows[0].assigned_team_id).toBe(teamId);
+    expect(t.rows[0].assigned_user_id).toBeNull();
+    expect(t.rows[0].assigned_vendor_id).toBeNull();
+
+    // (ii) routing_decisions row for the unassigned outcome: chosen_* ALL
+    // NULL (sourced from the decision object, NOT the stale v_new_*=teamId),
+    // chosen_by='unassigned'. This is the regression oracle — pre-v3.1
+    // chosen_team_id would equal teamId.
+    const rd = await pool.query(
+      `select chosen_by, strategy, chosen_team_id, chosen_user_id, chosen_vendor_id
+         from public.routing_decisions
+        where tenant_id = $1 and ticket_id = $2 and chosen_by = 'unassigned'`,
+      [base.tenantId, ticketId],
+    );
+    expect(rd.rowCount).toBe(1);
+    expect(rd.rows[0].chosen_by).toBe('unassigned');
+    expect(rd.rows[0].strategy).toBe('auto');
+    expect(rd.rows[0].chosen_team_id).toBeNull();
+    expect(rd.rows[0].chosen_user_id).toBeNull();
+    expect(rd.rows[0].chosen_vendor_id).toBeNull();
+  });
+
+  it('scenario 16 (D-A02-2): decision with a real resolver pick (chosen_team_id=X) + assigned_team_id=X — routing_decisions.chosen_team_id = X (decision-sourced, still correct for the real-target path)', async () => {
+    const base = await seedBaseFixture(pool, `v3_1-picked-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+
+    const teamX = randomUUID();
+    await withClient(pool, async (c) => {
+      await c.query('begin');
+      try {
+        await c.query("set local session_replication_role = 'replica'");
+        await c.query(
+          `insert into public.teams (id, tenant_id, name) values ($1, $2, 'D-A02-2 team X')`,
+          [teamX, base.tenantId],
+        );
+        await c.query('commit');
+      } catch (e) {
+        await c.query('rollback');
+        throw e;
+      }
+    });
+    registerCleanup(async () => {
+      await withClient(pool, async (c) => {
+        await c.query('begin');
+        try {
+          await c.query("set local session_replication_role = 'replica'");
+          await c.query('delete from public.teams where id = $1', [teamX]);
+          await c.query('commit');
+        } catch (e) {
+          await c.query('rollback');
+          throw e;
+        }
+      });
+    });
+
+    // Resolver picked team X; the caller sends both the assignment write
+    // (assigned_team_id=X) AND a decision carrying chosen_team_id=X.
+    const picked = await runRpcCapture<AssignmentResult>(
+      pool,
+      'public.set_entity_assignment',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `v3_1-picked-${ticketId}`,
+        {
+          assigned_team_id: teamX,
+          clear_routing_status: 'true',
+          decision: {
+            strategy: 'rule',
+            chosen_by: 'rule',
+            rule_id: null,
+            trace: [],
+            context: {},
+            chosen_team_id: teamX,
+            chosen_user_id: null,
+            chosen_vendor_id: null,
+          },
+        },
+      ],
+    );
+    expect(picked.kind).toBe('ok');
+    if (picked.kind !== 'ok') return;
+    expect(picked.value.new_assigned_team_id).toBe(teamX);
+
+    const rd = await pool.query(
+      `select chosen_by, strategy, chosen_team_id, chosen_user_id, chosen_vendor_id
+         from public.routing_decisions
+        where tenant_id = $1 and ticket_id = $2 and chosen_by = 'rule'`,
+      [base.tenantId, ticketId],
+    );
+    expect(rd.rowCount).toBe(1);
+    expect(rd.rows[0].chosen_team_id).toBe(teamX); // decision-sourced
+    expect(rd.rows[0].chosen_user_id).toBeNull();
+    expect(rd.rows[0].chosen_vendor_id).toBeNull();
+  });
+
+  it('scenario 17 (D-A02-2): caller-supplied chosen_team_id from another tenant raises set_entity_assignment.invalid_decision (NOT raw 23503 / 500)', async () => {
+    const base = await seedBaseFixture(pool, `v3_1-xtenant-${Date.now()}`);
+    const { ticketId } = await seedCase(pool, base);
+
+    const foreign = await seedBaseFixture(pool, `v3_1-xtenant-foreign-${Date.now()}`);
+    const foreignTeamId = randomUUID();
+    await withClient(pool, async (c) => {
+      await c.query('begin');
+      try {
+        await c.query("set local session_replication_role = 'replica'");
+        await c.query(
+          `insert into public.teams (id, tenant_id, name) values ($1, $2, 'Foreign-tenant team')`,
+          [foreignTeamId, foreign.tenantId],
+        );
+        await c.query('commit');
+      } catch (e) {
+        await c.query('rollback');
+        throw e;
+      }
+    });
+    registerCleanup(async () => {
+      await withClient(pool, async (c) => {
+        await c.query('begin');
+        try {
+          await c.query("set local session_replication_role = 'replica'");
+          await c.query('delete from public.teams where id = $1', [foreignTeamId]);
+          await c.query('commit');
+        } catch (e) {
+          await c.query('rollback');
+          throw e;
+        }
+      });
+    });
+
+    // chosen_team_id references a team in ANOTHER tenant. The
+    // routing_decisions.chosen_team_id FK (00027:63) is a global
+    // `references public.teams(id)` with no tenant scope — without the
+    // v3.1 tenant guard this FK-SUCCEEDS and writes cross-tenant
+    // provenance (a #0-invariant breach). The guard must raise the
+    // registered set_entity_assignment.invalid_decision (curated 400),
+    // never a raw 23503 / generic 500.
+    const xTenant = await runRpcCapture<AssignmentResult>(
+      pool,
+      'public.set_entity_assignment',
+      [
+        ticketId,
+        'case',
+        base.tenantId,
+        null,
+        `v3_1-xtenant-${ticketId}`,
+        {
+          assigned_team_id: null,
+          clear_routing_status: 'true',
+          decision: {
+            strategy: 'rule',
+            chosen_by: 'rule',
+            rule_id: null,
+            trace: [],
+            context: {},
+            chosen_team_id: foreignTeamId,
+            chosen_user_id: null,
+            chosen_vendor_id: null,
+          },
+        },
+      ],
+    );
+    expect(xTenant.kind).toBe('error');
+    if (xTenant.kind !== 'error') return;
+    expect(xTenant.error.message).toMatch(/set_entity_assignment\.invalid_decision/);
+    expect(xTenant.error.message).not.toMatch(/23503/);
+    expect(xTenant.error.message).not.toMatch(/foreign key/i);
+
+    // No routing_decisions row written (guard fires before the INSERT).
+    const rd = await pool.query(
+      `select id from public.routing_decisions where tenant_id = $1 and ticket_id = $2`,
+      [base.tenantId, ticketId],
+    );
+    expect(rd.rowCount).toBe(0);
+  });
 });
 
 export {};

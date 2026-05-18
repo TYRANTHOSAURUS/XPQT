@@ -290,6 +290,12 @@ describe('TicketService.reassign — audit02 Slice C (P1-1)', () => {
     expect(decision.chosen_by).toBe('request_type_default');
     expect(decision.rule_id).toBeNull();
     expect(decision.trace).toEqual(evalResult.trace);
+    // D-A02-2: decision carries the resolver's chosen target ids
+    // (recordDecision idiom — routing.service.ts:71-73). team target ⇒
+    // chosen_team_id set, the other two null.
+    expect(decision.chosen_team_id).toBe(NEW_TEAM);
+    expect(decision.chosen_user_id).toBeNull();
+    expect(decision.chosen_vendor_id).toBeNull();
     expect(decision.context).toMatchObject({
       request_type_id: null,
       domain: null,
@@ -381,6 +387,10 @@ describe('TicketService.reassign — audit02 Slice C (P1-1)', () => {
     expect(decision.strategy).toBe('rule');
     expect(decision.chosen_by).toBe('rule');
     expect(decision.rule_id).toBe('rule-77');
+    // D-A02-2: user target ⇒ chosen_user_id set, team/vendor null.
+    expect(decision.chosen_user_id).toBe(NEW_USER);
+    expect(decision.chosen_team_id).toBeNull();
+    expect(decision.chosen_vendor_id).toBeNull();
 
     expect(
       deps.insertCalls.filter((c) => c.table === 'routing_decisions'),
@@ -442,6 +452,10 @@ describe('TicketService.reassign — audit02 Slice C (P1-1)', () => {
     expect(decision).toBeDefined();
     expect(decision.strategy).toBe('fixed');
     expect(decision.chosen_by).toBe('request_type_default');
+    // D-A02-2: vendor target ⇒ chosen_vendor_id set, team/user null.
+    expect(decision.chosen_vendor_id).toBe(NEW_VENDOR);
+    expect(decision.chosen_team_id).toBeNull();
+    expect(decision.chosen_user_id).toBeNull();
 
     expect(
       deps.insertCalls.filter((c) => c.table === 'routing_decisions'),
@@ -516,6 +530,11 @@ describe('TicketService.reassign — audit02 Slice C (P1-1)', () => {
     expect(decision).toBeDefined();
     expect(decision.chosen_by).toBe('unassigned');
     expect(decision.strategy).toBe('auto');
+    // D-A02-2: result.target=null ⇒ ALL THREE chosen_* null (the resolver
+    // chose nobody — provenance must NOT reflect the prior assignment).
+    expect(decision.chosen_team_id).toBeNull();
+    expect(decision.chosen_user_id).toBeNull();
+    expect(decision.chosen_vendor_id).toBeNull();
 
     expect(
       deps.insertCalls.filter((c) => c.table === 'routing_decisions'),

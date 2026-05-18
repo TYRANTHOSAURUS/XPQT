@@ -264,6 +264,12 @@ describe('RoutingEvaluationHandler.handle (audit02 Slice D P1-2 + B.2.A.Step11 Â
       expect(decision.chosen_by).toBe('rule');
       expect(decision.rule_id).toBeNull();
       expect(decision.trace).toEqual(trace);
+      // D-A02-2: decision carries the resolver's chosen target ids,
+      // mirroring RoutingService.recordDecision (routing.service.ts:71-73).
+      // Team target â‡’ chosen_team_id set, the other two null.
+      expect(decision.chosen_team_id).toBe(TEAM_ID);
+      expect(decision.chosen_user_id).toBeNull();
+      expect(decision.chosen_vendor_id).toBeNull();
       // context mirrors RoutingService.recordDecision shape
       expect((decision.context as Record<string, unknown>).request_type_id).toBe(REQUEST_TYPE_ID);
       expect((decision.context as Record<string, unknown>).outbox_event_id).toBe(EVENT_ID);
@@ -305,9 +311,15 @@ describe('RoutingEvaluationHandler.handle (audit02 Slice D P1-2 + B.2.A.Step11 Â
       expect(decisionInserts).toHaveLength(0);
     });
 
-    it('unassigned outcome: still calls set_entity_assignment with clear_routing_status + decision (no assignee keys), no standalone writes', async () => {
+    it('unassigned outcome against an ALREADY-ASSIGNED ticket (D-A02-2): decision.chosen_* ALL NULL + NO assigned_* keys (assignment preserved) + clear_routing_status, no standalone writes', async () => {
+      // The ticket is currently assigned to a team. The resolver returns
+      // target=null (unassigned). The handler MUST NOT clear the existing
+      // assignment (no assigned_* keys) BUT the decision provenance MUST
+      // carry chosen_*=NULL (the resolver chose nobody) â€” NOT the stale
+      // current team. Pre-D-A02-2 the handler omitted chosen_* and v3
+      // sourced them from v_new_*=v_prev_*=the stale team â†’ wrong audit.
       const supabase = makeSupabase({
-        ticketRow: baseTicket(),
+        ticketRow: baseTicket({ assigned_team_id: TEAM_ID }),
         requestTypeRow: { domain: 'facilities' },
       });
       const routing = makeRoutingService({ target: null, chosen_by: 'unassigned', strategy: 'auto' });
@@ -318,9 +330,24 @@ describe('RoutingEvaluationHandler.handle (audit02 Slice D P1-2 + B.2.A.Step11 Â
         (c) => c.fn === 'set_entity_assignment',
       );
       expect(assignmentCalls).toHaveLength(1);
-      const args = assignmentCalls[0].args as { p_payload: Record<string, unknown> };
-      expect(args.p_payload.clear_routing_status).toBe('true');
-      expect(args.p_payload.decision).toBeDefined();
+      const payload = (assignmentCalls[0].args as { p_payload: Record<string, unknown> }).p_payload;
+      expect(payload.clear_routing_status).toBe('true');
+
+      // Assignment preservation: no assigned_* keys sent (resolver chose
+      // nobody â†’ must NOT clear the existing team assignment).
+      expect(Object.prototype.hasOwnProperty.call(payload, 'assigned_team_id')).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(payload, 'assigned_user_id')).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(payload, 'assigned_vendor_id')).toBe(false);
+
+      // D-A02-2: decision carries the RESOLVER's choice â€” chosen_* ALL
+      // NULL (the resolver returned target=null), NOT the stale team.
+      const decision = payload.decision as Record<string, unknown>;
+      expect(decision).toBeDefined();
+      expect(decision.chosen_by).toBe('unassigned');
+      expect(decision.chosen_team_id).toBeNull();
+      expect(decision.chosen_user_id).toBeNull();
+      expect(decision.chosen_vendor_id).toBeNull();
+
       // No standalone writes.
       expect(supabase.captured.updates.filter((u) => u.table === 'tickets')).toHaveLength(0);
       expect(supabase.captured.inserts.filter((i) => i.table === 'routing_decisions')).toHaveLength(0);

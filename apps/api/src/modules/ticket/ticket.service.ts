@@ -1298,6 +1298,12 @@ export class TicketService {
           strategy: string;
           chosen_by: string;
           rule_id: string | null;
+          // audit02 D-A02-2: the resolver's chosen target ids — v3.1
+          // (00418) sources routing_decisions.chosen_* from these
+          // (provenance), NOT the post-write assignment columns.
+          chosen_team_id: string | null;
+          chosen_user_id: string | null;
+          chosen_vendor_id: string | null;
           trace: unknown[];
           context: Record<string, unknown>;
         }
@@ -1381,6 +1387,14 @@ export class TicketService {
         strategy: result.strategy,
         chosen_by: result.chosen_by,
         rule_id: result.rule_id ?? null,
+        // audit02 D-A02-2: carry the resolver's chosen target ids so v3.1
+        // (00418) sources routing_decisions.chosen_* from the resolver
+        // DECISION, not the post-write assignment columns. Identical idiom
+        // to RoutingService.recordDecision (routing.service.ts:71-73):
+        // NULL on the resolver-unassigned outcome (result.target===null).
+        chosen_team_id: result.target?.kind === 'team' ? result.target.team_id : null,
+        chosen_user_id: result.target?.kind === 'user' ? result.target.user_id : null,
+        chosen_vendor_id: result.target?.kind === 'vendor' ? result.target.vendor_id : null,
         trace: result.trace as unknown[],
         context: {
           request_type_id: evalCtx.request_type_id,

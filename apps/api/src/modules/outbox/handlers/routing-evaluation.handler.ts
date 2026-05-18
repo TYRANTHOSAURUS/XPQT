@@ -266,6 +266,16 @@ export class RoutingEvaluationHandler
         strategy: evaluation.strategy,
         chosen_by: evaluation.chosen_by,
         rule_id: evaluation.rule_id ?? null,
+        // audit02 D-A02-2: carry the resolver's chosen target ids so v3.1
+        // sources routing_decisions.chosen_* from the resolver DECISION,
+        // not the post-write assignment columns. Identical idiom to
+        // RoutingService.recordDecision (routing.service.ts:71-73): NULL
+        // on the resolver-unassigned outcome (target===null). Pre-D-A02-2
+        // these were omitted and v3 fell back to v_new_*=v_prev_*=the
+        // stale current assignee on the assignment-preservation path.
+        chosen_team_id: target?.kind === 'team' ? target.team_id : null,
+        chosen_user_id: target?.kind === 'user' ? target.user_id : null,
+        chosen_vendor_id: target?.kind === 'vendor' ? target.vendor_id : null,
         trace: evaluation.trace,
         context: {
           request_type_id: context.request_type_id,
