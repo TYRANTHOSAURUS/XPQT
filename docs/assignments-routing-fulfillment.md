@@ -802,7 +802,11 @@ An agent can change a parent case's `ticket_type_id` via `POST /tickets/:id/recl
 **Outbox handlers (Step 11 commit 1):**
 - `SlaTimerRepointHandler` — drains `sla.timer_repointed_required`. Reads `tickets.sla_id` at fire time as source of truth (v8 / C3); computes `due_at` via `BusinessHoursService` from the path-dependent `started_at` in the payload (reclassify-time, not ticket.created_at); calls `repoint_sla_timer` RPC (00353 v2). Idempotent short-circuit on `(tenant, ticket, new_policy)` via the RPC's `already_repointed` outcome.
 - `WorkflowStartHandler` — already shipped in Step 12; same handler the create / grant paths use.
-- `RoutingEvaluationHandler` — drains `routing.evaluation_required`. Calls `RoutingService.evaluate`; if the target differs from current → calls `set_entity_assignment` RPC (00327 v2) with `idempotency_key=routing-evaluation:<event_id>`. Always inserts a `routing_decisions` audit row (including `unassigned` outcomes per v5 / I4). Sets `tickets.routing_status='idle'` on success, `'failed'` only on resolver throws or RPC errors (writes a `routing_evaluation_failed` activity breadcrumb).
+- `RoutingEvaluationHandler` — drains `routing.evaluation_required`. **Case-only by contract**: all 5 producers (`routing.evaluation_required`) are case/ticket-only (migrations 00354, 00355, 00356, 00357, 00358 — there is NO work_order producer). A non-case `entity_kind` in the payload dead-letters immediately (fail-closed guard, audit02 P1-2 F11). WO re-routing is an explicitly-deferred separate future event. Calls `RoutingService.evaluate`; then calls `set_entity_assignment` RPC (00416 v3) **unconditionally** with `idempotency_key=routing-evaluation:<event_id>`, always including:
+  - `p_payload.clear_routing_status:'true'` — v3 resets `routing_status='idle'` + `routing_failure_reason=null` inside the SAME PG transaction as the assignment write. The prior second raw UPDATE outside the RPC's tx (audit02 P1-2) is structurally eliminated.
+  - `p_payload.decision:{strategy,chosen_by,rule_id,trace,context}` — v3 writes the `routing_decisions` audit row atomically from this provenance. The prior standalone TS `routing_decisions.insert` (audit02 P1-2) is structurally eliminated.
+  - Assignment keys (`assigned_team_id/user_id/vendor_id`) are included only when the target differs from current; omitted for unassigned/matches-current (v3 key-absent = no change). v3's no-op fast path does NOT fire when either directive is present (00416:440-442 F17), so every evaluation produces a `routing_decisions` breadcrumb.
+  Sets `routing_status='failed'` ONLY on resolver throws or RPC errors (writes a `routing_evaluation_failed` activity breadcrumb).
 
 **Rejected paths:** reclassifying a child work order (TS preflight in `ReclassifyService.assertReclassifiable` — RPC doesn't gate this), reclassifying a closed/resolved ticket (post 2026-05-11 self-review remediation, 00355 v2 enforces a PG-side defense-in-depth `terminal_ticket` reject — symmetric with the approval gate at step 3; harness scenarios 12a-12c assert closed/resolved both raise `reclassify_ticket.terminal_ticket` and roll back the row), reclassifying to the same type (RPC raises `reclassify_ticket.target_same`), reclassifying to an inactive type (RPC raises `reclassify_ticket.new_request_type_invalid`), `reclassify_during_approval` (RPC raises — see step 3 above).
 
@@ -1318,3 +1322,46 @@ Any change to these requires updating §27:
 - `apps/api/src/modules/booking-bundles/bundle.service.ts` (if `attachServicesToBooking`'s write set or its `Cleanup` behavior changes — that invalidates the blocker map)
 - Any migration that adds, alters, or drops `delete_booking_with_guard`.
 - Any migration that changes the FK ON DELETE clauses on `bookings.id`-referencing tables (visitors, tickets, work_orders, orders, asset_reservations, recurrence_series, booking_slots) — that invalidates the blocker map. Update [`docs/follow-ups/phase-1-3-blocker-map.md`](follow-ups/phase-1-3-blocker-map.md) in the same PR.
+
+---
+
+## §28 — `routing.evaluation_required` handler — case-only contract (audit02 P1-2, 2026-05-18)
+
+### Contract
+
+`routing.evaluation_required` is **case-only by contract**. All 5 producers are case/ticket-only:
+
+| Migration | Producer |
+|---|---|
+| `00354_reclassify_ticket_rpc.sql` | `reclassify_ticket` RPC (on type change) |
+| `00355_reclassify_ticket_v2.sql` | v2 of the same (terminal-state guard) |
+| `00356_grant_ticket_approval.sql` | `grant_ticket_approval` RPC (on full approval) |
+| `00357_create_ticket_with_automation.sql` | `create_ticket_with_automation` RPC (on create) |
+| `00358_*.sql` | Additional case-create / approval path |
+
+There is **no work_order producer**. WO re-routing is an explicitly-deferred separate future event — if WOs ever need autonomous re-routing, a new `routing.wo_evaluation_required` event and a dedicated handler will be introduced. The `RoutingEvaluationHandler` must NOT be extended to cover WOs silently.
+
+### Atomicity (audit02 P1-2 fix)
+
+Prior to audit02 Slice D, the handler had two cross-transaction bugs:
+
+1. **routing_status clear** was a second raw `.from('tickets').update({routing_status:'idle'})` OUTSIDE the `set_entity_assignment` RPC's transaction. A crash between the two left `routing_status` stuck at `'pending'` forever.
+2. **routing_decisions insert** was a standalone TS write separate from the assignment RPC. A crash between the assignment commit and the insert left the audit trail incomplete.
+
+Both are now folded into `set_entity_assignment` v3 (migration `00416`) via:
+- `p_payload.clear_routing_status:'true'` — v3 resets `routing_status='idle'` + `routing_failure_reason=null` in the SAME PG tx as the assignment write.
+- `p_payload.decision:{strategy,chosen_by,rule_id,trace,context}` — v3 writes the `routing_decisions` row atomically from this provenance.
+
+The RPC is called **unconditionally** (all outcomes: target-found, unassigned, matches-current) so every evaluation event produces a `routing_decisions` breadcrumb. v3's no-op fast path (00416:440-442 F17) is NOT taken when either directive is present.
+
+### Fail-closed guard
+
+`RoutingEvaluationHandler` dead-letters immediately on a non-case `entity_kind` in the payload (impossible per the producer list above, but explicitly defended). This is not a transient error — it is a data-contract violation that cannot be fixed by retrying.
+
+### Trigger additions for §28
+
+Any change to these requires updating §28:
+
+- `apps/api/src/modules/outbox/handlers/routing-evaluation.handler.ts`
+- `supabase/migrations/00416_set_entity_assignment_v3.sql` (the `clear_routing_status` and `decision` semantics)
+- Any migration that adds a new `routing.evaluation_required` producer — update the producer table above and verify `entity_kind` is `'case'`.

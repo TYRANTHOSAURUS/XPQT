@@ -7,20 +7,34 @@ import type { RoutingService } from '../../../routing/routing.service';
 import type { OutboxEvent } from '../../outbox.types';
 
 /**
- * B.2.A.Step11 — `RoutingEvaluationHandler.handle` tests.
+ * audit02 Slice D (P1-2) + B.2.A.Step11 — `RoutingEvaluationHandler.handle` tests.
  *
  * Spec: docs/follow-ups/b2-survey-and-design.md §3.9.3 lines 2783-2786 +
  *       §3.10 step 10 (emitter — reclassify_ticket) + §3.9.2
  *       (routing_status state machine).
+ *       docs/follow-ups/audits/02-tickets-work-orders.md P1-2.
+ *
+ * audit02 Slice D changes (P1-2):
+ *   • set_entity_assignment is ALWAYS called (all outcomes, all paths) with
+ *     p_payload.clear_routing_status='true' + p_payload.decision — v3 owns
+ *     both the routing_status clear and the routing_decisions row atomically.
+ *   • The handler NO LONGER performs a standalone tickets.update({routing_status})
+ *     call (the cross-tx window between assignment + status-clear is now
+ *     structurally impossible — v3 commits both in one PG transaction).
+ *   • The handler NO LONGER performs a standalone routing_decisions.insert
+ *     in the success path — v3 writes it via the decision key.
+ *   • p_entity_kind is hardcoded 'case' by contract (5 producers, all case-only:
+ *     migrations 00354–00358). A non-case entity dead-letters immediately.
  *
  * Flow under test:
  *   1. tenant_id smuggling defense
  *   2. Re-read tickets row (terminal no-op on missing)
  *   3. Load request_type.domain
  *   4. Call RoutingService.evaluate
- *   5. Optional set_entity_assignment when target differs from current
- *   6. Always insert routing_decisions audit row
- *   7. tickets.routing_status='idle' on success / 'failed' on error
+ *   5. set_entity_assignment ALWAYS (with clear_routing_status:'true' + decision)
+ *   6. No standalone routing_decisions.insert in success path
+ *   7. No standalone tickets.update({routing_status:'idle'}) in success path
+ *   8. Non-case entity dead-letters immediately (fail-closed)
  */
 
 const TENANT_ID = 'e1111111-1111-4111-8111-111111111111';
@@ -162,6 +176,9 @@ function makeSupabase(opts: FakeSupabaseOpts) {
 interface FakeRoutingOpts {
   target?: { kind: 'team'; team_id: string } | { kind: 'user'; user_id: string } | { kind: 'vendor'; vendor_id: string } | null;
   chosen_by?: string;
+  strategy?: string;
+  rule_id?: string | null;
+  trace?: unknown[];
   throwError?: string;
 }
 
@@ -172,10 +189,10 @@ function makeRoutingService(opts: FakeRoutingOpts = {}): RoutingService {
       return {
         target: opts.target ?? null,
         chosen_by: opts.chosen_by ?? 'unassigned',
-        rule_id: null,
+        rule_id: opts.rule_id ?? null,
         rule_name: null,
-        strategy: opts.target ? opts.target.kind : 'auto',
-        trace: [{ step: 'request_type_default', matched: false, reason: 'no default', target: null }],
+        strategy: opts.strategy ?? (opts.target ? opts.target.kind : 'auto'),
+        trace: opts.trace ?? [{ step: 'request_type_default', matched: false, reason: 'no default', target: null }],
       };
     }),
   } as unknown as RoutingService;
@@ -197,9 +214,151 @@ function baseTicket(overrides: Partial<TicketRow> = {}): TicketRow {
   };
 }
 
-describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
+describe('RoutingEvaluationHandler.handle (audit02 Slice D P1-2 + B.2.A.Step11 §3.9.3)', () => {
+  describe('audit02 Slice D — P1-2 invariants', () => {
+    it('always calls set_entity_assignment with clear_routing_status:"true" on team target', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+        strategy: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+
+      const assignmentCalls = supabase.captured.rpcCalls.filter(
+        (c) => c.fn === 'set_entity_assignment',
+      );
+      expect(assignmentCalls).toHaveLength(1);
+      const args = assignmentCalls[0].args as { p_payload: Record<string, unknown> };
+      expect(args.p_payload.clear_routing_status).toBe('true');
+    });
+
+    it('always calls set_entity_assignment with p_payload.decision matching the evaluation result (team target)', async () => {
+      const trace = [{ step: 'rule', matched: true, reason: 'rule matched', target: { kind: 'team', team_id: TEAM_ID } }];
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+        strategy: 'rule',
+        rule_id: null,
+        trace,
+      });
+      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+
+      const assignmentCalls = supabase.captured.rpcCalls.filter(
+        (c) => c.fn === 'set_entity_assignment',
+      );
+      expect(assignmentCalls).toHaveLength(1);
+      const args = assignmentCalls[0].args as { p_payload: Record<string, unknown> };
+      const decision = args.p_payload.decision as Record<string, unknown>;
+      expect(decision).toBeDefined();
+      expect(decision.strategy).toBe('rule');
+      expect(decision.chosen_by).toBe('rule');
+      expect(decision.rule_id).toBeNull();
+      expect(decision.trace).toEqual(trace);
+      // context mirrors RoutingService.recordDecision shape
+      expect((decision.context as Record<string, unknown>).request_type_id).toBe(REQUEST_TYPE_ID);
+      expect((decision.context as Record<string, unknown>).outbox_event_id).toBe(EVENT_ID);
+    });
+
+    it('does NOT perform a standalone tickets.update({routing_status}) — v3 owns the clear atomically (no second write outside tx)', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+
+      // No standalone tickets.update call for routing_status — v3 handles it.
+      const ticketUpdates = supabase.captured.updates.filter((u) => u.table === 'tickets');
+      expect(ticketUpdates).toHaveLength(0);
+    });
+
+    it('does NOT perform a standalone routing_decisions.insert in the success path — v3 owns it via p_payload.decision', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+
+      // No standalone routing_decisions.insert in the success path.
+      const decisionInserts = supabase.captured.inserts.filter(
+        (i) => i.table === 'routing_decisions',
+      );
+      expect(decisionInserts).toHaveLength(0);
+    });
+
+    it('unassigned outcome: still calls set_entity_assignment with clear_routing_status + decision (no assignee keys), no standalone writes', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+      });
+      const routing = makeRoutingService({ target: null, chosen_by: 'unassigned', strategy: 'auto' });
+      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+
+      const assignmentCalls = supabase.captured.rpcCalls.filter(
+        (c) => c.fn === 'set_entity_assignment',
+      );
+      expect(assignmentCalls).toHaveLength(1);
+      const args = assignmentCalls[0].args as { p_payload: Record<string, unknown> };
+      expect(args.p_payload.clear_routing_status).toBe('true');
+      expect(args.p_payload.decision).toBeDefined();
+      // No standalone writes.
+      expect(supabase.captured.updates.filter((u) => u.table === 'tickets')).toHaveLength(0);
+      expect(supabase.captured.inserts.filter((i) => i.table === 'routing_decisions')).toHaveLength(0);
+    });
+
+    it('target matches current: still calls set_entity_assignment (for the directives), no standalone writes', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket({ assigned_team_id: TEAM_ID }),
+        requestTypeRow: { domain: 'facilities' },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+
+      const assignmentCalls = supabase.captured.rpcCalls.filter(
+        (c) => c.fn === 'set_entity_assignment',
+      );
+      expect(assignmentCalls).toHaveLength(1);
+      expect(supabase.captured.updates.filter((u) => u.table === 'tickets')).toHaveLength(0);
+      expect(supabase.captured.inserts.filter((i) => i.table === 'routing_decisions')).toHaveLength(0);
+    });
+
+    it('fail-closed guard: dead-letters if payload entity_kind is somehow not "case" (impossible per F11 — producers 00354-00358 are case-only)', async () => {
+      const supabase = makeSupabase({ ticketRow: baseTicket(), requestTypeRow: { domain: null } });
+      const routing = makeRoutingService({ target: null, chosen_by: 'unassigned' });
+      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+      const event = makeEvent({}, { tenant_id: TENANT_ID, ticket_id: TICKET_ID } as Partial<RoutingEvaluationRequiredPayload>);
+      // Inject entity_kind override to simulate a contract violation.
+      (event.payload as unknown as Record<string, unknown>).entity_kind = 'work_order';
+      await expect(handler.handle(event)).rejects.toBeInstanceOf(DeadLetterError);
+    });
+  });
+
   describe('happy paths', () => {
-    it('routes to a new team: calls set_entity_assignment + writes routing_decisions + sets routing_status=idle', async () => {
+    it('routes to a new team: calls set_entity_assignment with team + clear_routing_status + decision, no standalone writes', async () => {
       const supabase = makeSupabase({
         ticketRow: baseTicket(),
         requestTypeRow: { domain: 'facilities' },
@@ -231,35 +390,19 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
       expect(args.p_payload.assigned_team_id).toBe(TEAM_ID);
       expect(args.p_payload.assigned_user_id).toBeNull();
       expect(args.p_payload.assigned_vendor_id).toBeNull();
-      // codex-S11-I2 remediation: handler does NOT pass `reason` —
-      // doing so would trigger set_entity_assignment's manual-reassign
-      // audit branch (00327_v2:258) and write a duplicate routing_decisions
-      // row classified as `manual_reassign`. The handler writes its own
-      // resolver-audit row at step 6 with `chosen_by='rule'` (or whatever
-      // the evaluation produced).
+      // audit02 Slice D: clear_routing_status + decision folded into v3 tx.
+      expect(args.p_payload.clear_routing_status).toBe('true');
+      expect(args.p_payload.decision).toBeDefined();
+      // codex-S11-I2: handler does NOT pass `reason`.
       expect(args.p_payload.reason).toBeUndefined();
 
-      // routing_decisions row inserted.
-      const decisionInserts = supabase.captured.inserts.filter(
-        (i) => i.table === 'routing_decisions',
-      );
-      expect(decisionInserts).toHaveLength(1);
-      const decision = decisionInserts[0].row as {
-        chosen_team_id: string | null;
-        chosen_by: string;
-        context: { outbox_event_id: string };
-      };
-      expect(decision.chosen_team_id).toBe(TEAM_ID);
-      expect(decision.chosen_by).toBe('rule');
-      expect(decision.context.outbox_event_id).toBe(EVENT_ID);
-
-      // routing_status flipped to idle.
-      const ticketUpdates = supabase.captured.updates.filter((u) => u.table === 'tickets');
-      expect(ticketUpdates).toHaveLength(1);
-      expect((ticketUpdates[0].patch as { routing_status: string }).routing_status).toBe('idle');
+      // audit02 Slice D P1-2: NO standalone routing_decisions.insert (v3 owns it).
+      expect(supabase.captured.inserts.filter((i) => i.table === 'routing_decisions')).toHaveLength(0);
+      // audit02 Slice D P1-2: NO standalone tickets.update({routing_status}) (v3 owns it).
+      expect(supabase.captured.updates.filter((u) => u.table === 'tickets')).toHaveLength(0);
     });
 
-    it('unassigned outcome: no set_entity_assignment, routing_decisions row written, routing_status=idle (v5/I4)', async () => {
+    it('unassigned outcome: calls set_entity_assignment (directives only), no standalone writes (v5/I4)', async () => {
       const supabase = makeSupabase({
         ticketRow: baseTicket(),
         requestTypeRow: { domain: 'facilities' },
@@ -271,16 +414,16 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
 
       expect(
         supabase.captured.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
-      ).toHaveLength(0);
+      ).toHaveLength(1);
       expect(
         supabase.captured.inserts.filter((i) => i.table === 'routing_decisions'),
-      ).toHaveLength(1);
-      const ticketUpdates = supabase.captured.updates.filter((u) => u.table === 'tickets');
-      expect(ticketUpdates).toHaveLength(1);
-      expect((ticketUpdates[0].patch as { routing_status: string }).routing_status).toBe('idle');
+      ).toHaveLength(0);
+      expect(
+        supabase.captured.updates.filter((u) => u.table === 'tickets'),
+      ).toHaveLength(0);
     });
 
-    it('target matches current assignee: skip set_entity_assignment, still write routing_decisions', async () => {
+    it('target matches current assignee: still calls set_entity_assignment for directives, no standalone writes', async () => {
       const supabase = makeSupabase({
         ticketRow: baseTicket({ assigned_team_id: TEAM_ID }),
         requestTypeRow: { domain: 'facilities' },
@@ -295,13 +438,13 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
 
       expect(
         supabase.captured.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
-      ).toHaveLength(0);
+      ).toHaveLength(1);
       expect(
         supabase.captured.inserts.filter((i) => i.table === 'routing_decisions'),
-      ).toHaveLength(1);
+      ).toHaveLength(0);
     });
 
-    it('target differs from current (different team): set_entity_assignment fires', async () => {
+    it('target differs from current (different team): set_entity_assignment fires with both assignment keys + directives', async () => {
       const supabase = makeSupabase({
         ticketRow: baseTicket({ assigned_team_id: OTHER_TEAM_ID }),
         requestTypeRow: { domain: 'facilities' },
@@ -314,9 +457,12 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
 
       await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
 
-      expect(
-        supabase.captured.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
-      ).toHaveLength(1);
+      const calls = supabase.captured.rpcCalls.filter((c) => c.fn === 'set_entity_assignment');
+      expect(calls).toHaveLength(1);
+      const args = calls[0].args as { p_payload: Record<string, unknown> };
+      expect(args.p_payload.assigned_team_id).toBe(TEAM_ID);
+      expect(args.p_payload.clear_routing_status).toBe('true');
+      expect(args.p_payload.decision).toBeDefined();
     });
   });
 
