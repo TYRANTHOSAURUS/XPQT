@@ -382,6 +382,33 @@ export interface ActorContext {
    * the controller. The middleware always sets it on real HTTP requests.
    */
   client_request_id?: string;
+  /**
+   * Request-canonical resolution-basis instant (ISO 8601, audit-03 D-6).
+   *
+   * THE single wall-clock anchor for every lead-time-derived value that
+   * feeds the idempotency-hashed combined-RPC payloads on the CREATE path
+   * (the booking row does not exist yet, so there is no `created_at` to
+   * anchor on — unlike the attach path, which uses `bookings.created_at`).
+   *
+   * Defaulted ONCE at the controller chokepoint (`actorFromRequest`) to
+   * `new Date().toISOString()`, OR to a caller-supplied `X-Request-Time`
+   * header when present + a valid ISO instant (the seam a future FE-pin
+   * follow-up uses so a same-`clientRequestId` retry resends the original
+   * instant — deferred-with-owner per the D-6 decision doc).
+   *
+   * Threaded into `BookingFlowService.buildAttachPlan` → the room-rule
+   * resolver context + the service-rule producer + the predicate engine's
+   * `lead_minutes_*` operators, so two same-intent create retries that
+   * straddle a tenant lead-time-rule boundary recompute a byte-IDENTICAL
+   * `p_booking_input` + `p_attach_plan` (same md5 → cached 2xx, never a
+   * spurious `*.payload_mismatch` 409).
+   *
+   * Optional for the same reason as `client_request_id`: synthetic/system
+   * actors (recurrence materialiser, Outlook sync) and unit tests build an
+   * ActorContext directly. Consumers that need a basis fall back to
+   * `new Date().toISOString()` at the point of use when this is absent.
+   */
+  resolution_basis_at?: string;
 }
 
 export type RecurrenceScope = 'this' | 'this_and_following' | 'series';

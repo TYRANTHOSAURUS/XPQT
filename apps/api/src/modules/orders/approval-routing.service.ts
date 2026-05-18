@@ -214,7 +214,17 @@ export class ApprovalRoutingService {
           order_line_item_ids: entry.scope.order_line_item_ids ?? [],
           ticket_ids: entry.scope.ticket_ids ?? [],
           asset_reservation_ids: entry.scope.asset_reservation_ids ?? [],
-          reasons: entry.reasons,
+          // audit-03 D-6 (V3-order) — canonical sort by (rule_id,
+          // denial_message). Belt-and-suspenders: the upstream rule fetch
+          // is now id-ordered + the resolver sort is stable, so tuple
+          // order is already deterministic; this guarantees the SERIALIZED
+          // `reasons` array (part of the idempotency-hashed p_attach_plan)
+          // is byte-stable regardless of any future aggregation reorder.
+          reasons: [...entry.reasons].sort(
+            (a, b) =>
+              a.rule_id.localeCompare(b.rule_id) ||
+              (a.denial_message ?? '').localeCompare(b.denial_message ?? ''),
+          ),
         },
         status: 'pending',
       });

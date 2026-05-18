@@ -42,6 +42,7 @@ describe('BundleService.buildAttachPlan (B.0.C.4)', () => {
         end_at: '2026-05-04T11:00:00Z',
         attendee_count: 4 as number | null,
         source: 'portal' as const,
+        created_at: '2026-05-04T09:00:00Z', // audit-03 D-6 resolution basis
       },
       requester_person_id: '11111111-1111-1111-1111-111111111111',
       idempotency_key: 'idem-1',

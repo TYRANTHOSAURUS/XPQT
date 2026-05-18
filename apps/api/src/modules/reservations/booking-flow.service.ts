@@ -808,6 +808,22 @@ export class BookingFlowService {
     this.assertValid(input);
     const tenantId = TenantContext.current().id;
 
+    // audit-03 D-6 (V2 / V1 create-path) — the request-canonical
+    // resolution-basis instant. The booking row does NOT exist yet on
+    // create, so there is no `bookings.created_at` to anchor on (unlike
+    // the attach path). The controller chokepoint (`actorFromRequest`)
+    // defaults ONE instant per request onto `actor.resolution_basis_at`;
+    // synthetic/system actors + unit tests that build an ActorContext
+    // directly leave it unset → fall back to a single read here (still
+    // ONE basis for the whole plan-build, just not retry-stable for
+    // those non-HTTP callers, which have no retry semantics anyway).
+    // This SAME instant threads to (a) the room-rule resolver context
+    // (V2), (b) the service-rule producer + predicate engine (V1/V3-time)
+    // — so a same-intent create retry straddling a tenant lead-time-rule
+    // boundary recomputes a byte-identical p_booking_input + p_attach_plan.
+    const resolutionBasisAt = actor.resolution_basis_at ?? new Date().toISOString();
+    const resolutionBasisMs = Date.parse(resolutionBasisAt);
+
     // 1+2. Load space + verify
     const space = await this.loadSpace(input.space_id, tenantId);
 
@@ -822,7 +838,10 @@ export class BookingFlowService {
       room_teardown_buffer_minutes: space.teardown_buffer_minutes ?? 0,
     });
 
-    // 4. Resolve booking rules
+    // 4. Resolve booking rules — anchored on the request-canonical basis
+    //    (audit-03 D-6 V2/V3-time) so the matched room-rule set, and
+    //    therefore the hashed policy_snapshot / applied_rule_ids / status,
+    //    is wall-clock-independent across a same-intent create retry.
     const ruleOutcome = await this.ruleResolver.resolve(
       {
         requester_person_id: input.requester_person_id,
@@ -831,6 +850,7 @@ export class BookingFlowService {
         end_at: input.end_at,
         attendee_count: input.attendee_count ?? null,
         criteria: {},
+        resolution_basis_ms: resolutionBasisMs,
       },
       tenantId,
     );
@@ -850,16 +870,31 @@ export class BookingFlowService {
     const status: 'pending_approval' | 'confirmed' =
       ruleOutcome.final === 'require_approval' ? 'pending_approval' : 'confirmed';
 
+    // audit-03 D-6 (V3-order) — canonical-sort the matched rules ONCE by
+    // id, then derive EVERY hashed collection (matched_rule_ids,
+    // effects_seen, rule_evaluations, applied_rule_ids) from the SAME
+    // sorted array. Sorting once and re-deriving keeps `effects_seen` /
+    // `rule_evaluations` positionally aligned with `matched_rule_ids`
+    // (they would desync if sorted independently) AND makes all four
+    // byte-stable in the hashed p_booking_input across a same-intent
+    // retry. Belt-and-suspenders over the now-id-ordered rule fetch +
+    // stable resolver sort. `ruleOutcome.final` is order-independent
+    // (deny>approval>allow precedence), so the deny/status gate above is
+    // unaffected by reordering.
+    const sortedMatchedRules = [...ruleOutcome.matchedRules].sort((a, b) =>
+      a.id.localeCompare(b.id),
+    );
+
     const policySnapshot: PolicySnapshot = {
-      matched_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
-      effects_seen: ruleOutcome.effects,
+      matched_rule_ids: sortedMatchedRules.map((r) => r.id),
+      effects_seen: sortedMatchedRules.map((r) => r.effect),
       buffers_collapsed_for_back_to_back:
         buffers.setup_buffer_minutes !== (space.setup_buffer_minutes ?? 0) ||
         buffers.teardown_buffer_minutes !== (space.teardown_buffer_minutes ?? 0),
       source_room_check_in_required: space.check_in_required ?? false,
       source_room_setup_buffer_minutes: space.setup_buffer_minutes ?? 0,
       source_room_teardown_buffer_minutes: space.teardown_buffer_minutes ?? 0,
-      rule_evaluations: ruleOutcome.matchedRules.map((r) => ({
+      rule_evaluations: sortedMatchedRules.map((r) => ({
         rule_id: r.id,
         matched: true,
         effect: r.effect,
@@ -924,7 +959,10 @@ export class BookingFlowService {
       cost_center_id: input.bundle?.cost_center_id ?? null,
       cost_amount_snapshot: costAmountSnapshot,
       policy_snapshot: policySnapshot as unknown as Record<string, unknown>,
-      applied_rule_ids: ruleOutcome.matchedRules.map((r) => r.id),
+      // audit-03 D-6 (V3-order) — same canonically-sorted source as
+      // policy_snapshot.matched_rule_ids (re-deriving from the same sorted
+      // array, not the raw resolver order).
+      applied_rule_ids: sortedMatchedRules.map((r) => r.id),
       config_release_id: null,
       recurrence_series_id: input.recurrence_series_id ?? null,
       recurrence_index: input.recurrence_index ?? null,
@@ -952,6 +990,13 @@ export class BookingFlowService {
           end_at: input.end_at,
           attendee_count: input.attendee_count ?? null,
           source: bookingSource,
+          // audit-03 D-6 (create path) — there is no booking row yet, so
+          // the lead-time resolution basis is the request-canonical
+          // instant, NOT a `bookings.created_at`. `buildAttachPlan` reads
+          // this for `hydrateLines` + the service-rule predicate engine,
+          // so the hashed p_attach_plan matches the hashed p_booking_input
+          // and a same-intent create retry never spuriously 409s.
+          created_at: resolutionBasisAt,
         },
         requester_person_id: input.requester_person_id,
         bundle: input.bundle

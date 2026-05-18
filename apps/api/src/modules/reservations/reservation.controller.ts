@@ -26,6 +26,30 @@ import {
 } from './dto/dtos';
 import type { ActorContext, CreateReservationInput, PickerInput } from './dto/types';
 
+/**
+ * audit-03 D-6 — resolve the request-canonical resolution-basis instant.
+ *
+ * The single seam where the create-path lead-time anchor is fixed. Honors
+ * a caller-supplied `X-Request-Time` header IFF it parses to a finite
+ * instant (the FE-pin seam, deferred-with-owner — a future follow-up has
+ * the web client mint+resend this on a same-`clientRequestId` retry so the
+ * basis survives an auto-retry that straddles a lead-time boundary).
+ * Falls back to `new Date().toISOString()` — which makes the basis stable
+ * WITHIN a single request (the dominant case: `query-client.ts` sets
+ * mutations `retry:false` app-wide, so same-crid auto-retry is rare).
+ *
+ * Always returns a normalized ISO 8601 string (round-tripped through Date)
+ * so downstream `Date.parse` is exact and the hashed payload is canonical.
+ */
+function parseRequestTimeHeader(raw: unknown): string {
+  const candidate = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof candidate === 'string' && candidate.length > 0) {
+    const ms = Date.parse(candidate);
+    if (Number.isFinite(ms)) return new Date(ms).toISOString();
+  }
+  return new Date().toISOString();
+}
+
 @Controller('reservations')
 export class ReservationController {
   constructor(
@@ -882,6 +906,20 @@ export class ReservationController {
       is_service_desk: !!bookOnBehalfRes.data,
       has_override_rules: !!overrideRes.data,
       client_request_id: (req as { clientRequestId?: string }).clientRequestId,
+      // audit-03 D-6: request-canonical resolution-basis instant. Defaulted
+      // ONCE here (the single controller chokepoint every reservation route
+      // funnels through) so every lead-time-derived value on the create
+      // path anchors on ONE instant per request — a same-intent retry
+      // straddling a tenant lead-time-rule boundary recomputes a
+      // byte-identical hashed payload (no spurious payload_mismatch 409).
+      // Honors an optional `X-Request-Time` header when it parses to a
+      // valid ISO instant (the FE-pin seam — a future follow-up has the
+      // client mint+resend it on a same-clientRequestId retry; until then
+      // the default makes the basis stable WITHIN a single request, which
+      // is the common case since mutations are `retry:false` app-wide).
+      resolution_basis_at: parseRequestTimeHeader(
+        req.headers['x-request-time'],
+      ),
     };
   }
 }

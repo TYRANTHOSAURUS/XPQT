@@ -152,6 +152,19 @@ export class MultiRoomBookingService {
     const clientRequestId = actor.client_request_id ?? randomUUID();
     const idempotencyKey = `booking.create:${actor.user_id}:${clientRequestId}`;
 
+    // audit-03 D-6 (multi-room create path) — the request-canonical
+    // resolution-basis instant. Multi-room create calls the SAME
+    // producer (`bundle.buildAttachPlan`) + room-rule resolver as
+    // single-room, into the SAME idempotency-hashed
+    // create_booking_with_attach_plan. It inherits the identical V1/V2/
+    // V3-time nondeterminism, so it is anchored on the SAME basis: the
+    // controller-defaulted `actor.resolution_basis_at` (one instant per
+    // request), with a single-read fallback for synthetic/legacy callers
+    // that build an ActorContext directly (no retry semantics there).
+    const resolutionBasisAt =
+      actor.resolution_basis_at ?? new Date().toISOString();
+    const resolutionBasisMs = Date.parse(resolutionBasisAt);
+
     // 1. Per-room rule resolution + space hydration. We resolve rules
     //    per-room because each room can have a distinct rule set (e.g.
     //    catering required for room A, not B). The most restrictive
@@ -233,6 +246,10 @@ export class MultiRoomBookingService {
           end_at: input.end_at,
           attendee_count: input.attendee_count ?? null,
           criteria: {},
+          // audit-03 D-6 (V2/V3-time) — same request-canonical basis for
+          // every room so a same-intent multi-room retry recomputes the
+          // identical matched-rule set across ALL rooms.
+          resolution_basis_ms: resolutionBasisMs,
         },
         tenantId,
       );
@@ -326,8 +343,17 @@ export class MultiRoomBookingService {
         : input.source ?? 'portal';
 
     const status: 'pending_approval' | 'confirmed' = anyRequireApproval ? 'pending_approval' : 'confirmed';
+    // audit-03 D-6 (V3-order) — canonical-sort the cross-room matched-rule
+    // set before it is serialized into the idempotency-hashed
+    // p_booking_input. `matchedRuleIds` is a Set whose iteration order is
+    // per-room resolution order; the now-id-ordered rule fetch makes that
+    // deterministic, but the explicit sort guarantees byte-stability of
+    // the hashed payload across a same-intent multi-room retry regardless.
+    const sortedMatchedRuleIds = Array.from(matchedRuleIds).sort((a, b) =>
+      a.localeCompare(b),
+    );
     const policySnapshot: PolicySnapshot = {
-      matched_rule_ids: Array.from(matchedRuleIds),
+      matched_rule_ids: sortedMatchedRuleIds,
       effects_seen: [],
     };
 
@@ -385,7 +411,9 @@ export class MultiRoomBookingService {
       cost_center_id: input.bundle?.cost_center_id ?? null,
       cost_amount_snapshot: null,
       policy_snapshot: policySnapshot as unknown as Record<string, unknown>,
-      applied_rule_ids: Array.from(matchedRuleIds),
+      // audit-03 D-6 (V3-order) — same canonically-sorted source as
+      // policy_snapshot.matched_rule_ids.
+      applied_rule_ids: sortedMatchedRuleIds,
       config_release_id: null,
       recurrence_series_id: null,
       recurrence_index: null,
@@ -412,6 +440,11 @@ export class MultiRoomBookingService {
           end_at: input.end_at,
           attendee_count: input.attendee_count ?? null,
           source: bookingSource,
+          // audit-03 D-6 — no booking row yet (multi-room create); the
+          // lead-time basis is the request-canonical instant, threaded
+          // to hydrateLines + the service-rule predicate engine so the
+          // hashed p_attach_plan is wall-clock-independent on retry.
+          created_at: resolutionBasisAt,
         },
         requester_person_id: input.requester_person_id,
         bundle: input.bundle

@@ -100,7 +100,17 @@ export class ServiceRuleResolverService {
       .from('service_rules')
       .select('*')
       .eq('tenant_id', tenant.id)
-      .eq('active', true);
+      .eq('active', true)
+      // audit-03 D-6 (V3-order, time-INDEPENDENT) — deterministic
+      // tie-break. The (specificity, priority) ordering in
+      // `matchAndEvaluate` is UNCHANGED; this only stabilises the order
+      // of rules that tie on BOTH (Array.prototype.sort is stable, so the
+      // tie previously followed arbitrary DB row order → unsorted
+      // `matched_rule_ids` / `setup_emit.rule_ids` /
+      // `pending_setup_trigger_args.ruleIds` / `scope_breakdown.reasons`
+      // leaked into the idempotency-hashed attach plan even with ZERO
+      // wall-clock movement). Lowest-id wins among equals.
+      .order('id', { ascending: true });
     if (error) throw error;
     return (data ?? []) as ServiceRuleRow[];
   }
