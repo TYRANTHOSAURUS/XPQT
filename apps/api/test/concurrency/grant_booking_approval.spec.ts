@@ -15,10 +15,15 @@
  *
  * 2. Concurrent grants on DIFFERENT approval_id values within the
  *    SAME booking parallel-group:
- *    - The per-approval lock has different keys → both clients enter
- *      step 2 at the same time, both CAS their own row.
- *    - The per-booking lock has the SAME key for both → the second
- *      blocks at step 4 until the first commits.
+ *    - Per-approval advisory keys differ → the second clears step 1
+ *      without contending there.
+ *    - Per-booking serialisation in v3 (00426 step 2, BLOCKER-2
+ *      closure) is a `SELECT ... FROM bookings ... FOR UPDATE` ROW
+ *      lock — NOT the pre-00403 per-booking ADVISORY lock. The second
+ *      blocks on that row lock (held by the first's open txn) until
+ *      the first commits. Observed via pg_stat_activity +
+ *      pg_blocking_pids (waitForRowLockBlocker), since the advisory-
+ *      only pgLocksFor/waitForBlocker helpers cannot see a row lock.
  *    - The second's v_unresolved_count then reads MVCC-post-commit
  *      and decides resolution correctly (no pending siblings → final
  *      kind='resolved').
@@ -35,6 +40,7 @@ import {
   seedPendingApprovalBooking,
   seedSecondApprover,
   waitForBlocker,
+  waitForRowLockBlocker,
   withClient,
 } from './helpers';
 import { endPool, getPool } from './pool';
@@ -147,17 +153,24 @@ describe('grant_booking_approval — concurrent grants', () => {
       parallelGroup: 'group1',
     });
 
-    // Per-booking lock key — both A and B compete on this. Per-
-    // approval keys differ, so step 1 doesn't serialise.
-    const bookingLockKey = await withClient(pool, (c) =>
-      lockKey(c, `${base.tenantId}:booking_approval:${seeded.bookingId}`),
-    );
-
+    // Per-booking serialisation in grant_booking_approval v3
+    // (00426 step 2, BLOCKER-2 closure) is a `SELECT ... FROM bookings
+    // ... FOR UPDATE` ROW lock — NOT the per-booking ADVISORY lock the
+    // pre-00403 00310 RPC used. The advisory-only pgLocksFor /
+    // waitForBlocker helpers cannot observe a row lock; contention is
+    // observed via pg_stat_activity (waitForRowLockBlocker) +
+    // pg_blocking_pids instead. Do NOT reintroduce a bookingLockKey
+    // advisory assertion here — v3 takes no per-booking advisory lock.
     const clientA = await pool.connect();
     const clientB = await pool.connect();
     try {
-      // A starts first and acquires the booking-level lock at step 4.
+      // A starts first and, inside grant_booking_approval, takes the
+      // per-approval advisory lock (step 1) then the bookings-row
+      // FOR UPDATE (step 2) which its open transaction keeps held.
       await clientA.query('begin');
+      const aPid = (
+        await clientA.query<{ pid: number }>('select pg_backend_pid() as pid')
+      ).rows[0].pid;
       const aResult = await callRpc<{ kind: string; remaining?: number }>(
         clientA,
         'public.grant_booking_approval',
@@ -165,29 +178,37 @@ describe('grant_booking_approval — concurrent grants', () => {
       );
       expect(aResult.kind).toBe('partial_approved');
       expect(aResult.remaining).toBe(1);
-      expect(
-        (await pgLocksFor(pool, bookingLockKey)).filter((l) => l.granted).length,
-      ).toBe(1);
 
-      // B starts — its per-approval lock is different from A's, so B
-      // gets through steps 1-3 (CAS its own row to 'approved'). Then
-      // B reaches step 4 (per-booking lock) and BLOCKS behind A.
+      // B starts — its per-approval advisory key differs from A's, so B
+      // clears step 1, then BLOCKS at step 2 on the bookings row lock
+      // A's still-open transaction holds.
       await clientB.query('begin');
+      const bPid = (
+        await clientB.query<{ pid: number }>('select pg_backend_pid() as pid')
+      ).rows[0].pid;
       const bPromise = callRpc<{ kind: string; final_decision?: string; new_status?: string }>(
         clientB,
         'public.grant_booking_approval',
         [approvalBId, base.tenantId, null, 'approved', null, `grant-diff-B-${approvalBId}`],
       );
 
-      await waitForBlocker(pool, bookingLockKey, { timeoutMs: 5_000 });
-      const duringContention = await pgLocksFor(pool, bookingLockKey);
-      expect(duringContention.some((l) => !l.granted)).toBe(true);
-      // Exactly one waiter (B) and one holder (A).
-      expect(duringContention.filter((l) => l.granted).length).toBe(1);
+      // Deterministic contention proof: B is parked in a row-level Lock
+      // wait, and A's backend is the one blocking it. 15s (not the
+      // harness-default 5s) tolerates a loaded ubuntu-latest CI runner —
+      // waitForRowLockBlocker polls real pg_stat_activity state and
+      // returns the instant B blocks, so a larger ceiling only avoids a
+      // false negative; it cannot mask a genuine no-contention failure.
+      await waitForRowLockBlocker(pool, bPid, { timeoutMs: 15_000 });
+      const blockers = await pool.query<{ blockers: number[] }>(
+        'select pg_blocking_pids($1) as blockers',
+        [bPid],
+      );
+      expect(blockers.rows[0].blockers).toContain(aPid);
 
-      // Commit A → B's lock acquires; B re-reads sibling counts under
-      // a fresh snapshot that includes A's commit. Both approvals are
-      // 'approved' now → unresolved=0 → kind='resolved'.
+      // Commit A → the bookings row lock releases; B acquires it and
+      // re-reads sibling counts under a fresh snapshot that includes
+      // A's commit. Both approvals 'approved' now → unresolved=0 →
+      // kind='resolved'.
       await clientA.query('commit');
 
       const bResult = await bPromise;

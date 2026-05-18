@@ -128,7 +128,7 @@ async function seedRequestType(
         await c.query(
           `insert into public.workflow_definitions
              (id, tenant_id, name, entity_type, version, status, graph_definition)
-           values ($1, $2, 'Concurrency Workflow', 'ticket', 1, 'published', $3::jsonb)`,
+           values ($1, $2, 'Concurrency Workflow', 'case', 1, 'published', $3::jsonb)`,
           [
             workflowDefinitionId,
             base.tenantId,
@@ -220,7 +220,7 @@ async function seedExtraWorkflow(
   await pool.query(
     `insert into public.workflow_definitions
        (id, tenant_id, name, entity_type, version, status, graph_definition)
-     values ($1, $2, $3, 'ticket', 1, 'published', '{"nodes":[{"id":"trigger-1","type":"trigger"}],"edges":[]}'::jsonb)`,
+     values ($1, $2, $3, 'case', 1, 'published', '{"nodes":[{"id":"trigger-1","type":"trigger"}],"edges":[]}'::jsonb)`,
     [id, tenantId, label],
   );
   return id;
