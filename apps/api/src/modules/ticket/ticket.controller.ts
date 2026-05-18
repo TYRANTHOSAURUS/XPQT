@@ -306,6 +306,22 @@ export class TicketController {
     return this.ticketService.getChildTasks(id, actorAuthUid);
   }
 
+  /**
+   * Audit-02 P1-5 FE-rollup fix. Privileged aggregate count of a case's
+   * child work_orders — parent-`read`-gated (same precondition as
+   * `children`), tenant-scoped, returns ONLY `{ done, total }`. It
+   * deliberately does NOT apply the per-child `work_order_visibility_ids`
+   * filter so the desk progress ring/badge reports the true total even to
+   * a scoped operator who can't see every child. No child identities or
+   * metadata are exposed. See docs/visibility.md §7.
+   */
+  @Get(':id/children/rollup')
+  async childrenRollup(@Req() request: Request, @Param('id') id: string) {
+    const actorAuthUid = (request as { user?: { id: string } }).user?.id;
+    if (!actorAuthUid) throw AppErrors.unauthorized('No auth user');
+    return this.ticketService.getChildTasksRollup(id, actorAuthUid);
+  }
+
   @Get(':id/visibility-trace')
   async visibilityTrace(@Req() request: Request, @Param('id') id: string) {
     const tenant = TenantContext.current();

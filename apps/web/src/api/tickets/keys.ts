@@ -9,6 +9,7 @@
  *     └─ detail → detail(id)
  *                   └─ activities(id)
  *                   └─ children(id)
+ *                   └─ childrenRollup(id)
  *                   └─ approvals(id)
  *                   └─ reclassify-preview(id, nextRequestTypeId)
  */
@@ -46,6 +47,15 @@ export const ticketKeys = {
 
   activities: (id: string) => [...ticketKeys.detail(id), 'activities'] as const,
   children: (id: string) => [...ticketKeys.detail(id), 'children'] as const,
+  /**
+   * Audit-02 P1-5 FE-rollup fix. Privileged `{ done, total }` aggregate over
+   * a case's child work_orders (`GET /tickets/:id/children/rollup`). Lives
+   * UNDER the detail subtree as a sibling of `children(id)` so it shares the
+   * parent-detail invalidation subtree — any child-WO mutation that touches
+   * `children(id)` must also invalidate this key.
+   */
+  childrenRollup: (id: string) =>
+    [...ticketKeys.detail(id), 'children-rollup'] as const,
   approvals: (id: string) => [...ticketKeys.detail(id), 'approvals'] as const,
   canPlan: (id: string) => [...ticketKeys.detail(id), 'can-plan'] as const,
 
