@@ -94,6 +94,18 @@ jobs:
         # KEEP_BACKWARDS_COMPAT_FIELD / KEEP_AUDIT_ENTITY_TYPE / KEEP_WIRE_SHAPE.
         run: pnpm naming:check-allowlist
 
+      - name: Migration prefix uniqueness guard
+        # audit-02 P2-3 / integrator verdict blocker #8. Duplicate 5-digit
+        # migration prefixes from concurrent branches cause a
+        # `schema_migrations` PK collision that aborts `supabase db reset`
+        # (the RC1 root of the 2026-05-18 5-deep CI-red cascade; the
+        # historical renumber landed via PR #21). scripts/check-migration-
+        # prefixes.sh was wired into root `pnpm lint` but NO CI job runs
+        # root lint (CI runs per-package @prequest/web|api lints only), so
+        # the guard was toothless and a recurrence could slip in pre-merge.
+        # This step CI-enforces it (the explicitly-recommended cheap fix).
+        run: bash scripts/check-migration-prefixes.sh
+
       - name: Typecheck web
         run: pnpm --filter @prequest/web run lint
 

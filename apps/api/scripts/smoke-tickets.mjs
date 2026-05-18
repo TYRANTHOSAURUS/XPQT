@@ -1912,6 +1912,35 @@ async function a2ProbeRoutingEvalClear(headers) {
   console.log('\n— audit-02 P1-2: routing.evaluation_required → routing_status clear');
   const c = '0a020000-0000-4000-8000-000000000040';
   try {
+    // codex-tertiary item-4 (per-run isolation): the fixture case id is a
+    // FIXED constant and a2SeedCase upserts via ON CONFLICT DO UPDATE, which
+    // does NOT clear ticket_type_id / assignment columns. An interrupted
+    // PRIOR run can therefore leave a stale routing_decisions row (and stale
+    // tickets columns) that would make the exactly-1 replay assertion
+    // false-pass/false-fail. Hard pre-clean the fixture's footprint FIRST,
+    // scoped by BOTH this case id AND the a2 tenant so a concurrent session's
+    // data on the shared remote is never touched: drop the tickets row (so
+    // the upsert below re-inserts CLEAN, no carried-over ticket_type_id /
+    // assignees), purge any routing_decisions for this case, and drain any
+    // orphan outbox.events row from a prior run of THIS probe (its
+    // idempotency_key prefix is `routing.evaluation_required:<c>:a2-smoke-`).
+    // a2DropCase scopes its own deletes by case id; we additionally scope by
+    // tenant here and add the outbox.events sweep a2DropCase does not do.
+    a2Psql(`
+      set session_replication_role = 'replica';
+      delete from public.routing_decisions
+        where case_id='${c}' and tenant_id='${A2_TENANT}';
+      delete from public.ticket_activities
+        where ticket_id='${c}' and tenant_id='${A2_TENANT}';
+      delete from public.tickets
+        where id='${c}' and tenant_id='${A2_TENANT}';
+      delete from outbox.events
+        where tenant_id='${A2_TENANT}' and aggregate_id='${c}'
+          and event_type='routing.evaluation_required'
+          and idempotency_key like 'routing.evaluation_required:${c}:a2-smoke-%';
+      set session_replication_role = 'origin';
+    `);
+
     // Seed a case with routing_status='pending' (the stuck state P1-2
     // fixes). No request_type → resolver returns unassigned; the handler
     // OMITS assigned_*_id keys (preserves assignee) but STILL clears
@@ -1982,7 +2011,162 @@ async function a2ProbeRoutingEvalClear(headers) {
       results.failed.push('audit-02 routing-eval spurious activity');
       console.log(`  ✗ routing-eval — ${spurious.length} spurious assignment_changed activity row(s)`);
     }
+
+    // ── audit-02 Code-I1: handler-level OUTBOX REDELIVERY idempotency ──
+    //
+    // The probe above emits via outbox_emit_via_rpc with a UNIQUE
+    // idempotency key, so a *re-emit* is deduped by the OUTBOX layer and
+    // never re-enqueues — that does NOT exercise handler-level replay.
+    // Code-I1 fixes a duplicate routing_decisions audit row written when
+    // the SAME outbox event is REDELIVERED to the handler (the outbox is
+    // at-least-once; the assignment RPC was already idempotent via
+    // command_operations, only the audit insert duped).
+    //
+    // Trigger mechanism (genuinely re-drives the SAME event.id through
+    // RoutingEvaluationHandler — no fragile internals, no faking): the
+    // :3010 OutboxWorker.drainOnce claims rows where processed_at IS NULL
+    // AND claim_token IS NULL AND available_at <= now() AND attempts <
+    // max. We look up the already-processed outbox.events row for THIS
+    // case's known idempotency_key, snapshot its id, then reset
+    // (processed_at, processed_reason, claim_token, claimed_at, attempts,
+    // available_at) so the worker's next @Cron(30s) tick re-claims the
+    // exact same row and re-invokes handler.handle(event) with the
+    // identical event.id + payload. This is a true handler redelivery,
+    // not an outbox-dedup-suppressed re-emit. Limitation: it depends on
+    // the live :3010 worker draining within the poll window (same
+    // assumption the routing_status assertion above already relies on);
+    // if the worker is disabled the whole probe (including the pre-
+    // existing assertions) would fail loud — acceptable, not weakened.
+    const evRow = a2Psql(
+      `select id, processed_at from outbox.events ` +
+        `where tenant_id='${A2_TENANT}' and idempotency_key='${evKey}' ` +
+        `order by enqueued_at desc limit 1;`,
+    ).toString();
+    const evIdMatch = evRow.match(
+      /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
+    );
+    if (!evIdMatch) {
+      results.fail += 1;
+      results.failed.push('audit-02 routing-eval replay (no event row)');
+      console.log('  ✗ routing-eval replay — could not resolve outbox event id');
+    } else {
+      const eventId = evIdMatch[1];
+      const countDecisions = () => {
+        const out = a2Psql(
+          `select count(*) from public.routing_decisions ` +
+            `where tenant_id='${A2_TENANT}' and case_id='${c}' ` +
+            `and context->>'outbox_event_id'='${eventId}';`,
+        ).toString();
+        const m = out.match(/(\d+)/);
+        return m ? Number(m[1]) : -1;
+      };
+
+      // codex-tertiary item-4 (robust + isolated baseline). What this
+      // sub-assertion proves: re-driving the EXACT SAME outbox event.id
+      // through RoutingEvaluationHandler a second time must NOT write a
+      // duplicate routing_decisions audit row — i.e. Code-I1's
+      // `ON CONFLICT (tenant_id,(context->>'outbox_event_id'),chosen_by)
+      // WHERE context ? 'outbox_event_id' DO NOTHING` collapses the replay
+      // to the single row the first delivery wrote. The fixture is
+      // intentionally a STABLE-payload event (unassigned / no request_type)
+      // so the replay outcome is deterministic; the assignment-CHANGING
+      // replay path is a separate routed follow-up and is deliberately NOT
+      // covered here. Cleanup contract: BEFORE establishing the baseline,
+      // scoped-delete any routing_decisions row for THIS fixture case +
+      // tenant that is NOT this run's eventId (a leftover from an
+      // interrupted prior run that the upstream pre-clean + the unique
+      // per-run evKey already make unlikely, but we belt-and-brace so the
+      // exactly-1 baseline is provably about THIS event alone). Every
+      // delete is scoped by BOTH case id AND A2_TENANT — never a wildcard —
+      // so a concurrent session's data on the shared remote is untouched.
+      // The probe's `finally` (a2DropCase) plus the explicit outbox.events
+      // sweep added below remove the routing_decisions rows AND the
+      // outbox.events row so a crash mid-probe cannot poison the next run.
+      a2Psql(
+        `set session_replication_role = 'replica';` +
+          `delete from public.routing_decisions ` +
+          `where tenant_id='${A2_TENANT}' and case_id='${c}' ` +
+          `and context->>'outbox_event_id' is distinct from '${eventId}';` +
+          `set session_replication_role = 'origin';`,
+      );
+
+      const before = countDecisions();
+      if (before !== 1) {
+        results.fail += 1;
+        results.failed.push('audit-02 routing-eval replay (pre-count)');
+        console.log(
+          `  ✗ routing-eval replay — expected 1 routing_decisions row pre-replay, got ${before}`,
+        );
+      } else {
+        // Reset the SAME outbox row so the worker re-drains event.id.
+        a2Psql(`
+          update outbox.events
+             set processed_at = null,
+                 processed_reason = null,
+                 claim_token = null,
+                 claimed_at = null,
+                 attempts = 0,
+                 available_at = now()
+           where id = '${eventId}' and tenant_id = '${A2_TENANT}';
+        `);
+
+        // Poll up to ~80s for the worker to re-process the same event.
+        let reprocessed = false;
+        const rdl = Date.now() + 80_000;
+        while (Date.now() < rdl) {
+          await new Promise((res) => setTimeout(res, 5000));
+          const st = a2Psql(
+            `select processed_at from outbox.events ` +
+              `where id='${eventId}' and tenant_id='${A2_TENANT}';`,
+          ).toString();
+          // processed_at non-null again ⇒ the same event was re-drained.
+          if (/\d{4}-\d{2}-\d{2}/.test(st)) {
+            reprocessed = true;
+            break;
+          }
+        }
+
+        const after = countDecisions();
+        if (reprocessed && after === 1) {
+          results.pass += 1;
+          console.log(
+            '  ✓ routing-eval — same outbox event REDELIVERED, still exactly 1 routing_decisions row (Code-I1: ON CONFLICT DO NOTHING)',
+          );
+        } else if (!reprocessed) {
+          results.fail += 1;
+          results.failed.push('audit-02 routing-eval replay (not re-drained)');
+          console.log(
+            `  ✗ routing-eval replay — worker did not re-process event ${eventId} within window (count=${after})`,
+          );
+        } else {
+          results.fail += 1;
+          results.failed.push('audit-02 routing-eval replay (dup audit row)');
+          console.log(
+            `  ✗ routing-eval replay — expected 1 routing_decisions row after redelivery, got ${after} (Code-I1 regressed: duplicate audit row)`,
+          );
+        }
+      }
+    }
   } finally {
+    // codex-tertiary item-4: a2DropCase clears routing_decisions /
+    // ticket_activities / tickets for this case but does NOT touch
+    // outbox.events. Sweep the fixture's outbox row too (scoped by case id
+    // AND A2_TENANT — never a wildcard) so a crash mid-probe cannot leave a
+    // claimable routing.evaluation_required event that re-fires into the
+    // next run. Best-effort: a teardown failure must not mask a real probe
+    // result, so swallow + log like a2DropCase does.
+    try {
+      a2Psql(
+        `set session_replication_role = 'replica';` +
+          `delete from outbox.events ` +
+          `where tenant_id='${A2_TENANT}' and aggregate_id='${c}' ` +
+          `and event_type='routing.evaluation_required' ` +
+          `and idempotency_key like 'routing.evaluation_required:${c}:a2-smoke-%';` +
+          `set session_replication_role = 'origin';`,
+      );
+    } catch (e) {
+      console.log(`  ! audit-02 routing-eval outbox cleanup warn: ${e.message}`);
+    }
     await a2DropCase(c);
   }
 }

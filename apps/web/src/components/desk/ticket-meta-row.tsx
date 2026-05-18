@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CornerDownRight, History, MapPin, Tag, User } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
-import { useWorkOrders } from '@/hooks/use-work-orders';
+import { useWorkOrders, useWorkOrdersRollup } from '@/hooks/use-work-orders';
 import { cn } from '@/lib/utils';
 import { formatRelativeTime } from '@/lib/format';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -55,12 +55,28 @@ function useParentTitle(parentId: string | null) {
 }
 
 function SubIssueProgress({ parentId }: { parentId: string }) {
-  const { data, loading } = useWorkOrders(parentId);
-  if (loading || data.length === 0) return null;
-  const done = data.filter((r) => r.status_category === 'resolved' || r.status_category === 'closed').length;
-  const ratio = done / data.length;
-  return (
-    <span className="inline-flex items-center gap-1.5 text-foreground/80">
+  // Audit-02 P1-5 FE-rollup: progress is single-sourced from the PRIVILEGED
+  // server rollup — NOT computed from the visibility-filtered child array
+  // (that under-reports for a scoped operator who can't see every child).
+  const { data: rollup, loading } = useWorkOrdersRollup(parentId);
+  // The visible-list length is only needed to detect that children are
+  // hidden from this actor (rollup.total > what they can see). The list
+  // query/filter is UNCHANGED — P1-5 stays intact.
+  const { data: visible, loading: loadingVisible } = useWorkOrders(parentId);
+
+  if (loading || !rollup || rollup.total === 0) return null;
+
+  const { done, total } = rollup;
+  const ratio = total > 0 ? done / total : 0;
+  // Audit-02 P1-5 FE-rollup (FOLD item-5): only trust the hidden-items
+  // affordance once the (visibility-filtered) list query has ALSO settled.
+  // While it's still pending `visible.length` is transiently 0 → the tooltip
+  // + cursor-help would flicker on every mount/refetch even when nothing is
+  // hidden. Treat still-loading as not-hidden until it settles.
+  const hasHidden = !loadingVisible && visible.length < total;
+
+  const ring = (
+    <>
       <span className="relative inline-flex h-3.5 w-3.5 items-center justify-center">
         <svg viewBox="0 0 14 14" className="h-3.5 w-3.5">
           <circle cx="7" cy="7" r="5.5" fill="none" className="stroke-muted-foreground/30" strokeWidth="2" />
@@ -79,8 +95,27 @@ function SubIssueProgress({ parentId }: { parentId: string }) {
           )}
         </svg>
       </span>
-      <span className="tabular-nums">{done}/{data.length}</span>
-    </span>
+      <span className="tabular-nums">{done}/{total}</span>
+    </>
+  );
+
+  if (!hasHidden) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-foreground/80">{ring}</span>
+    );
+  }
+
+  // Subtle affordance ONLY when children are hidden from this actor.
+  // Base UI Tooltip uses a `render` prop (not Radix `asChild`) — mirror the
+  // existing reclassified-tooltip pattern in this file.
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        className="inline-flex items-center gap-1.5 text-foreground/80 cursor-help bg-transparent border-0 p-0"
+        render={(props) => <span {...props}>{ring}</span>}
+      />
+      <TooltipContent>Some sub-issues may be hidden by visibility rules.</TooltipContent>
+    </Tooltip>
   );
 }
 

@@ -5,7 +5,8 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { PersonAvatar } from '@/components/person-avatar';
-import { useWorkOrders, WorkOrderRow } from '@/hooks/use-work-orders';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useWorkOrders, useWorkOrdersRollup, WorkOrderRow } from '@/hooks/use-work-orders';
 import { cn } from '@/lib/utils';
 import { PriorityIcon } from '@/components/desk/ticket-row-cells';
 
@@ -116,17 +117,46 @@ export function SubIssuesSection({
     else navigate(`/desk/tickets/${id}`);
   };
   const { data, loading, error, refetch } = useWorkOrders(parentId);
+  // Audit-02 P1-5 FE-rollup: the header count is the PRIVILEGED total —
+  // NOT `data.length` (the visibility-filtered list under-reports for a
+  // scoped operator). The child LIST below still renders the filtered
+  // `data` UNCHANGED — P1-5 stays intact.
+  const { data: rollup } = useWorkOrdersRollup(parentId);
+  const total = rollup?.total ?? 0;
+  // Audit-02 P1-5 FE-rollup (FOLD item-5): only trust the hidden-items
+  // tooltip once the (visibility-filtered) list query has ALSO settled.
+  // While `loading`, `data.length` is transiently 0 → the header tooltip +
+  // cursor-help would flicker on every mount/refetch even when nothing is
+  // hidden. Treat still-loading as not-hidden until it settles.
+  const hasHidden = !loading && total > 0 && data.length < total;
   const [lastNonce, setLastNonce] = useState(refreshNonce);
   if (refreshNonce !== lastNonce) {
     setLastNonce(refreshNonce);
     refetch();
   }
 
+  // Base UI Tooltip uses a `render` prop (not Radix `asChild`) — mirror the
+  // pattern used elsewhere (ticket-meta-row reclassified tooltip).
+  const headerCount =
+    total > 0 ? (
+      hasHidden ? (
+        <Tooltip>
+          <TooltipTrigger
+            className="text-xs text-muted-foreground tabular-nums cursor-help bg-transparent border-0 p-0"
+            render={(props) => <span {...props}>{total}</span>}
+          />
+          <TooltipContent>Some sub-issues may be hidden by visibility rules.</TooltipContent>
+        </Tooltip>
+      ) : (
+        <span className="text-xs text-muted-foreground tabular-nums">{total}</span>
+      )
+    ) : null;
+
   return (
     <section className="mt-10">
       <header className="flex items-center gap-3 mb-3">
         <span className="text-sm font-medium">Sub-issues</span>
-        {data.length > 0 && <span className="text-xs text-muted-foreground">{data.length}</span>}
+        {headerCount}
         <Button
           variant="ghost"
           size="icon"
@@ -162,8 +192,18 @@ export function SubIssuesSection({
         </div>
       )}
 
-      {!loading && !error && data.length === 0 && (
+      {!loading && !error && data.length === 0 && total === 0 && (
         <p className="text-sm text-muted-foreground/60 py-2">No sub-issues yet</p>
+      )}
+
+      {/*
+        Audit-02 P1-5 FE-rollup: the parent is readable (we got a rollup) and
+        it HAS children (total > 0), but none are individually visible to
+        this scoped operator. Show a muted notice — the header still surfaces
+        the true privileged total + the hidden-items tooltip.
+      */}
+      {!loading && !error && data.length === 0 && total > 0 && (
+        <p className="text-sm text-muted-foreground/60 py-2">No visible sub-issues</p>
       )}
 
       {!error && data.length > 0 && (

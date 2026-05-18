@@ -113,13 +113,28 @@ export function useUpdateTicket(id: string) {
       handleMutationError(err, { actionTitle: "Couldn't update ticket" });
     },
 
-    onSettled: (_data, _err, variables) => {
+    onSettled: (_data, _err, variables, context) => {
       const tasks: Promise<unknown>[] = [
         qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
         qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
       ];
       if (variables && touchesActivityFeed(variables.payload)) {
         tasks.push(qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }));
+      }
+      // Audit-02 P1-5 FE-rollup (FOLD C1): `useUpdateTicket` is the shared
+      // quick-status surface — the ticket-list context menu marks a visible
+      // child work_order resolved through THIS hook (not useUpdateWorkOrder).
+      // A status_category change on a child moves the parent case's
+      // privileged done/total, so the rollup must refetch. The parent id
+      // isn't a hook arg (the hook is keyed on the edited row's own id) — it
+      // lives in the cached row detail captured in onMutate's context.
+      // Mirrors useUpdateWorkOrder.onSettled exactly. For a CASE row
+      // `parent_ticket_id` is null, so the guard correctly no-ops.
+      const parentId = context?.previous?.parent_ticket_id;
+      if (parentId) {
+        tasks.push(
+          qc.invalidateQueries({ queryKey: ticketKeys.childrenRollup(parentId) }),
+        );
       }
       return Promise.all(tasks);
     },
@@ -324,13 +339,23 @@ export function useUpdateWorkOrder(id: string) {
       handleMutationError(err, { actionTitle: "Couldn't update work order" });
     },
 
-    onSettled: (_data, _err, variables) => {
+    onSettled: (_data, _err, variables, context) => {
       const tasks: Promise<unknown>[] = [
         qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
         qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
       ];
       if (variables && touchesWorkOrderActivityFeed(variables.payload)) {
         tasks.push(qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }));
+      }
+      // Audit-02 P1-5 FE-rollup: a status_category change on this child WO
+      // moves the parent case's privileged done/total. The parent id isn't
+      // a hook arg (the hook is keyed on the child's own id) — it lives in
+      // the cached parent detail captured in onMutate's context.
+      const parentId = context?.previous?.parent_ticket_id;
+      if (parentId) {
+        tasks.push(
+          qc.invalidateQueries({ queryKey: ticketKeys.childrenRollup(parentId) }),
+        );
       }
       return Promise.all(tasks);
     },
@@ -388,11 +413,23 @@ export function useReassignWorkOrder(id: string) {
       handleMutationError(err, { actionTitle: "Couldn't reassign work order" });
     },
 
-    onSettled: () =>
-      Promise.all([
+    onSettled: (_data, _err, _vars, context) => {
+      const tasks: Promise<unknown>[] = [
         qc.invalidateQueries({ queryKey: ticketKeys.detail(id) }),
         qc.invalidateQueries({ queryKey: ticketKeys.lists() }),
         qc.invalidateQueries({ queryKey: ticketKeys.activities(id) }),
-      ]),
+      ];
+      // Audit-02 P1-5 FE-rollup: reassign doesn't change status_category,
+      // but the brief lists reassign among the child-mutation hooks that
+      // must keep the parent rollup honest — mirror the invalidation set
+      // exactly (parent id from the cached detail captured in onMutate).
+      const parentId = context?.previous?.parent_ticket_id;
+      if (parentId) {
+        tasks.push(
+          qc.invalidateQueries({ queryKey: ticketKeys.childrenRollup(parentId) }),
+        );
+      }
+      return Promise.all(tasks);
+    },
   });
 }
