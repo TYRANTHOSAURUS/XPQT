@@ -110,7 +110,7 @@ export class BookingFlowService {
    *     create_booking + best-effort `createApprovalRows`. Two RPC
    *     families, two approval-row code paths, two idempotency stories.
    *   - The combined RPC's step-10 approvals INSERT was extended 7→11 cols
-   *     (migration 00429) so the no-services FLAT approval case is now
+   *     (migration 00431) so the no-services FLAT approval case is now
    *     committed IN-TRANSACTION with chain-aware columns → inbox-notified
    *     (the 00402 trigger fires; pre-P2-3 a no-services pending-approval
    *     booking created via the *combined* RPC had approval_chain_id=NULL
@@ -147,7 +147,7 @@ export class BookingFlowService {
     // 20-arg `create_booking` RPC path + `createApprovalRows` are deleted.
     // `buildAttachPlan` produces an empty service graph for the no-services
     // case, plus (FLAT approval case) the deterministic chain-aware
-    // approval rows the 00429 RPC commits in-transaction.
+    // approval rows the 00431 RPC commits in-transaction.
     //
     // Spec §3.1 + §7.6 of
     // docs/superpowers/specs/2026-05-04-domain-outbox-design.md +
@@ -300,7 +300,7 @@ export class BookingFlowService {
     //
     // The FLAT approval case needs NO post-RPC work here: its approval rows
     // (with the deterministic shared chain_id) were committed
-    // IN-TRANSACTION by the 00429 RPC, and the 00402 AFTER INSERT trigger
+    // IN-TRANSACTION by the 00431 RPC, and the 00402 AFTER INSERT trigger
     // already fanned out the inbox notifications. Double-notify is
     // impossible — the trigger is the ONLY notification path for FLAT rows
     // now (no TS-side onApprovalRequested call here), and its
@@ -335,7 +335,7 @@ export class BookingFlowService {
     // Notification: `onCreated` for the requester-facing "your booking is
     // in" message. The pending-approval APPROVER notification is NOT sent
     // from here — for FLAT rows it comes from the 00402 inbox trigger
-    // (chain_id-bearing rows committed in-transaction by the 00429 RPC);
+    // (chain_id-bearing rows committed in-transaction by the 00431 RPC);
     // for WORKFLOW-DEF rows the engine's approval node owns it. Sending
     // `onApprovalRequested` here too would double-notify the approver.
     if (this.notifications) {
@@ -551,7 +551,7 @@ export class BookingFlowService {
      * must start the workflow_instance POST-RPC (parity with the legacy
      * `create` fan-out at the old :367-373). For the FLAT / confirmed cases
      * `workflowDefinitionId` is null and the approvals (if any) are already
-     * in the plan + committed in-transaction by the 00429 RPC.
+     * in the plan + committed in-transaction by the 00431 RPC.
      */
     approvalCutover: {
       status: 'pending_approval' | 'confirmed';
@@ -786,7 +786,7 @@ export class BookingFlowService {
       //               mirroring createApprovalRows OUTCOME, with HARD
       //               determinism (planUuid-derived ids + shared chain id;
       //               NO randomUUID/Date.now in the hashed plan). Handled
-      //               atomically by the 00429 RPC in-transaction.
+      //               atomically by the 00431 RPC in-transaction.
       //
       //   WORKFLOW-DEF case (approvalWorkflowDefinitionId set): approvals
       //               stay []; the workflow engine owns the approval rows.
@@ -892,7 +892,7 @@ export class BookingFlowService {
       // `workflowDefinitionId` is non-null ONLY when the matched rule is a
       // workflow-def approval rule (in which case the plan emitted NO
       // approval rows — the engine owns them). FLAT approval rows are
-      // already in `attachPlan.approvals` + committed by the 00429 RPC.
+      // already in `attachPlan.approvals` + committed by the 00431 RPC.
       approvalCutover: {
         status,
         workflowDefinitionId:

@@ -2,7 +2,7 @@
 
 Date: 2026-05-18
 Slice: audit-03 Slice 2 (deferred-finding closeout)
-Status: **CLOSED** (migration `00428` + producer canonical-approver-sort; live smoke is the authoritative completeness gate, validated in the batch push pass)
+Status: **CLOSED** (migration `00430` + producer canonical-approver-sort; live smoke is the authoritative completeness gate, validated in the batch push pass)
 
 ---
 
@@ -102,7 +102,7 @@ is exactly the two pre-state fields.
 
 ## 4. The fix
 
-- **Migration `00428_booking_edit_strip_hash_prestate_fields.sql`** — a
+- **Migration `00430_booking_edit_strip_hash_prestate_fields.sql`** — a
   VERBATIM reproduction of the live `00407:55-82`
   `booking_edit_strip_hash_server_fields` body. **Sole executable delta**:
   the exclusion set `('_resolution_at')` →
@@ -164,7 +164,7 @@ an unrelated field.
 
 ## 6. Residuals
 
-- **Forward-only on the shared remote.** `00428` is an in-place
+- **Forward-only on the shared remote.** `00430` is an in-place
   `create or replace`; rollback is a follow-up migration (re-`create or
   replace` with the prior 1-name set). Reverting reinstates the D-5 409.
   There is no `down`.
@@ -190,7 +190,7 @@ FIXME-409 block, now flipped to assert idempotent cached-success replay):
 it exercises a REAL same-intent `edit_booking_scope` COMMIT→RETRY against
 the running server + real DB, where the COMMIT's §3.6.5 reconciliation
 genuinely mutates `approvals`. It is authoritative OVER the jest guard and
-is validated in the **audit-03 batch push pass** once `00428` is on remote
+is validated in the **audit-03 batch push pass** once `00430` is on remote
 (the orchestrator runs live smokes; this slice does not push).
 
 ## 8. Verification (this slice, pre-push)

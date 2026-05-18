@@ -79,7 +79,7 @@ type Row = Record<string, unknown>;
 // audit-03 Slice 2 (D-5): extended to include the two enumerated
 // pre-state-derived approval fields (`old_outcome`,
 // `chain_config_changed`) alongside the `_`-prefixed server field. The
-// SQL exclusion set (migration 00428) carries the same three names;
+// SQL exclusion set (migration 00430) carries the same three names;
 // GUARD 2 asserts this mirror == the SQL set EXACTLY so GUARD 1 / 3
 // cannot drift from the DB.
 const SERVER_FIELD_EXCLUSIONS = new Set([
@@ -339,7 +339,7 @@ describe('Booking-edit idempotency-hash determinism (Slice 1 P0 guard)', () => {
     // jest cwd is apps/api; migrations live at the monorepo root. Walk
     // up until supabase/migrations resolves so the guard is robust to
     // the runner's cwd.
-    const fileName = '00428_booking_edit_strip_hash_prestate_fields.sql';
+    const fileName = '00430_booking_edit_strip_hash_prestate_fields.sql';
     const candidates = [
       join(process.cwd(), 'supabase', 'migrations', fileName),
       join(process.cwd(), '..', '..', 'supabase', 'migrations', fileName),
@@ -357,8 +357,8 @@ describe('Booking-edit idempotency-hash determinism (Slice 1 P0 guard)', () => {
 
     // Parse the `where key not in ('a', 'b', ...)` clause inside the
     // EXECUTABLE body of booking_edit_strip_hash_server_fields. Strip
-    // SQL `--` line comments first: the 00428 migration header
-    // intentionally documents the 00407→00428 exclusion-set diff in
+    // SQL `--` line comments first: the 00430 migration header
+    // intentionally documents the 00407→00430 exclusion-set diff in
     // prose (`-- 00407: where key not in ('_resolution_at')`), which
     // would otherwise be the first regex hit and make this guard parse
     // the WRONG (documentation) set. After comment-stripping, the only
@@ -419,7 +419,7 @@ describe('Booking-edit idempotency-hash determinism (Slice 1 P0 guard)', () => {
 // ─────────────────────────────────────────────────────────────────────
 
 // Faithful TS mirror of public.booking_edit_strip_hash_server_fields
-// (00407 :55-69 / 00428): recursively remove any object key whose EXACT
+// (00407 :55-69 / 00430): recursively remove any object key whose EXACT
 // NAME is in the exclusion set, at EVERY nesting depth; preserve array
 // order. Parameterized by the exclusion set so the SAME mirror can be
 // asserted under HEAD's set and the proposed set.

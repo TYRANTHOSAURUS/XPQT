@@ -209,7 +209,7 @@ export interface AttachPlanApproval {
   /**
    * Person-approver id. NULL on a team-only row (the no-services FLAT path
    * can emit `type==='team'` rule approvers; the with-services
-   * `assemblePlan` path is always person — see C2 note there). The 00429
+   * `assemblePlan` path is always person — see C2 note there). The 00431
    * RPC binds `(v_approval->>'approver_person_id')::uuid` which is NULL for
    * an absent/JSON-null key (verbatim-00372 expr; behaviour unchanged for
    * the pre-existing person-only rows).
@@ -220,8 +220,8 @@ export interface AttachPlanApproval {
 
   // ── audit-03 P2-3 (C2) — chain-aware columns ───────────────────────────
   //
-  // Optional on the wire so a pre-00429 plan (or a caller that hasn't
-  // adopted them) still serialises to the legacy 7-col shape. The 00429
+  // Optional on the wire so a pre-00431 plan (or a caller that hasn't
+  // adopted them) still serialises to the legacy 7-col shape. The 00431
   // RPC reads them via `nullif(...,'')::T` (absent → NULL) EXCEPT
   // `chain_threshold` which coalesces to 'all' (C1: NOT NULL DEFAULT).
   //

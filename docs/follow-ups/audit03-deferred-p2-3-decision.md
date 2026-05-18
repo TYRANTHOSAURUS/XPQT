@@ -40,10 +40,10 @@ delegates to `createWithAttachPlan` → `create_booking_with_attach_plan`.
 plus (FLAT approval case) the deterministic chain-aware approval rows the
 combined RPC commits IN-TRANSACTION. The legacy `create_booking` RPC + its
 TS call site + `createApprovalRows` are deleted; the RPC is revoked
-(migration 00430, revoke-not-drop).
+(migration 00432, revoke-not-drop).
 
-Migrations claimed (next-free-slot at write time): **00429** (extend the
-combined RPC's step-10 approvals INSERT 7→11 cols) + **00430** (revoke the
+Migrations claimed (next-free-slot at write time): **00431** (extend the
+combined RPC's step-10 approvals INSERT 7→11 cols) + **00432** (revoke the
 legacy RPC).
 
 ---
@@ -63,12 +63,12 @@ explicit `NULL` into the NOT NULL column aborts with **23502** and would
 break EVERY existing with-services approval booking — a strict P0
 regression on a path that works today.
 
-**Fix (verified in the 00429 body diff):**
+**Fix (verified in the 00431 body diff):**
 `chain_threshold := coalesce(nullif(v_approval->>'chain_threshold',''),'all')`
 — absent OR empty-string → `'all'`, byte-behaviour-identical to today's
 column-default behaviour. The 3 genuinely-nullable added columns
 (`approval_chain_id`, `parallel_group`, `approver_team_id`) use
-`nullif(...,'')::T` so an absent key → SQL NULL (their pre-00429 behaviour:
+`nullif(...,'')::T` so an absent key → SQL NULL (their pre-00431 behaviour:
 the INSERT never wrote them, so they defaulted to NULL). The
 `approver_person_id` expression is left **verbatim-00372**
 (`(v_approval->>'approver_person_id')::uuid`): for a team-only row the plan
@@ -76,7 +76,7 @@ emits JSON `null` → `->>` yields SQL NULL → `(NULL)::uuid` = NULL
 (behaviour unchanged for the pre-existing person-only rows).
 
 **Migration A is provably verbatim-00372 + ONLY the 4-col delta.** A
-comment-stripped body diff (`00372` vs `00429`) shows exactly three hunks:
+comment-stripped body diff (`00372` vs `00431`) shows exactly three hunks:
 (i) +4 column names in the step-10 INSERT, (ii) +4 value expressions in the
 step-10 INSERT, (iii) the non-executable `comment on function` docstring.
 Nothing else — the advisory lock, the `attach_operations` gate (md5 hash,
@@ -157,7 +157,7 @@ has two sub-cases, mirroring the legacy `create` fan-out at the old
   team rows — unusable here, deliberately not used). `any_pending_approval`
   is set `true` AND `bundle_audit_payload.any_pending_approval` in
   lockstep. **This case is now ATOMIC**: the approval rows commit
-  IN-TRANSACTION with the booking via the 00429 RPC and the 00402 trigger
+  IN-TRANSACTION with the booking via the 00431 RPC and the 00402 trigger
   fans out inbox notifications. This is a genuine IMPROVEMENT over the
   legacy path (legacy: best-effort post-RPC TS insert that could fail
   silently leaving a stuck booking).
@@ -213,7 +213,7 @@ RANDOM idempotency key per call.
    error. The random-key + existingIndices design is intentional and is
    the lower-risk choice.
 
-C1-recurrence correctness (the 00429 INSERT must keep chain cols for
+C1-recurrence correctness (the 00431 INSERT must keep chain cols for
 `recurrence_index` rows) is asserted directly at the RPC boundary by smoke
 probe (k) — see §7.
 
@@ -265,7 +265,7 @@ so the 00402 `users` / `team_members` join finds a row):
   `recurrence_index=7`) combined-RPC create with a chain-bearing approval,
   invoked at the RPC boundary directly → occurrence persists its
   recurrence tags AND the approval keeps `approval_chain_id` /
-  `chain_threshold` / `parallel_group` (the 00429 INSERT must NOT
+  `chain_threshold` / `parallel_group` (the 00431 INSERT must NOT
   special-case `recurrence_index`) + ≥1 inbox row. RPC-boundary assertion
   chosen because the materialiser's master-confirmed/occurrence-approval-
   gated arrangement is fragile to seed drift; the boundary assertion is the
@@ -279,10 +279,10 @@ the batch pass; the script is `node --check`-verified here.
 
 ---
 
-## 8. The revoke (migration 00430)
+## 8. The revoke (migration 00432)
 
 00277 created `create_booking` with NO explicit grant ⇒ PostgreSQL default
-`EXECUTE` to PUBLIC. Its sole live caller was deleted in STEP D. 00430
+`EXECUTE` to PUBLIC. Its sole live caller was deleted in STEP D. 00432
 `revoke execute on function public.create_booking(<21-arg sig quoted
 verbatim from 00277:236-259>) from public, anon, authenticated,
 service_role;` then `notify pgrst, 'reload schema';`. **Revoke, NOT drop**

@@ -369,7 +369,7 @@ describe('BookingFlowService.buildAttachPlan (B.0.C.4)', () => {
   // `create_booking` RPC + `createApprovalRows` onto the combined RPC.
   // `buildAttachPlan` must now emit the FLAT-case approval rows (mirroring
   // createApprovalRows OUTCOME) with HARD determinism so a same-intent
-  // retry rebuilds a byte-identical plan (D-5/D-6) and the 00429 RPC
+  // retry rebuilds a byte-identical plan (D-5/D-6) and the 00431 RPC
   // commits them in-transaction → inbox-notified.
 
   const APPROVER_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';

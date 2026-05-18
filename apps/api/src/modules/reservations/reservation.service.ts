@@ -741,7 +741,7 @@ export class ReservationService {
    * to the `command_operations` idempotency md5. The hash is computed by
    * `booking_edit_idempotency_payload_hash` → `booking_edit_strip_hash_
    * server_fields`, which strips ONLY the three ENUMERATED names
-   * (`_resolution_at`, `old_outcome`, `chain_config_changed` — 00428); it
+   * (`_resolution_at`, `old_outcome`, `chain_config_changed` — 00430); it
    * would NOT remove this marker. So we strip it HERE, in the producer-
    * to-RPC boundary, guaranteeing the marker never reaches the wire, the
    * RPC, or the hash. Returns a shallow clone (the input plan object is

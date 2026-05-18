@@ -138,7 +138,7 @@ neither the wire shape nor the error taxonomy.
   `edit_booking` / `edit_booking_scope` call site) so it **never reaches
   the wire, the RPC, or the `command_operations` idempotency md5**. This
   is load-bearing: the hash strip helper (`booking_edit_strip_hash_
-  server_fields`, 00407/00428) removes ONLY the 3 enumerated names
+  server_fields`, 00407/00430) removes ONLY the 3 enumerated names
   (`_resolution_at`, `old_outcome`, `chain_config_changed`) — it would
   **NOT** remove this marker, so leaving it on the payload would corrupt
   the idempotency hash. Stripping at the service boundary closes that

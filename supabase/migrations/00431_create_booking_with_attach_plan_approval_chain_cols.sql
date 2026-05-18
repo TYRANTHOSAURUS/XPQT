@@ -25,7 +25,7 @@
 -- a VERBATIM reproduction of the LIVE 00372
 -- `create_booking_with_attach_plan(jsonb,jsonb,uuid,text)` def (confirmed
 -- live: it is the last `create or replace` of this signature across
--- 00309/00315/00372; nothing in 00373..00428 re-creates it — 00410/00412/
+-- 00309/00315/00372; nothing in 00373..00430 re-creates it — 00410/00412/
 -- 00413 only reference it in comments) with ONE — and only one — executable
 -- delta:
 --
@@ -69,7 +69,7 @@
 -- behaviour: those columns were simply never written by this INSERT, so
 -- they defaulted to NULL). Existing with-services `assemblePlan` rows omit
 -- all 4 keys ⇒ chain_id/parallel/team → NULL, threshold → 'all' ⇒
--- byte-behaviour-identical to pre-00429. The C2 plan-builder change in the
+-- byte-behaviour-identical to pre-00431. The C2 plan-builder change in the
 -- same slice is what STARTS populating these keys for the with-services
 -- path; this migration only makes the columns INSERTABLE without regressing
 -- the absent-key case.
@@ -314,7 +314,7 @@ begin
   -- (C1: the column is NOT NULL DEFAULT 'all' (00400:45); an explicit NULL
   -- aborts 23502 and would break every existing with-services approval
   -- booking whose assemblePlan rows omit the key). The 3 genuinely-nullable
-  -- columns become SQL NULL on an absent key (their pre-00429 behaviour:
+  -- columns become SQL NULL on an absent key (their pre-00431 behaviour:
   -- this INSERT never wrote them, so they defaulted to NULL).
   for v_approval in select * from jsonb_array_elements(p_attach_plan->'approvals')
   loop
@@ -453,6 +453,6 @@ revoke execute on function public.create_booking_with_attach_plan(jsonb, jsonb, 
 grant  execute on function public.create_booking_with_attach_plan(jsonb, jsonb, uuid, text) to service_role;
 
 comment on function public.create_booking_with_attach_plan(jsonb, jsonb, uuid, text) is
-  'Atomic booking + services creation. Single transaction commits booking + slots + orders + asset_reservations + OLIs + approvals + outbox emissions. Idempotent on (tenant_id, idempotency_key) via attach_operations table. Spec §7 of docs/superpowers/specs/2026-05-04-domain-outbox-design.md (v6 idempotency, v8.1 internal-refs validator signature). Phase 1.A (00372): emits booking.created outbox event for the universal-workflow Tier 2 wake mechanism (spec 2026-05-12 §3.5). audit-03 P2-3 (00429): step-10 approvals INSERT extended 7→11 cols (approval_chain_id/parallel_group/chain_threshold/approver_team_id) so the consolidated no-services path stays inbox-notified; chain_threshold coalesces to ''all'' on absent key (C1: NOT NULL DEFAULT, byte-identical to the prior column-default behaviour).';
+  'Atomic booking + services creation. Single transaction commits booking + slots + orders + asset_reservations + OLIs + approvals + outbox emissions. Idempotent on (tenant_id, idempotency_key) via attach_operations table. Spec §7 of docs/superpowers/specs/2026-05-04-domain-outbox-design.md (v6 idempotency, v8.1 internal-refs validator signature). Phase 1.A (00372): emits booking.created outbox event for the universal-workflow Tier 2 wake mechanism (spec 2026-05-12 §3.5). audit-03 P2-3 (00431): step-10 approvals INSERT extended 7→11 cols (approval_chain_id/parallel_group/chain_threshold/approver_team_id) so the consolidated no-services path stays inbox-notified; chain_threshold coalesces to ''all'' on absent key (C1: NOT NULL DEFAULT, byte-identical to the prior column-default behaviour).';
 
 notify pgrst, 'reload schema';

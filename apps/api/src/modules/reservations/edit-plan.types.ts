@@ -186,7 +186,7 @@ export interface EditPlan {
    * `_`-prefixed by the same convention as `_resolution_at` — a
    * server-stamped non-domain marker. UNLIKE `_resolution_at` (which IS
    * sent to the RPC and stripped from the idempotency hash BY NAME in
-   * `booking_edit_strip_hash_server_fields`, 00407/00428), this field is
+   * `booking_edit_strip_hash_server_fields`, 00407/00430), this field is
    * NEVER placed on the RPC payload at all: the service strips it
    * immediately before every `edit_booking` / `edit_booking_scope` call,
    * so it can never reach the wire or the `command_operations`

@@ -64,7 +64,7 @@
 -- executable delta vs the live 00407 helper is the `key not in (...)`
 -- exclusion list:
 --   00407:  where key not in ('_resolution_at')
---   00428:  where key not in ('_resolution_at','old_outcome','chain_config_changed')
+--   00430:  where key not in ('_resolution_at','old_outcome','chain_config_changed')
 -- `language sql immutable`, `set search_path = public`, and the
 -- revoke/grant trailer are reproduced verbatim. The
 -- `booking_edit_idempotency_payload_hash` wrapper, `edit_booking`, and
