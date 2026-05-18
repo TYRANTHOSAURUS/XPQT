@@ -4,6 +4,7 @@ import {
   buildPatchIdempotencyKey,
   buildCreateTicketIdempotencyKey,
   buildCreateTicketId,
+  buildReassignIdempotencyKey,
 } from '@prequest/shared';
 import { AppError, AppErrors, mapRpcErrorToAppError } from '../../common/errors';
 import { hasOwnDefined } from '../../common/has-own-defined';
@@ -1232,11 +1233,11 @@ export class TicketService {
     id: string,
     dto: ReassignDto,
     actorAuthUid: string,
-    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
-    // controller for `POST /tickets/:id/reassign`. Plumbed only today;
-    // Step 3+ uses it as the idempotency-key seed for the
-    // set_entity_assignment RPC (spec §3.2 + §3.9.1).
-    _clientRequestId?: string,
+    // audit02 Slice C (P1-1) — threaded from RequireClientRequestIdGuard
+    // via the controller for `POST /tickets/:id/reassign`. USED here as
+    // the idempotency-key seed for the canonical `set_entity_assignment`
+    // v3 RPC (00416) via buildReassignIdempotencyKey('case', …).
+    clientRequestId?: string,
   ) {
     const tenant = TenantContext.current();
 
@@ -1274,27 +1275,42 @@ export class TicketService {
       });
     }
 
-    const prev = {
-      team: current.assigned_team_id as string | null,
-      user: current.assigned_user_id as string | null,
-      vendor: current.assigned_vendor_id as string | null,
-    };
+    // audit02 Slice C (P1-1): every reassign — manual OR rerun_resolver —
+    // commits through the canonical `set_entity_assignment` v3 RPC (00416)
+    // in ONE transaction (assignment columns + status_category inherit +
+    // command_operations idempotency + routing_decisions audit +
+    // ticket_activities + ticket_assigned domain event). The legacy path
+    // did a raw `.from('tickets').update` + a SEPARATE
+    // `routing_decisions.insert` + a SEPARATE `addActivity` across
+    // multiple non-transactional round-trips with no idempotency — a
+    // crash between any two left a partially-applied reassign and a
+    // missing audit row. v3 owns all of it atomically.
 
     let nextTarget: { kind: 'team' | 'user' | 'vendor'; id: string } | null = null;
-    let chosenBy: 'manual_reassign' | 'rerun_resolver' = 'manual_reassign';
-    let strategy: string = 'manual';
-    let trace: Array<Record<string, unknown>> = [
-      { step: 'manual_reassign', matched: true, reason: dto.reason, by: dto.actor_person_id ?? null },
-    ];
+    // Only set for the rerun_resolver branch — v3 writes the
+    // routing_decisions row using THESE provenance values
+    // (strategy/chosen_by/rule_id/trace/context) instead of the
+    // hardcoded manual literals. Manual reassign passes NO `decision`:
+    // v3's `reason`-gated branch already writes the manual audit row
+    // (strategy='manual', chosen_by='manual_reassign') — 00416:508-547.
+    let decision:
+      | {
+          strategy: string;
+          chosen_by: string;
+          rule_id: string | null;
+          trace: unknown[];
+          context: Record<string, unknown>;
+        }
+      | undefined;
 
     if (dto.rerun_resolver) {
-      // Clear current assignment and let the resolver pick fresh
-      await this.supabase.admin
-        .from('tickets')
-        .update({ assigned_team_id: null, assigned_user_id: null, assigned_vendor_id: null })
-        .eq('id', id)
-        .eq('tenant_id', tenant.id);
-
+      // EVALUATE-FIRST, then ONE write (00416 §1 rejects rerun at the RPC
+      // layer; the TS layer must resolve assignees then re-invoke). NO
+      // pre-clear of the assignment columns: the legacy code raw-cleared
+      // all three BEFORE running the resolver, so a crash mid-resolver
+      // left the ticket permanently unassigned. v3 only changes the keys
+      // we send, so a crash before the RPC leaves the prior assignment
+      // intact.
       const rtCfg = current.ticket_type_id
         ? (await this.supabase.admin
             .from('request_types')
@@ -1325,7 +1341,6 @@ export class TicketService {
         location_id: effectiveLocation,
       };
       const result = await this.routingService.evaluate(evalCtx);
-      await this.routingService.recordDecision(id, evalCtx, result);
       if (result.target) {
         if (result.target.kind === 'team') nextTarget = { kind: 'team', id: result.target.team_id };
         else if (result.target.kind === 'user') nextTarget = { kind: 'user', id: result.target.user_id };
@@ -1336,8 +1351,8 @@ export class TicketService {
       // Routing definitions are tenant-scoped, but the resolver result is
       // a structured payload — if a routing-table compromise, rule import,
       // or test-time override returned a foreign uuid, we'd write it
-      // blind to the tickets row. Validate before propagating into
-      // `updates` below.
+      // blind. Validate before propagating into the v3 payload. v3 also
+      // re-runs validate_assignees_in_tenant (00416:260) — defense-in-depth.
       if (nextTarget) {
         await validateAssigneesInTenant(
           this.supabase,
@@ -1350,65 +1365,74 @@ export class TicketService {
           { skipForSystemActor: actorAuthUid === SYSTEM_ACTOR },
         );
       }
-      chosenBy = 'rerun_resolver';
-      strategy = result.strategy;
-      trace = [
-        { step: 'manual_reassign', matched: true, reason: dto.reason, by: dto.actor_person_id ?? null },
-        ...(result.trace as unknown as Array<Record<string, unknown>>),
-      ];
+
+      // Map the evaluation into v3's `decision` provenance object. The
+      // mapping is the IDENTITY — `RoutingEvaluation.strategy` is
+      // `FulfillmentShape | 'rule'` = {asset,location,fixed,auto,rule}
+      // (routing.service.ts:18 / resolver.types.ts:1) which is BYTE-
+      // IDENTICAL to v3's strategy allowlist (00416:356); and
+      // `RoutingEvaluation.chosen_by` is the `ChosenBy` union
+      // (resolver.types.ts:8-27) which is BYTE-IDENTICAL to v3's
+      // chosen_by allowlist (00416:366-371). v3's own comments mandate
+      // these stay in sync (00416:350-364). No normalization required —
+      // a non-identity map would be the bug. `context` mirrors
+      // RoutingService.recordDecision (routing.service.ts:77-83).
+      decision = {
+        strategy: result.strategy,
+        chosen_by: result.chosen_by,
+        rule_id: result.rule_id ?? null,
+        trace: result.trace as unknown[],
+        context: {
+          request_type_id: evalCtx.request_type_id,
+          domain: evalCtx.domain,
+          priority: evalCtx.priority,
+          asset_id: evalCtx.asset_id,
+          location_id: evalCtx.location_id,
+        },
+      };
     } else {
       if (dto.assigned_team_id) nextTarget = { kind: 'team', id: dto.assigned_team_id };
       else if (dto.assigned_user_id) nextTarget = { kind: 'user', id: dto.assigned_user_id };
       else if (dto.assigned_vendor_id) nextTarget = { kind: 'vendor', id: dto.assigned_vendor_id };
     }
 
-    const updates: Record<string, unknown> = {
-      assigned_team_id: null,
-      assigned_user_id: null,
-      assigned_vendor_id: null,
-      status_category: nextTarget ? 'assigned' : 'new',
+    // Single atomic write. Send all three assignment keys explicitly so
+    // v3 performs a clean overwrite (omitted key = "no change"; explicit
+    // null = "clear"). status_category inheritance is owned by v3
+    // (00416:415-421). `reason` non-null triggers v3's audit branch
+    // (00416:508). `decision` (rerun only) overrides the hardcoded manual
+    // provenance with the resolver trace.
+    const payload: Record<string, unknown> = {
+      assigned_team_id: nextTarget?.kind === 'team' ? nextTarget.id : null,
+      assigned_user_id: nextTarget?.kind === 'user' ? nextTarget.id : null,
+      assigned_vendor_id: nextTarget?.kind === 'vendor' ? nextTarget.id : null,
+      reason: dto.reason,
+      actor_person_id: dto.actor_person_id ?? null,
     };
-    if (nextTarget?.kind === 'team') updates.assigned_team_id = nextTarget.id;
-    if (nextTarget?.kind === 'user') updates.assigned_user_id = nextTarget.id;
-    if (nextTarget?.kind === 'vendor') updates.assigned_vendor_id = nextTarget.id;
+    if (decision) payload.decision = decision;
 
-    await this.supabase.admin.from('tickets').update(updates).eq('id', id).eq('tenant_id', tenant.id);
+    if (!clientRequestId) {
+      throw AppErrors.badRequest(
+        'command_operations.client_request_id_required',
+        'POST /tickets/:id/reassign requires X-Client-Request-Id header per I1 (RequireClientRequestIdGuard).',
+      );
+    }
 
-    // Routing decision audit row. Convention (code-review C5): set the
-    // polymorphic columns explicitly on both case + WO sides — the 00232
-    // derive trigger remains as a defensive fallback, but writing them
-    // here makes the audit row deterministic at write time and removes the
-    // "depends on the trigger" coupling. Mirror of work-order.service.ts:1000.
-    await this.supabase.admin.from('routing_decisions').insert({
-      tenant_id: tenant.id,
-      ticket_id: id, // legacy soft pointer; FK to tickets dropped in 00233
-      entity_kind: 'case',
-      case_id: id,
-      strategy,
-      chosen_team_id: nextTarget?.kind === 'team' ? nextTarget.id : null,
-      chosen_user_id: nextTarget?.kind === 'user' ? nextTarget.id : null,
-      chosen_vendor_id: nextTarget?.kind === 'vendor' ? nextTarget.id : null,
-      chosen_by: chosenBy,
-      trace,
-      context: { reason: dto.reason, previous: prev, actor: dto.actor_person_id ?? null },
-    });
-
-    // Activity row. Mirrors the WO-side `reassigned` shape
-    // (work-order.service.ts:1039) — `reason` included in metadata for
-    // parity with WO surface. Code-review C2 alignment.
-    await this.addActivity(id, {
-      activity_type: 'system_event',
-      author_person_id: dto.actor_person_id,
-      visibility: 'internal',
-      content: dto.reason,
-      metadata: {
-        event: 'reassigned',
-        previous: prev,
-        next: nextTarget,
-        mode: chosenBy,
-        reason: dto.reason,
+    const { error: rpcErr } = await this.supabase.admin.rpc(
+      'set_entity_assignment',
+      {
+        p_entity_id: id,
+        p_entity_kind: 'case',
+        p_tenant_id: tenant.id,
+        // 00416:550-558 — p_actor_user_id is the auth UID, not users.id.
+        // SYSTEM_ACTOR collapses to null (the RPC's actor_person resolve
+        // falls through cleanly).
+        p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
+        p_idempotency_key: buildReassignIdempotencyKey('case', id, clientRequestId),
+        p_payload: payload,
       },
-    });
+    );
+    if (rpcErr) throw mapRpcErrorToAppError(rpcErr);
 
     return this.getById(id, SYSTEM_ACTOR);
   }

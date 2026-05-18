@@ -1,9 +1,27 @@
-// Tests for WorkOrderService.reassign — audited assignment change with a
-// reason. Distinct from updateAssignment because it writes a routing_decisions
-// row (entity_kind='work_order') and an internal-visibility activity.
+// Tests for WorkOrderService.reassign — audit02 Slice C (P1-1).
+//
+// The reassign path commits through the canonical `set_entity_assignment`
+// v3 RPC (00416) in ONE transaction. v3 owns the work_orders UPDATE +
+// status_category inheritance + command_operations idempotency +
+// routing_decisions audit (strategy='manual'/chosen_by='manual_reassign',
+// reason-gated) + ticket_activities + ticket_assigned domain event.
+//
+// What this spec asserts (vs. the legacy raw-write path):
+//   - exactly ONE rpc('set_entity_assignment', …) with
+//     p_entity_kind:'work_order', the deterministic reassign idempotency
+//     key, the target assignment keys + reason + actor_person_id, and NO
+//     `decision` key (WO is manual-only — rerun_resolver throws).
+//   - NO raw `.from('work_orders').update(...)` for the assignment.
+//   - NO standalone routing_decisions / ticket_activities insert (the
+//     legacy swallowed try/catch that silently lost the audit on error).
+//   - a post-RPC refetch miss yields `notFound`, NOT `forbidden`
+//     (closes audit P2-4).
+//   - rerun_resolver still throws 501-class unsupported (unchanged).
+//   - missing clientRequestId hard-fails (crid is the idempotency seed).
 
 import { AppError } from '../../common/errors';
 import { WorkOrderService, SYSTEM_ACTOR } from './work-order.service';
+import { buildReassignIdempotencyKey } from '@prequest/shared';
 
 type WorkOrderRow = {
   id: string;
@@ -16,6 +34,13 @@ type WorkOrderRow = {
 };
 
 const TENANT = 't1';
+const CRID = 'crid-wo-1';
+// validateAssigneesInTenant enforces real uuid shape for non-SYSTEM
+// actors (tenant-validation.ts). SYSTEM_ACTOR paths skip validation, so
+// the other fixtures can keep readable string ids.
+const TEAM_X = '00000000-0000-4000-8000-00000000cccc';
+
+type RpcCall = { fn: string; args: Record<string, unknown> };
 
 function makeDeps(
   initial: WorkOrderRow,
@@ -24,17 +49,25 @@ function makeDeps(
     teams?: Array<{ id: string; tenant_id: string }>;
     users?: Array<{ id: string; tenant_id: string }>;
     vendors?: Array<{ id: string; tenant_id: string }>;
+    // null → simulate a refetch miss after the RPC committed.
+    refetchRow?: WorkOrderRow | null;
+    rpcError?: { message: string; code?: string } | null;
   } = {},
 ) {
   let row: WorkOrderRow = { ...initial };
-  const updates: Array<Record<string, unknown>> = [];
+  const rawUpdates: Array<Record<string, unknown>> = [];
   const activities: Array<Record<string, unknown>> = [];
   const routingDecisions: Array<Record<string, unknown>> = [];
   const permissionChecks: Array<{ user_id: string; permission: string }> = [];
+  const rpcCalls: RpcCall[] = [];
+  let woSelectCalls = 0;
 
   const teams = options.teams ?? [];
   const users = options.users ?? [];
   const vendors = options.vendors ?? [];
+  // `options.refetchRow: null` forces a post-RPC refetch miss; otherwise
+  // the refetch reflects the LIVE `row` (after the v3 mock mutated it).
+  const refetchMiss = options.refetchRow === null;
 
   const tenantLookup = (matches: Array<{ id: string; tenant_id: string }>) => ({
     select: () => ({
@@ -57,13 +90,26 @@ function makeDeps(
             select: () => ({
               eq: () => ({
                 eq: () => ({
-                  maybeSingle: async () => ({ data: { ...row }, error: null }),
+                  maybeSingle: async () => {
+                    woSelectCalls += 1;
+                    // 1st select = pre-check existence (always the row);
+                    // 2nd+ = post-RPC refetch (null when refetchMiss).
+                    if (woSelectCalls === 1) {
+                      return { data: { id: row.id }, error: null };
+                    }
+                    return {
+                      data: refetchMiss ? null : { ...row },
+                      error: null,
+                    };
+                  },
                   single: async () => ({ data: { ...row }, error: null }),
                 }),
               }),
             }),
+            // Any raw work_orders UPDATE for the assignment is a Slice C
+            // regression — v3 owns the write.
             update: (patch: Record<string, unknown>) => {
-              updates.push(patch);
+              rawUpdates.push(patch);
               row = { ...row, ...(patch as Partial<WorkOrderRow>) };
               const second = {
                 then: (
@@ -94,6 +140,8 @@ function makeDeps(
             }),
           } as unknown;
         }
+        // A standalone routing_decisions / ticket_activities insert is a
+        // Slice C regression — v3 owns those rows atomically.
         if (table === 'ticket_activities') {
           return {
             insert: async (a: Record<string, unknown>) => {
@@ -112,12 +160,30 @@ function makeDeps(
         }
         throw new Error(`unexpected table in mock: ${table}`);
       }),
-      rpc: jest.fn(async (fn: string, args: { p_user_id: string; p_permission: string }) => {
-        if (fn !== 'user_has_permission') {
-          throw new Error(`unexpected rpc in mock: ${fn}`);
+      rpc: jest.fn(async (fn: string, args: Record<string, unknown>) => {
+        rpcCalls.push({ fn, args });
+        if (fn === 'user_has_permission') {
+          permissionChecks.push({
+            user_id: args.p_user_id as string,
+            permission: args.p_permission as string,
+          });
+          return { data: !!options.hasAssignPermission, error: null };
         }
-        permissionChecks.push({ user_id: args.p_user_id, permission: args.p_permission });
-        return { data: !!options.hasAssignPermission, error: null };
+        if (fn === 'set_entity_assignment') {
+          if (options.rpcError) {
+            return { data: null, error: options.rpcError };
+          }
+          // Simulate v3 applying the assignment so the refetch reflects it.
+          const payload = args.p_payload as Record<string, unknown>;
+          row = {
+            ...row,
+            assigned_team_id: (payload.assigned_team_id as string | null) ?? null,
+            assigned_user_id: (payload.assigned_user_id as string | null) ?? null,
+            assigned_vendor_id: (payload.assigned_vendor_id as string | null) ?? null,
+          };
+          return { data: { noop: false }, error: null };
+        }
+        throw new Error(`unexpected rpc in mock: ${fn}`);
       }),
     },
   };
@@ -141,10 +207,11 @@ function makeDeps(
 
   return {
     row: () => row,
-    updates,
+    rawUpdates,
     activities,
     routingDecisions,
     permissionChecks,
+    rpcCalls,
     supabase,
     slaService,
     visibility,
@@ -159,7 +226,11 @@ function makeSvc(deps: ReturnType<typeof makeDeps>) {
   );
 }
 
-describe('WorkOrderService.reassign', () => {
+function assignCalls(rpcCalls: RpcCall[]) {
+  return rpcCalls.filter((c) => c.fn === 'set_entity_assignment');
+}
+
+describe('WorkOrderService.reassign — audit02 Slice C (P1-1)', () => {
   beforeEach(() => {
     jest.spyOn(
       require('../../common/tenant-context').TenantContext,
@@ -167,7 +238,11 @@ describe('WorkOrderService.reassign', () => {
     ).mockReturnValue({ id: TENANT, slug: TENANT });
   });
 
-  it('reassigns to a new team and writes a routing_decisions row with the reason', async () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('routes a team reassign through ONE set_entity_assignment v3 call with the deterministic key and no raw/swallowed writes', async () => {
     const deps = makeDeps(
       {
         id: 'wo1',
@@ -191,69 +266,71 @@ describe('WorkOrderService.reassign', () => {
         actor_person_id: 'p-actor',
       },
       SYSTEM_ACTOR,
+      CRID,
     );
 
     expect(result.assigned_team_id).toBe('team-new');
-    // The work_orders update clears all three fields then sets the new one.
-    expect(deps.updates).toHaveLength(1);
-    expect(deps.updates[0]).toMatchObject({
-      assigned_team_id: 'team-new',
-      assigned_user_id: null,
-      assigned_vendor_id: null,
-    });
-    expect(deps.updates[0]).toHaveProperty('updated_at');
 
-    // routing_decisions row carries entity_kind='work_order' + work_order_id
-    // (the 00230 derive trigger only handles cases via tickets table — we
-    // MUST set polymorphic columns explicitly for work_orders).
-    expect(deps.routingDecisions).toHaveLength(1);
-    expect(deps.routingDecisions[0]).toMatchObject({
-      tenant_id: TENANT,
-      ticket_id: 'wo1',
-      entity_kind: 'work_order',
-      work_order_id: 'wo1',
-      strategy: 'manual',
-      chosen_by: 'manual_reassign',
-      chosen_team_id: 'team-new',
-      chosen_user_id: null,
-      chosen_vendor_id: null,
-      context: {
-        reason,
-        previous: { team: 'team-old', user: null, vendor: null },
-        actor: 'p-actor',
-      },
-    });
-    // trace contains the manual_reassign step with the reason
-    const trace = (deps.routingDecisions[0] as { trace: Array<Record<string, unknown>> }).trace;
-    expect(trace).toHaveLength(1);
-    expect(trace[0]).toMatchObject({
-      step: 'manual_reassign',
-      matched: true,
-      reason,
-      by: 'p-actor',
-    });
+    // Exactly ONE set_entity_assignment RPC, kind=work_order.
+    const calls = assignCalls(deps.rpcCalls);
+    expect(calls).toHaveLength(1);
+    const args = calls[0].args;
+    expect(args.p_entity_id).toBe('wo1');
+    expect(args.p_entity_kind).toBe('work_order');
+    expect(args.p_tenant_id).toBe(TENANT);
+    // SYSTEM_ACTOR collapses to null actor.
+    expect(args.p_actor_user_id).toBeNull();
+    expect(args.p_idempotency_key).toBe(
+      buildReassignIdempotencyKey('work_order', 'wo1', CRID),
+    );
 
-    // Activity row is internal-visibility (not 'system') because the reason
-    // is human-authored — surfaces in timeline as a note. Reason in content.
-    expect(deps.activities).toHaveLength(1);
-    expect(deps.activities[0]).toMatchObject({
-      tenant_id: TENANT,
-      ticket_id: 'wo1',
-      activity_type: 'system_event',
-      visibility: 'internal',
-      content: reason,
-      author_person_id: 'p-actor',
-      metadata: {
-        event: 'reassigned',
-        previous: { team: 'team-old', user: null, vendor: null },
-        next: { kind: 'team', id: 'team-new' },
-        mode: 'manual_reassign',
-        reason,
-      },
-    });
+    const payload = args.p_payload as Record<string, unknown>;
+    expect(payload.assigned_team_id).toBe('team-new');
+    expect(payload.assigned_user_id).toBeNull();
+    expect(payload.assigned_vendor_id).toBeNull();
+    expect(payload.reason).toBe(reason);
+    expect(payload.actor_person_id).toBe('p-actor');
+    // WO is manual-only — NEVER a `decision` key.
+    expect(payload).not.toHaveProperty('decision');
+
+    // No raw work_orders UPDATE, no standalone routing_decisions /
+    // ticket_activities insert — v3 owns all of it atomically.
+    expect(deps.rawUpdates).toHaveLength(0);
+    expect(deps.routingDecisions).toHaveLength(0);
+    expect(deps.activities).toHaveLength(0);
   });
 
-  it('rejects when reason is missing or empty', async () => {
+  it('non-SYSTEM actor forwards the auth uid as p_actor_user_id', async () => {
+    const deps = makeDeps(
+      {
+        id: 'wo1',
+        tenant_id: TENANT,
+        status: 'assigned',
+        status_category: 'assigned',
+        assigned_team_id: null,
+        assigned_user_id: null,
+        assigned_vendor_id: null,
+      },
+      {
+        teams: [{ id: TEAM_X, tenant_id: TENANT }],
+        hasAssignPermission: true,
+      },
+    );
+    const svc = makeSvc(deps);
+
+    await svc.reassign(
+      'wo1',
+      { assigned_team_id: TEAM_X, reason: 'cover' },
+      'auth-uid-7',
+      CRID,
+    );
+
+    const calls = assignCalls(deps.rpcCalls);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args.p_actor_user_id).toBe('auth-uid-7');
+  });
+
+  it('rejects when reason is missing or empty — before any RPC', async () => {
     const deps = makeDeps(
       {
         id: 'wo1',
@@ -274,6 +351,7 @@ describe('WorkOrderService.reassign', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         { assigned_team_id: 'team-new' } as any,
         SYSTEM_ACTOR,
+        CRID,
       ),
     ).rejects.toThrow(AppError);
 
@@ -282,12 +360,39 @@ describe('WorkOrderService.reassign', () => {
         'wo1',
         { assigned_team_id: 'team-new', reason: '   ' },
         SYSTEM_ACTOR,
+        CRID,
       ),
     ).rejects.toThrow(AppError);
 
-    expect(deps.updates).toHaveLength(0);
-    expect(deps.routingDecisions).toHaveLength(0);
-    expect(deps.activities).toHaveLength(0);
+    expect(assignCalls(deps.rpcCalls)).toHaveLength(0);
+    expect(deps.rawUpdates).toHaveLength(0);
+  });
+
+  it('hard-fails when clientRequestId is missing (crid is the idempotency seed)', async () => {
+    const deps = makeDeps(
+      {
+        id: 'wo1',
+        tenant_id: TENANT,
+        status: 'assigned',
+        status_category: 'assigned',
+        assigned_team_id: 'team-old',
+        assigned_user_id: null,
+        assigned_vendor_id: null,
+      },
+      { teams: [{ id: 'team-new', tenant_id: TENANT }] },
+    );
+    const svc = makeSvc(deps);
+
+    await expect(
+      svc.reassign(
+        'wo1',
+        { assigned_team_id: 'team-new', reason: 'cover' },
+        SYSTEM_ACTOR,
+        // no crid
+      ),
+    ).rejects.toThrow(/X-Client-Request-Id/);
+
+    expect(assignCalls(deps.rpcCalls)).toHaveLength(0);
   });
 
   it('throws Forbidden when caller lacks tickets.assign and write_all', async () => {
@@ -313,23 +418,19 @@ describe('WorkOrderService.reassign', () => {
     await expect(
       svc.reassign(
         'wo1',
-        {
-          assigned_team_id: 'team-new',
-          reason: 'try',
-        },
+        { assigned_team_id: 'team-new', reason: 'try' },
         'auth-uid-non-admin',
+        CRID,
       ),
     ).rejects.toThrow(/tickets\.assign/);
 
     expect(deps.permissionChecks).toEqual([
       { user_id: 'u1', permission: 'tickets.assign' },
     ]);
-    expect(deps.updates).toHaveLength(0);
-    expect(deps.routingDecisions).toHaveLength(0);
-    expect(deps.activities).toHaveLength(0);
+    expect(assignCalls(deps.rpcCalls)).toHaveLength(0);
   });
 
-  it('rejects rerun_resolver mode with 501 NotImplemented (deferred to a future slice)', async () => {
+  it('rejects rerun_resolver mode with 501-class unsupported (unchanged — WO is manual-only)', async () => {
     const deps = makeDeps(
       {
         id: 'wo1',
@@ -344,34 +445,81 @@ describe('WorkOrderService.reassign', () => {
     );
     const svc = makeSvc(deps);
 
-    // 501 NotImplemented (not 400 BadRequest) — the request is well-formed,
-    // the resource just doesn't implement that mode yet.
     await expect(
       svc.reassign(
         'wo1',
-        {
-          assigned_team_id: 'team-new',
-          reason: 'rerun please',
-          rerun_resolver: true,
-        },
+        { assigned_team_id: 'team-new', reason: 'rerun please', rerun_resolver: true },
         SYSTEM_ACTOR,
-      ),
-    ).rejects.toThrow(AppError);
-
-    await expect(
-      svc.reassign(
-        'wo1',
-        {
-          assigned_team_id: 'team-new',
-          reason: 'rerun please',
-          rerun_resolver: true,
-        },
-        SYSTEM_ACTOR,
+        CRID,
       ),
     ).rejects.toThrow(/rerun_resolver is not yet supported/);
 
-    expect(deps.updates).toHaveLength(0);
-    expect(deps.routingDecisions).toHaveLength(0);
-    expect(deps.activities).toHaveLength(0);
+    expect(assignCalls(deps.rpcCalls)).toHaveLength(0);
+  });
+
+  it('a post-RPC refetch miss yields notFound (NOT forbidden) — closes audit P2-4', async () => {
+    const deps = makeDeps(
+      {
+        id: 'wo1',
+        tenant_id: TENANT,
+        status: 'assigned',
+        status_category: 'assigned',
+        assigned_team_id: 'team-old',
+        assigned_user_id: null,
+        assigned_vendor_id: null,
+      },
+      {
+        teams: [{ id: 'team-new', tenant_id: TENANT }],
+        // Pre-check returns a row (existence ok), but the post-RPC
+        // refetch returns null → must be notFound, never forbidden.
+        refetchRow: null,
+      },
+    );
+    const svc = makeSvc(deps);
+
+    let caught: unknown = null;
+    try {
+      await svc.reassign(
+        'wo1',
+        { assigned_team_id: 'team-new', reason: 'cover' },
+        SYSTEM_ACTOR,
+        CRID,
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AppError);
+    const code = (caught as AppError & { code?: string }).code;
+    // notFound, not forbidden.
+    expect(String(code)).not.toMatch(/no_longer_accessible|forbidden/i);
+    expect(String((caught as Error).message)).not.toMatch(/no longer accessible/i);
+  });
+
+  it('maps a v3 RPC error through mapRpcErrorToAppError', async () => {
+    const deps = makeDeps(
+      {
+        id: 'wo1',
+        tenant_id: TENANT,
+        status: 'assigned',
+        status_category: 'assigned',
+        assigned_team_id: 'team-old',
+        assigned_user_id: null,
+        assigned_vendor_id: null,
+      },
+      {
+        teams: [{ id: 'team-new', tenant_id: TENANT }],
+        rpcError: { message: 'command_operations.payload_mismatch', code: 'P0001' },
+      },
+    );
+    const svc = makeSvc(deps);
+
+    await expect(
+      svc.reassign(
+        'wo1',
+        { assigned_team_id: 'team-new', reason: 'cover' },
+        SYSTEM_ACTOR,
+        CRID,
+      ),
+    ).rejects.toThrow(AppError);
   });
 });

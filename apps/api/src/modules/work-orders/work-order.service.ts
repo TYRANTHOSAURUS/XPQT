@@ -3,7 +3,10 @@ import {
   Injectable,
   forwardRef,
 } from '@nestjs/common';
-import { buildPatchIdempotencyKey } from '@prequest/shared';
+import {
+  buildPatchIdempotencyKey,
+  buildReassignIdempotencyKey,
+} from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import {
@@ -895,11 +898,11 @@ export class WorkOrderService {
       rerun_resolver?: boolean;
     },
     actorAuthUid: string,
-    // B.2.A I1 — threaded from RequireClientRequestIdGuard via the
-    // controller for `POST /work-orders/:id/reassign`. Plumbed only today;
-    // Step 3+ uses it as the idempotency-key seed for the
-    // set_entity_assignment RPC (spec §3.2 + §3.9.1).
-    _clientRequestId?: string,
+    // audit02 Slice C (P1-1) — threaded from RequireClientRequestIdGuard
+    // via the controller for `POST /work-orders/:id/reassign`. USED here
+    // as the idempotency-key seed for the canonical `set_entity_assignment`
+    // v3 RPC (00416) via buildReassignIdempotencyKey('work_order', …).
+    clientRequestId?: string,
   ): Promise<WorkOrderRow> {
     const tenant = TenantContext.current();
 
@@ -920,11 +923,21 @@ export class WorkOrderService {
       });
     }
 
+    // audit02 P1-4 (DELIBERATELY OUT OF SCOPE for Slice C): the WO
+    // reassign permission FLOOR is `assertCanPlan` + `tickets.assign`
+    // (assertAssignPermission below), whereas the case-side floor is
+    // `assertVisible('write')` + `tickets.assign`
+    // (ticket.service.ts:1244-1266). This asymmetry is intentional and
+    // UNCHANGED here — unifying the floors is tracked separately by audit
+    // P1-4. See docs/visibility.md (reassign-floor-asymmetry note).
     await this.assertAssignPermission(actorAuthUid, workOrderId, tenant.id);
 
+    // Early-404 pre-check: preserve the existing contract that a missing
+    // / cross-tenant work order fails BEFORE the RPC. v3 also raises
+    // `set_entity_assignment.not_found` (00416:243-246) — defense-in-depth.
     const { data: current, error: loadErr } = await this.supabase.admin
       .from('work_orders')
-      .select('id, tenant_id, assigned_team_id, assigned_user_id, assigned_vendor_id')
+      .select('id')
       .eq('id', workOrderId)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
@@ -932,19 +945,6 @@ export class WorkOrderService {
     if (!current) {
       throw AppErrors.notFound('work_order', workOrderId);
     }
-    const currentRow = current as {
-      id: string;
-      tenant_id: string;
-      assigned_team_id: string | null;
-      assigned_user_id: string | null;
-      assigned_vendor_id: string | null;
-    };
-
-    const prev = {
-      team: currentRow.assigned_team_id,
-      user: currentRow.assigned_user_id,
-      vendor: currentRow.assigned_vendor_id,
-    };
 
     let nextTarget: { kind: 'team' | 'user' | 'vendor'; id: string } | null = null;
     if (dto.assigned_team_id) nextTarget = { kind: 'team', id: dto.assigned_team_id };
@@ -965,90 +965,58 @@ export class WorkOrderService {
       );
     }
 
-    const updates: Record<string, unknown> = {
-      assigned_team_id: null,
-      assigned_user_id: null,
-      assigned_vendor_id: null,
-      updated_at: new Date().toISOString(),
-    };
-    if (nextTarget?.kind === 'team') updates.assigned_team_id = nextTarget.id;
-    if (nextTarget?.kind === 'user') updates.assigned_user_id = nextTarget.id;
-    if (nextTarget?.kind === 'vendor') updates.assigned_vendor_id = nextTarget.id;
+    // audit02 Slice C (P1-1): commit through the canonical
+    // `set_entity_assignment` v3 RPC (00416) in ONE transaction. The
+    // legacy path did a raw `.from('work_orders').update` + TWO
+    // try/catch-SWALLOWED inserts (routing_decisions @ ex-1000, the
+    // `reassigned` activity @ ex-1027) — a swallowed insert silently lost
+    // the routing audit + the timeline note while the assignment still
+    // committed, the exact silent-audit-loss the audit flagged. v3 owns
+    // the work_orders UPDATE + status_category inherit +
+    // command_operations idempotency + routing_decisions
+    // (strategy='manual'/chosen_by='manual_reassign', reason-gated) +
+    // ticket_activities + ticket_assigned domain event atomically — no
+    // swallow, no partial state. NO `decision` key: WO is manual-only
+    // (rerun_resolver throws above), so v3's hardcoded manual provenance
+    // is exactly right (00416:508-547). `prev` is no longer needed — v3
+    // captures previous_assigned_* in its own audit row + event.
+    if (!clientRequestId) {
+      throw AppErrors.badRequest(
+        'command_operations.client_request_id_required',
+        'POST /work-orders/:id/reassign requires X-Client-Request-Id header per I1 (RequireClientRequestIdGuard).',
+      );
+    }
 
-    const { error: updateErr } = await this.supabase.admin
-      .from('work_orders')
-      .update(updates)
-      .eq('id', workOrderId)
-      .eq('tenant_id', tenant.id);
-    if (updateErr) throw updateErr;
-
-    // Routing decision audit row. Convention (code-review C5): set the
-    // polymorphic columns (entity_kind + work_order_id) explicitly on both
-    // case + WO sides — the 00232 derive trigger remains as a defensive
-    // fallback, but writing them here makes the audit row deterministic at
-    // write time and removes the "depends on the trigger" coupling. Mirror
-    // of ticket.service.ts:1133 (case-side reassign).
-    const trace = [
+    const { error: rpcErr } = await this.supabase.admin.rpc(
+      'set_entity_assignment',
       {
-        step: 'manual_reassign',
-        matched: true,
-        reason: dto.reason,
-        by: dto.actor_person_id ?? null,
+        p_entity_id: workOrderId,
+        p_entity_kind: 'work_order',
+        p_tenant_id: tenant.id,
+        // 00416:550-558 — p_actor_user_id is the auth UID, not users.id.
+        // SYSTEM_ACTOR collapses to null (the RPC's actor_person resolve
+        // falls through cleanly).
+        p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
+        p_idempotency_key: buildReassignIdempotencyKey(
+          'work_order',
+          workOrderId,
+          clientRequestId,
+        ),
+        p_payload: {
+          // Send all three explicitly so v3 performs a clean overwrite
+          // (omitted = "no change"; explicit null = "clear").
+          assigned_team_id: nextTarget?.kind === 'team' ? nextTarget.id : null,
+          assigned_user_id: nextTarget?.kind === 'user' ? nextTarget.id : null,
+          assigned_vendor_id: nextTarget?.kind === 'vendor' ? nextTarget.id : null,
+          reason: dto.reason,
+          actor_person_id: dto.actor_person_id ?? null,
+        },
       },
-    ];
-    try {
-      const { error: rdErr } = await this.supabase.admin
-        .from('routing_decisions')
-        .insert({
-          tenant_id: tenant.id,
-          ticket_id: workOrderId, // legacy soft pointer; FK to tickets dropped in 00233
-          entity_kind: 'work_order',
-          work_order_id: workOrderId,
-          strategy: 'manual',
-          chosen_team_id: nextTarget?.kind === 'team' ? nextTarget.id : null,
-          chosen_user_id: nextTarget?.kind === 'user' ? nextTarget.id : null,
-          chosen_vendor_id: nextTarget?.kind === 'vendor' ? nextTarget.id : null,
-          chosen_by: 'manual_reassign',
-          trace,
-          context: {
-            reason: dto.reason,
-            previous: prev,
-            actor: dto.actor_person_id ?? null,
-          },
-        });
-      if (rdErr) throw rdErr;
-    } catch (err) {
-      console.error('[work-order] reassign routing_decisions write failed', err);
-    }
+    );
+    if (rpcErr) throw mapRpcErrorToAppError(rpcErr);
 
-    // Activity row. Internal visibility (NOT 'system') because the reason
-    // is human-authored and surfaces in the timeline as a note. Matches
-    // ticket.service.ts:1060-1071.
-    try {
-      const authorPersonId =
-        dto.actor_person_id ?? (await this.resolveAuthorPersonId(actorAuthUid, tenant.id));
-      const { error: activityErr } = await this.supabase.admin
-        .from('ticket_activities')
-        .insert({
-          tenant_id: tenant.id,
-          ticket_id: workOrderId,
-          activity_type: 'system_event',
-          author_person_id: authorPersonId,
-          visibility: 'internal',
-          content: dto.reason,
-          metadata: {
-            event: 'reassigned',
-            previous: prev,
-            next: nextTarget,
-            mode: 'manual_reassign',
-            reason: dto.reason,
-          },
-        });
-      if (activityErr) throw activityErr;
-    } catch (err) {
-      console.error('[work-order] reassigned activity failed', err);
-    }
-
+    // Refetch so the response shape carries every v3-side side effect
+    // (status_category inheritance, updated_at).
     const { data: refreshed, error: refetchErr } = await this.supabase.admin
       .from('work_orders')
       .select('*')
@@ -1057,7 +1025,14 @@ export class WorkOrderService {
       .maybeSingle();
     if (refetchErr) throw refetchErr;
     if (!refreshed) {
-      throw AppErrors.forbidden('work_order.no_longer_accessible', 'Work order no longer accessible');
+      // Closes audit P2-4: the legacy code threw
+      // `forbidden('work_order.no_longer_accessible')` here, which
+      // misleadingly suggested a permission failure. The v3 RPC
+      // committed under service_role + tenant_id matched — a null
+      // refetch means the row was deleted concurrently or the
+      // PostgREST cache is stale. `notFound` is the correct shape
+      // (mirrors WorkOrderService.update @ work-order.service.ts:507).
+      throw AppErrors.notFound('work_order', workOrderId);
     }
     return refreshed as WorkOrderRow;
   }
@@ -1096,23 +1071,5 @@ export class WorkOrderService {
     if (!hasAssign) {
       throw AppErrors.forbidden('work_order.permission_assign', ERR_PERM_ASSIGN);
     }
-  }
-
-  /**
-   * Resolve actor → persons.id for activity attribution. Falls back to null
-   * (system attribution) if the actor isn't a known user in this tenant.
-   */
-  private async resolveAuthorPersonId(
-    actorAuthUid: string,
-    tenantId: string,
-  ): Promise<string | null> {
-    if (actorAuthUid === SYSTEM_ACTOR) return null;
-    const { data } = await this.supabase.admin
-      .from('users')
-      .select('person_id')
-      .eq('auth_uid', actorAuthUid)
-      .eq('tenant_id', tenantId)
-      .maybeSingle();
-    return ((data as { person_id: string | null } | null)?.person_id) ?? null;
   }
 }

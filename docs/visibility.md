@@ -89,6 +89,11 @@ Internal service-to-service calls (workflow engine, approvals, resolver callback
 - **Vendor-participant path (Phase 4).** Currently returns no rows. The schema doesn't link a person to their specific vendor; Phase 4 will formalize. Users with `persons.external_source='vendor'` must rely on team membership or role scope for now.
 - **RLS defense-in-depth.** Possible Phase 2 addition. The tenant-isolation RLS stays; a per-user visibility RLS policy can be added later that calls `ticket_visibility_ids` from a `SECURITY DEFINER` function.
 - **Per-activity visibility.** `ticket_activities.visibility` (internal/external/system) is a separate concern and remains unchanged.
+- **Reassign permission-floor asymmetry (case vs. work order).** The two reassign paths have *deliberately different* visibility floors, both layered under the same per-action `tickets.assign` (or `tickets.write_all`) permission check:
+  - `POST /tickets/:id/reassign` (case) → `TicketService.reassign` → **`assertVisible(id, ctx, 'write')`** + `tickets.assign`.
+  - `POST /work-orders/:id/reassign` (WO) → `WorkOrderService.reassign` → **`assertCanPlan(id, ctx)`** (via `assertAssignPermission`) + `tickets.assign`.
+
+  `assertCanPlan` is *narrower* than `assertVisible(...,'write')` — it excludes requester / watcher / readonly cross-domain roles (see §4). This asymmetry is intentional and was confirmed during audit 02 Slice C (P1-1 reassign-atomicity remediation): unifying the two floors is a separate product/security decision tracked by audit 02 **P1-4** (floor-parity), explicitly OUT of scope for Slice C, which changed only the *write mechanism* (both now commit through the atomic `set_entity_assignment` v3 RPC) and left both floors untouched. Do not "fix" one side to match the other without resolving P1-4 first — a silent floor change is a visibility regression.
 
 ## 8. Database role posture — RLS as perimeter, not policy
 
