@@ -94,6 +94,13 @@ interface FakeSupabaseOpts {
   requestTypeRow?: { domain: string | null } | null;
   rpcResponse?: unknown;
   rpcError?: { code?: string; message: string };
+  // audit02 CR2 / D-A02-4: command_operations success-probe row keyed by
+  // idempotency_key. When the probe finds a `success` row the handler
+  // short-circuits (no re-evaluate, no re-RPC).
+  commandOps?: Record<
+    string,
+    { outcome: string; cached_result: Record<string, unknown> | null } | null
+  >;
 }
 
 interface CapturedCalls {
@@ -101,6 +108,7 @@ interface CapturedCalls {
   rpcCalls: Array<{ fn: string; args: unknown }>;
   inserts: Array<{ table: string; row: unknown }>;
   updates: Array<{ table: string; patch: unknown }>;
+  commandOpsProbes: Array<Record<string, unknown>>;
 }
 
 function makeSupabase(opts: FakeSupabaseOpts) {
@@ -109,6 +117,7 @@ function makeSupabase(opts: FakeSupabaseOpts) {
     rpcCalls: [],
     inserts: [],
     updates: [],
+    commandOpsProbes: [],
   };
 
   const from = jest.fn((table: string) => {
@@ -157,6 +166,25 @@ function makeSupabase(opts: FakeSupabaseOpts) {
           return { data: null, error: null };
         },
       };
+    }
+    if (table === 'command_operations') {
+      const filters: Record<string, unknown> = {};
+      const chain: Record<string, unknown> = {
+        select: () => chain,
+        eq: (col: string, val: unknown) => {
+          filters[col] = val;
+          return chain;
+        },
+        maybeSingle: async () => {
+          captured.commandOpsProbes.push({ ...filters });
+          const key = filters.idempotency_key as string;
+          return {
+            data: opts.commandOps?.[key] ?? null,
+            error: null,
+          };
+        },
+      };
+      return chain;
     }
     throw new Error('unexpected table: ' + table);
   });
@@ -615,6 +643,173 @@ describe('RoutingEvaluationHandler.handle (audit02 Slice D P1-2 + B.2.A.Step11 �
       const handler = new RoutingEvaluationHandler(supabase.service, routing);
       await expect(handler.handle(makeEvent())).rejects.toThrow(/connection wobble/);
       await expect(handler.handle(makeEvent())).rejects.not.toBeInstanceOf(DeadLetterError);
+    });
+  });
+
+  describe('audit02 CR2 / D-A02-4 — command_operations success-probe short-circuit', () => {
+    // The handler reuses the STABLE key `routing-evaluation:<event_id>`
+    // but recomputes decision.trace/context from MUTABLE routing config +
+    // ticket inputs on every (re)delivery. If the first delivery
+    // committed the assignment + routing_status clear + routing_decisions
+    // atomically, an outbox redelivery that recomputes a DRIFTED decision
+    // (config/inputs changed) → same key + different payload hash →
+    // `command_operations.payload_mismatch` → handler errors → event
+    // poisoned. Fix: probe command_operations for a `success` row under
+    // the stable key BEFORE re-evaluating; if present, the work is
+    // genuinely done — log + return so the outbox ACKs the event.
+
+    it('short-circuits on a command_operations success row: NO re-evaluate, NO re-RPC, returns normally (event ACKed)', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+        commandOps: {
+          ['routing-evaluation:' + EVENT_ID]: {
+            outcome: 'success',
+            cached_result: { noop: false },
+          },
+        },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+
+      // Resolver NOT re-run; RPC NOT re-called — the canonical write
+      // already committed under this key.
+      expect(routing.evaluate).not.toHaveBeenCalled();
+      expect(
+        supabase.captured.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
+      ).toHaveLength(0);
+      // No failure breadcrumb — the event genuinely succeeded earlier.
+      expect(
+        supabase.captured.updates.filter((u) => u.table === 'tickets'),
+      ).toHaveLength(0);
+      // Probe was tenant-scoped on the stable event-derived key.
+      expect(supabase.captured.commandOpsProbes).toHaveLength(1);
+      expect(supabase.captured.commandOpsProbes[0]).toMatchObject({
+        tenant_id: TENANT_ID,
+        idempotency_key: 'routing-evaluation:' + EVENT_ID,
+      });
+    });
+
+    it('does NOT short-circuit on an in_progress row — proceeds to evaluate + RPC', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+        commandOps: {
+          ['routing-evaluation:' + EVENT_ID]: {
+            outcome: 'in_progress',
+            cached_result: null,
+          },
+        },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+
+      expect(routing.evaluate).toHaveBeenCalledTimes(1);
+      expect(
+        supabase.captured.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
+      ).toHaveLength(1);
+    });
+  });
+
+  describe('audit02 CR2 — IMPORTANT: transient RPC error retries (does NOT terminally consume the event)', () => {
+    // Pre-fix: on rpcRes.error the handler called markRoutingFailure then
+    // `return` — a normal return makes the outbox mark the event
+    // processed. A TRANSIENT RPC/DB error thus terminally consumed the
+    // event with routing_status='failed'. Fix: classify the error.
+    // RETRYABLE (transient infra: unparseable / unregistered code) → THROW
+    // (the outbox redelivers per its backoff). TERMINAL (registered
+    // business/validation code, incl. payload_mismatch) → keep
+    // markRoutingFailure + return.
+
+    it('transient RPC error (unregistered/unparseable message) → THROWS a plain Error (outbox redelivers), does NOT markRoutingFailure', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+        rpcError: {
+          code: '08006',
+          message: 'connection to server was lost (transient)',
+        },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+
+      await expect(handler.handle(makeEvent())).rejects.toThrow();
+      // It throws a transient (NOT DeadLetter) error → outbox retry path.
+      await expect(handler.handle(makeEvent())).rejects.not.toBeInstanceOf(
+        DeadLetterError,
+      );
+      // It did NOT terminally consume the event with a 'failed' status.
+      expect(
+        supabase.captured.updates.filter(
+          (u) =>
+            u.table === 'tickets' &&
+            (u.patch as { routing_status?: string }).routing_status === 'failed',
+        ),
+      ).toHaveLength(0);
+    });
+
+    it('terminal RPC error (registered code: validate_assignees_in_tenant.*) → markRoutingFailure + return (consumed, not thrown)', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+        rpcError: {
+          code: '42501',
+          message:
+            'validate_assignees_in_tenant.assigned_team_id_not_in_tenant',
+        },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+
+      // Terminal business error: failure recorded, event consumed.
+      const failureUpdate = supabase.captured.updates.find(
+        (u) =>
+          u.table === 'tickets' &&
+          (u.patch as { routing_status: string }).routing_status === 'failed',
+      );
+      expect(failureUpdate).toBeDefined();
+    });
+
+    it('terminal RPC error (command_operations.payload_mismatch) → markRoutingFailure + return (consumed, not thrown)', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+        rpcError: {
+          code: 'P0001',
+          message: 'command_operations.payload_mismatch',
+        },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(supabase.service, routing);
+
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+      const failureUpdate = supabase.captured.updates.find(
+        (u) =>
+          u.table === 'tickets' &&
+          (u.patch as { routing_status: string }).routing_status === 'failed',
+      );
+      expect(failureUpdate).toBeDefined();
     });
   });
 
