@@ -1079,6 +1079,9 @@ apps/api/src/modules/reservations/recurrence.service.ts:93:   * from reservation
 # KEEP_HISTORICAL_COMMENT — live import of the reservations module (no KEEP_LIVE_IMPORT class exists; mirrors allowlist lines 1005-1020).
 apps/api/src/modules/outbox/handlers/booking-cancelled-cascade.handler.ts:7:import { BookingNotificationsService } from '../../reservations/booking-notifications.service';
 apps/api/src/modules/outbox/outbox.module.ts:4:import { ReservationsModule } from '../reservations/reservations.module';
+# KEEP_HISTORICAL_COMMENT — live test dependency on the current reservations module path; no KEEP_LIVE_IMPORT class exists. Remove when reservations/ is renamed to bookings/ in Phase 8.
+apps/api/src/modules/booking-bundles/bundle-attach-plan.determinism.spec.ts:49:import { BookingFlowService } from '../reservations/booking-flow.service';
+apps/api/src/modules/booking-bundles/bundle-attach-plan.determinism.spec.ts:54:import type { ActorContext, CreateReservationInput } from '../reservations/dto/types';
 # KEEP_WIRE_SHAPE — documented byte-stable response shape; `reservations[]` is the response field on POST /reservations/multi-room. Mirrors allowlist lines 948-949.
 apps/api/src/modules/reservations/multi-room-booking.service.ts:67: * Returns shape is byte-stable: `{ group_id, reservations[] }` where
 apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:247:      cancelled_reservation_ids: result.booking_cancelled ? [args.bundle_id] : [],
