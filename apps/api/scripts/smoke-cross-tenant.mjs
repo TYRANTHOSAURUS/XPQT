@@ -268,9 +268,9 @@ function idorNotificationStillUnread() {
 }
 
 // Browser-direct PostgREST hardening proof (04-rls-security.md, codex
-// 2026-05-18 #2 / migration 00415). Two layers:
+// 2026-05-18 #2 / migration 00434, formerly 00415). Two layers:
 //  (1) grant assertion — anon+authenticated must hold NO write DML on
-//      ANY public base table (the guard's scope matches 00415's
+//      ANY public base table (the guard's scope matches 00434's
 //      `REVOKE … ON ALL TABLES`, not just an escalation subset — the
 //      full-review I2 scope-mismatch fix), but MUST retain SELECT on the
 //      Realtime-published set (Supabase Realtime per-subscriber RLS
@@ -279,7 +279,7 @@ function idorNotificationStillUnread() {
 //      pre-push 12 grants → RED; post-push 0 → GREEN).
 //  (2) live end-to-end — a real authenticated browser session token
 //      cannot INSERT into user_role_assignments via PostgREST. Post-
-//      00415 this is GRANT-denied (claim-independent: holds even if a
+//      00434 this is GRANT-denied (claim-independent: holds even if a
 //      future custom-access-token hook starts minting tenant_id).
 const REALTIME_TABLES = [
   'bookings',
@@ -296,7 +296,7 @@ function browserGrantPosture() {
   const { dbPass, dbUrl } = proofDbArgs();
   const rtList = REALTIME_TABLES.map((t) => `('${t}')`).join(',');
   // writes_left = ANY public base table where anon/authenticated still
-  // holds INSERT/UPDATE/DELETE (scope == the 00415 REVOKE). select_missing
+  // holds INSERT/UPDATE/DELETE (scope == the 00434 REVOKE). select_missing
   // = a Realtime-published table that LOST SELECT (over-broad revoke).
   const sql = `select
     (select count(*) from pg_tables tb
@@ -319,31 +319,55 @@ function browserGrantPosture() {
   return { writesLeft, selectMissing };
 }
 
-// 00417 guard: NO postgres-owned (i.e. app/migration-authored) public
-// routine may be browser-role-EXECUTE-able except the audit-documented
-// bearer-token trio. Scoped to `proowner = postgres` deliberately: the
-// ~219 still-executable routines are pg_trgm/btree_gist extension math
-// owned by `supabase_admin` — they carry NO tenant data and CANNOT be
-// revoked from the non-owner migration role, so asserting "zero of ALL
-// routines" would be an unachievable paper-tiger gate. The
-// security-meaningful, achievable invariant is "zero app routines"
-// (every SECURITY DEFINER tenant-data fn — incl. the proven leak
-// tickets_distinct_tags — is postgres-owned). Must be 0.
+// Bearer-token trio (anon-callable by audit design — public invitation /
+// kiosk flows). Used by the trio-reachability probe below.
 const BEARER_TRIO = [
   'validate_invitation_token',
   'peek_invitation_token',
   'validate_kiosk_token',
 ];
-function browserExecuteGrantPosture() {
+
+// 00435 → 00436 EXECUTE-axis guard (post-00436, the RLS-correct
+// posture). The 2026-05-19 P0 incident proved that the previous
+// "zero browser-EXECUTE-able app routines" invariant
+// (00435_revoke_browser_execute_grants.sql, formerly 00417) is
+// fundamentally incompatible with Supabase RLS: every tenant_isolation
+// policy's USING clause invokes public.current_tenant_id() (others call
+// current_user_id() / user_has_permission()), and Postgres checks
+// EXECUTE on those helper functions AS THE QUERYING ROLE
+// (anon/authenticated) even for SECURITY DEFINER — so revoking their
+// EXECUTE from the browser roles 42501'd every browser/Realtime read.
+// 00436_fix_00435_rls_helper_execute_regression.sql (formerly 00420,
+// PR #31) fully reverts 00435 and restores the Supabase-default grant.
+// The correct, achievable, security-meaningful EXECUTE-axis invariant
+// is therefore the INVERSE of the old one: the RLS-helper functions
+// MUST remain browser-EXECUTE-able. `missing` = count of the supplied
+// RLS helpers for which anon OR authenticated lacks EXECUTE. Must be 0;
+// any non-zero ⇒ the 00435-class outage has regressed.
+function rlsHelperExecutePosture(helpers) {
   const { dbPass, dbUrl } = proofDbArgs();
-  const trio = BEARER_TRIO.map((n) => `'${n}'`).join(',');
+  const list = helpers.map((n) => `('${n}')`).join(',');
+  // Overload-safe: a helper counts as `missing` for role g if it is
+  // absent entirely OR ANY pg_proc row of that name lacks EXECUTE for
+  // g. The old form (`not exists(... and has_function_privilege ...)`)
+  // let one EXECUTE-able overload of an overloaded helper (e.g.
+  // user_has_permission has multiple signatures) mask a revoked
+  // sibling overload. We keep an `exists(... proname = h.n)` arm so a
+  // missing-entirely helper still surfaces (negated: a helper with
+  // zero pg_proc rows is counted), AND add the per-overload
+  // `exists(... and not has_function_privilege ...)` arm so any
+  // single non-EXECUTE-able overload is flagged.
   const sql = `select count(*)
-    from pg_proc p
-    where p.pronamespace = 'public'::regnamespace
-      and pg_get_userbyid(p.proowner) = 'postgres'
-      and has_function_privilege('authenticated', p.oid, 'EXECUTE')
-      and p.proname not in (${trio});`;
-  return Number(
+    from (values ${list}) h(n)
+    cross join (values ('anon'),('authenticated')) r(g)
+    where not exists (
+        select 1 from pg_proc p
+        where p.pronamespace = 'public'::regnamespace and p.proname = h.n)
+      or exists (
+        select 1 from pg_proc p
+        where p.pronamespace = 'public'::regnamespace and p.proname = h.n
+          and not has_function_privilege(r.g, p.oid, 'EXECUTE'));`;
+  const missing = Number(
     execFileSync(
       'psql',
       [dbUrl, '-tA', '-v', 'ON_ERROR_STOP=1', '-c', sql],
@@ -352,6 +376,7 @@ function browserExecuteGrantPosture() {
       .toString()
       .trim(),
   );
+  return { missing };
 }
 
 function cleanupIdorNotificationFixture() {
@@ -891,7 +916,7 @@ async function probe(name, options) {
     cleanupIdorNotificationFixture();
   }
 
-  // ── Browser-direct PostgREST hardening (codex 2026-05-18 #2 / 00415) ──
+  // ── Browser-direct PostgREST hardening (codex 2026-05-18 #2 / 00434) ──
   console.log(
     '\n─── Browser-direct PostgREST: write grants revoked from anon/authenticated',
   );
@@ -900,13 +925,13 @@ async function probe(name, options) {
     if (writesLeft === 0) {
       results.pass += 1;
       console.log(
-        '  ✓ anon/authenticated hold NO INSERT/UPDATE/DELETE on ANY public table (00415 scope)',
+        '  ✓ anon/authenticated hold NO INSERT/UPDATE/DELETE on ANY public table (00434 scope)',
       );
     } else {
       results.fail += 1;
       results.failed.push('Browser write grants NOT fully revoked (00434 not applied / regressed)');
       console.log(
-        `  ✗ ${writesLeft} anon/authenticated write grants still present on public tables — apply/re-apply migration 00415`,
+        `  ✗ ${writesLeft} anon/authenticated write grants still present on public tables — apply/re-apply migration 00434`,
       );
     }
     if (selectMissing === 0) {
@@ -967,27 +992,55 @@ async function probe(name, options) {
       }
     }
 
-    // ── 00417: browser-role EXECUTE revoked on public functions ──
-    // (codex done-check 2026-05-18 found a LIVE cross-tenant leak via
-    // SECURITY DEFINER tickets_distinct_tags(tenant) granted to
-    // authenticated — it trusts the caller-supplied tenant arg.)
-    const execLeft = browserExecuteGrantPosture();
-    if (execLeft === 0) {
+    // ── 00435 → 00436: EXECUTE posture is the Supabase RLS default ──
+    // 2026-05-19 P0 incident: 00435_revoke_browser_execute_grants.sql
+    // (formerly 00417) did `REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA
+    // public FROM PUBLIC, anon, authenticated`. That broke every
+    // browser/Realtime RLS read (RLS policies invoke
+    // public.current_tenant_id(); Postgres checks EXECUTE as the
+    // querying role even for SECURITY DEFINER) → 42501 outage.
+    // 00436_fix_00435_rls_helper_execute_regression.sql (formerly
+    // 00420, PR #31) FULLY REVERTS 00435 — it deliberately RESTORES
+    // `GRANT EXECUTE ON ALL ROUTINES ... TO anon, authenticated` (the
+    // RLS-critical Supabase default) and keeps ONLY the narrow
+    // per-function lock of the one proven leak. So the prior "ZERO
+    // browser-EXECUTE-able app routines" assertion is now the
+    // CATASTROPHIC state, not the safe one — it is removed (it would
+    // fail RED against the green post-00436 main, a broken gate per the
+    // runnable-guards mandate). The correct EXECUTE-axis invariant is
+    // now: the RLS-helper trio (current_tenant_id / current_user_id /
+    // user_has_permission) MUST be browser-EXECUTE-able (else the
+    // 00435-class outage has regressed), AND the narrow
+    // tickets_distinct_tags lock MUST still hold (next probe). The
+    // end-to-end consequence — browser RLS reads return 200 not 42501 —
+    // is the dedicated regression probe added below.
+    const RLS_HELPERS = [
+      'current_tenant_id',
+      'current_user_id',
+      'user_has_permission',
+    ];
+    const helperExec = rlsHelperExecutePosture(RLS_HELPERS);
+    if (helperExec.missing === 0) {
       results.pass += 1;
       console.log(
-        '  ✓ anon/authenticated EXECUTE on ZERO postgres-owned app routines except the bearer-token trio (00417)',
+        `  ✓ RLS-helper EXECUTE present for anon/authenticated (${RLS_HELPERS.join(', ')}) — 00435-outage class not regressed (post-00436)`,
       );
     } else {
       results.fail += 1;
-      results.failed.push('Browser EXECUTE grants NOT revoked (00435 not applied / regressed)');
+      results.failed.push(
+        'RLS-helper EXECUTE missing — RLS-helper EXECUTE regression (blanket REVOKE EXECUTE class; 00435-outage type)',
+      );
       console.log(
-        `  ✗ ${execLeft} postgres-owned app routines still anon/authenticated-EXECUTABLE beyond the trio — apply migration 00417`,
+        `  ✗ ${helperExec.missing} RLS-helper grant(s) missing for anon/authenticated — RLS-helper EXECUTE regression (blanket REVOKE EXECUTE class; 00435-outage type). Apply/keep migration 00436.`,
       );
     }
-    // Decisive live red→green: the proven leak. Authenticated TENANT_A
-    // browser token calls the SECURITY DEFINER fn with a FOREIGN tenant.
-    // Pre-00417: HTTP 200 + that tenant's tags. Post-00417: grant-denied
-    // (PostgREST 404 PGRST202 / 401 / 403). Status ∉ 2xx ⇒ denied.
+    // Decisive live probe — the one proven leak, still locked post-00436.
+    // 00436 KEEPS the narrow per-function lock: tickets_distinct_tags is
+    // revoked from PUBLIC/anon/authenticated and granted to service_role
+    // only (the app calls it via the API/service_role). Authenticated
+    // TENANT_A browser token calls the SECURITY DEFINER fn with a FOREIGN
+    // tenant → must be grant-denied (PostgREST 404 PGRST202 / 401 / 403).
+    // Status ∉ 2xx ⇒ denied.
     const lr = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/tickets_distinct_tags`, {
       method: 'POST',
       headers: {
@@ -1006,12 +1059,15 @@ async function probe(name, options) {
       results.fail += 1;
       results.failed.push('LIVE cross-tenant RPC leak: tickets_distinct_tags executable browser-direct');
       console.log(
-        `  ✗ browser-direct rpc/tickets_distinct_tags(foreign tenant) → HTTP ${lr.status} — LIVE cross-tenant leak; apply 00417`,
+        `  ✗ browser-direct rpc/tickets_distinct_tags(foreign tenant) → HTTP ${lr.status} — LIVE cross-tenant leak; apply/keep 00436 per-function lock`,
       );
     }
-    // Trio preserved: a bearer-token fn must still be reachable (not
-    // grant-denied) — else 00417 over-revoked and kiosk/invitation
-    // flows break. Bogus token ⇒ the fn runs and returns its own
+    // Trio reachable: a bearer-token fn must be browser-callable (not
+    // grant-denied) — public invitation/kiosk flows depend on it. Post-
+    // 00436 every public routine is anon/authenticated-EXECUTE-able by
+    // the restored Supabase default, so this is now a sanity check that
+    // the public bearer-token surface is intact rather than a 00435
+    // over-revoke guard. Bogus token ⇒ the fn runs and returns its own
     // not-found, NOT PostgREST's PGRST202 "function not found".
     const tp = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/validate_kiosk_token`, {
       method: 'POST',
@@ -1030,10 +1086,86 @@ async function probe(name, options) {
       );
     } else {
       results.fail += 1;
-      results.failed.push('00417 over-revoked: bearer-token trio no longer reachable');
+      results.failed.push('bearer-token trio no longer browser-reachable (public invitation/kiosk flow broken)');
       console.log(
-        `  ✗ validate_kiosk_token → HTTP ${tp.status} ${tpBody} — 00417 broke the kiosk/invitation flow`,
+        `  ✗ validate_kiosk_token → HTTP ${tp.status} ${tpBody} — public kiosk/invitation flow broken`,
       );
+    }
+
+    // ── Browser-path RLS-helper EXECUTE regression (00435 outage class) ──
+    // The 2026-05-19 P0 outage: migration
+    // 00435_revoke_browser_execute_grants.sql (formerly 00417) ran a
+    // blanket `REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA public FROM
+    // PUBLIC, anon, authenticated` and so revoked EXECUTE on the
+    // RLS-helper `public.current_tenant_id()` too. Postgres checks
+    // function EXECUTE as the *querying role* even for SECURITY
+    // DEFINER, so every logged-in browser/Realtime SELECT — whose RLS
+    // USING clause invokes current_tenant_id() (others call
+    // current_user_id() / user_has_permission()) — died with
+    // `42501 permission denied for function current_tenant_id`. Fixed
+    // by 00436_fix_00435_rls_helper_execute_regression.sql (formerly
+    // 00420, PR #31): full revert of 00435 + Supabase-default EXECUTE
+    // restored to anon/authenticated + narrow per-function lock of the
+    // one proven leak `public.tickets_distinct_tags(uuid)`.
+    //
+    // Every OTHER smoke gate exercises the service_role / NestJS-API
+    // path, which BYPASSES this RLS-helper EXECUTE check — that is why
+    // the outage shipped undetected. This probe exercises the BROWSER
+    // path: a real authenticated browser session token (the exact
+    // thing apps/web holds post-login) doing a plain PostgREST SELECT
+    // through the same proxy the browser uses. We mint a NON-ADMIN
+    // browser token — a non-admin session is the true outage-victim
+    // profile and avoids any admin OR-branch a policy might carry.
+    //
+    // REGRESSION (fail) fires on ANY of: (a) HTTP status !== 200,
+    // (b) body contains `permission denied for function`, or
+    // (c) the PostgREST JSON error `code` === '42501'. A healthy
+    // `200 []` stays GREEN: a browser JWT carries no tenant_id claim,
+    // so current_tenant_id() = NULL → `tenant_id = NULL` → 0 rows.
+    // That empty read is the correct healthy state; this probe's job
+    // is specifically to catch the 42501 / blanket-REVOKE-EXECUTE
+    // class, NOT empty-read regressions.
+    const rlsBrowserTok = await mintTokenFor(NONADMIN_AUTH_UID);
+    for (const tbl of ['inbox_notifications', 'bookings', 'tickets']) {
+      const rr = await fetch(
+        `${env.SUPABASE_URL}/rest/v1/${tbl}?select=id&limit=1`,
+        {
+          headers: {
+            apikey: env.SUPABASE_PUBLISHABLE_KEY,
+            Authorization: `Bearer ${rlsBrowserTok}`,
+          },
+        },
+      );
+      const rrBody = await rr.text();
+      const helperDenied = rrBody.includes('permission denied for function');
+      let jsonCode42501 = false;
+      try {
+        if (JSON.parse(rrBody)?.code === '42501') jsonCode42501 = true;
+      } catch {
+        /* non-JSON body (e.g. `[]`) — not a 42501 error envelope */
+      }
+      const regression =
+        rr.status !== 200 || helperDenied || jsonCode42501;
+      if (!regression) {
+        results.pass += 1;
+        console.log(
+          `  ✓ browser-path RLS read /rest/v1/${tbl} → HTTP 200 (RLS-helper EXECUTE intact; non-admin browser session)`,
+        );
+      } else {
+        const sqlstate =
+          helperDenied || jsonCode42501 ? ' SQLSTATE 42501' : '';
+        results.fail += 1;
+        results.failed.push(
+          `browser-path RLS read ${tbl}${sqlstate} — browser-path RLS-helper EXECUTE regression (blanket REVOKE EXECUTE class; the 00435-outage type) — service_role-path gates miss it`,
+        );
+        console.log(
+          `  ✗ browser-path RLS read /rest/v1/${tbl} → HTTP ${rr.status}${
+            helperDenied || jsonCode42501
+              ? ` (42501 permission denied for function — table ${tbl})`
+              : ''
+          } — browser-path RLS-helper EXECUTE regression (blanket REVOKE EXECUTE class; the 00435-outage type) — service_role-path gates miss it. ${rrBody.slice(0, 200)}`,
+        );
+      }
     }
   } catch (e) {
     results.fail += 1;
