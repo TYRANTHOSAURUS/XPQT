@@ -13,6 +13,7 @@ import type {
 import { crossingKey } from './sla-threshold.types';
 import { percentElapsed, selectApplicableThresholds } from './sla-threshold.helpers';
 import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
+import { probeCommandOperationSuccess } from '../../common/command-operations-probe';
 
 @Injectable()
 export class SlaService {
@@ -803,6 +804,42 @@ export class SlaService {
     crossingIdemKey: string,
     reason: string,
   ): Promise<boolean> {
+    // audit-02 D-A02-4: caller-side command_operations success-probe
+    // BEFORE recomputing the mutable payload. The SLA escalation reuses
+    // the STABLE crossing key `sla:escalation:<timer>:<pct>:<type>` but
+    // builds `assignmentPayload` from MUTABLE state — the resolved
+    // assignee (a users.id looked up live from `resolved.personId`, or a
+    // team id), and `reason`, can drift from an intervening manual
+    // reassign between two ticks. The poison path: tick-1's RPC commits a
+    // command_operations success row, then the best-effort watcher block
+    // (or any step after the RPC, before `fireThreshold` writes the
+    // crossing anchor) crashes hard enough to abort fireThreshold → NO
+    // crossing row written. A later tick re-enters here, recomputes a
+    // DRIFTED payload → same key + different hash →
+    // `command_operations.payload_mismatch` (00425:159-162) → throw
+    // BEFORE the crossing anchor → the escalation is permanently poisoned
+    // (the no-permanent-suppression invariant is broken).
+    //
+    // If a `success` row already exists under the stable key, the
+    // canonical assignment write ALREADY committed (idempotently, by a
+    // prior tick whose post-RPC step failed). Short-circuit WITHOUT
+    // recomputing the mutable payload or re-calling the RPC — return
+    // `true` ("assignment already done", which is equivalent to a fresh
+    // successful applyReassignment for the purpose of the downstream
+    // crossing-anchor gate in fireThreshold). The stuck escalation
+    // finally records its crossing + fires side-effects exactly once.
+    // `in_progress` is NOT a short-circuit signal (another tick
+    // mid-flight holds the key — the RPC's own advisory-lock + gate is
+    // the authoritative WRITE-side guard; this is purely the READ side).
+    const committed = await probeCommandOperationSuccess(
+      this.supabase,
+      ticket.tenant_id,
+      crossingIdemKey,
+    );
+    if (committed) {
+      return true;
+    }
+
     const assignmentPayload: Record<string, unknown> = {
       reason,
       // System/cron actor — no person attribution. set_entity_assignment

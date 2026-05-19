@@ -39,11 +39,17 @@ function makeDeps(
     vendors?: Array<{ id: string; tenant_id: string }>;
     // Simulate the post-RPC refetch returning no row (P2-4).
     refetchMissing?: boolean;
+    // audit-02 D-A02-4: command_operations success-probe row. Default
+    // (undefined) → no row → probe returns null → reassign proceeds to
+    // the RPC exactly as before (every pre-existing test relies on this
+    // default). outcome='success' short-circuits to the refetch.
+    commandOpRow?: { outcome: string; cached_result: unknown } | null;
   } = {},
 ) {
   let row: WorkOrderRow = { ...initial };
   const permissionChecks: Array<{ user_id: string; permission: string }> = [];
   const assignmentRpcCalls: Array<Record<string, unknown>> = [];
+  const commandOpProbes: Array<Record<string, unknown>> = [];
 
   const teams = options.teams ?? [];
   const users = options.users ?? [];
@@ -79,6 +85,20 @@ function makeDeps(
               }),
             }),
           } as unknown;
+        }
+        if (table === 'command_operations') {
+          const filters: Record<string, unknown> = {};
+          const chain = {
+            eq: (col: string, val: unknown) => {
+              filters[col] = val;
+              return chain;
+            },
+            maybeSingle: async () => {
+              commandOpProbes.push({ ...filters });
+              return { data: options.commandOpRow ?? null, error: null };
+            },
+          };
+          return { select: () => chain } as unknown;
         }
         if (table === 'teams') return tenantLookup(teams) as unknown;
         if (table === 'vendors') return tenantLookup(vendors) as unknown;
@@ -151,6 +171,7 @@ function makeDeps(
     row: () => row,
     permissionChecks,
     assignmentRpcCalls,
+    commandOpProbes,
     supabase,
     slaService,
     visibility,
@@ -408,5 +429,45 @@ describe('WorkOrderService.reassign', () => {
     expect(caught).toBeInstanceOf(AppError);
     expect((caught as AppError).code).toBe('work_order.not_found');
     expect(deps.assignmentRpcCalls).toHaveLength(1);
+  });
+
+  it('audit-02 D-A02-4: command_operations success-probe short-circuits BEFORE the RPC — returns the contracted refetch shape, NO re-call, tenant-scoped probe', async () => {
+    const deps = makeDeps(
+      {
+        id: 'wo1',
+        tenant_id: TENANT,
+        status: 'assigned',
+        status_category: 'assigned',
+        assigned_team_id: 'team-new',
+        assigned_user_id: null,
+        assigned_vendor_id: null,
+      },
+      {
+        teams: [{ id: 'team-new', tenant_id: TENANT }],
+        // A prior delivery under the SAME crid already committed.
+        commandOpRow: { outcome: 'success', cached_result: { noop: false } },
+      },
+    );
+    const svc = makeSvc(deps);
+
+    const result = await svc.reassign(
+      'wo1',
+      { assigned_team_id: 'team-new', reason: 'cover', actor_person_id: 'p-actor' },
+      SYSTEM_ACTOR,
+      CRID,
+    );
+
+    // Short-circuited: NO set_entity_assignment re-call (no payload
+    // recompute → no payload_mismatch poison), contracted refetch shape
+    // still returned.
+    expect(deps.assignmentRpcCalls).toHaveLength(0);
+    expect(result.assigned_team_id).toBe('team-new');
+
+    // Probe is tenant-scoped on the command_operations PK.
+    expect(deps.commandOpProbes).toHaveLength(1);
+    expect(deps.commandOpProbes[0]).toEqual({
+      tenant_id: TENANT,
+      idempotency_key: buildReassignIdempotencyKey('work_order', 'wo1', CRID),
+    });
   });
 });
