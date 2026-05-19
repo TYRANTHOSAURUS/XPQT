@@ -1054,3 +1054,36 @@ Completion bar:
 - Direct DB/RLS posture is documented honestly.
 - SECURITY DEFINER functions have an audited follow-up list or all are reviewed.
 ```
+
+---
+
+## Append-only reconciliation — 2026-05-19 (migration renumber by release-integration)
+
+**This block does not rewrite any text above. It maps the old migration numbers to the new ones for anyone cross-referencing this ledger.**
+
+After PRs #30/#31 merged this workstream's RLS migrations to `main`, their numeric
+prefixes collided with three **incumbent floor-plans migrations** that had been on
+`main` since 2026-05-18 (`7b058e8a`, the RC1 CI-cascade fix):
+
+| This ledger calls it | Renamed to | Collided with (incumbent, unchanged) |
+|----------------------|------------|--------------------------------------|
+| `00415_revoke_browser_write_grants.sql` | **`00434_revoke_browser_write_grants.sql`** | `00415_spaces_floor_plan_render_hint.sql` |
+| `00417_revoke_browser_execute_grants.sql` (the "00417 EXECUTE-revoke incident") | **`00435_revoke_browser_execute_grants.sql`** | `00417_floor_plans_and_drafts_labels.sql` |
+| `00420_fix_00417_rls_helper_execute_regression.sql` | **`00436_fix_00435_rls_helper_execute_regression.sql`** | `00420_floor_plans_storage_bucket.sql` |
+
+The collision tripped `main` CI's `Migration prefix uniqueness guard` +
+`schema_migrations_pkey` (db:reset) — blocking **every** main-targeted PR. Per the
+documented RC1 precedent (`docs/follow-ups/ci-red-cascade-2026-05-18.md`: incumbent
+stays, later-merged side is the safe mover; floor-plans `00420` is anchored by its
+`00423_floor_plans_storage_relax.sql` dependent), the **audit-04 trio** was the safe
+mover. Codex-design-checked + user-authorized as a release-integration absorb.
+
+**Scope of the change: rename only.** The three migrations' SQL bodies are
+byte-identical to the originals (verified by non-comment diff); only the leading
+prefix and in-file comment cross-references were updated, plus a lineage banner in
+each file. **Remote DB is unaffected** — these were applied via the raw `psql -f`
+fallback, which does not write Supabase's `schema_migrations` ledger (same basis as
+the RC1 precedent), so no remote re-apply is needed and no ledger desync results.
+Every "00415 / 00417 / 00420" reference in the append-only blocks above should be
+read through the table above. The production "00417 EXECUTE-revoke incident" /
+"00420 hotfix" narrative is unchanged in substance — only the file numbers moved.

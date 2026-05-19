@@ -1,4 +1,9 @@
--- 00415 — Revoke browser-role write grants on public.* (RLS Audit 04, P1)
+-- 00434 — Revoke browser-role write grants on public.* (RLS Audit 04, P1)
+--
+-- RENUMBERED 2026-05-19 (release-integration): was 00415 — collided with the
+-- incumbent floor-plans 00415_spaces_floor_plan_render_hint.sql (on main since
+-- 2026-05-18). Rename only; SQL byte-identical. The RLS-Audit-04 ledger
+-- (docs/follow-ups/audits/04-rls-security.md) refers to this file as "00415".
 --
 -- docs/follow-ups/audits/04-rls-security.md — codex 2026-05-18 remaining
 -- item #2 (browser-direct PostgREST). The prior ledger conclusion

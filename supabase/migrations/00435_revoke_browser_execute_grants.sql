@@ -1,4 +1,9 @@
--- 00417 — Revoke browser-role EXECUTE on public functions (RLS Audit 04)
+-- 00435 — Revoke browser-role EXECUTE on public functions (RLS Audit 04)
+--
+-- RENUMBERED 2026-05-19 (release-integration): was 00417 — collided with the
+-- incumbent floor-plans 00417_floor_plans_and_drafts_labels.sql (on main since
+-- 2026-05-18). Rename only; SQL byte-identical. The RLS-Audit-04 ledger and
+-- the production "00417 EXECUTE-revoke incident" both refer to this as "00417".
 --
 -- docs/follow-ups/audits/04-rls-security.md — codex done-check 2026-05-18
 -- found this LIVE cross-tenant leak that the "RPC-EXECUTE tracked-P2,
@@ -22,7 +27,7 @@
 -- `GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon,
 -- authenticated` — 370 public functions are browser-role-executable.
 -- `tickets_distinct_tags` is the proven-live instance; the class is the
--- function-level twin of the table-DML hole 00415 closed. The app makes
+-- function-level twin of the table-DML hole 00434 closed. The app makes
 -- ZERO browser-direct `.rpc()` calls (verified at HEAD) — every RPC is
 -- invoked through the NestJS API on the service_role / postgres path.
 --
@@ -58,7 +63,7 @@
 -- touch the booking-canonicalization destructive-default invariant.
 --
 -- Default-privilege future-proofing is PARTIAL by the same constraint
--- as 00415: the migration role `postgres` is not a member of
+-- as 00434: the migration role `postgres` is not a member of
 -- `supabase_admin` and not superuser, so `ALTER DEFAULT PRIVILEGES`
 -- only covers `postgres`-created future functions. The load-bearing
 -- protection is the `REVOKE … ON ALL ROUTINES` (every current

@@ -1,8 +1,14 @@
--- 00420 — REVERT 00417's catastrophic blanket EXECUTE revoke; keep only
+-- 00436 — REVERT 00435's catastrophic blanket EXECUTE revoke; keep only
 --          the narrow, correct tickets_distinct_tags fix.
 --
+-- RENUMBERED 2026-05-19 (release-integration): was 00420 (reverting then-00417,
+-- now 00435) — collided with the incumbent floor-plans
+-- 00420_floor_plans_storage_bucket.sql (on main since 2026-05-18). Rename only;
+-- SQL byte-identical. The RLS-Audit-04 ledger refers to this file as "00420"
+-- and to its target as "00417" (now 00435).
+--
 -- INCIDENT (2026-05-19, self-caused, user-caught, production):
--- 00417 did `REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA public FROM
+-- 00435 (then numbered 00417) did `REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA public FROM
 -- PUBLIC, anon, authenticated`. That is fundamentally incompatible with
 -- Supabase RLS: every `tenant_isolation` policy calls
 -- `public.current_tenant_id()` (and others call `current_user_id()` /
@@ -10,7 +16,7 @@
 -- EXECUTE on a policy's helper functions AS THE QUERYING ROLE
 -- (anon/authenticated) — even for SECURITY DEFINER functions (DEFINER
 -- changes the role *inside* the body, not the EXECUTE check). So after
--- 00417 every browser / PostgREST / Supabase-Realtime read on every
+-- 00435 every browser / PostgREST / Supabase-Realtime read on every
 -- RLS-protected table failed with `42501 permission denied for function
 -- current_tenant_id` — i.e. the entire app's data "disappeared" for
 -- logged-in users. `smoke:work-orders` did not catch it because it
@@ -25,7 +31,7 @@
 -- pattern), never schema-wide.
 --
 -- This migration:
---  1. Fully reverts 00417 — restores the Supabase-default posture that
+--  1. Fully reverts 00435 — restores the Supabase-default posture that
 --     RLS depends on (EXECUTE on all public routines + default privs to
 --     anon, authenticated). This returns the broad RPC-EXECUTE surface
 --     to its PRE-SESSION state (tracked-P2 as originally framed — the
@@ -37,14 +43,14 @@
 --     service_role). Revoked from PUBLIC/anon/authenticated, granted to
 --     service_role. This is the audit's documented per-function pattern
 --     and has zero RLS/Realtime blast radius.
---  3. 00415 (table-DML write revoke, SELECT kept) is unaffected and
+--  3. 00434 (table-DML write revoke, SELECT kept) is unaffected and
 --     correct — it did NOT cause the incident; not touched here.
 --
 -- Idempotent. The remote DB was already hand-restored to this exact
 -- state during the incident; applying this migration is a consistent
 -- no-op against that state and the authoritative record going forward.
 
--- (1) Undo 00417's blanket revoke — restore the RLS-critical default.
+-- (1) Undo 00435's blanket revoke — restore the RLS-critical default.
 grant execute on all routines in schema public to anon, authenticated;
 alter default privileges in schema public
   grant execute on routines to anon, authenticated;
