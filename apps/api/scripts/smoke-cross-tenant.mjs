@@ -347,16 +347,26 @@ const BEARER_TRIO = [
 function rlsHelperExecutePosture(helpers) {
   const { dbPass, dbUrl } = proofDbArgs();
   const list = helpers.map((n) => `('${n}')`).join(',');
+  // Overload-safe: a helper counts as `missing` for role g if it is
+  // absent entirely OR ANY pg_proc row of that name lacks EXECUTE for
+  // g. The old form (`not exists(... and has_function_privilege ...)`)
+  // let one EXECUTE-able overload of an overloaded helper (e.g.
+  // user_has_permission has multiple signatures) mask a revoked
+  // sibling overload. We keep an `exists(... proname = h.n)` arm so a
+  // missing-entirely helper still surfaces (negated: a helper with
+  // zero pg_proc rows is counted), AND add the per-overload
+  // `exists(... and not has_function_privilege ...)` arm so any
+  // single non-EXECUTE-able overload is flagged.
   const sql = `select count(*)
     from (values ${list}) h(n)
     cross join (values ('anon'),('authenticated')) r(g)
-    where exists (
-      select 1 from pg_proc p
-      where p.pronamespace = 'public'::regnamespace and p.proname = h.n)
-      and not exists (
+    where not exists (
+        select 1 from pg_proc p
+        where p.pronamespace = 'public'::regnamespace and p.proname = h.n)
+      or exists (
         select 1 from pg_proc p
         where p.pronamespace = 'public'::regnamespace and p.proname = h.n
-          and has_function_privilege(r.g, p.oid, 'EXECUTE'));`;
+          and not has_function_privilege(r.g, p.oid, 'EXECUTE'));`;
   const missing = Number(
     execFileSync(
       'psql',
@@ -1103,10 +1113,19 @@ async function probe(name, options) {
     // the outage shipped undetected. This probe exercises the BROWSER
     // path: a real authenticated browser session token (the exact
     // thing apps/web holds post-login) doing a plain PostgREST SELECT
-    // through the same proxy the browser uses. It fails the gate on
-    // either a non-200 OR a `permission denied for function` body
-    // (the 42501 signature), naming the table.
-    const rlsBrowserTok = await mintTokenFor(ADMIN_AUTH_UID);
+    // through the same proxy the browser uses. We mint a NON-ADMIN
+    // browser token — a non-admin session is the true outage-victim
+    // profile and avoids any admin OR-branch a policy might carry.
+    //
+    // REGRESSION (fail) fires on ANY of: (a) HTTP status !== 200,
+    // (b) body contains `permission denied for function`, or
+    // (c) the PostgREST JSON error `code` === '42501'. A healthy
+    // `200 []` stays GREEN: a browser JWT carries no tenant_id claim,
+    // so current_tenant_id() = NULL → `tenant_id = NULL` → 0 rows.
+    // That empty read is the correct healthy state; this probe's job
+    // is specifically to catch the 42501 / blanket-REVOKE-EXECUTE
+    // class, NOT empty-read regressions.
+    const rlsBrowserTok = await mintTokenFor(NONADMIN_AUTH_UID);
     for (const tbl of ['inbox_notifications', 'bookings', 'tickets']) {
       const rr = await fetch(
         `${env.SUPABASE_URL}/rest/v1/${tbl}?select=id&limit=1`,
@@ -1119,19 +1138,31 @@ async function probe(name, options) {
       );
       const rrBody = await rr.text();
       const helperDenied = rrBody.includes('permission denied for function');
-      if (rr.status === 200 && !helperDenied) {
+      let jsonCode42501 = false;
+      try {
+        if (JSON.parse(rrBody)?.code === '42501') jsonCode42501 = true;
+      } catch {
+        /* non-JSON body (e.g. `[]`) — not a 42501 error envelope */
+      }
+      const regression =
+        rr.status !== 200 || helperDenied || jsonCode42501;
+      if (!regression) {
         results.pass += 1;
         console.log(
-          `  ✓ browser-path RLS read /rest/v1/${tbl} → HTTP 200 (RLS-helper EXECUTE intact)`,
+          `  ✓ browser-path RLS read /rest/v1/${tbl} → HTTP 200 (RLS-helper EXECUTE intact; non-admin browser session)`,
         );
       } else {
+        const sqlstate =
+          helperDenied || jsonCode42501 ? ' SQLSTATE 42501' : '';
         results.fail += 1;
         results.failed.push(
-          `browser-path RLS read ${tbl} — browser-path RLS-helper EXECUTE regression (blanket REVOKE EXECUTE class; the 00435-outage type) — service_role-path gates miss it`,
+          `browser-path RLS read ${tbl}${sqlstate} — browser-path RLS-helper EXECUTE regression (blanket REVOKE EXECUTE class; the 00435-outage type) — service_role-path gates miss it`,
         );
         console.log(
           `  ✗ browser-path RLS read /rest/v1/${tbl} → HTTP ${rr.status}${
-            helperDenied ? ' (42501 permission denied for function)' : ''
+            helperDenied || jsonCode42501
+              ? ` (42501 permission denied for function — table ${tbl})`
+              : ''
           } — browser-path RLS-helper EXECUTE regression (blanket REVOKE EXECUTE class; the 00435-outage type) — service_role-path gates miss it. ${rrBody.slice(0, 200)}`,
         );
       }
