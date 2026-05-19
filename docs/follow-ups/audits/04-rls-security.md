@@ -1087,3 +1087,44 @@ the RC1 precedent), so no remote re-apply is needed and no ledger desync results
 Every "00415 / 00417 / 00420" reference in the append-only blocks above should be
 read through the table above. The production "00417 EXECUTE-revoke incident" /
 "00420 hotfix" narrative is unchanged in substance — only the file numbers moved.
+
+---
+
+## Append-only incident — 2026-05-19 (blanket REVOKE EXECUTE broke every browser/Realtime RLS read)
+
+**This block does not rewrite any text above. It records the production incident and the smoke-gate gap it exposed. All migration numbers below use the post-#32-renumber identities; cross-reference the renumber table at lines ~1068–1072 of this same file (`00415→00434`, `00417→00435`, `00420→00436`).**
+
+### Incident
+
+Migration **`00435_revoke_browser_execute_grants.sql`** (formerly `00417` — see the renumber table above) ran a blanket:
+
+```sql
+REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA public FROM PUBLIC, anon, authenticated;
+```
+
+Within minutes of it reaching the remote DB, **every logged-in user saw all their data vanish** — bookings, tickets, inbox notifications, scheduler, everything that reads through the browser/Realtime path returned empty or errored. Postgres logs showed `42501 permission denied for function current_tenant_id` (and the sibling helpers) on essentially every authenticated `SELECT`. This was a P0 outage: the app was functionally dark for all authenticated browser sessions, even though the NestJS/service_role API path kept working (which is exactly why pre-merge gates stayed green).
+
+### Mechanism
+
+Postgres checks function `EXECUTE` privilege **as the querying role even for `SECURITY DEFINER` functions**. The `SECURITY DEFINER` boundary changes the role *inside* the function body; it does **not** waive the caller's need for `EXECUTE` to *enter* the function in the first place.
+
+Every per-table RLS `tenant_isolation` policy's `USING` / `WITH CHECK` clause invokes `public.current_tenant_id()`; other policies invoke `public.current_user_id()` and `public.user_has_permission()`. With the browser session authenticated as the `authenticated` role and that role's `EXECUTE` on those helpers revoked, the RLS predicate itself failed to evaluate → `42501` on the *function*, surfaced as a denied/empty read for the *table*. So a single schema-wide `REVOKE EXECUTE` silently disabled RLS evaluation for the entire browser/Realtime surface.
+
+### Fix
+
+**`00436_fix_00435_rls_helper_execute_regression.sql`** (formerly `00420`, shipped via **PR #31**):
+
+1. **Full revert of `00435`** — undoes the schema-wide `REVOKE EXECUTE`.
+2. **Restores the Supabase default** — `GRANT EXECUTE ON ALL ROUTINES IN SCHEMA public TO anon, authenticated` (this is the RLS-critical default Supabase ships with; RLS-helper functions *must* stay browser-EXECUTE-able).
+3. **Keeps ONLY a narrow per-function lock** of the one proven cross-tenant leak: `public.tickets_distinct_tags(uuid)` is `REVOKE`d from `PUBLIC` / `anon` / `authenticated` and `GRANT`ed to `service_role` only (the app calls it via the API/service_role path; it trusts a caller-supplied tenant arg, so browser-direct execution was a real leak).
+
+### Live verification (remote)
+
+- Browser-path `GET /rest/v1/{inbox_notifications,bookings,tickets}?select=id&limit=1` with a real authenticated browser JWT → **HTTP 200**, no `permission denied for function` in the body (RLS-helper EXECUTE intact, reads work end-to-end).
+- Browser-direct `POST /rest/v1/rpc/tickets_distinct_tags` with a foreign tenant arg → **HTTP 403** (the proven leak stays grant-denied; the narrow per-function lock holds).
+
+### Lesson
+
+- **NEVER issue a schema-wide `REVOKE EXECUTE ON ALL ROUTINES ... FROM anon/authenticated`.** It does not "harden" RLS — it *breaks* it, because RLS predicates themselves call `SECURITY DEFINER` helper functions and Postgres checks `EXECUTE` as the querying role. A blanket EXECUTE revoke disables RLS evaluation for the whole browser/Realtime surface.
+- **Lock proven `SECURITY DEFINER` leaks per-function only** (revoke that one function from the browser roles, grant it to `service_role`). Surgical, not schema-wide.
+- **Smoke gates MUST include a browser-path RLS read probe.** Every prior cross-tenant gate exercised the `service_role` / NestJS-API path, which **bypasses the RLS-helper EXECUTE check entirely** — so the whole outage class was invisible to the gate. The dedicated browser-path RLS read probe added in this PR (`pnpm smoke:cross-tenant`: a real authenticated browser JWT doing a plain PostgREST `SELECT` on `inbox_notifications` / `bookings` / `tickets`, asserting HTTP 200 + no `permission denied for function`) is the probe that would have caught this end-to-end before merge. The same PR also inverts the prior EXECUTE-axis posture probe: the old "zero browser-EXECUTE-able app routines" assertion encoded the *catastrophic* `00435` state and went RED against the *correct* post-`00436` `main` — it is replaced by its RLS-correct inverse (the RLS-helper trio `current_tenant_id` / `current_user_id` / `user_has_permission` MUST remain browser-EXECUTE-able), with the narrow `tickets_distinct_tags(uuid)` foreign-tenant-denied lock retained.
