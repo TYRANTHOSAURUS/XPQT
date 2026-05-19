@@ -50,6 +50,12 @@ function makeEditPlan(opts: {
   startAt: string;
   endAt: string;
   approval?: EditPlanApproval;
+  /** audit-03 Slice 3 (P0-2 multi-slot residual, Path B) — when true,
+   * the assembled plan carries the SERVER-INTERNAL skip marker (set by
+   * `buildSingleSlotPlan` when `buildLinkedRowPatches` skips a >1-slot
+   * booking). The service MUST strip it before the RPC (no wire change)
+   * AND emit a durable tenant-scoped audit row. */
+  skippedMultiSlot?: boolean;
 }): EditPlan {
   return {
     booking: {
@@ -60,6 +66,7 @@ function makeEditPlan(opts: {
       policy_snapshot: { matched_rule_ids: [], effects_seen: [] },
       applied_rule_ids: [],
     },
+    ...(opts.skippedMultiSlot ? { _skipped_multi_slot_linked_rows: true } : {}),
     slot_patches: [
       {
         // self-review N-CODE-3 (B.4 step 2D-D) — mirror the full slot
@@ -210,9 +217,15 @@ describe('ReservationService.editSlot', () => {
     // assertTenantOwned pre-flight on editSlot (default: SPACE_ORIGINAL +
     // SPACE_VALID; tests opt out by passing []).
     knownTenantSpaces?: string[];
+    // audit-03 Slice 3 — `recordMultiSlotLinkedRowSkip`'s precise
+    // slot-count head read returns this (default 1).
+    multiSlotCount?: number;
   }) {
     const calls = {
       rpc: [] as Array<{ fn: string; args: unknown }>,
+      // audit-03 Slice 3 — capture every audit_events insert so the
+      // multi-slot-skip test can assert the durable, tenant-scoped row.
+      auditInserts: [] as Array<Record<string, unknown>>,
     };
     const projection = opts?.projectionRow ?? {
       ...makeSlotRow({ id: SLOT_B }),
@@ -261,10 +274,19 @@ describe('ReservationService.editSlot', () => {
           // .maybeSingle(). The projection read is `.select(SLOT_WITH_BOOKING_SELECT)
           // .eq('tenant_id').eq('booking_id').order().order().limit().maybeSingle()`.
           // We disambiguate by counting .order() calls.
+          //
+          // audit-03 Slice 3: `recordMultiSlotLinkedRowSkip` adds a THIRD
+          // shape — `.select('id',{count:'exact',head:true}).eq('tenant_id')
+          // .eq('booking_id')` awaited DIRECTLY (no .order/.maybeSingle).
+          // The chain is thenable so `await chain` yields `{count, error}`.
           const filters: Array<[string, unknown]> = [];
           let hasOrder = false;
+          let isHeadCount = false;
           const chain: any = {
-            select: () => chain,
+            select: (_cols?: string, o?: { count?: string; head?: boolean }) => {
+              if (o?.head) isHeadCount = true;
+              return chain;
+            },
             eq: (col: string, val: unknown) => {
               filters.push([col, val]);
               return chain;
@@ -278,11 +300,27 @@ describe('ReservationService.editSlot', () => {
               hasOrder
                 ? Promise.resolve({ data: projection, error: null })
                 : Promise.resolve({ data: slotPreflight, error: null }),
+            // Thenable so the head/count read (`await ...eq().eq()`)
+            // resolves to `{ count, error }`. Only the count read awaits
+            // the chain directly; preflight/projection use .maybeSingle().
+            then: (
+              onF: (v: { count: number | null; error: unknown }) => unknown,
+            ) =>
+              Promise.resolve(
+                isHeadCount
+                  ? { count: opts?.multiSlotCount ?? 1, error: null }
+                  : { count: null, error: null },
+              ).then(onF),
           };
           return chain;
         }
         if (table === 'audit_events') {
-          return { insert: () => Promise.resolve({ data: null, error: null }) };
+          return {
+            insert: (row: Record<string, unknown>) => {
+              calls.auditInserts.push(row);
+              return Promise.resolve({ data: null, error: null });
+            },
+          };
         }
         if (table === 'visitors') {
           return {
@@ -334,6 +372,9 @@ describe('ReservationService.editSlot', () => {
     /** Force the assembler to throw — exercises the plan-build error
      * propagation path. */
     throwOnAssemble?: AppError;
+    /** audit-03 Slice 3 — assembled plan carries the multi-slot skip
+     * marker (as `buildSingleSlotPlan` sets it for a >1-slot booking). */
+    skippedMultiSlot?: boolean;
   }) {
     const assembleEditPlan = jest.fn(async (args: {
       bookingId: string;
@@ -349,6 +390,7 @@ describe('ReservationService.editSlot', () => {
         startAt: args.patch.start_at ?? '2026-05-01T11:00:00Z',
         endAt: args.patch.end_at ?? '2026-05-01T12:00:00Z',
         approval: opts?.approvalOverride,
+        skippedMultiSlot: opts?.skippedMultiSlot,
       });
     });
     return { assembleEditPlan };
@@ -430,6 +472,83 @@ describe('ReservationService.editSlot', () => {
     expect(result.slot_id).toBe(SLOT_B);
     expect(result.start_at).toBe(updatedStart);
     expect(result.end_at).toBe(updatedEnd);
+  });
+
+  // ───────────────────────────────────────────────────────────────────
+  // audit-03 Slice 3 — P0-2 multi-slot residual, Path B.
+  //
+  // When `AssembleEditPlanService.buildLinkedRowPatches` skips linked-row
+  // propagation for a >1-slot booking it now sets the SERVER-INTERNAL
+  // `_skipped_multi_slot_linked_rows` marker on the EditPlan (pre-fix
+  // this flag was DROPPED at the `buildSingleSlotPlan` call site → the
+  // skip was SILENT). The service edit path MUST:
+  //   1. STRIP the marker before the `edit_booking` RPC — NO new wire
+  //      field, NO change to the `command_operations` idempotency hash.
+  //   2. emit a DURABLE, TENANT-SCOPED `audit_events` row recording the
+  //      residual gap (the spec-legal alternative to a forbidden success-
+  //      path `warnings[]` / error code).
+  //   3. NOT emit that row when the marker is absent (don't over-fire).
+  // ───────────────────────────────────────────────────────────────────
+
+  it('multi-slot skip: strips the internal marker off the RPC payload AND emits a durable tenant-scoped audit row', async () => {
+    const supabase = makeSupabase({ multiSlotCount: 3 });
+    const visibility = makeVisibility({ canEdit: true });
+    const conflict = makeConflictGuard();
+    const assemble = makeAssembleEditPlan({ skippedMultiSlot: true });
+    const svc = buildService(supabase, visibility, conflict, assemble);
+
+    await TenantContext.run(TENANT, () =>
+      svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
+        start_at: '2026-05-01T11:00:00Z',
+      }),
+    );
+
+    // 1. NO wire change: the plan sent to the RPC must NOT carry the
+    //    `_`-prefixed internal marker (it would otherwise land in the
+    //    hashed payload — the strip helper only removes the 3 enumerated
+    //    names, never this one).
+    const rpcCall = supabase.calls.rpc.find((c) => c.fn === 'edit_booking');
+    expect(rpcCall).toBeDefined();
+    const plan = (rpcCall!.args as Record<string, unknown>).p_plan as Record<
+      string,
+      unknown
+    >;
+    expect('_skipped_multi_slot_linked_rows' in plan).toBe(false);
+
+    // 2. Durable, tenant-scoped audit row recording the residual gap.
+    const skipRows = supabase.calls.auditInserts.filter(
+      (r) => r.event_type === 'booking.linked_rows_not_propagated',
+    );
+    expect(skipRows).toHaveLength(1);
+    const row = skipRows[0];
+    // tenant_id is the #0 rule — the row MUST be tenant-scoped.
+    expect(row.tenant_id).toBe(TENANT.id);
+    expect(row.entity_type).toBe('booking');
+    expect(row.entity_id).toBe(BOOKING_ID);
+    const details = row.details as Record<string, unknown>;
+    expect(details.reason).toBe('multi_slot_no_attribution');
+    expect(details.edit_kind).toBe('slot');
+    expect(details.slot_count).toBe(3); // precise count from the head read
+    expect(details.actor_user_id).toBe('U');
+  });
+
+  it('multi-slot skip absent: NO booking.linked_rows_not_propagated audit row on a normal single-slot edit', async () => {
+    const supabase = makeSupabase();
+    const visibility = makeVisibility({ canEdit: true });
+    const conflict = makeConflictGuard();
+    // Default assemble mock → no skip marker (single-slot booking).
+    const svc = buildService(supabase, visibility, conflict);
+
+    await TenantContext.run(TENANT, () =>
+      svc.editSlot(BOOKING_ID, SLOT_B, makeActor(), CLIENT_REQUEST_ID, {
+        start_at: '2026-05-01T11:00:00Z',
+      }),
+    );
+
+    const skipRows = supabase.calls.auditInserts.filter(
+      (r) => r.event_type === 'booking.linked_rows_not_propagated',
+    );
+    expect(skipRows).toHaveLength(0);
   });
 
   // B.4.A.5 sub-step H (2026-05-13) lifted the controller-vs-notification

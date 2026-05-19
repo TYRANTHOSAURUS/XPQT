@@ -14,10 +14,13 @@ import type { ActorContext, CreateReservationInput } from './dto/types';
 // compensation is needed; the test surface shifts to RPC-error
 // mapping.
 //
-// What stays:
-//   - Empty / undefined services arrays still bypass the combined RPC
-//     and use the existing `create_booking` path. Tests at the bottom
-//     verify those don't accidentally pull in the new collaborators.
+// audit-03 P2-3 (deferred-closeout) update:
+//   - The legacy 20-arg `create_booking` RPC + its sole TS caller were
+//     RETIRED. Empty / undefined services arrays NO LONGER bypass the
+//     combined RPC — ALL single-room creates route through
+//     `create_booking_with_attach_plan`. The no-services tests at the
+//     bottom now assert the cutover (combined RPC called, legacy RPC
+//     NEVER called, `bundle.buildAttachPlan` not pulled in).
 //
 // What's new:
 //   - With-services + RPC error paths exercise `mapAttachPlanRpcError`
@@ -86,9 +89,21 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
       rpc: (fn: string, args: unknown) => {
         calls.rpc.push({ fn, args });
         if (rpcStub) return rpcStub(fn, args);
-        if (fn === 'create_booking') {
+        // audit-03 P2-3 — ALL single-room creates (with OR without
+        // services) go through `create_booking_with_attach_plan` now. The
+        // legacy `create_booking` RPC + its TS call site are deleted; the
+        // default mock returns the combined RPC's cached_result shape.
+        if (fn === 'create_booking_with_attach_plan') {
           return Promise.resolve({
-            data: { booking_id: BOOKING_ID_NO_SVC, slot_ids: [SLOT_ID_NO_SVC] },
+            data: {
+              booking_id: BOOKING_ID_NO_SVC,
+              slot_ids: [SLOT_ID_NO_SVC],
+              order_ids: [],
+              order_line_item_ids: [],
+              asset_reservation_ids: [],
+              approval_ids: [],
+              any_pending_approval: false,
+            },
             error: null,
           });
         }
@@ -232,9 +247,19 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     } as CreateReservationInput;
   }
 
-  // ─── No-services path: existing create_booking RPC ───────────────────
+  // ─── No-services path: COMBINED RPC (audit-03 P2-3 cutover) ──────────
+  //
+  // P2-3 retired the legacy 20-arg `create_booking` RPC + its sole TS
+  // caller. ALL single-room creates (with OR without services) now route
+  // through `create_booking_with_attach_plan`. These tests assert the
+  // no-services path:
+  //   - NEVER calls the (deleted) `create_booking` RPC
+  //   - DOES call `create_booking_with_attach_plan`
+  //   - does NOT pull in `bundle.buildAttachPlan` (BookingFlowService
+  //     builds the empty / FLAT-approval plan itself for no-services;
+  //     `bundle.buildAttachPlan` is the WITH-services service-graph path)
 
-  it('uses create_booking RPC when services array is empty', async () => {
+  it('routes no-services (empty array) through create_booking_with_attach_plan', async () => {
     const supabase = makeSupabase();
     const conflict = makeConflict();
     const rules = makeRules();
@@ -242,9 +267,7 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
 
     // Booking-audit Slice 7 (audit 03 P2-1): the BookingTransactionBoundary
     // + BookingCompensationService positional args (old ctor positions 8/9)
-    // were removed — both classes are retired. The no-services path never
-    // used them anyway (it goes straight to the atomic `create_booking`
-    // RPC); this test still asserts that.
+    // were removed — both classes are retired.
     const svc = new BookingFlowService(
       supabase as never,
       conflict as never,
@@ -257,20 +280,21 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     const result = await TenantContext.run(TENANT, () => svc.create(baseInput(), makeActor()));
 
     expect(result.id).toBe(BOOKING_ID_NO_SVC);
-    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking')).toBe(true);
-    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking_with_attach_plan')).toBe(false);
+    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking_with_attach_plan')).toBe(true);
+    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking')).toBe(false);
     expect(bundle.attachServicesToBooking).not.toHaveBeenCalled();
+    // BookingFlowService.buildAttachPlan builds the empty plan in-house for
+    // no-services; the BundleService.buildAttachPlan service-graph builder
+    // is the WITH-services path and must NOT be reached here.
     expect(bundle.buildAttachPlan).not.toHaveBeenCalled();
   });
 
-  it('uses create_booking RPC when services is undefined', async () => {
+  it('routes no-services (undefined) through create_booking_with_attach_plan', async () => {
     const supabase = makeSupabase();
     const conflict = makeConflict();
     const rules = makeRules();
     const bundle = makeBundle();
 
-    // Slice 7: retired boundary/compensation positional args removed
-    // (same rationale as the empty-services test above).
     const svc = new BookingFlowService(
       supabase as never,
       conflict as never,
@@ -284,8 +308,9 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     delete (input as Partial<CreateReservationInput>).services;
     await TenantContext.run(TENANT, () => svc.create(input, makeActor()));
 
-    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking')).toBe(true);
-    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking_with_attach_plan')).toBe(false);
+    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking_with_attach_plan')).toBe(true);
+    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking')).toBe(false);
+    expect(bundle.buildAttachPlan).not.toHaveBeenCalled();
   });
 
   // ─── With-services path: combined RPC ───────────────────────────────

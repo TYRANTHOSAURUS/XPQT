@@ -9,6 +9,7 @@ import {
 import { AppError, AppErrors, mapRpcErrorToAppError } from '../../common/errors';
 import { hasOwnDefined } from '../../common/has-own-defined';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { probeCommandOperationSuccess } from '../../common/command-operations-probe';
 import {
   assertTenantOwned,
   validateAssigneesInTenant,
@@ -1328,6 +1329,37 @@ export class TicketService {
 
     const idempotencyKey = buildReassignIdempotencyKey('case', id, clientRequestId);
     const actorUserId = actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid;
+
+    // audit-02 D-A02-4: caller-side command_operations success-probe
+    // BEFORE re-evaluating the resolver / recomputing the payload, and
+    // AFTER the permission/visibility gates above (no auth bypass). The
+    // reassign key `reassign:case:<id>:<crid>` is STABLE, but the
+    // `rerun_resolver` path re-runs `routingService.evaluate()` and
+    // rebuilds `rerunPayload` from MUTABLE routing config / ticket state
+    // before the RPC; a retried request with the SAME crid after the
+    // routing matrix or ticket inputs drifted recomputes a different
+    // `assigned_*_id` tuple → same key + different payload hash →
+    // `command_operations.payload_mismatch` (00425:159-162) → the retry
+    // errors instead of replaying the original. (The manual path's
+    // payload is a pure function of the stable dto+crid → already safe;
+    // the uniform guard covers it too for defense-in-depth.) If a
+    // `success` row already exists under the stable key, the canonical
+    // write committed atomically (assignment + status inherit +
+    // routing_decisions + activity + event); return the SAME externally-
+    // visible result the original call returned. `cached_result`
+    // (00425:466-479) does not carry the full ticket shape, so a
+    // tenant-scoped re-fetch via getById is the correct contract
+    // reproduction — the write already happened, getById is read-only.
+    // `in_progress` is NOT a short-circuit signal — that's the RPC's own
+    // advisory-lock window; let the RPC calls below handle it as today.
+    const reassignCommitted = await probeCommandOperationSuccess(
+      this.supabase,
+      tenant.id,
+      idempotencyKey,
+    );
+    if (reassignCommitted) {
+      return this.getById(id, SYSTEM_ACTOR);
+    }
 
     let nextTarget: { kind: 'team' | 'user' | 'vendor'; id: string } | null = null;
 

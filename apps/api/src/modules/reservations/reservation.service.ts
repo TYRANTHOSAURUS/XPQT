@@ -644,6 +644,118 @@ export class ReservationService {
   }
 
   /**
+   * audit-03 Slice 3 (P0-2 multi-slot residual, Path B) — durable,
+   * tenant-scoped, best-effort record that an editOne / editSlot moved a
+   * MULTI-SLOT booking's window but `AssembleEditPlanService.
+   * buildLinkedRowPatches` SKIPPED propagating that move to the booking's
+   * linked rows (orders / asset_reservations / setup work_orders) because
+   * those children key ONLY off `booking_id` with no slot/space
+   * attribution column (00278:108-144) — a booking-level child cannot be
+   * safely re-pointed to one moved slot's window.
+   *
+   * Why an `audit_events` row, not a response field / new error code:
+   * the error-handling spec (`docs/superpowers/specs/2026-05-02-error-
+   * handling-system-design.md`) has a CLOSED RFC-9457 wire shape, a
+   * CLOSED surface enum, and an exhaustive 11-class taxonomy — a success-
+   * path `warnings[]` or a success-path error code is SPEC-ILLEGAL. A
+   * durable tenant-scoped `audit_events` row is the codebase's canonical
+   * "this happened, it's queryable, it never blocks the operation"
+   * mechanism. Mirrors the in-service post-commit best-effort pattern
+   * (the `booking.restored` audit insert at reservation.service.ts: the
+   * `restoreOccurrence` path) EXACTLY: `from('audit_events').insert({...})`
+   * inside try/catch, swallow on failure (post-commit — must NEVER
+   * roll/block the already-committed edit), tenant_id is the #0 rule.
+   *
+   * `actor.user_id` is recorded in the jsonb `details` (NOT the uuid
+   * `actor_user_id` column) — synthetic actors carry a non-uuid
+   * `system:*` sentinel (the D-8 class); `details` is jsonb with no uuid
+   * constraint, the `restored_by` precedent.
+   *
+   * Best-effort precise `slot_count`: the propagated marker is a boolean
+   * (presence == "skipped"), so we do ONE extra tenant-gated head/count
+   * read for the honest number. That read is itself inside the try/catch
+   * — a failed count must not lose the audit row (we still record
+   * `slot_count: 'unknown (>1)'`), and must never block the edit.
+   */
+  private async recordMultiSlotLinkedRowSkip(
+    bookingId: string,
+    tenantId: string,
+    actor: ActorContext,
+    editKind: 'one' | 'slot',
+  ): Promise<void> {
+    try {
+      // Best-effort precise count — honest number for the daglijst /
+      // setup-WO divergence triage. Falls back to the truthful
+      // 'unknown (>1)' string (the marker already proves >1) if the read
+      // errors; never throws out of this method.
+      let slotCount: number | string = 'unknown (>1)';
+      try {
+        const { count, error } = await this.supabase.admin
+          .from('booking_slots')
+          .select('id', { count: 'exact', head: true })
+          .eq('tenant_id', tenantId)
+          .eq('booking_id', bookingId);
+        if (!error && typeof count === 'number') slotCount = count;
+      } catch {
+        /* keep the truthful 'unknown (>1)' fallback */
+      }
+      await this.supabase.admin.from('audit_events').insert({
+        tenant_id: tenantId,
+        event_type: 'booking.linked_rows_not_propagated',
+        entity_type: 'booking',
+        entity_id: bookingId,
+        details: {
+          reason: 'multi_slot_no_attribution',
+          slot_count: slotCount,
+          edit_kind: editKind,
+          actor_user_id: actor.user_id,
+          // The residual gap this row records, in plain terms — so a
+          // triage query (audit_events WHERE event_type =
+          // 'booking.linked_rows_not_propagated') is self-describing.
+          note:
+            'editOne/editSlot moved a multi-slot booking window; linked ' +
+            'orders / asset_reservations / setup work_orders were NOT ' +
+            're-pointed (children key only off booking_id, no slot/space ' +
+            'attribution column — see audit-03 D-11).',
+        },
+      });
+    } catch (err) {
+      // Post-commit, best-effort — the edit already committed in the RPC.
+      // A failed audit insert must NEVER roll it back or surface. Mirror
+      // the structured warn so the skip is still observable in logs even
+      // if the durable row failed (defense-in-depth over the I-1 warn).
+      this.log.warn(
+        `[audit-03 P0-2] booking.linked_rows_not_propagated audit insert ` +
+          `failed (best-effort, edit already committed) bookingId=${bookingId} ` +
+          `tenantId=${tenantId} editKind=${editKind}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * audit-03 Slice 3 (P0-2 multi-slot residual, Path B) — strip the
+   * SERVER-INTERNAL `_skipped_multi_slot_linked_rows` marker from a plan
+   * BEFORE it is sent to `edit_booking` / `edit_booking_scope`.
+   *
+   * The brief's hard constraint: NO new field on the RPC wire, NO change
+   * to the `command_operations` idempotency md5. The hash is computed by
+   * `booking_edit_idempotency_payload_hash` → `booking_edit_strip_hash_
+   * server_fields`, which strips ONLY the three ENUMERATED names
+   * (`_resolution_at`, `old_outcome`, `chain_config_changed` — 00430); it
+   * would NOT remove this marker. So we strip it HERE, in the producer-
+   * to-RPC boundary, guaranteeing the marker never reaches the wire, the
+   * RPC, or the hash. Returns a shallow clone (the input plan object is
+   * still used by post-RPC cascade/projection logic — don't mutate it).
+   */
+  private stripInternalMarkers<T extends { _skipped_multi_slot_linked_rows?: boolean }>(
+    plan: T,
+  ): Omit<T, '_skipped_multi_slot_linked_rows'> {
+    const { _skipped_multi_slot_linked_rows: _omit, ...wireSafe } = plan;
+    void _omit;
+    return wireSafe;
+  }
+
+  /**
    * Edit a single occurrence. Sets recurrence_overridden=true if part of a series.
    * Re-runs conflict guard if time/space changed.
    *
@@ -1028,9 +1140,19 @@ export class ReservationService {
     // the cross-op-collision followup in docs/follow-ups/b4-followups.md.
     const idempotencyKey = buildEditBookingIdempotencyKey(id, clientRequestId, 'one');
 
+    // audit-03 Slice 3 (P0-2 multi-slot residual, Path B): capture the
+    // SERVER-INTERNAL skip marker BEFORE stripping it for the wire. The
+    // RPC plan MUST NOT carry this `_`-prefixed field (no wire change, no
+    // idempotency-hash change — see stripInternalMarkers / edit-plan
+    // .types.ts). The durable audit row is emitted POST-COMMIT below so
+    // it can never block or roll back the already-committed edit.
+    const skippedMultiSlotLinkedRows =
+      plan._skipped_multi_slot_linked_rows === true;
+    const wirePlan = this.stripInternalMarkers(plan);
+
     const { error: rpcErr } = await this.supabase.admin.rpc('edit_booking', {
       p_booking_id: id,
-      p_plan: plan as unknown as Record<string, unknown>,
+      p_plan: wirePlan as unknown as Record<string, unknown>,
       p_tenant_id: tenantId,
       // F-CRIT-1: the RPC resolves this via `where u.auth_uid = p_actor_
       // user_id` (00364:357-371, unchanged in 00394 v5). Must be the JWT
@@ -1085,6 +1207,16 @@ export class ReservationService {
         oldSpaceId: changedRoom ? targetSlotPre.space_id : null,
         newSpaceId: changedRoom ? updated.space_id : null,
       });
+    }
+
+    // audit-03 Slice 3 (P0-2 multi-slot residual, Path B): POST-COMMIT,
+    // best-effort durable record that this edit moved a multi-slot
+    // booking but its linked rows were NOT re-pointed. Awaited (not
+    // fire-and-forget) so a smoke gate can deterministically read the
+    // row, but `recordMultiSlotLinkedRowSkip` swallows its own failures
+    // and never throws — the edit already committed in the RPC above.
+    if (skippedMultiSlotLinkedRows) {
+      await this.recordMultiSlotLinkedRowSkip(id, tenantId, actor, 'one');
     }
 
     return updated;
@@ -1349,9 +1481,19 @@ export class ReservationService {
     // B.4 Step 2F.3 — op discriminator (see editOne above; same rationale).
     const idempotencyKey = buildEditBookingIdempotencyKey(bookingId, clientRequestId, 'slot');
 
+    // audit-03 Slice 3 (P0-2 multi-slot residual, Path B): capture +
+    // strip the SERVER-INTERNAL skip marker before the wire (identical
+    // contract to editOne — no wire/hash change; durable audit emitted
+    // POST-COMMIT below). editSlot moves ONE slot of a (possibly multi-
+    // slot) booking; `buildLinkedRowPatches` sets the marker when the
+    // booking has >1 slot — the linked rows are NOT re-pointed.
+    const skippedMultiSlotLinkedRows =
+      plan._skipped_multi_slot_linked_rows === true;
+    const wirePlan = this.stripInternalMarkers(plan);
+
     const { error: rpcErr } = await this.supabase.admin.rpc('edit_booking', {
       p_booking_id: bookingId,
-      p_plan: plan as unknown as Record<string, unknown>,
+      p_plan: wirePlan as unknown as Record<string, unknown>,
       p_tenant_id: tenantId,
       // F-CRIT-1: RPC resolves via `where u.auth_uid = p_actor_user_id`
       // (00364:357-371). Must be the JWT subject, not users.id.
@@ -1434,6 +1576,13 @@ export class ReservationService {
         oldSpaceId: changedRoom ? targetSlotPre.space_id : null,
         newSpaceId: changedRoom ? updated.space_id : null,
       });
+    }
+
+    // audit-03 Slice 3 (P0-2 multi-slot residual, Path B): POST-COMMIT
+    // best-effort durable record (see editOne; same contract — swallows
+    // its own failures, never throws, edit already committed).
+    if (skippedMultiSlotLinkedRows) {
+      await this.recordMultiSlotLinkedRowSkip(bookingId, tenantId, actor, 'slot');
     }
 
     return updated;
@@ -1795,10 +1944,27 @@ export class ReservationService {
     // outbox keyed on (idempotency_key, occurrence_id) which is tracked
     // separately. Mentioned here for visibility, not blocking C1/C2.
 
+    // audit-03 Slice 3 (P0-2 multi-slot residual, Path B): strip the
+    // SERVER-INTERNAL marker from EVERY per-occurrence plan before the
+    // scope RPC. `ScopeEditPlan extends Omit<EditPlan,'booking'>` so it
+    // inherits `_skipped_multi_slot_linked_rows`; a multi-slot occurrence
+    // still trips `buildLinkedRowPatches`'s slot-count gate even though
+    // scope edits cannot time-shift (gate A rejects start_at/end_at →
+    // there is no daglijst-divergence here, so no audit row is emitted on
+    // this path — the durable signal is scoped to the time-moving
+    // editOne/editSlot paths per the decision doc). The strip is the
+    // load-bearing part: the marker must NEVER reach the
+    // `edit_booking_scope` wire or its `command_operations` idempotency
+    // hash (the strip helper only removes the 3 enumerated names).
+    const wireRpcPlans = rpc_plans.map((rp) => ({
+      booking_id: rp.booking_id,
+      plan: this.stripInternalMarkers(rp.plan),
+    }));
+
     const { data: rpcData, error: rpcErr } = await this.supabase.admin.rpc(
       'edit_booking_scope',
       {
-        p_plans: rpc_plans as unknown as Record<string, unknown>[],
+        p_plans: wireRpcPlans as unknown as Record<string, unknown>[],
         p_tenant_id: tenantId,
         // F-CRIT-1: RPC resolves via `where u.auth_uid = p_actor_user_id`
         // (00371:227-238, mirrors 00364:357-371). Must be the JWT subject,

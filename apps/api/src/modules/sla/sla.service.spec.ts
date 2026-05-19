@@ -1,5 +1,158 @@
 import { SlaService } from './sla.service';
 
+// audit-02 D-A02-4 — caller-side command_operations success-probe in
+// applyReassignment. The SLA escalation reuses the STABLE per-crossing
+// idempotency key but rebuilds the mutable assignment payload every tick.
+// If a prior tick's RPC committed but a post-RPC step crashed before
+// fireThreshold wrote the crossing anchor, a later tick recomputes a
+// drifted payload → command_operations.payload_mismatch → the escalation
+// is permanently poisoned. The probe short-circuits a proven-committed
+// crossing (return true → fireThreshold completes the stuck crossing
+// once) instead of recomputing.
+describe('SlaService.applyReassignment — audit-02 D-A02-4 success-probe', () => {
+  type RpcCall = { fn: string; args: Record<string, unknown> };
+
+  function makeReassignDeps(
+    commandOpRow: { outcome: string; cached_result: unknown } | null,
+  ) {
+    const rpcCalls: RpcCall[] = [];
+    const commandOpProbes: Array<Record<string, unknown>> = [];
+
+    const supabase = {
+      admin: {
+        rpc: async (fn: string, args: Record<string, unknown>) => {
+          rpcCalls.push({ fn, args });
+          return { data: { noop: false }, error: null };
+        },
+        from: (table: string) => {
+          if (table === 'command_operations') {
+            const filters: Record<string, unknown> = {};
+            const chain: Record<string, unknown> = {
+              select: () => chain,
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return chain;
+              },
+              maybeSingle: async () => {
+                commandOpProbes.push({ ...filters });
+                return { data: commandOpRow, error: null };
+              },
+            };
+            return chain;
+          }
+          if (table === 'users') {
+            const chain: Record<string, unknown> = {
+              select: () => chain,
+              eq: () => chain,
+              maybeSingle: async () => ({ data: null, error: null }),
+            };
+            return chain;
+          }
+          throw new Error(`unexpected table in mock: ${table}`);
+        },
+      },
+    };
+
+    return { supabase, rpcCalls, commandOpProbes };
+  }
+
+  const STABLE_KEY = 'sla:escalation:timer-1:100:response';
+
+  it('success-probe short-circuits BEFORE recompute: returns true, NO set_entity_assignment RPC, tenant-scoped probe', async () => {
+    const { supabase, rpcCalls, commandOpProbes } = makeReassignDeps({
+      outcome: 'success',
+      cached_result: { entity_id: 'tic-1', noop: false },
+    });
+    const svc = new SlaService(supabase as any, {} as any, {} as any);
+
+    const ticket = {
+      id: 'tic-1',
+      tenant_id: 'ten-1',
+      assigned_user_id: 'user-old',
+      assigned_team_id: null as string | null,
+      watchers: ['person-existing'] as string[] | null,
+      entity_kind: 'case' as const,
+    };
+
+    const changed = await (svc as any).applyReassignment(
+      ticket,
+      { personId: 'person-new' },
+      STABLE_KEY,
+      'SLA escalation — 100% threshold breached',
+    );
+
+    // "assignment already done" → fireThreshold's crossing-anchor gate
+    // treats this exactly like a fresh successful reassign and completes
+    // the stuck escalation once.
+    expect(changed).toBe(true);
+    // No RPC re-call → no recomputed payload → no payload_mismatch poison.
+    expect(
+      rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
+    ).toHaveLength(0);
+    // Probe tenant-scoped on the command_operations PK.
+    expect(commandOpProbes).toHaveLength(1);
+    expect(commandOpProbes[0]).toEqual({
+      tenant_id: 'ten-1',
+      idempotency_key: STABLE_KEY,
+    });
+  });
+
+  it('no prior commit (no row): probe falls through → recompute + RPC exactly as before', async () => {
+    const { supabase, rpcCalls } = makeReassignDeps(null);
+    const svc = new SlaService(supabase as any, {} as any, {} as any);
+
+    const ticket = {
+      id: 'tic-1',
+      tenant_id: 'ten-1',
+      assigned_user_id: null as string | null,
+      assigned_team_id: 'team-old',
+      watchers: null as string[] | null,
+      entity_kind: 'case' as const,
+    };
+
+    const changed = await (svc as any).applyReassignment(
+      ticket,
+      { teamId: 'team-new' },
+      STABLE_KEY,
+      'SLA escalation — 100% threshold breached',
+    );
+
+    expect(changed).toBe(true);
+    expect(
+      rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
+    ).toHaveLength(1);
+  });
+
+  it("in_progress does NOT short-circuit: a concurrent tick holds the key → recompute + RPC proceeds", async () => {
+    const { supabase, rpcCalls } = makeReassignDeps({
+      outcome: 'in_progress',
+      cached_result: null,
+    });
+    const svc = new SlaService(supabase as any, {} as any, {} as any);
+
+    const ticket = {
+      id: 'tic-1',
+      tenant_id: 'ten-1',
+      assigned_user_id: null as string | null,
+      assigned_team_id: 'team-old',
+      watchers: null as string[] | null,
+      entity_kind: 'case' as const,
+    };
+
+    const changed = await (svc as any).applyReassignment(
+      ticket,
+      { teamId: 'team-new' },
+      STABLE_KEY,
+      'SLA escalation — 100% threshold breached',
+    );
+
+    expect(changed).toBe(true);
+    expect(
+      rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
+    ).toHaveLength(1);
+  });
+});
+
 // Hand-rolled supabase chain mock for the sla_policies lookup used by
 // applyWaitingStateTransition. Captures the .eq() filters so tests can assert
 // the tenant scope (codex C1 lock-in: same UUID across tenants must not

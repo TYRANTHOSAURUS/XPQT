@@ -157,6 +157,17 @@ export interface BuildAttachPlanArgs {
      */
     attendee_count: number | null;
     source: 'portal' | 'desk' | 'api' | 'calendar_sync' | 'reception' | 'recurrence';
+    /**
+     * audit-03 D-6 — the request-canonical lead-time RESOLUTION BASIS
+     * (ISO 8601). ATTACH path: the existing booking's `bookings.created_at`
+     * (server-immutable). CREATE path: `actor.resolution_basis_at` (the
+     * booking row does not exist yet, so there is no `created_at`; the
+     * controller defaults ONE instant per request). `hydrateLines` +
+     * the rule resolver + the predicate engine `lead_minutes_*` operators
+     * ALL anchor on this single instant so a same-intent retry hashes
+     * identically.
+     */
+    created_at: string;
   };
   /**
    * Required when services is non-empty (so the line-key dedup index can
@@ -300,6 +311,11 @@ export class BundleService {
         attendee_count: booking.attendee_count,
         source: (booking.source ??
           'desk') as BuildAttachPlanArgs['booking']['source'],
+        // audit-03 D-6 STEP-1: server-only resolution basis. The booking
+        // already exists for attach; its server-assigned, immutable
+        // `created_at` is the lead-time anchor — a same-intent attach
+        // retry recomputes a byte-identical plan with NO FE coupling.
+        created_at: booking.created_at,
       },
       requester_person_id: args.requester_person_id,
       bundle: args.bundle,
@@ -541,10 +557,23 @@ export class BundleService {
       attendee_count: args.booking.attendee_count,
       booking_bundle_id: args.booking_id,         // booking IS the bundle
       source: args.booking.source,
+      // audit-03 D-6: the request-canonical resolution basis. ATTACH path
+      // = real `bookings.created_at` (server-immutable). CREATE path =
+      // `actor.resolution_basis_at` (no row exists yet; the caller in
+      // booking-flow.service.ts threads it through args.booking.created_at).
+      created_at: args.booking.created_at,
     };
 
+    // audit-03 D-6 — the SINGLE wall-clock anchor for every lead-time-
+    // derived value in this plan. Every site that previously read
+    // `Date.now()` (hydrateLines :1477, the rule resolver context, the
+    // predicate engine `lead_minutes_*` operators) now reads THIS instant,
+    // so two same-intent retries straddling a tenant lead-time-rule
+    // boundary recompute a byte-identical hashed payload.
+    const resolutionBasisMs = Date.parse(args.booking.created_at);
+
     // ── 3. Hydrate lines (catalog lookup + menu offer + lead-time guard) ──
-    const lines = await this.hydrateLines(args.services, booking);
+    const lines = await this.hydrateLines(args.services, booking, resolutionBasisMs);
     // Re-verify per-service-type uniqueness now that we know each line's
     // service_type (the per-order scope mandated by §7.4 v8).
     const lineIdByServiceType = new Map<string, Set<string>>();
@@ -733,6 +762,11 @@ export class BundleService {
             line_count: lines.length,
           },
           permissions,
+          // audit-03 D-6 (V3-time) — feed the SAME request-canonical basis
+          // to the predicate engine so a `lead_minutes_*` service-rule
+          // predicate yields a wall-clock-independent boolean across a
+          // same-intent retry (matched-rule set → hashed outcome stable).
+          resolution_basis_ms: resolutionBasisMs,
         });
       },
     });
@@ -793,6 +827,16 @@ export class BundleService {
       const outcome = outcomes.get(oli.id);
       if (!outcome || !outcome.requires_internal_setup) continue;
       const line = lineByOliId.get(oli.id)!;
+      // audit-03 D-6 (V3-order) — canonical-sort the matched rule ids
+      // before they are serialized into the idempotency-hashed plan
+      // (`pending_setup_trigger_args.ruleIds` / `setup_emit.rule_ids`).
+      // Belt-and-suspenders: the upstream service-rule fetch is now
+      // id-ordered + the resolver sort is stable, so this is already
+      // deterministic; the explicit sort guarantees byte-stability even
+      // if a future aggregation change reorders matched_rule_ids.
+      const sortedRuleIds = [...outcome.matched_rule_ids].sort((a, b) =>
+        a.localeCompare(b),
+      );
       if (anyPendingApproval) {
         // Snapshot for the approval-grant RPC. Preserves the exact shape
         // `SetupWorkOrderTriggerService.triggerMany` consumed pre-v6, so
@@ -805,14 +849,14 @@ export class BundleService {
           serviceCategory: line.service_type,
           serviceWindowStartAt: line.service_window_start_at,
           locationId: booking.space_id,
-          ruleIds: outcome.matched_rule_ids,
+          ruleIds: sortedRuleIds,
           leadTimeOverride: outcome.internal_setup_lead_time_minutes,
           originSurface: 'bundle' as const,
         };
       } else {
         const setupEmit: AttachPlanSetupEmit = {
           service_category: line.service_type,
-          rule_ids: outcome.matched_rule_ids,
+          rule_ids: sortedRuleIds,
           lead_time_override_minutes: outcome.internal_setup_lead_time_minutes,
         };
         oli.setup_emit = setupEmit;
@@ -1427,7 +1471,7 @@ export class BundleService {
     const tenantId = TenantContext.current().id;
     const { data, error } = await this.supabase.admin
       .from('bookings')
-      .select('id, tenant_id, location_id, requester_person_id, host_person_id, start_at, end_at, source')
+      .select('id, tenant_id, location_id, requester_person_id, host_person_id, start_at, end_at, source, created_at')
       .eq('id', id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
@@ -1444,6 +1488,7 @@ export class BundleService {
       start_at: string;
       end_at: string;
       source: string | null;
+      created_at: string;
     };
 
     // Pull attendee_count from the booking's primary slot (lowest
@@ -1469,12 +1514,24 @@ export class BundleService {
       attendee_count: (slot as { attendee_count: number | null } | null)?.attendee_count ?? null,
       booking_bundle_id: row.id,                  // booking IS the bundle now
       source: row.source,
+      created_at: row.created_at,
     };
   }
 
-  private async hydrateLines(inputs: ServiceLineInput[], booking: BookingRow): Promise<HydratedLine[]> {
+  private async hydrateLines(
+    inputs: ServiceLineInput[],
+    booking: BookingRow,
+    // audit-03 D-6 (V1 fix) — the request-canonical resolution basis in
+    // epoch-ms. REPLACES the old `const now = Date.now()`: that wall-clock
+    // read made `lead_time_remaining_hours` (and therefore every rule
+    // OUTCOME it feeds) recompute differently on a same-intent retry that
+    // straddled a tenant lead-time `service_rules` boundary → a different
+    // md5 → spurious `attach_operations.payload_mismatch` 409, op lost.
+    // ATTACH path: `bookings.created_at`. CREATE path: the request basis.
+    resolutionBasisMs: number,
+  ): Promise<HydratedLine[]> {
     const out: HydratedLine[] = [];
-    const now = Date.now();
+    const now = resolutionBasisMs;
     const tenantId = booking.tenant_id;
     for (const input of inputs) {
       // Look up the catalog item — gives us category + price/unit defaults
@@ -1958,6 +2015,18 @@ interface BookingRow {
   attendee_count: number | null;            // pulled from primary slot
   booking_bundle_id: string | null;         // = id (legacy alias for in-service code)
   source: string | null;
+  /**
+   * audit-03 D-6: the server-canonical creation instant. On the ATTACH
+   * path this is the request-canonical lead-time RESOLUTION BASIS — it is
+   * server-assigned (00372:~385-392 anchors hash-determinism on the same
+   * column) and immutable across retries, so a same-intent attach replay
+   * straddling a tenant lead-time-rule boundary recomputes a byte-identical
+   * hashed `p_attach_plan` with ZERO client cooperation. On the synthesised
+   * CREATE-path `BookingRow` (booking not yet inserted) this carries the
+   * request-canonical `actor.resolution_basis_at` instead (the create path
+   * passes it explicitly — see `buildAttachPlan` STEP-2 wiring).
+   */
+  created_at: string;
 }
 
 interface HydratedLine {

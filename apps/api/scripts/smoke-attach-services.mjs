@@ -68,6 +68,24 @@
  *      the `setup_work_order.create_required` outbox event is SUPPRESSED
  *      for THIS booking_id (the RPC guards the emit on
  *      NOT any_pending_approval — 00412:330-358) until approval.
+ *   8. **D-6 producer-determinism (fail-closed)** — attach a catering
+ *      line with a seeded LEAD-TIME-BOUNDARY `service_rules` rule
+ *      (`lead_minutes_gt 60`) present, then REPLAY the SAME
+ *      X-Client-Request-Id + body. The attach idempotency basis is the
+ *      booking's server-immutable `created_at` (audit-03 D-6 fix), so the
+ *      replay recomputes a BYTE-IDENTICAL p_attach_plan → the
+ *      attach_operations gate returns the CACHED 2xx. Asserts the replay
+ *      did NOT 409 `booking.idempotency_payload_mismatch` (a 409 here =
+ *      the producer baked a wall-clock-derived value into the hashed
+ *      plan = a D-6 REGRESSION), ZERO duplicate orders/OLIs, still
+ *      exactly ONE attach_operations success row. Fails LOUDLY, never
+ *      weakens. This REPLACES the prior "documented gap / expected-409"
+ *      disposition. Create-path analog: owned + jest-guard-covered
+ *      (`bundle-attach-plan.determinism.spec.ts` drives the real
+ *      BookingFlowService.buildAttachPlan with a controlled clock — the
+ *      smoke server cannot deterministically advance its own wall-clock
+ *      between two HTTP calls). See
+ *      docs/follow-ups/audit03-deferred-d6-decision.md §5/§7.
  *
  * USAGE:
  *   pnpm dev:api &      (or have the dev server already running)
@@ -297,6 +315,14 @@ function mkFixtureIds(tag) {
     rollbackAssetId: crypto.randomUUID(),
     rollbackAvCatalogId: crypto.randomUUID(),
     approvalRuleId: crypto.randomUUID(),
+    // audit-03 D-6 — a tenant lead-time-boundary service_rules rule used
+    // by the determinism probe (8). Catalog_item-scoped on the catering
+    // item, `lead_minutes_gt` predicate (the canonical "min lead time"
+    // rule). With the fix the attach idempotency basis is the booking's
+    // server-immutable created_at, so a same-crid replay recomputes a
+    // byte-identical plan even with this lead-sensitive rule present →
+    // cached 2xx (NOT a payload_mismatch 409).
+    leadRuleId: crypto.randomUUID(),
   };
 }
 
@@ -359,6 +385,29 @@ function catalogSeedSql(ids) {
        'require_approval',
        '{"approver_target":"person","person_id":"${NOOR_PERSON}"}'::jsonb,
        10, true);
+
+    -- audit-03 D-6 determinism probe (8) — a LEAD-TIME-BOUNDARY rule on
+    -- the catering item. lead_minutes_gt 60 = the canonical "must book
+    -- >=60min ahead" rule; the predicate engine evaluates lead =
+    -- (start_at - BASIS) / 60000. Pre-fix BASIS was a fresh Date.now()
+    -- per attempt, so a same-crid replay seconds later recomputes a
+    -- (possibly) different lead, a different rule outcome, a different
+    -- md5(p_attach_plan), a spurious attach_operations.payload_mismatch
+    -- 409. Post-fix BASIS = the booking server-immutable created_at, so
+    -- the replay recomputes a byte-identical plan and the gate returns a
+    -- cached 2xx. The attach plan also lands a require_approval approver
+    -- (fine); probe (8) asserts the IDEMPOTENT-REPLAY contract only.
+    insert into public.service_rules
+      (id, tenant_id, name, target_kind, target_id, applies_when, effect,
+       approval_config, priority, active)
+    values
+      ('${ids.leadRuleId}'::uuid, '${TENANT_ID}'::uuid,
+       'Smoke AS lead-boundary ${ids.tag}',
+       'catalog_item', '${ids.cateringCatalogId}'::uuid,
+       '{"fn":"lead_minutes_gt","args":["$.booking.start_at",60]}'::jsonb,
+       'require_approval',
+       '{"approver_target":"person","person_id":"${NOOR_PERSON}"}'::jsonb,
+       5, true);
   `;
 }
 
@@ -396,7 +445,9 @@ async function deleteFixtures(state) {
   const assetTypeIds = fx
     ? [fx.assetTypeId, fx.rollbackAssetTypeId].map((id) => `'${id}'::uuid`).join(', ')
     : `'00000000-0000-0000-0000-000000000000'::uuid`;
-  const ruleIds = fx ? `'${fx.approvalRuleId}'::uuid` : `'00000000-0000-0000-0000-000000000000'::uuid`;
+  const ruleIds = fx
+    ? [fx.approvalRuleId, fx.leadRuleId].map((id) => `'${id}'::uuid`).join(', ')
+    : `'00000000-0000-0000-0000-000000000000'::uuid`;
   const idemKeyList =
     [...mintedIdempotencyKeys].map((k) => `'${k.replace(/'/g, "''")}'`).join(', ') ||
     `'__smoke_as_no_keys__'`;
@@ -1062,6 +1113,115 @@ async function runApprovalSuppressionProbe(probe, fx, bk) {
   );
 }
 
+// (8) audit-03 D-6 — fail-closed producer-determinism gate.
+//
+// REPLACES the old "documented-gap / expected-409" disposition (smoke
+// header + smoke-gates.md §D-6 "Known deferred"). The seeded
+// `leadRuleId` rule is a LEAD-TIME-BOUNDARY rule on the catering item
+// (`lead_minutes_gt 60`). Attach a catering line with a crid; the rule
+// fires and its outcome is serialized into the idempotency-hashed
+// p_attach_plan. Then REPLAY the SAME crid. With the D-6 fix the attach
+// resolution basis is the booking's server-immutable `created_at`, so the
+// replay recomputes a BYTE-IDENTICAL plan (same md5) → the
+// attach_operations gate returns the CACHED 2xx result. PRE-FIX the
+// basis was a fresh Date.now() per attempt, so a replay whose elapsed
+// time crossed the lead boundary would recompute a different outcome →
+// `attach_operations.payload_mismatch` 409 and the op is permanently
+// lost. This probe asserts the FIXED behaviour and fails LOUDLY (never
+// weakens) on a 409 or any duplicate row.
+//
+// Create-path analog: the smoke server cannot deterministically advance
+// its own wall-clock between two HTTP calls, so the authoritative
+// create-path completeness proof is the jest guard
+// (`bundle-attach-plan.determinism.spec.ts`, which drives the real
+// BookingFlowService.buildAttachPlan with a controlled clock) — owned +
+// documented in docs/follow-ups/audit03-deferred-d6-decision.md §5.
+async function runDeterminismReplayProbe(probe, fx, bk) {
+  console.log(
+    '\n=== (8) D-6 determinism: same-crid replay WITH a lead-time rule → 2xx CACHED, no 409, no dup ===',
+  );
+  const ordersBefore = countOrders(bk.bookingId);
+  const olisBefore = countOlis(bk.bookingId);
+  const arsBefore = countAssetReservations(bk.bookingId);
+
+  const crid = crypto.randomUUID();
+  const idemKey = buildAttachServicesIdempotencyKey(bk.bookingId, crid);
+  const body = {
+    services: [
+      { catalog_item_id: fx.cateringCatalogId, quantity: 7, client_line_id: 'as-d6-1' },
+    ],
+  };
+
+  const first = await probe('First attach (lead-time rule fires) → 2xx', {
+    url: `${API_BASE}/api/reservations/${bk.bookingId}/services`,
+    body,
+    clientRequestId: crid,
+    expect: 'success',
+  });
+  if (!first.ok) {
+    skipProbe(
+      '(8) determinism replay assertions',
+      `first attach did not succeed (status=${first.status}) — cannot assert replay; investigate, do NOT treat as pass`,
+    );
+    return;
+  }
+  passAssertion(
+    '(8) exactly 1 attach_operations row, outcome=success after first attach',
+    countAttachOps(idemKey) === 1 && attachOpOutcome(idemKey) === 'success',
+    `count=${countAttachOps(idemKey)} outcome=${attachOpOutcome(idemKey)}`,
+  );
+  const ordersAfter1 = countOrders(bk.bookingId);
+  const olisAfter1 = countOlis(bk.bookingId);
+
+  // Replay the SAME crid + SAME body. The genuine D-6 regression would
+  // surface here as a 409 booking.idempotency_payload_mismatch (the
+  // recomputed plan hashed differently because the resolution basis was
+  // a fresh wall-clock read). The fix anchors the basis on created_at →
+  // byte-identical plan → cached 2xx.
+  const replay = await probe('Replay SAME crid + body → 2xx CACHED (NOT 409)', {
+    url: `${API_BASE}/api/reservations/${bk.bookingId}/services`,
+    body,
+    clientRequestId: crid,
+    expect: 'success',
+  });
+  if (!replay.ok) {
+    const mp = parseJsonSafe(replay.body);
+    passAssertion(
+      '(8) replay did NOT 409 payload_mismatch (D-6 regression if it did)',
+      mp?.code !== 'booking.idempotency_payload_mismatch',
+      `status=${replay.status} code=${mp?.code} body=${replay.body.slice(0, 200)} — a 409 here = the producer baked a wall-clock-derived value into the hashed plan (D-6 REGRESSION)`,
+    );
+    return;
+  }
+  passAssertion(
+    '(8) replay returned 2xx (cached idempotent result)',
+    replay.status >= 200 && replay.status < 300,
+    `status=${replay.status}`,
+  );
+  passAssertion(
+    '(8) ZERO duplicate orders on replay (count unchanged)',
+    countOrders(bk.bookingId) === ordersAfter1,
+    `afterFirst=${ordersAfter1} afterReplay=${countOrders(bk.bookingId)}`,
+  );
+  passAssertion(
+    '(8) ZERO duplicate OLIs on replay (count unchanged)',
+    countOlis(bk.bookingId) === olisAfter1,
+    `afterFirst=${olisAfter1} afterReplay=${countOlis(bk.bookingId)}`,
+  );
+  passAssertion(
+    '(8) still exactly 1 attach_operations row, outcome=success (no second op row)',
+    countAttachOps(idemKey) === 1 && attachOpOutcome(idemKey) === 'success',
+    `count=${countAttachOps(idemKey)} outcome=${attachOpOutcome(idemKey)}`,
+  );
+  passAssertion(
+    '(8) net effect = exactly one logical attach (delta from baseline is the first attach only)',
+    countOrders(bk.bookingId) - ordersBefore >= 1 &&
+      countOlis(bk.bookingId) - olisBefore === 1 &&
+      countAssetReservations(bk.bookingId) - arsBefore === 0,
+    `orders Δ=${countOrders(bk.bookingId) - ordersBefore} olis Δ=${countOlis(bk.bookingId) - olisBefore} ars Δ=${countAssetReservations(bk.bookingId) - arsBefore}`,
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────
@@ -1156,6 +1316,12 @@ async function main() {
     if (bk5) {
       state.bookingIds.add(bk5.bookingId);
       await runApprovalSuppressionProbe(probe, fx, bk5);
+    }
+
+    const bk6 = await createFixtureBooking(probe, spaceIds[1], 9, 'd6-determinism');
+    if (bk6) {
+      state.bookingIds.add(bk6.bookingId);
+      await runDeterminismReplayProbe(probe, fx, bk6);
     }
   } finally {
     console.log('\nCleaning up fixtures…');

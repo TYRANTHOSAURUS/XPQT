@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DbService } from '../../../common/db/db.service';
 import { SupabaseService } from '../../../common/supabase/supabase.service';
+import { probeCommandOperationSuccess } from '../../../common/command-operations-probe';
+import { mapRpcErrorToAppError } from '../../../common/errors';
 import { RoutingService } from '../../routing/routing.service';
 import type { AssignmentTarget, ResolverContext } from '../../routing/resolver.types';
 import { DeadLetterError } from '../dead-letter.error';
@@ -37,8 +39,14 @@ import type { OutboxEvent } from '../outbox.types';
  *      separate post-RPC raw UPDATE. The RPC's v3 no-op fast path still
  *      clears routing_status when the flag is set, so a re-evaluation
  *      that re-picks the current assignee can't leave it pinned at
- *      'pending'. `'failed'` is still set out-of-band on resolver throws
- *      or RPC errors (markRoutingFailure) — those paths skip the RPC.
+ *      'pending'. `'failed'` is set out-of-band on a resolver throw OR a
+ *      TERMINAL RPC error (a registered business/validation code, incl.
+ *      command_operations.payload_mismatch) — those paths skip the RPC /
+ *      consume the event. On a RETRYABLE RPC error (transient infra →
+ *      mapped to unknown.server_error) the handler THROWS so the outbox
+ *      redelivers (audit-02 D-A02-4 — the pre-fix code returned on ALL
+ *      RPC errors, terminally consuming the event even on a transient
+ *      blip; a normal return ACKs the event).
  *
  * ── Case-only contract ───────────────────────────────────────────────────
  *
@@ -55,11 +63,21 @@ import type { OutboxEvent } from '../outbox.types';
  *
  * ── Idempotency ──────────────────────────────────────────────────────────
  *
- * Two layers:
- *   a) The `set_entity_assignment` RPC has its own `command_operations`
- *      gate keyed on (tenant_id, idempotency_key). We use
- *      `routing-evaluation:<event_id>` so a replay collapses to the cached
- *      RPC result — no double-assignment.
+ * Three layers:
+ *   a) The `set_entity_assignment` RPC has its own authoritative
+ *      WRITE-side `command_operations` gate keyed on (tenant_id,
+ *      idempotency_key). We use `routing-evaluation:<event_id>` so a
+ *      replay collapses to the cached RPC result — no double-assignment.
+ *   a2) audit-02 D-A02-4: this handler ALSO performs the READ-side of
+ *      the idempotency contract — a `command_operations` SUCCESS-probe
+ *      under the SAME stable key BEFORE re-running the resolver. The
+ *      handler rebuilds the assignment payload from MUTABLE routing
+ *      config + ticket inputs; a redelivery after a config/input change
+ *      would recompute a drifted payload → same key + different hash →
+ *      `command_operations.payload_mismatch` → poisoned event. The probe
+ *      short-circuits a proven-committed delivery (log + return → outbox
+ *      ACK) so the poisoning recompute never runs. The RPC keeps its
+ *      authoritative write-side gate (defense in depth).
  *   b) Routing-decision INSERTs carry the event_id in the context payload
  *      and use a raw `ON CONFLICT (tenant_id,
  *      (context->>'outbox_event_id'), chosen_by) WHERE context ?
@@ -210,6 +228,45 @@ export class RoutingEvaluationHandler
     }
     const ticket = ticketRes.data as unknown as TicketContextRow;
 
+    const idempotencyKey = buildRoutingEvaluationIdempotencyKey(event.id);
+
+    // ── 2b. audit-02 D-A02-4 — command_operations success-probe ─────────
+    //
+    // The idempotency key `routing-evaluation:<event_id>` is STABLE, but
+    // on an outbox redelivery this handler RE-RUNS
+    // `routingService.evaluate()` and rebuilds the payload (the
+    // assigned_*_id tuple) from MUTABLE routing config + ticket inputs
+    // before the RPC. If routing config / ticket inputs changed between
+    // the first delivery and a redelivery, the recomputed assignment
+    // differs → same key + different payload hash →
+    // `command_operations.payload_mismatch` (00425:159-162) → the handler
+    // errors and (pre the §5 split below) the event was poisoned.
+    //
+    // Probe command_operations for a `success` row under the stable key
+    // BEFORE re-evaluating. If present, the first delivery's assignment +
+    // routing_status clear ALL committed atomically inside v3's PG tx —
+    // the event is genuinely done. Log + return normally so the outbox
+    // ACKs it (it IS handled); do NOT re-evaluate, do NOT re-call the
+    // RPC, do NOT re-insert the routing_decisions audit row (the §6
+    // ON CONFLICT DO NOTHING already makes a redelivery audit-idempotent;
+    // this probe additionally avoids the wasteful + poisoning recompute).
+    // `in_progress` is NOT a short-circuit signal (a concurrent worker
+    // holds the key — the worker's claim-token + the RPC's own
+    // advisory-lock + write-side gate make a fresh attempt converge
+    // correctly; we only skip on a proven `success`).
+    const committed = await probeCommandOperationSuccess(
+      this.supabase,
+      event.tenant_id,
+      idempotencyKey,
+    );
+    if (committed) {
+      this.log.log(
+        `already_committed (command_operations success) ticket=${ticket_id} ` +
+          `event=${event.id} — skipping re-evaluate + re-RPC, ACKing`,
+      );
+      return;
+    }
+
     // ── 3. Compose the resolver context ─────────────────────────────────
     //
     // The v1 ResolverContext also carries `domain` (free-text). Load it
@@ -301,7 +358,6 @@ export class RoutingEvaluationHandler
       payload.assigned_vendor_id = target.kind === 'vendor' ? target.vendor_id : null;
     }
 
-    const idempotencyKey = buildRoutingEvaluationIdempotencyKey(event.id);
     const rpcRes = await this.supabase.admin.rpc('set_entity_assignment', {
       p_entity_id: ticket_id,
       // Case-only by construction — see the class-doc "Case-only contract"
@@ -317,9 +373,64 @@ export class RoutingEvaluationHandler
     });
 
     if (rpcRes.error) {
-      // RPC error → record routing failure, return. The downstream RPC
-      // has its own classify-and-dead-letter logic; here we just want the
-      // ticket to show `routing_status='failed'` until ops re-triggers.
+      // audit-02 D-A02-4 (IMPORTANT): classify the RPC error — RETRYABLE
+      // vs TERMINAL — instead of unconditionally consuming the event.
+      //
+      // The pre-fix code unconditionally called markRoutingFailure then
+      // `return`. A normal return makes the outbox mark the event
+      // processed (outbox.worker.ts:218 markSuccess) — so a TRANSIENT
+      // RPC/DB error (connection drop, lock/statement timeout,
+      // serialization 40001/40P01, 08* connection class) terminally
+      // consumed the event with routing_status='failed', and the next
+      // reclassify/routing-trigger would have to re-emit a fresh event
+      // for ops to recover.
+      //
+      // Classification reuses the project's existing RPC-error taxonomy
+      // (mapRpcErrorToAppError, map-rpc-error.ts): a leading
+      // `<namespace>.<specifier>` token registered in KNOWN_ERROR_CODES
+      // is a business/validation error → TERMINAL (e.g.
+      // validate_assignees_in_tenant.*, set_entity_assignment.not_found,
+      // and command_operations.payload_mismatch). An unparseable /
+      // unregistered message maps to `unknown.server_error` — the
+      // transient-infra surface → RETRYABLE.
+      //
+      // With the §2b success-probe above, payload_mismatch-on-redelivery
+      // is no longer reachable (a redelivery short-circuits on the
+      // existing command_operations success), so payload_mismatch
+      // correctly classifies TERMINAL here only for the genuine
+      // "same key, two genuinely different payloads in the same delivery"
+      // misuse — the residual surface is overwhelmingly genuine transient
+      // infra → must retry, not consume.
+      const mapped = mapRpcErrorToAppError(rpcRes.error);
+      const isTerminal = mapped.code !== 'unknown.server_error';
+
+      if (!isTerminal) {
+        // RETRYABLE transient error. Do NOT markRoutingFailure (that
+        // would flip routing_status='failed' for a recoverable blip) and
+        // do NOT return (a return ACKs the event). THROW a plain Error so
+        // the outbox worker takes the §4.2.2 retry transition (markRetry
+        // + backoff); a non-DeadLetterError is transient by the worker's
+        // contract (outbox.worker.ts:219-234 + dead-letter.error.ts).
+        // Same idiom as sla-timer-repoint.handler.ts:93 (a plain throw is
+        // the sanctioned transient signal; the errors:check-app-errors
+        // gate forbids only raw NestJS exception classes, not
+        // `throw Error`).
+        this.log.warn(
+          `assignment_retryable ticket=${ticket_id} event=${event.id}: ` +
+            `${rpcRes.error.message} (transient → outbox will redeliver)`,
+        );
+        throw new Error(
+          `routing_evaluation.assignment_rpc_transient: ${rpcRes.error.message}`,
+        );
+      }
+
+      // TERMINAL business/validation error. The routing_status clear and
+      // routing_decisions insert did NOT commit (same PG tx as the
+      // assignment write). markRoutingFailure writes the 'failed' status
+      // + activity breadcrumb + failure audit row best-effort, then we
+      // return — the event is genuinely unrecoverable without an operator
+      // fixing the rule/matrix; ops sees routing_status='failed' and a
+      // re-emitted event after the fix.
       await this.markRoutingFailure(
         event.tenant_id,
         ticket_id,

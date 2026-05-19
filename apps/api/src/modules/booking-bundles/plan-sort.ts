@@ -105,12 +105,21 @@ export function comparePlanAssetReservations(
  * Approval sort: `(approver_person_id)` ascending. After
  * `ApprovalRoutingService.assemblePlan` deduplication, each row has a
  * unique `approver_person_id` — no secondary sort needed.
+ *
+ * audit-03 P2-3 — `approver_person_id` is now nullable on the plan type
+ * (team-only rows from the no-services FLAT path). NULL sorts first
+ * deterministically (empty-string proxy) so the comparator stays total +
+ * stable for any caller. The no-services FLAT path does NOT use this sort
+ * (it relies on `canonicalApproverSort`'s `(type,id)` order, which handles
+ * team rows); `assemblePlan` (the only caller) is always person-only so
+ * this branch is never exercised there — it exists purely so the
+ * comparator's type matches the widened plan interface.
  */
 export function comparePlanApprovals(
-  a: { approver_person_id: string },
-  b: { approver_person_id: string },
+  a: { approver_person_id: string | null },
+  b: { approver_person_id: string | null },
 ): number {
-  return a.approver_person_id.localeCompare(b.approver_person_id);
+  return (a.approver_person_id ?? '').localeCompare(b.approver_person_id ?? '');
 }
 
 /**

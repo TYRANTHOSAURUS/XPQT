@@ -297,4 +297,83 @@ describe('TicketService.reassign(rerun_resolver=true) — Plan A.2 tenant valida
       deps.insertCalls.filter((c) => c.table === 'routing_decisions'),
     ).toHaveLength(0);
   });
+
+  it('audit-02 D-A02-4: command_operations success-probe short-circuits the rerun_resolver path BEFORE the resolver + RPC (no payload_mismatch poison on retry)', async () => {
+    // A prior request under the SAME crid already committed
+    // (command_operations success). A retry must NOT re-run the resolver
+    // (which could re-pick a drifted target if routing config changed) and
+    // must NOT re-call set_entity_assignment with a recomputed payload —
+    // that's the payload_mismatch poison D-A02-4 closes. It returns the
+    // contracted getById shape instead.
+    const deps = makeSupabase({
+      command_operations: [
+        {
+          tenant_id: TENANT.id,
+          idempotency_key: `reassign:case:${TICKET_ID}:crid-rerun-3`,
+          outcome: 'success',
+          cached_result: { noop: false },
+        },
+      ],
+      teams: [{ id: VALID_TEAM, tenant_id: TENANT.id }],
+    });
+
+    const visibility = {
+      loadContext: jest.fn().mockResolvedValue({
+        user_id: 'u-1',
+        person_id: 'p-1',
+        tenant_id: TENANT.id,
+        has_read_all: false,
+        has_write_all: true,
+        has_admin: false,
+      }),
+      assertCanPlan: jest.fn().mockResolvedValue(undefined),
+      assertVisible: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const routingService = {
+      evaluate: jest.fn(),
+      recordDecision: jest.fn(),
+    };
+
+    const svc = new TicketService(
+      deps.supabase as never,
+      routingService as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      visibility as never,
+      {} as never,
+    );
+
+    jest.spyOn(svc, 'getById').mockResolvedValue({
+      id: TICKET_ID,
+      tenant_id: TENANT.id,
+      ticket_kind: 'case',
+      assigned_team_id: VALID_TEAM,
+      assigned_user_id: null,
+      assigned_vendor_id: null,
+      status_category: 'assigned',
+    } as never);
+    const addActivitySpy = jest
+      .spyOn(svc, 'addActivity')
+      .mockResolvedValue(undefined as never);
+
+    const result = await svc.reassign(
+      TICKET_ID,
+      { rerun_resolver: true, reason: 'retry', actor_person_id: 'p-1' },
+      'auth-uid',
+      'crid-rerun-3',
+    );
+
+    // Short-circuited: resolver NOT re-run, RPC NOT re-called,
+    // recordDecision NOT re-run, no second activity — no recompute, no
+    // payload_mismatch. Contracted getById shape still returned.
+    expect(routingService.evaluate).not.toHaveBeenCalled();
+    expect(routingService.recordDecision).not.toHaveBeenCalled();
+    expect(addActivitySpy).not.toHaveBeenCalled();
+    expect(
+      deps.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
+    ).toHaveLength(0);
+    expect((result as { id: string }).id).toBe(TICKET_ID);
+  });
 });

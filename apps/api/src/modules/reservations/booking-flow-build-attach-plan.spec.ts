@@ -362,4 +362,190 @@ describe('BookingFlowService.buildAttachPlan (B.0.C.4)', () => {
       ).rejects.toThrow(AppError);
     });
   });
+
+  // ─── audit-03 P2-3 STEP C — no-services FLAT approval builder ─────────
+  //
+  // The no-services single-room path was cut over from the legacy
+  // `create_booking` RPC + `createApprovalRows` onto the combined RPC.
+  // `buildAttachPlan` must now emit the FLAT-case approval rows (mirroring
+  // createApprovalRows OUTCOME) with HARD determinism so a same-intent
+  // retry rebuilds a byte-identical plan (D-5/D-6) and the 00431 RPC
+  // commits them in-transaction → inbox-notified.
+
+  const APPROVER_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const APPROVER_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const APPROVER_TEAM = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const WF_DEF = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+
+  function makeApprovalRules(opts: {
+    required_approvers: Array<{ type: 'team' | 'person'; id: string }>;
+    threshold?: 'all' | 'any';
+    workflowDefinitionId?: string | null;
+  }) {
+    return {
+      resolve: jest.fn(async () => ({
+        effects: [],
+        matchedRules: [],
+        warnings: [],
+        denialMessages: [],
+        overridable: false,
+        approvalConfig: {
+          required_approvers: opts.required_approvers,
+          threshold: opts.threshold ?? 'all',
+        },
+        approvalWorkflowDefinitionId: opts.workflowDefinitionId ?? null,
+        final: 'require_approval' as const,
+      })),
+    };
+  }
+
+  it('FLAT approval rule (no services) → approvals[] + any_pending_approval, deterministic ids', async () => {
+    const svc = new BookingFlowService(
+      makeSupabase() as never,
+      makeConflict() as never,
+      makeApprovalRules({
+        // Deliberately UNSORTED to prove canonicalApproverSort is applied.
+        required_approvers: [
+          { type: 'person', id: APPROVER_B },
+          { type: 'person', id: APPROVER_A },
+        ],
+        threshold: 'all',
+      }) as never,
+    );
+
+    const run = () =>
+      TenantContext.run(TENANT, () =>
+        svc.buildAttachPlan(baseInput(), makeActor(), 'idem-flat-1'),
+      );
+
+    const r1 = await run();
+    const r2 = await run();
+
+    // any_pending_approval set in lockstep (top-level + bundle_audit_payload).
+    expect(r1.attachPlan.any_pending_approval).toBe(true);
+    expect(r1.attachPlan.bundle_audit_payload.any_pending_approval).toBe(true);
+    expect(r1.attachPlan.approvals.length).toBe(2);
+    // No services ⇒ empty service graph.
+    expect(r1.attachPlan.orders).toEqual([]);
+    expect(r1.attachPlan.order_line_items).toEqual([]);
+
+    const bookingId = r1.bookingInput.booking_id;
+    // canonicalApproverSort(['person:B','person:A']) → A before B.
+    expect(r1.attachPlan.approvals.map((a) => a.approver_person_id)).toEqual([
+      APPROVER_A,
+      APPROVER_B,
+    ]);
+
+    // Deterministic row ids = planUuid(key, 'approval', approver.id).
+    expect(r1.attachPlan.approvals[0].id).toBe(
+      planUuid('idem-flat-1', 'approval', APPROVER_A),
+    );
+    expect(r1.attachPlan.approvals[1].id).toBe(
+      planUuid('idem-flat-1', 'approval', APPROVER_B),
+    );
+
+    // ONE shared, deterministic approval_chain_id (NOT randomUUID).
+    const chainId = planUuid('idem-flat-1', 'approval', '__chain__');
+    expect(r1.attachPlan.approvals[0].approval_chain_id).toBe(chainId);
+    expect(r1.attachPlan.approvals[1].approval_chain_id).toBe(chainId);
+    // threshold==='all' ⇒ parallel_group = 'parallel-' + bookingId.
+    expect(r1.attachPlan.approvals[0].parallel_group).toBe(
+      `parallel-${bookingId}`,
+    );
+    expect(r1.attachPlan.approvals[0].chain_threshold).toBe('all');
+    expect(r1.attachPlan.approvals[0].approver_team_id).toBeNull();
+    expect(r1.attachPlan.approvals[0].status).toBe('pending');
+    expect(r1.attachPlan.approvals[0].target_entity_type).toBe('booking');
+    expect(r1.attachPlan.approvals[0].target_entity_id).toBe(bookingId);
+
+    // Byte-identical across two same-key calls (D-6 idempotency discipline).
+    expect(JSON.stringify(r2.attachPlan.approvals)).toBe(
+      JSON.stringify(r1.attachPlan.approvals),
+    );
+    expect(r2.bookingInput.booking_id).toBe(bookingId);
+
+    // FLAT case ⇒ no workflow-def post-RPC start.
+    expect(r1.approvalCutover.status).toBe('pending_approval');
+    expect(r1.approvalCutover.workflowDefinitionId).toBeNull();
+  });
+
+  it("FLAT rule threshold='any' → parallel_group null, chain_threshold 'any'", async () => {
+    const svc = new BookingFlowService(
+      makeSupabase() as never,
+      makeConflict() as never,
+      makeApprovalRules({
+        required_approvers: [{ type: 'person', id: APPROVER_A }],
+        threshold: 'any',
+      }) as never,
+    );
+    const r = await TenantContext.run(TENANT, () =>
+      svc.buildAttachPlan(baseInput(), makeActor(), 'idem-any-1'),
+    );
+    expect(r.attachPlan.approvals.length).toBe(1);
+    expect(r.attachPlan.approvals[0].chain_threshold).toBe('any');
+    expect(r.attachPlan.approvals[0].parallel_group).toBeNull();
+    expect(r.attachPlan.approvals[0].approval_chain_id).toBe(
+      planUuid('idem-any-1', 'approval', '__chain__'),
+    );
+  });
+
+  it('FLAT rule with a TEAM approver → approver_team_id populated, approver_person_id null', async () => {
+    const svc = new BookingFlowService(
+      makeSupabase() as never,
+      makeConflict() as never,
+      makeApprovalRules({
+        required_approvers: [{ type: 'team', id: APPROVER_TEAM }],
+        threshold: 'all',
+      }) as never,
+    );
+    const r = await TenantContext.run(TENANT, () =>
+      svc.buildAttachPlan(baseInput(), makeActor(), 'idem-team-1'),
+    );
+    expect(r.attachPlan.approvals.length).toBe(1);
+    const row = r.attachPlan.approvals[0];
+    expect(row.approver_team_id).toBe(APPROVER_TEAM);
+    expect(row.approver_person_id).toBeNull();
+    expect(row.approval_chain_id).toBe(
+      planUuid('idem-team-1', 'approval', '__chain__'),
+    );
+    expect(row.id).toBe(planUuid('idem-team-1', 'approval', APPROVER_TEAM));
+    expect(r.attachPlan.any_pending_approval).toBe(true);
+  });
+
+  it('WORKFLOW-DEF approval rule (no services) → NO plan approvals, cutover surfaces the def id', async () => {
+    const svc = new BookingFlowService(
+      makeSupabase() as never,
+      makeConflict() as never,
+      makeApprovalRules({
+        required_approvers: [{ type: 'person', id: APPROVER_A }],
+        threshold: 'all',
+        workflowDefinitionId: WF_DEF,
+      }) as never,
+    );
+    const r = await TenantContext.run(TENANT, () =>
+      svc.buildAttachPlan(baseInput(), makeActor(), 'idem-wf-1'),
+    );
+    // Engine owns the approval rows — plan emits NONE.
+    expect(r.attachPlan.approvals).toEqual([]);
+    expect(r.attachPlan.any_pending_approval).toBe(false);
+    expect(r.attachPlan.bundle_audit_payload.any_pending_approval).toBe(false);
+    // Cutover tells createWithAttachPlan to start the workflow POST-RPC.
+    expect(r.approvalCutover.status).toBe('pending_approval');
+    expect(r.approvalCutover.workflowDefinitionId).toBe(WF_DEF);
+  });
+
+  it('confirmed (no approval rule, no services) → empty plan, no cutover', async () => {
+    const svc = new BookingFlowService(
+      makeSupabase() as never,
+      makeConflict() as never,
+      makeRules('allow') as never,
+    );
+    const r = await TenantContext.run(TENANT, () =>
+      svc.buildAttachPlan(baseInput(), makeActor(), 'idem-ok-1'),
+    );
+    expect(r.attachPlan.approvals).toEqual([]);
+    expect(r.attachPlan.any_pending_approval).toBe(false);
+    expect(r.approvalCutover.status).toBe('confirmed');
+    expect(r.approvalCutover.workflowDefinitionId).toBeNull();
+  });
 });

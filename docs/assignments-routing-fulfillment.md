@@ -338,6 +338,30 @@ Assignment RPC first, then watchers RPC; each is independently idempotent. SLA e
 
 **Recurrence-safety contract (audit-02 P0-2) — anchor-first ordering.** The assignment RPC is the load-bearing, atomic, audited write. `fireThreshold` then writes the **crossing row immediately, BEFORE** the best-effort side-effects (notification; the watcher copy inside `set_entity_assignment`'s caller is likewise best-effort). The crossing is the idempotency anchor `selectApplicableThresholds` uses to suppress re-fire. Ordering it first makes recurrence-safety a **structural invariant**: once the crossing exists, nothing afterwards — a thrown notifier, a thrown telemetry insert, any future post-anchor await — can make the cron re-fire that escalation. (Pre-fix, side-effects ran before the crossing; a throw between the committed assignment and the crossing left no anchor → permanent per-tick re-fire. The assignment RPC replays harmlessly, but the failing side-effect re-threw forever.) The **sole** remaining bounded retry window is the `writeCrossing` insert itself failing — rare; the RPCs replay idempotently and a racing duplicate is swallowed as `23505`. Failed side-effects surface as `sla_escalation_notify_failed` / `sla_escalation_watcher_skipped` telemetry (itself best-effort). Trade-off: `sla_threshold_crossings.notification_id` is null (we anchor before sending) — soft trace-linkage given up for the invariant.
 
+### Stable-keyed `set_entity_assignment` callers — caller-side `command_operations` success-probe (audit-02 D-A02-4, 2026-05-19)
+
+Four call sites invoke `set_entity_assignment` with a **stable** (deterministic, replay-reused) `idempotency_key` while recomputing `p_payload` from **mutable** state on every (re)entry:
+
+| Caller | Stable key | Mutable input that can drift |
+|---|---|---|
+| `SlaService.applyReassignment` (escalation cron) | `sla:escalation:<timer>:<at_percent>:<timer_type>` | resolved assignee (live `users` lookup), reason, an intervening manual reassign |
+| `TicketService.reassign` (case; `rerun_resolver`) | `reassign:case:<id>:<clientRequestId>` | `routingService.evaluate()` re-pick if the routing matrix / ticket inputs changed between original + retry |
+| `WorkOrderService.reassign` (work_order) | `reassign:work_order:<id>:<clientRequestId>` | payload-stable in practice (pure fn of dto+crid; `rerun_resolver` 501-rejected) — uniform guard for defense-in-depth |
+| `RoutingEvaluationHandler` (outbox) | `routing-evaluation:<event_id>` | `routingService.evaluate()` re-pick on a redelivery after a config/input change |
+
+The RPC hashes the whole `p_payload`; same key + a **drifted** payload raises `command_operations.payload_mismatch` (`00425:159-162`). If the canonical write already committed under the key on an earlier tick/delivery but a *post-RPC* step failed before the caller's own side-effect gate ran, a later re-entry recomputes a drifted payload → `payload_mismatch` → the caller throws **before** its side-effect gate → the logical op is **permanently poisoned**.
+
+**Contract (the READ side of the idempotency contract):** before recomputing the mutable payload / re-calling the RPC, each caller probes `command_operations` for an `outcome='success'` row under the **same stable key**, via `probeCommandOperationSuccess(supabase, tenantId, idempotencyKey)` (`apps/api/src/common/command-operations-probe.ts`). The probe is **tenant-scoped on the table PK** `(tenant_id, idempotency_key)` (#0 invariant) and placed **after** all permission/visibility gates on the reassign paths (no auth bypass). On a `success` hit the caller short-circuits to the contracted shape **without** the recompute/recall:
+
+- `applyReassignment` → returns `true` ("assignment already done") so `fireThreshold`'s anchor-first crossing write completes the stuck escalation exactly once (this restores the no-permanent-suppression invariant in the crash-between-RPC-and-crossing window).
+- `TicketService.reassign` → returns `getById` (the canonical write — assignment + status inherit + `routing_decisions` + activity + event — already committed; the read-only refetch reproduces the contract).
+- `WorkOrderService.reassign` → returns the shared `refetchContracted()` work_orders row.
+- `RoutingEvaluationHandler` → logs + returns so the outbox ACKs the event (it genuinely IS handled; `routing_decisions` idempotency is additionally backed by `uq_routing_decisions_outbox_event`).
+
+Only `'success'` short-circuits; `'in_progress'` falls through (a concurrent op holds the key — the RPC's own advisory-lock + write-side gate remain the authoritative WRITE-side guard; this is purely the read side, defense-in-depth, **no migration**).
+
+**Routing-evaluation handler — retryable vs terminal RPC-error split (same change).** On `rpcRes.error` the handler now classifies via `mapRpcErrorToAppError`: a registered `<namespace>.<specifier>` business/validation code (incl. `command_operations.payload_mismatch`) is **terminal** → `markRoutingFailure` + return (event consumed; `routing_status='failed'`); an unparseable/unregistered message maps to `unknown.server_error` = transient infra → the handler **throws a plain `Error`** so the outbox takes its retry/backoff transition (same sanctioned idiom as `sla-timer-repoint.handler.ts:93`; a non-`DeadLetterError` is transient by the worker's contract). This fixes the prior behaviour where **all** `rpcRes.error` unconditionally `markRoutingFailure`+returned, terminally consuming the event (with `routing_status='failed'`) even on a recoverable transient blip. This is the fix for the previously-routed **I3** (`docs/follow-ups/i3-routing-eval-assignment-rpc-payload-drift-2026-05-18.md`).
+
 ### WorkOrderService surface — single PATCH endpoint backed by `update_entity_combined`
 
 Post-B.2.A Step 6 (2026-05-11), every mutating command on a work_order lives on `WorkOrderService`, not `TicketService`. `TicketService.update` is **case-only** — it `BadRequest`s any incoming `sla_id` change because parent SLA is locked.
@@ -1190,6 +1214,56 @@ Two fields are deliberately NULL even when the caller has values for them:
 - **`parent_ticket_id`** — there is no parent case (per §25 above). To prevent these from polluting the desk's top-level case queue (which filters `parent_ticket_id IS NULL`), `TicketService.list()` ALSO filters `booking_id IS NULL` whenever the parent-null filter is applied (column renamed from `booking_bundle_id` in 00278:87). Booking-origin work orders are reachable as `work_orders` rows, by drilling into a booking, or by their assigned-team queue — they just don't appear in the default cases queue.
 
 Visibility for these tickets falls to the assignee path: `assigned_team_id` matches → team members see it; `tickets.read_all` permission → admins see it. Vendors are not assigned to booking-origin work orders today (they're internal-setup work).
+
+### Rule-resolution determinism (audit-03 D-6, 2026-05-18)
+
+The booking rule resolvers (`service-rule-resolver.service.ts`,
+`room-booking-rules/rule-resolver.service.ts`) are routing code: their
+matched-rule set + ordering feed the idempotency-hashed combined-RPC
+payloads (`create_booking_with_attach_plan`,
+`attach_services_to_existing_booking`). Two determinism contracts were
+made explicit here:
+
+1. **Tie-break ordering — STABILIZATION, not a semantic change.** Rules
+   resolve most-specific-first, then highest-priority-first within a
+   specificity bucket. Among rules tied on BOTH specificity AND priority,
+   the order was previously **DB-row-arbitrary**:
+   `Array.prototype.sort` is stable, and the rule-fetch queries
+   (`service_rules` `fetchAllRules`; `room_booking_rules` `fetchAllRules`
+   AND `fetchCandidateRules`) had no `ORDER BY`, so the tie followed
+   whatever order Postgres returned the rows in. They now carry
+   `.order('id', { ascending: true })`, so a tie deterministically
+   resolves **lowest-rule-id-first**. The specificity ordering, the
+   priority ordering, and the effect precedence
+   (deny > require_approval > warn > allow_override > allow) are
+   **UNCHANGED** — only the previously-undefined tie-break is now defined.
+   This affects only tenants with ≥2 equal-(specificity, priority) rules
+   that all fire on the same line/booking; for them the chosen rule was
+   never stable before and is now stable (lowest id).
+
+2. **Lead-time is anchored on a request-canonical basis, not
+   `Date.now()`.** Every lead-time-derived value that reaches the hashed
+   payload — `service` lead bands, `room` `lead_time_minutes`, the shared
+   predicate engine's `lead_minutes_lt` / `lead_minutes_gt` operators —
+   reads ONE request-canonical instant: the existing booking's
+   server-immutable `bookings.created_at` on the ATTACH path, or
+   `ActorContext.resolution_basis_at` (defaulted once at the controller
+   chokepoint) on the CREATE path. A same-intent retry that straddles a
+   tenant lead-time-rule boundary therefore recomputes the SAME
+   matched-rule set instead of a wall-clock-shifted one. Decision +
+   completeness proof: `docs/follow-ups/audit03-deferred-d6-decision.md`.
+
+Trigger files for this contract: `service-rule-resolver.service.ts`,
+`room-booking-rules/rule-resolver.service.ts`,
+`room-booking-rules/predicate-engine.service.ts`,
+`service-catalog/service-evaluation-context.ts`,
+`reservations/booking-flow.service.ts`,
+`reservations/multi-room-booking.service.ts`,
+`orders/approval-routing.service.ts` (`assemblePlan` reasons sort),
+`reservations/dto/types.ts` (`ActorContext.resolution_basis_at`),
+`reservations/reservation.controller.ts` (the `X-Request-Time` /
+default-basis chokepoint). Any migration adding/altering `service_rules`
+or `room_booking_rules` must preserve the `id`-ordered fetch.
 
 ### Trigger additions for §15
 

@@ -85,6 +85,13 @@ interface FakeSupabaseOpts {
   requestTypeRow?: { domain: string | null } | null;
   rpcResponse?: unknown;
   rpcError?: { code?: string; message: string };
+  // audit-02 D-A02-4: the command_operations success-probe. Default
+  // (undefined) → no row → probe returns null → handler proceeds to
+  // re-evaluate exactly as before (every pre-existing test relies on
+  // this default — zero behaviour change for them). A row with
+  // outcome='success' short-circuits; 'in_progress' falls through.
+  commandOpRow?: { outcome: string; cached_result: unknown } | null;
+  commandOpError?: { message: string };
 }
 
 interface CapturedCalls {
@@ -92,6 +99,9 @@ interface CapturedCalls {
   rpcCalls: Array<{ fn: string; args: unknown }>;
   inserts: Array<{ table: string; row: unknown }>;
   updates: Array<{ table: string; patch: unknown }>;
+  // audit-02 D-A02-4: the .eq() filters the success-probe applied, so
+  // tests can assert it is tenant-scoped (tenant_id + idempotency_key).
+  commandOpProbes: Array<Record<string, unknown>>;
 }
 
 /**
@@ -153,6 +163,7 @@ function makeSupabase(opts: FakeSupabaseOpts) {
     rpcCalls: [],
     inserts: [],
     updates: [],
+    commandOpProbes: [],
   };
 
   const from = jest.fn((table: string) => {
@@ -201,6 +212,26 @@ function makeSupabase(opts: FakeSupabaseOpts) {
           return { data: null, error: null };
         },
       };
+    }
+    if (table === 'command_operations') {
+      // audit-02 D-A02-4 success-probe:
+      //   .select('outcome, cached_result').eq('tenant_id', t)
+      //     .eq('idempotency_key', k).maybeSingle()
+      const filters: Record<string, unknown> = {};
+      const chain = {
+        eq: (col: string, val: unknown) => {
+          filters[col] = val;
+          return chain;
+        },
+        maybeSingle: async () => {
+          captured.commandOpProbes.push({ ...filters });
+          return {
+            data: opts.commandOpRow ?? null,
+            error: opts.commandOpError ?? null,
+          };
+        },
+      };
+      return { select: () => chain };
     }
     throw new Error('unexpected table: ' + table);
   });
@@ -572,6 +603,163 @@ describe('RoutingEvaluationHandler.handle (B.2.A.Step11 §3.9.3)', () => {
       );
       await expect(handler.handle(makeEvent())).rejects.toThrow(/connection wobble/);
       await expect(handler.handle(makeEvent())).rejects.not.toBeInstanceOf(DeadLetterError);
+    });
+  });
+
+  describe('audit-02 D-A02-4 — command_operations success-probe + retryable/terminal RPC-error split', () => {
+    it('success-probe short-circuits BEFORE re-evaluate + RPC: log+return (outbox ACK), no resolver, no RPC, no audit insert', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+        // A prior delivery already committed under the stable key.
+        commandOpRow: {
+          outcome: 'success',
+          cached_result: { entity_id: TICKET_ID, noop: false },
+        },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
+
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+
+      // Did NOT re-run the resolver, did NOT re-call the RPC, did NOT
+      // re-insert the routing_decisions audit row — the poisoning
+      // recompute never ran.
+      expect(routing.evaluate).not.toHaveBeenCalled();
+      expect(
+        supabase.captured.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
+      ).toHaveLength(0);
+      expect(
+        supabase.captured.inserts.filter((i) => i.table === 'routing_decisions'),
+      ).toHaveLength(0);
+      // No failure was recorded — this is a genuine completed delivery.
+      expect(
+        supabase.captured.updates.filter(
+          (u) =>
+            u.table === 'tickets' &&
+            (u.patch as { routing_status?: string }).routing_status === 'failed',
+        ),
+      ).toHaveLength(0);
+    });
+
+    it('success-probe is tenant-scoped (tenant_id + idempotency_key — the command_operations PK)', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: null },
+        commandOpRow: { outcome: 'success', cached_result: null },
+      });
+      const routing = makeRoutingService();
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
+
+      await handler.handle(makeEvent());
+
+      expect(supabase.captured.commandOpProbes).toHaveLength(1);
+      expect(supabase.captured.commandOpProbes[0]).toEqual({
+        tenant_id: TENANT_ID,
+        idempotency_key: 'routing-evaluation:' + EVENT_ID,
+      });
+    });
+
+    it("in_progress does NOT short-circuit — handler proceeds to re-evaluate + RPC (concurrent worker holds the key)", async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+        commandOpRow: { outcome: 'in_progress', cached_result: null },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
+
+      await handler.handle(makeEvent());
+
+      expect(routing.evaluate).toHaveBeenCalledTimes(1);
+      expect(
+        supabase.captured.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
+      ).toHaveLength(1);
+    });
+
+    it('TRANSIENT RPC error (unknown.server_error): THROWS (outbox redelivers), does NOT markRoutingFailure, does NOT write routing_status=failed', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+        // Unparseable / unregistered message → mapRpcErrorToAppError
+        // returns unknown.server_error → RETRYABLE.
+        rpcError: { code: '08006', message: 'connection to server lost' },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
+
+      const event = makeEvent();
+      await expect(handler.handle(event)).rejects.toThrow(
+        /routing_evaluation\.assignment_rpc_transient/,
+      );
+      // A non-DeadLetterError → the worker treats it as transient (retry).
+      await expect(handler.handle(event)).rejects.not.toBeInstanceOf(
+        DeadLetterError,
+      );
+      // Crucially: routing_status was NOT flipped to 'failed' for a
+      // recoverable blip (the pre-fix bug terminally consumed the event).
+      expect(
+        supabase.captured.updates.filter(
+          (u) =>
+            u.table === 'tickets' &&
+            (u.patch as { routing_status?: string }).routing_status === 'failed',
+        ),
+      ).toHaveLength(0);
+    });
+
+    it('TERMINAL RPC error (registered business/validation code): markRoutingFailure + return (event consumed) — unchanged contract', async () => {
+      const supabase = makeSupabase({
+        ticketRow: baseTicket(),
+        requestTypeRow: { domain: 'facilities' },
+        // Registered <ns>.<spec> code → TERMINAL.
+        rpcError: {
+          code: 'P0001',
+          message: 'command_operations.payload_mismatch',
+        },
+      });
+      const routing = makeRoutingService({
+        target: { kind: 'team', team_id: TEAM_ID },
+        chosen_by: 'rule',
+      });
+      const handler = new RoutingEvaluationHandler(
+        supabase.service,
+        routing,
+        makeDb(supabase.captured),
+      );
+
+      // Returns normally (event consumed) — NOT thrown.
+      await expect(handler.handle(makeEvent())).resolves.toBeUndefined();
+      const failureUpdate = supabase.captured.updates.find(
+        (u) =>
+          u.table === 'tickets' &&
+          (u.patch as { routing_status?: string }).routing_status === 'failed',
+      );
+      expect(failureUpdate).toBeDefined();
     });
   });
 
