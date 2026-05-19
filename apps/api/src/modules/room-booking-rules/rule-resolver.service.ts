@@ -218,7 +218,15 @@ export class RuleResolverService {
       .select('*')
       .eq('tenant_id', tenantId)
       .eq('active', true)
-      .or(orConds);
+      .or(orConds)
+      // audit-03 D-6 (V3-order, time-INDEPENDENT) — deterministic
+      // tie-break. The (specificity, priority) comparator below is
+      // UNCHANGED; this only fixes the order of rules that tie on BOTH
+      // (Array.prototype.sort is stable, so the tie previously followed
+      // arbitrary DB row order → an unsorted matched/applied_rule_ids /
+      // policy_snapshot leaked into the idempotency-hashed payload even
+      // with ZERO wall-clock movement). Lowest-id wins among equals.
+      .order('id', { ascending: true });
     if (error) throw error;
     return (data ?? []) as RuleRow[];
   }
@@ -229,7 +237,10 @@ export class RuleResolverService {
       .from('room_booking_rules')
       .select('*')
       .eq('tenant_id', tenantId)
-      .eq('active', true);
+      .eq('active', true)
+      // audit-03 D-6 (V3-order) — deterministic tie-break (see
+      // fetchCandidateRules). Comparator unchanged; lowest-id wins on ties.
+      .order('id', { ascending: true });
     if (error) throw error;
     return (data ?? []) as RuleRow[];
   }
@@ -349,8 +360,17 @@ export class RuleResolverService {
     const endMs = Date.parse(scenario.end_at);
     const duration = Number.isFinite(startMs) && Number.isFinite(endMs)
       ? Math.round((endMs - startMs) / 60_000) : 0;
+    // audit-03 D-6 (V2 fix) — anchor lead-time on the request-canonical
+    // basis when the caller supplied one (the create-with-attach-plan
+    // path), NOT a fresh wall-clock read. A same-intent create retry then
+    // recomputes the SAME lead_time_minutes → SAME matched room-rule set →
+    // byte-identical policy_snapshot / applied_rule_ids / status in the
+    // hashed p_booking_input. Picker / ad-hoc sim leave it unset → Date.now().
+    const basisMs = typeof scenario.resolution_basis_ms === 'number'
+      ? scenario.resolution_basis_ms
+      : Date.now();
     const lead = Number.isFinite(startMs)
-      ? Math.round((startMs - Date.now()) / 60_000) : 0;
+      ? Math.round((startMs - basisMs) / 60_000) : 0;
     return {
       requester: {
         id: requester.id,
@@ -381,6 +401,15 @@ export class RuleResolverService {
         org_descendants: {},
         in_business_hours: {},
       },
+      // audit-03 D-6 (V3-time) — also expose the basis to the shared
+      // predicate engine so a `lead_minutes_*` ROOM-rule predicate is
+      // wall-clock-independent across a same-intent create retry (the
+      // matched-rule set drives the hashed policy_snapshot). undefined
+      // on the picker / sim paths → engine falls back to Date.now().
+      resolution_basis_ms:
+        typeof scenario.resolution_basis_ms === 'number'
+          ? scenario.resolution_basis_ms
+          : undefined,
     };
   }
 

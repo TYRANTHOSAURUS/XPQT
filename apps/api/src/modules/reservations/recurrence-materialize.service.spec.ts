@@ -1,4 +1,6 @@
+import { Logger } from '@nestjs/common';
 import { RecurrenceService } from './recurrence.service';
+import { AppErrors } from '../../common/errors';
 import type { Booking, BookingSlot } from './dto/types';
 
 describe('RecurrenceService.materialize', () => {
@@ -545,12 +547,30 @@ describe('RecurrenceService.materialize — Slice 7 audit emission + materialize
     });
     const conflict = { isExclusionViolation: () => false };
 
+    // audit-03 slice1 (D-9): the dedicated `booking.partial_failure`
+    // ops-triage branch was DEAD pre-fix (catch read e.response?.code,
+    // always undefined → catch-all). Spy the Logger and assert the
+    // dedicated triage line ("clone failed AND compensation blocked —
+    // manual recovery required") now fires.
+    const errSpy = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+
     const svc = new RecurrenceService(supabase as never, conflict as never);
     svc.setBookingFlow(makeBookingFlow() as never);
     svc.setOrdersFanOut(makeFailingClone() as never);
 
     const result = await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
     expect(result.skipped_conflicts).toBeGreaterThan(0);
+
+    // Dedicated booking.partial_failure triage branch is now LIVE.
+    const triageCalls = errSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) =>
+        m.includes('clone failed AND compensation blocked — manual recovery required'),
+      );
+    expect(triageCalls.length).toBeGreaterThan(0);
+    errSpy.mockRestore();
 
     // Audit row reproduced verbatim from BookingCompensationService:
     // event_type 'booking.compensation_partial_failure', entity_type
@@ -586,12 +606,29 @@ describe('RecurrenceService.materialize — Slice 7 audit emission + materialize
     });
     const conflict = { isExclusionViolation: () => false };
 
+    // audit-03 slice1 (D-9): the dedicated `booking.compensation_failed`
+    // ops-triage branch was DEAD pre-fix. Spy the Logger and assert the
+    // dedicated triage line ("compensation RPC failed — booking may
+    // persist in unknown state") now fires.
+    const errSpy = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+
     const svc = new RecurrenceService(supabase as never, conflict as never);
     svc.setBookingFlow(makeBookingFlow() as never);
     svc.setOrdersFanOut(makeFailingClone() as never);
 
     const result = await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
     expect(result.skipped_conflicts).toBeGreaterThan(0);
+
+    // Dedicated booking.compensation_failed triage branch is now LIVE.
+    const triageCalls = errSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) =>
+        m.includes('compensation RPC failed — booking may persist in unknown state'),
+      );
+    expect(triageCalls.length).toBeGreaterThan(0);
+    errSpy.mockRestore();
 
     // Audit row reproduced verbatim: 'booking.compensation_failed',
     // details { rpc_error: 'connection lost' }
@@ -675,5 +712,61 @@ describe('RecurrenceService.materialize — Slice 7 audit emission + materialize
       (u) => u && typeof u === 'object' && 'materialized_through' in (u as object),
     );
     expect(advanced.length).toBeGreaterThan(0);
+  });
+
+  it('rule_deny at create → dedicated rule-deny triage log fires AND materialized_through is NOT advanced (D-9 observability-only; pre-fix no-advance preserved — see D-10)', async () => {
+    // audit-03 slice1 (D-9): pre-fix the catch read `e.response?.code`
+    // (always undefined on an AppError) so a `rule_deny` throw fell to
+    // the catch-all, which set sawUnexpectedFailure=true → NO advance.
+    // D-9 is observability-ONLY: the now-live rule_deny branch fires its
+    // dedicated triage log but STILL sets sawUnexpectedFailure=true so
+    // the net series-state effect is byte-identical to pre-fix. Whether
+    // rule_deny should skip-and-advance is the separate, deferred D-10.
+    const { supabase, seriesUpdates } = buildDirectDeleteSupabase({
+      series,
+      masterOrders: [],
+      guardResult: { data: { kind: 'rolled_back' }, error: null },
+    });
+    const conflict = { isExclusionViolation: () => false };
+    const bookingFlow = {
+      // Every create throws the real AppError booking-flow.service.ts:182
+      // raises on a deny-rule hit (AppErrors.forbidden('rule_deny')).
+      create: jest.fn(async () => {
+        throw AppErrors.forbidden('rule_deny', 'Booking denied by booking rules.');
+      }),
+    };
+
+    const warnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
+    const svc = new RecurrenceService(supabase as never, conflict as never);
+    svc.setBookingFlow(bookingFlow as never);
+
+    const result = await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
+    expect(result.skipped_conflicts).toBeGreaterThan(0);
+
+    // Dedicated rule-deny triage branch is now LIVE (D-9 delta): the
+    // dedicated line fires instead of the generic catch-all log.
+    const triageCalls = warnSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes('create-time rule outcome rule_deny'));
+    expect(triageCalls.length).toBeGreaterThan(0);
+    // And the generic catch-all log must NOT be the one that fired for
+    // this occurrence (proves the dedicated branch took control).
+    const catchAllCalls = warnSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes('unexpected (will retry)'));
+    expect(catchAllCalls).toHaveLength(0);
+    warnSpy.mockRestore();
+
+    // PRESERVED INVARIANT (byte-identical to pre-fix): rule_deny still
+    // sets sawUnexpectedFailure=true → the gate at recurrence.service.ts
+    // :725 (`!sawUnexpectedFailure`) does NOT advance. Changing this is
+    // deferred as D-10 with its own dedicated smoke.
+    const advanced = seriesUpdates.filter(
+      (u) => u && typeof u === 'object' && 'materialized_through' in (u as object),
+    );
+    expect(advanced).toHaveLength(0);
   });
 });

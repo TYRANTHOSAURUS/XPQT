@@ -81,6 +81,16 @@ export interface BuildServiceEvaluationContextArgs {
   line: ServiceEvaluationContext['line'];
   order: ServiceEvaluationContext['order'];
   permissions?: Record<string, boolean>;
+  /**
+   * audit-03 D-6 — the request-canonical resolution basis in epoch-ms.
+   * Threaded straight onto `BaseEvaluationContext.resolution_basis_ms`
+   * so the shared predicate engine's `lead_minutes_*` operators anchor a
+   * lead-band predicate on a stable instant (NOT a fresh `Date.now()`),
+   * keeping the matched-service-rule set — and therefore the
+   * idempotency-hashed attach plan — wall-clock-independent across a
+   * same-intent retry.
+   */
+  resolution_basis_ms?: number;
 }
 
 /**
@@ -119,6 +129,9 @@ export function buildServiceEvaluationContext(
       org_descendants: {},
       in_business_hours: {},
     },
+    // audit-03 D-6 — pass the request-canonical basis to the shared
+    // predicate engine (consumed by `lead_minutes_*`).
+    resolution_basis_ms: args.resolution_basis_ms,
   };
 }
 

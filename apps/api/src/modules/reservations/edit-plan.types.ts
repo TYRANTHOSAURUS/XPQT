@@ -167,4 +167,31 @@ export interface EditPlan {
    * since (00364:432-454). */
   _resolution_at: string;
   approval: EditPlanApproval;
+  /**
+   * audit-03 Slice 3 (P0-2 multi-slot residual, Path B) — SERVER-INTERNAL
+   * marker, NEVER sent to the RPC. `true` when `buildLinkedRowPatches`
+   * SKIPPED linked-row (orders / asset_reservations / setup work_orders)
+   * time propagation because the booking has >1 `booking_slots` and the
+   * children key ONLY off `booking_id` with no slot/space attribution
+   * column (00278:108-144) — a booking-level child cannot be safely
+   * attributed to a single moved slot.
+   *
+   * Pre-fix this flag was DISCARDED at the `buildSingleSlotPlan` call
+   * site (only the 3 patch arrays were destructured from
+   * `buildLinkedRowPatches`), making the skip SILENT below the
+   * `this.log.warn`. It is now propagated up so the service edit path
+   * (`reservation.service.ts` editOne/editSlot) can emit a durable,
+   * tenant-scoped `audit_events` row recording the residual gap.
+   *
+   * `_`-prefixed by the same convention as `_resolution_at` — a
+   * server-stamped non-domain marker. UNLIKE `_resolution_at` (which IS
+   * sent to the RPC and stripped from the idempotency hash BY NAME in
+   * `booking_edit_strip_hash_server_fields`, 00407/00430), this field is
+   * NEVER placed on the RPC payload at all: the service strips it
+   * immediately before every `edit_booking` / `edit_booking_scope` call,
+   * so it can never reach the wire or the `command_operations`
+   * idempotency md5 (the strip helper only removes the three enumerated
+   * names — it would NOT remove this one). No migration, no RPC change.
+   */
+  _skipped_multi_slot_linked_rows?: boolean;
 }

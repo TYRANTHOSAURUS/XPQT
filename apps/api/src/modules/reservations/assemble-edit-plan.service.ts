@@ -60,6 +60,7 @@ import { ConflictGuardService } from './conflict-guard.service';
 import { BookingFlowService } from './booking-flow.service';
 import { RuleResolverService } from '../room-booking-rules/rule-resolver.service';
 import {
+  canonicalApproverSort,
   chainConfigsEqual,
   computeCostFromHours,
   loadCurrentApprovalChain,
@@ -911,6 +912,20 @@ export class AssembleEditPlanService {
       approval,
     };
 
+    // audit-03 Slice 3 (P0-2 multi-slot residual, Path B): propagate the
+    // multi-slot skip up to the service edit path. Pre-fix this flag was
+    // DISCARDED here (only the 3 patch arrays were destructured from
+    // `linked`), so the documented multi-slot linked-row skip was SILENT
+    // below `buildLinkedRowPatches`'s `this.log.warn` — no durable,
+    // queryable record that a multi-room-with-services booking's caterer
+    // daglijst / setup work_orders were left at the OLD time. Set ONLY
+    // when true so single-slot plans stay byte-identical (and the field
+    // is `_`-prefixed + stripped before the RPC, so it never reaches the
+    // wire or the idempotency hash regardless — see edit-plan.types.ts).
+    if (linked.skippedMultiSlot) {
+      plan._skipped_multi_slot_linked_rows = true;
+    }
+
     return plan;
   }
 
@@ -1334,8 +1349,24 @@ export class AssembleEditPlanService {
       // future code path skips the fail-fast in `assembleSlotEditPlan`.
       return null;
     }
+    // audit-03 Slice 2 (D-5, STEP 3): canonical-sort the approver array
+    // before serialisation. The rule-resolver approver fan-out has NO
+    // guaranteed order; without this, the SAME logical edit retried
+    // under the same idempotency key serialises `required_approvers` in
+    // a different order → a different post-strip md5 → a spurious
+    // `command_operations.payload_mismatch` 409 (a SEPARATE latent
+    // ≥2-approver order-instability, sibling to the pre-state-field D-5
+    // bug). The RPC's chain insert treats `required_approvers` as a SET
+    // not a sequence (verified in plan review), so canonicalising the
+    // order CANNOT change the approval decision / threshold /
+    // parallel-group — it only makes the hashed payload byte-stable.
+    // `canonicalApproverSort` is the SAME comparator `chainConfigsEqual`
+    // already uses, so plan equality and the hash agree on ordering.
     return {
-      required_approvers: approvers.map((a) => ({ type: a.type, id: a.id })),
+      required_approvers: canonicalApproverSort(approvers).map((a) => ({
+        type: a.type,
+        id: a.id,
+      })),
       threshold: config.threshold ?? 'all',
     };
   }

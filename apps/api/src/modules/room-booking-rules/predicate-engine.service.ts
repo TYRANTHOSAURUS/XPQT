@@ -46,6 +46,22 @@ export interface BaseEvaluationContext {
     org_descendants: Record<string, Set<string>>;
     in_business_hours: Record<string, boolean>; // key = `${at}|${calendar_id}`
   };
+  /**
+   * audit-03 D-6 (V3-time fix) — the request-canonical resolution-basis
+   * instant in epoch-ms. The `lead_minutes_lt` / `lead_minutes_gt`
+   * operators read THIS instead of `Date.now()` so a lead-band predicate
+   * (`min_lead_time` / `max_lead_time` rule templates) yields the SAME
+   * boolean on a same-intent retry that straddles the band boundary —
+   * i.e. the matched-rule set (and therefore the idempotency-hashed
+   * resolver outcome) is wall-clock-independent.
+   *
+   * Set by BOTH context builders (room: `assembleContext`; service:
+   * `buildServiceEvaluationContext`). Optional only so the static
+   * `validate()` walk and any non-resolution caller keep type-checking;
+   * the operators fall back to `Date.now()` when it is absent (the
+   * picker / ad-hoc-simulation paths, which never feed a hashed payload).
+   */
+  resolution_basis_ms?: number;
   [key: string]: unknown;
 }
 
@@ -229,12 +245,22 @@ export class PredicateEngineService {
       }
       case 'lead_minutes_lt': {
         const [start, mins] = args as [string, number];
-        const d = (Date.parse(start) - Date.now()) / 60_000;
+        // audit-03 D-6 (V3-time): anchor on the request-canonical basis,
+        // NOT a fresh wall-clock read, so the lead-band boolean is stable
+        // across a same-intent retry. Falls back to Date.now() only on the
+        // non-hashed paths (picker / ad-hoc sim) that never set the basis.
+        const basis = typeof ctx.resolution_basis_ms === 'number'
+          ? ctx.resolution_basis_ms
+          : Date.now();
+        const d = (Date.parse(start) - basis) / 60_000;
         return Number.isFinite(d) && d < Number(mins);
       }
       case 'lead_minutes_gt': {
         const [start, mins] = args as [string, number];
-        const d = (Date.parse(start) - Date.now()) / 60_000;
+        const basis = typeof ctx.resolution_basis_ms === 'number'
+          ? ctx.resolution_basis_ms
+          : Date.now();
+        const d = (Date.parse(start) - basis) / 60_000;
         return Number.isFinite(d) && d > Number(mins);
       }
       case 'has_permission': {

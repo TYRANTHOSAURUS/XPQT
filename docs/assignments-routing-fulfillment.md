@@ -1191,6 +1191,56 @@ Two fields are deliberately NULL even when the caller has values for them:
 
 Visibility for these tickets falls to the assignee path: `assigned_team_id` matches → team members see it; `tickets.read_all` permission → admins see it. Vendors are not assigned to booking-origin work orders today (they're internal-setup work).
 
+### Rule-resolution determinism (audit-03 D-6, 2026-05-18)
+
+The booking rule resolvers (`service-rule-resolver.service.ts`,
+`room-booking-rules/rule-resolver.service.ts`) are routing code: their
+matched-rule set + ordering feed the idempotency-hashed combined-RPC
+payloads (`create_booking_with_attach_plan`,
+`attach_services_to_existing_booking`). Two determinism contracts were
+made explicit here:
+
+1. **Tie-break ordering — STABILIZATION, not a semantic change.** Rules
+   resolve most-specific-first, then highest-priority-first within a
+   specificity bucket. Among rules tied on BOTH specificity AND priority,
+   the order was previously **DB-row-arbitrary**:
+   `Array.prototype.sort` is stable, and the rule-fetch queries
+   (`service_rules` `fetchAllRules`; `room_booking_rules` `fetchAllRules`
+   AND `fetchCandidateRules`) had no `ORDER BY`, so the tie followed
+   whatever order Postgres returned the rows in. They now carry
+   `.order('id', { ascending: true })`, so a tie deterministically
+   resolves **lowest-rule-id-first**. The specificity ordering, the
+   priority ordering, and the effect precedence
+   (deny > require_approval > warn > allow_override > allow) are
+   **UNCHANGED** — only the previously-undefined tie-break is now defined.
+   This affects only tenants with ≥2 equal-(specificity, priority) rules
+   that all fire on the same line/booking; for them the chosen rule was
+   never stable before and is now stable (lowest id).
+
+2. **Lead-time is anchored on a request-canonical basis, not
+   `Date.now()`.** Every lead-time-derived value that reaches the hashed
+   payload — `service` lead bands, `room` `lead_time_minutes`, the shared
+   predicate engine's `lead_minutes_lt` / `lead_minutes_gt` operators —
+   reads ONE request-canonical instant: the existing booking's
+   server-immutable `bookings.created_at` on the ATTACH path, or
+   `ActorContext.resolution_basis_at` (defaulted once at the controller
+   chokepoint) on the CREATE path. A same-intent retry that straddles a
+   tenant lead-time-rule boundary therefore recomputes the SAME
+   matched-rule set instead of a wall-clock-shifted one. Decision +
+   completeness proof: `docs/follow-ups/audit03-deferred-d6-decision.md`.
+
+Trigger files for this contract: `service-rule-resolver.service.ts`,
+`room-booking-rules/rule-resolver.service.ts`,
+`room-booking-rules/predicate-engine.service.ts`,
+`service-catalog/service-evaluation-context.ts`,
+`reservations/booking-flow.service.ts`,
+`reservations/multi-room-booking.service.ts`,
+`orders/approval-routing.service.ts` (`assemblePlan` reasons sort),
+`reservations/dto/types.ts` (`ActorContext.resolution_basis_at`),
+`reservations/reservation.controller.ts` (the `X-Request-Time` /
+default-basis chokepoint). Any migration adding/altering `service_rules`
+or `room_booking_rules` must preserve the `id`-ordered fetch.
+
 ### Trigger additions for §15
 
 Any change to these requires updating this section:
