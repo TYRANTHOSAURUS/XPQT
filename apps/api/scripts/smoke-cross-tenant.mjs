@@ -94,6 +94,16 @@ const TEAM_ID = '94000000-0000-0000-0000-000000000001';
 const PROOF_ROLE_ID = '91000000-0000-0000-0000-0000000011b2';
 const PROOF_ASSIGNMENT_ID = '96000000-0000-0000-0000-0000000011b2';
 
+// Notification same-tenant IDOR proof (docs/follow-ups/audits/04-rls-security.md
+// — codex 2026-05-18 remaining item #1). A notification owned by some
+// TENANT_A person that is NOT the admin caller. The legacy
+// NotificationController consumer routes (POST /notifications/:id/read,
+// /notifications/person/:personId*, .../read-all) updated/read by
+// id/personId with NO recipient binding (supabase.admin bypasses RLS) —
+// any same-tenant authed user could flip anyone's read-state. Fixed UUID
+// so the finally-cleanup is deterministic.
+const IDOR_NOTIF_ID = '9a000000-0000-0000-0000-00000000d0e1';
+
 // Mirror smoke-tickets.mjs:86-87 — TENANT_B fixture seed shape.
 const TENANT_B_ID = '00000000-0000-0000-0000-0000000000b1';
 
@@ -199,6 +209,167 @@ function cleanupProofRoleFixture() {
     });
   } catch (e) {
     console.log(`  ! slice11.2b-cleanup failed (non-fatal): ${e.message}`);
+  }
+}
+
+// Seed one in_app notification owned by a TENANT_A person that is NOT the
+// admin caller (resolve NONADMIN's person; fall back to any TENANT_A
+// person — never the admin's). read_at NULL so a successful IDOR mark is
+// observable. set_replication_role replica: notifications has no audit
+// trigger today but mirror the proof-fixture pattern for consistency.
+function seedIdorNotificationFixture() {
+  const { dbPass, dbUrl } = proofDbArgs();
+  const sql = `
+    set session_replication_role = 'replica';
+    insert into public.notifications
+      (id, tenant_id, notification_type, target_channel,
+       recipient_person_id, subject, body, status, read_at, created_at)
+    values (
+      '${IDOR_NOTIF_ID}', '${TENANT_A_ID}', 'smoke_idor_probe', 'in_app',
+      coalesce(
+        (select person_id from public.users
+           where tenant_id = '${TENANT_A_ID}'
+             and id = '${NONADMIN_USER_ID}' and person_id is not null),
+        (select id from public.persons
+           where tenant_id = '${TENANT_A_ID}' limit 1)),
+      'IDOR probe — victim notification',
+      'Must NOT be markable-read by a non-recipient same-tenant user.',
+      'sent', null, now())
+    on conflict (id) do update
+      set status = 'sent', read_at = null;
+    set session_replication_role = 'origin';
+  `;
+  execFileSync('psql', [dbUrl, '-v', 'ON_ERROR_STOP=1', '-c', sql], {
+    env: { ...process.env, PGPASSWORD: dbPass },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+// Returns true iff the seeded notification's read_at is still NULL — i.e.
+// the IDOR did NOT succeed. -tA = tuples-only, unaligned (empty string
+// when read_at IS NULL).
+function idorNotificationStillUnread() {
+  const { dbPass, dbUrl } = proofDbArgs();
+  const out = execFileSync(
+    'psql',
+    [
+      dbUrl,
+      '-tA',
+      '-v',
+      'ON_ERROR_STOP=1',
+      '-c',
+      `select read_at from public.notifications where id = '${IDOR_NOTIF_ID}';`,
+    ],
+    { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
+  )
+    .toString()
+    .trim();
+  return out === '';
+}
+
+// Browser-direct PostgREST hardening proof (04-rls-security.md, codex
+// 2026-05-18 #2 / migration 00415). Two layers:
+//  (1) grant assertion — anon+authenticated must hold NO write DML on
+//      ANY public base table (the guard's scope matches 00415's
+//      `REVOKE … ON ALL TABLES`, not just an escalation subset — the
+//      full-review I2 scope-mismatch fix), but MUST retain SELECT on the
+//      Realtime-published set (Supabase Realtime per-subscriber RLS
+//      needs it; revoking it breaks the inbox bell / scheduler live
+//      updates). Deterministic red→green for the migration (verified:
+//      pre-push 12 grants → RED; post-push 0 → GREEN).
+//  (2) live end-to-end — a real authenticated browser session token
+//      cannot INSERT into user_role_assignments via PostgREST. Post-
+//      00415 this is GRANT-denied (claim-independent: holds even if a
+//      future custom-access-token hook starts minting tenant_id).
+const REALTIME_TABLES = [
+  'bookings',
+  'inbox_notifications',
+  'booking_slots',
+  'orders',
+  'order_line_items',
+  'recurrence_series',
+  'room_booking_rules',
+  'vendor_order_status_events',
+];
+
+function browserGrantPosture() {
+  const { dbPass, dbUrl } = proofDbArgs();
+  const rtList = REALTIME_TABLES.map((t) => `('${t}')`).join(',');
+  // writes_left = ANY public base table where anon/authenticated still
+  // holds INSERT/UPDATE/DELETE (scope == the 00415 REVOKE). select_missing
+  // = a Realtime-published table that LOST SELECT (over-broad revoke).
+  const sql = `select
+    (select count(*) from pg_tables tb
+       cross join (values ('anon'),('authenticated')) r(g)
+       where tb.schemaname = 'public'
+         and (has_table_privilege(r.g, format('public.%I', tb.tablename), 'INSERT')
+           or has_table_privilege(r.g, format('public.%I', tb.tablename), 'UPDATE')
+           or has_table_privilege(r.g, format('public.%I', tb.tablename), 'DELETE'))) as writes_left,
+    (select count(*) from (values ${rtList}) t(n)
+       cross join (values ('anon'),('authenticated')) r(g)
+       where not has_table_privilege(r.g, 'public.'||t.n, 'SELECT')) as select_missing;`;
+  const out = execFileSync(
+    'psql',
+    [dbUrl, '-tA', '-F', '|', '-v', 'ON_ERROR_STOP=1', '-c', sql],
+    { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
+  )
+    .toString()
+    .trim();
+  const [writesLeft, selectMissing] = out.split('|').map((n) => Number(n));
+  return { writesLeft, selectMissing };
+}
+
+// 00417 guard: NO postgres-owned (i.e. app/migration-authored) public
+// routine may be browser-role-EXECUTE-able except the audit-documented
+// bearer-token trio. Scoped to `proowner = postgres` deliberately: the
+// ~219 still-executable routines are pg_trgm/btree_gist extension math
+// owned by `supabase_admin` — they carry NO tenant data and CANNOT be
+// revoked from the non-owner migration role, so asserting "zero of ALL
+// routines" would be an unachievable paper-tiger gate. The
+// security-meaningful, achievable invariant is "zero app routines"
+// (every SECURITY DEFINER tenant-data fn — incl. the proven leak
+// tickets_distinct_tags — is postgres-owned). Must be 0.
+const BEARER_TRIO = [
+  'validate_invitation_token',
+  'peek_invitation_token',
+  'validate_kiosk_token',
+];
+function browserExecuteGrantPosture() {
+  const { dbPass, dbUrl } = proofDbArgs();
+  const trio = BEARER_TRIO.map((n) => `'${n}'`).join(',');
+  const sql = `select count(*)
+    from pg_proc p
+    where p.pronamespace = 'public'::regnamespace
+      and pg_get_userbyid(p.proowner) = 'postgres'
+      and has_function_privilege('authenticated', p.oid, 'EXECUTE')
+      and p.proname not in (${trio});`;
+  return Number(
+    execFileSync(
+      'psql',
+      [dbUrl, '-tA', '-v', 'ON_ERROR_STOP=1', '-c', sql],
+      { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+      .toString()
+      .trim(),
+  );
+}
+
+function cleanupIdorNotificationFixture() {
+  try {
+    const { dbPass, dbUrl } = proofDbArgs();
+    execFileSync(
+      'psql',
+      [
+        dbUrl,
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-c',
+        `delete from public.notifications where id = '${IDOR_NOTIF_ID}';`,
+      ],
+      { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+  } catch (e) {
+    console.log(`  ! idor-notif-cleanup failed (non-fatal): ${e.message}`);
   }
 }
 
@@ -660,6 +831,214 @@ async function probe(name, options) {
     console.log(`  ✗ Slice 11.2b proof threw: ${e.message}`);
   } finally {
     cleanupProofRoleFixture();
+  }
+
+  // ── Notification same-tenant IDOR (codex 2026-05-18 remaining #1) ──
+  // The admin is a valid TENANT_A authed user but NOT the seeded
+  // notification's recipient. Pre-fix the legacy NotificationController
+  // consumer routes flip/read read-state by id/personId with no
+  // recipient binding — a same-tenant IDOR. The fix removes the dead
+  // legacy surface entirely (the real inbox is the server-derived
+  // /me/inbox/*); routes must be GONE (404) and the victim row's
+  // read_at must remain NULL even if a route still answered.
+  console.log(
+    '\n─── Notification same-tenant IDOR: a non-recipient cannot touch read-state',
+  );
+  try {
+    seedIdorNotificationFixture();
+    const dummyPerson = '00000000-0000-0000-0000-0000000000a1';
+    await probe('POST /notifications/:id/read  (non-recipient → route removed)', {
+      url: `${API_BASE}/api/notifications/${IDOR_NOTIF_ID}/read`,
+      method: 'POST',
+      headers: tenantA,
+      expect: 'notfound',
+    });
+    await probe('POST /notifications/person/:personId/read-all  (route removed)', {
+      url: `${API_BASE}/api/notifications/person/${dummyPerson}/read-all`,
+      method: 'POST',
+      headers: tenantA,
+      expect: 'notfound',
+    });
+    await probe('GET /notifications/person/:personId  (route removed)', {
+      url: `${API_BASE}/api/notifications/person/${dummyPerson}`,
+      headers: tenantA,
+      expect: 'notfound',
+    });
+    await probe('GET /notifications/person/:personId/unread-count  (route removed)', {
+      url: `${API_BASE}/api/notifications/person/${dummyPerson}/unread-count`,
+      headers: tenantA,
+      expect: 'notfound',
+    });
+    // Decisive behavioral proof — independent of HTTP status semantics:
+    // the victim notification must still be unread after every attack.
+    if (idorNotificationStillUnread()) {
+      results.pass += 1;
+      console.log(
+        '  ✓ victim notification read_at still NULL (IDOR did not mark it)',
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Notification IDOR — victim row was marked read');
+      console.log(
+        '  ✗ victim notification read_at is SET — a non-recipient marked it read (IDOR)',
+      );
+    }
+  } catch (e) {
+    results.fail += 1;
+    results.failed.push('Notification IDOR proof (seed/probe threw)');
+    console.log(`  ✗ Notification IDOR proof threw: ${e.message}`);
+  } finally {
+    cleanupIdorNotificationFixture();
+  }
+
+  // ── Browser-direct PostgREST hardening (codex 2026-05-18 #2 / 00415) ──
+  console.log(
+    '\n─── Browser-direct PostgREST: write grants revoked from anon/authenticated',
+  );
+  try {
+    const { writesLeft, selectMissing } = browserGrantPosture();
+    if (writesLeft === 0) {
+      results.pass += 1;
+      console.log(
+        '  ✓ anon/authenticated hold NO INSERT/UPDATE/DELETE on ANY public table (00415 scope)',
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Browser write grants NOT fully revoked (00415 not applied / regressed)');
+      console.log(
+        `  ✗ ${writesLeft} anon/authenticated write grants still present on public tables — apply/re-apply migration 00415`,
+      );
+    }
+    if (selectMissing === 0) {
+      results.pass += 1;
+      console.log(
+        '  ✓ SELECT retained on Realtime-published tables (inbox/scheduler live updates intact)',
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('SELECT wrongly revoked on a Realtime table');
+      console.log(
+        `  ✗ ${selectMissing} Realtime-table SELECT grants missing — Realtime would break; over-broad revoke`,
+      );
+    }
+
+    // Live end-to-end: a real authenticated browser session token (the
+    // exact thing apps/web holds post-login) cannot write an escalation
+    // row via PostgREST. Goes through env.SUPABASE_URL — the same proxy
+    // the browser uses. {401,403} = denied (grant- or RLS-layer).
+    const browserTok = await mintTokenFor(ADMIN_AUTH_UID);
+    const wr = await fetch(`${env.SUPABASE_URL}/rest/v1/user_role_assignments`, {
+      method: 'POST',
+      headers: {
+        apikey: env.SUPABASE_PUBLISHABLE_KEY,
+        Authorization: `Bearer ${browserTok}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+      },
+      body: JSON.stringify({
+        id: '9b000000-0000-0000-0000-00000000dead',
+        tenant_id: TENANT_A_ID,
+        user_id: ADMIN_AUTH_UID,
+        role_id: ADMIN_ROLE_ID,
+        active: true,
+      }),
+    });
+    if (wr.status === 401 || wr.status === 403) {
+      results.pass += 1;
+      console.log(
+        `  ✓ browser-direct POST /rest/v1/user_role_assignments → HTTP ${wr.status} (self-grant denied)`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Browser-direct self-grant INSERT was NOT denied');
+      console.log(
+        `  ✗ browser-direct self-grant → HTTP ${wr.status} — LIVE escalation; cleaning up`,
+      );
+      try {
+        const { dbPass, dbUrl } = proofDbArgs();
+        execFileSync(
+          'psql',
+          [dbUrl, '-v', 'ON_ERROR_STOP=1', '-c',
+           `delete from public.user_role_assignments where id = '9b000000-0000-0000-0000-00000000dead';`],
+          { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
+        );
+      } catch (e) {
+        console.log(`  ! browser-direct cleanup failed (non-fatal): ${e.message}`);
+      }
+    }
+
+    // ── 00417: browser-role EXECUTE revoked on public functions ──
+    // (codex done-check 2026-05-18 found a LIVE cross-tenant leak via
+    // SECURITY DEFINER tickets_distinct_tags(tenant) granted to
+    // authenticated — it trusts the caller-supplied tenant arg.)
+    const execLeft = browserExecuteGrantPosture();
+    if (execLeft === 0) {
+      results.pass += 1;
+      console.log(
+        '  ✓ anon/authenticated EXECUTE on ZERO postgres-owned app routines except the bearer-token trio (00417)',
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Browser EXECUTE grants NOT revoked (00417 not applied / regressed)');
+      console.log(
+        `  ✗ ${execLeft} postgres-owned app routines still anon/authenticated-EXECUTABLE beyond the trio — apply migration 00417`,
+      );
+    }
+    // Decisive live red→green: the proven leak. Authenticated TENANT_A
+    // browser token calls the SECURITY DEFINER fn with a FOREIGN tenant.
+    // Pre-00417: HTTP 200 + that tenant's tags. Post-00417: grant-denied
+    // (PostgREST 404 PGRST202 / 401 / 403). Status ∉ 2xx ⇒ denied.
+    const lr = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/tickets_distinct_tags`, {
+      method: 'POST',
+      headers: {
+        apikey: env.SUPABASE_PUBLISHABLE_KEY,
+        Authorization: `Bearer ${browserTok}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ tenant: TENANT_B_ID }),
+    });
+    if (lr.status < 200 || lr.status >= 300) {
+      results.pass += 1;
+      console.log(
+        `  ✓ browser-direct rpc/tickets_distinct_tags(foreign tenant) → HTTP ${lr.status} (cross-tenant RPC leak denied)`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('LIVE cross-tenant RPC leak: tickets_distinct_tags executable browser-direct');
+      console.log(
+        `  ✗ browser-direct rpc/tickets_distinct_tags(foreign tenant) → HTTP ${lr.status} — LIVE cross-tenant leak; apply 00417`,
+      );
+    }
+    // Trio preserved: a bearer-token fn must still be reachable (not
+    // grant-denied) — else 00417 over-revoked and kiosk/invitation
+    // flows break. Bogus token ⇒ the fn runs and returns its own
+    // not-found, NOT PostgREST's PGRST202 "function not found".
+    const tp = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/validate_kiosk_token`, {
+      method: 'POST',
+      headers: {
+        apikey: env.SUPABASE_PUBLISHABLE_KEY,
+        Authorization: `Bearer ${browserTok}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ p_token: 'smoke-bogus-token' }),
+    });
+    const tpBody = (await tp.text()).slice(0, 120);
+    if (tp.status !== 403 && !tpBody.includes('PGRST202')) {
+      results.pass += 1;
+      console.log(
+        `  ✓ bearer-token trio preserved (validate_kiosk_token still reachable → HTTP ${tp.status})`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('00417 over-revoked: bearer-token trio no longer reachable');
+      console.log(
+        `  ✗ validate_kiosk_token → HTTP ${tp.status} ${tpBody} — 00417 broke the kiosk/invitation flow`,
+      );
+    }
+  } catch (e) {
+    results.fail += 1;
+    results.failed.push('Browser-direct PostgREST proof threw');
+    console.log(`  ✗ Browser-direct PostgREST proof threw: ${e.message}`);
   }
 
   console.log('');

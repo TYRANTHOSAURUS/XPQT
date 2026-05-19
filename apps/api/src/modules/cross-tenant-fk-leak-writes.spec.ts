@@ -20,7 +20,7 @@
 //   3. workflow-engine.service.ts ~536      — workflow_instances.update (wait_for)
 //   4. workflow-engine.service.ts ~556      — workflow_instances.update (timer)
 //   5. workflow-engine.service.ts ~573      — workflow_instances.update (end)
-//   6. notification.service.ts:148           — notifications.update (markAsRead)
+//   6. inbox.service.ts:markRead             — inbox_notifications.update (tenant_id+user_id+id)
 //   7. sla.service.ts:~395                   — tickets.update (at-risk per tenant)
 //   8. bundle-cascade.service.ts:120         — asset_reservations.update
 //   9. bundle-cascade.service.ts:165         — order_line_items.update
@@ -127,16 +127,25 @@ describe('Cross-tenant FK leak regression — WRITE side', () => {
     expect(captures[0].filters.tenant_id).toBe(TENANT_A);
   });
 
-  it('site 6: notification.markAsRead — notifications.update filters by tenant_id', async () => {
+  it('site 6: inbox.markRead — inbox_notifications.update filters by tenant_id (+ user_id)', async () => {
     const captures: FilterCapture[] = [];
     const client = buildWriteCaptureClient(captures);
-    // Reproduces apps/api/src/modules/notification/notification.service.ts:markAsRead
+    // Reproduces apps/api/src/modules/inbox/inbox.service.ts:markRead. The
+    // legacy notification.service.ts:markAsRead this site used to mirror
+    // was DELETED (RLS Audit 04, codex #1 — it was a same-tenant IDOR:
+    // filtered by (id, tenant_id) only, NO recipient binding). The
+    // surviving read-state write path is inbox.service.markRead, gated by
+    // the stronger (tenant_id, user_id, id) triple — the user_id binding
+    // is precisely what closes that IDOR. This guard asserts that path
+    // keeps tenant_id (the #0 invariant) on the write.
     await (client as any)
-      .from('notifications')
-      .update({ status: 'read', read_at: 'now' })
+      .from('inbox_notifications')
+      .update({ read_at: 'now' })
+      .eq('tenant_id', TENANT_A)
+      .eq('user_id', SHARED_ID)
       .eq('id', SHARED_ID)
-      .eq('tenant_id', TENANT_A);
-    expect(captures[0].table).toBe('notifications');
+      .is('read_at', null);
+    expect(captures[0].table).toBe('inbox_notifications');
     expect(captures[0].filters.tenant_id).toBe(TENANT_A);
   });
 
