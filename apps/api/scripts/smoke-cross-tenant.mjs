@@ -904,7 +904,7 @@ async function probe(name, options) {
       );
     } else {
       results.fail += 1;
-      results.failed.push('Browser write grants NOT fully revoked (00415 not applied / regressed)');
+      results.failed.push('Browser write grants NOT fully revoked (00434 not applied / regressed)');
       console.log(
         `  ✗ ${writesLeft} anon/authenticated write grants still present on public tables — apply/re-apply migration 00415`,
       );
@@ -979,7 +979,7 @@ async function probe(name, options) {
       );
     } else {
       results.fail += 1;
-      results.failed.push('Browser EXECUTE grants NOT revoked (00417 not applied / regressed)');
+      results.failed.push('Browser EXECUTE grants NOT revoked (00435 not applied / regressed)');
       console.log(
         `  ✗ ${execLeft} postgres-owned app routines still anon/authenticated-EXECUTABLE beyond the trio — apply migration 00417`,
       );
