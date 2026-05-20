@@ -79,11 +79,11 @@ MIGRATED_MODULES=(
 # of these specific modules) is caught by CI going forward.
 #
 # Scope is intentionally narrower than MIGRATED_MODULES — adding a module
-# here is a promise that its service files are clean today. Other migrated
-# modules (config-engine, room-booking-rules, user-management) have many
-# residual raw rethrows; they're explicitly deferred to a future R2-follow-up
-# PR (see triage doc "Deferred" section). Don't add them here without a
-# matching cleanup PR.
+# here is a promise that its service files are clean today. F1-A
+# (2026-05-20) added the next 7 high-traffic modules; ~20 still have
+# residual raw rethrows and are tracked in the triage doc "Deferred"
+# section for F1-B. Don't add a module here without a matching cleanup
+# PR.
 RAW_RETHROW_SWEPT_MODULES=(
   "apps/api/src/modules/asset"
   "apps/api/src/modules/business-hours"

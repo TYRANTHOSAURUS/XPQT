@@ -132,7 +132,14 @@ export class ServiceCatalogService {
   }
 
   // Translate the category hierarchy trigger errors into actionable validation messages.
-  private rethrowCategoryError(error: { message: string; code?: string }): never {
+  // `lookupMode: 'update'` passes the module's not_found code to wrapPgError so
+  // PGRST116 (id-not-in-tenant) on the update's `.single()` surfaces as 404
+  // `config_engine.category_not_found` rather than the catch-all
+  // `generic.not_found`. Insert paths leave it unset (no PGRST116 to map).
+  private rethrowCategoryError(
+    error: { message: string; code?: string },
+    opts: { lookupMode?: 'update' | 'insert' } = {},
+  ): never {
     const msg = error.message ?? '';
     if (msg.includes('category_depth_exceeded')) {
       throw AppErrors.validationFailed('config_engine.invalid_hierarchy', { detail: 'Catalog hierarchy is capped at 3 levels.' });
@@ -142,6 +149,7 @@ export class ServiceCatalogService {
     }
     throw wrapPgError(error, 'config_engine.category_write_failed', {
       detail: `Service catalog category write failed${msg ? `: ${msg}` : ''}`,
+      ...(opts.lookupMode === 'update' ? { notFoundCode: 'config_engine.category_not_found' as const } : {}),
     });
   }
 
@@ -182,7 +190,7 @@ export class ServiceCatalogService {
       .select()
       .single();
 
-    if (error) this.rethrowCategoryError(error);
+    if (error) this.rethrowCategoryError(error, { lookupMode: 'update' });
     return data;
   }
 

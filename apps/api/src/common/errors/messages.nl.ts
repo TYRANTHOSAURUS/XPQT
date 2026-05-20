@@ -2258,6 +2258,7 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'user_management.effective_permissions_failed': { title: 'Kon effectieve permissies niet bepalen' },
   'user_management.user_not_found': { title: 'We kunnen die gebruiker niet vinden' },
   'user_management.role_not_found': { title: 'We kunnen die rol niet vinden' },
+  'user_management.role_assignment_not_found': { title: 'We kunnen die rolkoppeling niet vinden' },
 
   'room_rule.list_failed': { title: 'Kon zaalboekingsregels niet laden' },
   'room_rule.lookup_failed': { title: 'Kon die zaalboekingsregel niet opzoeken' },

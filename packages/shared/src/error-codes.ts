@@ -1297,6 +1297,7 @@ export type KnownErrorCode =
   | 'user_management.effective_permissions_failed'
   | 'user_management.user_not_found'
   | 'user_management.role_not_found'
+  | 'user_management.role_assignment_not_found'
 
   | 'room_rule.list_failed'
   | 'room_rule.lookup_failed'
@@ -2216,6 +2217,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'user_management.effective_permissions_failed',
   'user_management.user_not_found',
   'user_management.role_not_found',
+  'user_management.role_assignment_not_found',
   'room_rule.list_failed',
   'room_rule.lookup_failed',
   'room_rule.soft_delete_failed',

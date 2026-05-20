@@ -2322,6 +2322,7 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'user_management.effective_permissions_failed': { title: "Couldn't resolve effective permissions" },
   'user_management.user_not_found': { title: "We can't find that user" },
   'user_management.role_not_found': { title: "We can't find that role" },
+  'user_management.role_assignment_not_found': { title: "We can't find that role assignment" },
 
   'room_rule.list_failed': { title: "Couldn't load room booking rules" },
   'room_rule.lookup_failed': { title: "Couldn't look up that room booking rule" },

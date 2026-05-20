@@ -462,6 +462,7 @@ export class UserManagementService {
     if (error) {
       throw wrapPgError(error, 'user_management.role_assignment_update_failed', {
         detail: `Role assignment ${id} update failed`,
+        notFoundCode: 'user_management.role_assignment_not_found',
       });
     }
     const row = data as { role_id: string; user_id: string } | null;
