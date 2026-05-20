@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 
 /**
  * criteria_sets authoring. The canonical evaluator is plpgsql —
@@ -116,7 +116,11 @@ export class CriteriaSetService {
       .select('*')
       .eq('tenant_id', tenant.id)
       .order('name');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.criteria_set_list_failed', {
+        detail: 'Criteria sets list query failed',
+      });
+    }
     return data;
   }
 
@@ -128,7 +132,12 @@ export class CriteriaSetService {
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.criteria_set_lookup_failed', {
+        detail: `Criteria set ${id} lookup failed`,
+        notFoundCode: 'config_engine.criteria_set_not_found',
+      });
+    }
     if (!data) throw AppErrors.notFoundWithCode('config_engine.criteria_set_not_found', 'Criteria set not found');
     return data;
   }
@@ -150,7 +159,11 @@ export class CriteriaSetService {
       })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.criteria_set_create_failed', {
+        detail: `Criteria set insert failed (name ${input.name})`,
+      });
+    }
     return data;
   }
 
@@ -174,7 +187,12 @@ export class CriteriaSetService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.criteria_set_update_failed', {
+        detail: `Criteria set ${id} update failed`,
+        notFoundCode: 'config_engine.criteria_set_not_found',
+      });
+    }
     if (!data) throw AppErrors.notFoundWithCode('config_engine.criteria_set_not_found', 'Criteria set not found');
     return data;
   }
@@ -255,8 +273,16 @@ export class CriteriaSetService {
         .eq('tenant_id', tenant.id)
         .eq('is_primary', true),
     ]);
-    if (pErr) throw pErr;
-    if (mErr) throw mErr;
+    if (pErr) {
+      throw wrapPgError(pErr, 'config_engine.criteria_set_match_load_failed', {
+        detail: 'Criteria-set match preview persons load failed',
+      });
+    }
+    if (mErr) {
+      throw wrapPgError(mErr, 'config_engine.criteria_set_match_load_failed', {
+        detail: 'Criteria-set match preview memberships load failed',
+      });
+    }
 
     // Supabase types `org_nodes` as an array when joined, even though the FK
     // is single-valued — unwrap it manually.

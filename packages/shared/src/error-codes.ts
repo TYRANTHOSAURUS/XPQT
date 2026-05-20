@@ -1192,7 +1192,171 @@ export type KnownErrorCode =
   | 'delegation.not_found'
   | 'notification.not_found'
   | 'team.not_found'
-  | 'vendor.not_found';
+  | 'vendor.not_found'
+
+  // ─── F1 Sub-PR A — wrapPgError sweep, top 7 modules (2026-05-20) ────────
+  // Domain-specific `<entity>.<op>_failed` codes for the residual raw
+  // rethrows in the seven highest-traffic modules
+  // (person/maintenance/orders/ticket/user-management/room-booking-rules/
+  // config-engine). Same shape as the R2 batch above: `wrapPgError` keeps
+  // PGRST116→404 / 23505/23503→409 wire precision via the helper's branch
+  // arms, and the `<op>_failed` code is the module-specific 500 fallback.
+  // Spec §3.4 + docs/follow-ups/r2-apperror-sweep-triage-2026-05-20.md.
+  | 'person.search_failed'
+  | 'person.list_failed'
+  | 'person.create_failed'
+  | 'person.update_failed'
+  | 'person.membership_update_failed'
+  | 'person.membership_remove_failed'
+  | 'person.location_grant_list_failed'
+  | 'person.location_grant_create_failed'
+  | 'person.location_grant_remove_failed'
+  | 'person.authorization_load_failed'
+
+  | 'maintenance_plans.list_failed'
+  | 'maintenance_plans.lookup_failed'
+  | 'maintenance_plans.create_failed'
+  | 'maintenance_plans.update_failed'
+  | 'maintenance_plans.dependents_check_failed'
+  | 'maintenance_plans.deactivate_failed'
+  | 'maintenance_plans.delete_failed'
+  | 'maintenance_plans.actor_lookup_failed'
+  | 'pm_generator.asset_lookup_failed'
+  | 'pm_generator.asset_list_failed'
+  | 'pm_generator.create_pm_work_order_failed'
+  | 'pm_generator.advance_failed'
+  | 'pm_generator.due_plans_list_failed'
+  | 'pm_generator.tenants_list_failed'
+
+  | 'order.master_lookup_failed'
+  | 'order.clone_insert_failed'
+  | 'order.master_lines_load_failed'
+  | 'order.clone_asset_reservation_failed'
+  | 'order.clone_line_insert_failed'
+  | 'order.reeval_booking_lookup_failed'
+  | 'order.reeval_slot_lookup_failed'
+  | 'order.reeval_catalog_items_load_failed'
+  | 'order.reeval_menus_load_failed'
+  | 'order.line_override_failed'
+  | 'order.line_skip_failed'
+  | 'order.line_revert_failed'
+  | 'order.services_only_bundle_create_failed'
+  | 'order.create_failed'
+  | 'order.catalog_item_lookup_failed'
+  | 'order.resolve_menu_offer_failed'
+  | 'order.asset_check_failed'
+  | 'order.asset_reservation_create_failed'
+  | 'order.line_item_create_failed'
+  | 'order.cost_booking_lookup_failed'
+  | 'order.cost_slot_lookup_failed'
+  | 'order.cost_orders_list_failed'
+  | 'order.cost_series_lookup_failed'
+  | 'order.cost_line_items_load_failed'
+  | 'order.approval_role_expand_failed'
+  | 'order.approval_role_user_lookup_failed'
+  | 'order.approval_cost_center_lookup_failed'
+  | 'order.approval_existing_lookup_failed'
+  | 'order.approval_scope_merge_failed'
+  | 'order.approval_insert_failed'
+
+  | 'ticket.list_failed'
+  | 'ticket.lookup_failed'
+  | 'ticket.work_order_lookup_failed'
+  | 'ticket.inbox_activities_load_failed'
+  | 'ticket.distinct_tags_visible_failed'
+  | 'ticket.distinct_tags_failed'
+  | 'ticket.permission_check_failed'
+  | 'ticket.activities_list_failed'
+  | 'ticket.activity_create_failed'
+  | 'ticket.attachment_upload_failed'
+  | 'ticket.attachment_bucket_list_failed'
+  | 'ticket.attachment_bucket_create_failed'
+  | 'ticket.child_tasks_list_failed'
+  | 'ticket.inbox_fetch_failed'
+  | 'ticket.actor_team_list_failed'
+  | 'ticket.system_work_order_create_failed'
+  | 'ticket.visibility_ids_failed'
+  | 'ticket.dispatch_child_refetch_failed'
+  | 'ticket.dispatch_batch_refetch_failed'
+
+  | 'user_management.user_create_failed'
+  | 'user_management.user_lookup_failed'
+  | 'user_management.user_list_failed'
+  | 'user_management.user_update_failed'
+  | 'user_management.user_roles_list_failed'
+  | 'user_management.role_assignment_create_failed'
+  | 'user_management.role_assignment_update_failed'
+  | 'user_management.role_assignment_remove_failed'
+  | 'user_management.role_list_failed'
+  | 'user_management.role_create_failed'
+  | 'user_management.role_update_failed'
+  | 'user_management.persons_list_failed'
+  | 'user_management.person_create_failed'
+  | 'user_management.person_update_failed'
+  | 'user_management.role_audit_list_failed'
+  | 'user_management.effective_permissions_failed'
+  | 'user_management.user_not_found'
+  | 'user_management.role_not_found'
+  | 'user_management.role_assignment_not_found'
+
+  | 'room_rule.list_failed'
+  | 'room_rule.lookup_failed'
+  | 'room_rule.soft_delete_failed'
+  | 'room_rule.versions_list_failed'
+  | 'room_rule.version_lookup_failed'
+  | 'room_rule.scenario_list_failed'
+  | 'room_rule.scenario_create_failed'
+  | 'room_rule.scenario_lookup_failed'
+  | 'room_rule.active_rules_list_failed'
+  | 'room_rule.org_descendants_resolve_failed'
+  | 'room_rule.business_hours_resolve_failed'
+  | 'room_rule.candidate_rules_load_failed'
+  | 'room_rule.all_rules_load_failed'
+  | 'room_rule.ancestor_chain_load_failed'
+  | 'room_rule.space_chain_load_failed'
+  | 'room_rule.replay_load_failed'
+  | 'room_rule.space_descendants_resolve_failed'
+  | 'room_rule.space_names_load_failed'
+  | 'room_rule.person_names_load_failed'
+
+  | 'config_engine.entity_list_failed'
+  | 'config_engine.entity_create_failed'
+  | 'config_engine.draft_create_failed'
+  | 'config_engine.draft_update_failed'
+  | 'config_engine.publish_failed'
+  | 'config_engine.publish_pointer_failed'
+  | 'config_engine.criteria_set_list_failed'
+  | 'config_engine.criteria_set_lookup_failed'
+  | 'config_engine.criteria_set_create_failed'
+  | 'config_engine.criteria_set_update_failed'
+  | 'config_engine.criteria_set_match_load_failed'
+  | 'config_engine.category_list_failed'
+  | 'config_engine.category_tree_load_failed'
+  | 'config_engine.category_write_failed'
+  | 'config_engine.category_delete_failed'
+  | 'config_engine.request_type_list_failed'
+  | 'config_engine.request_type_lookup_failed'
+  | 'config_engine.request_type_create_failed'
+  | 'config_engine.request_type_update_failed'
+  | 'config_engine.request_type_categories_replace_failed'
+  | 'config_engine.request_type_categories_list_failed'
+  | 'config_engine.request_type_coverage_replace_failed'
+  | 'config_engine.request_type_coverage_list_failed'
+  | 'config_engine.request_type_audience_replace_failed'
+  | 'config_engine.request_type_audience_list_failed'
+  | 'config_engine.request_type_form_variants_replace_failed'
+  | 'config_engine.request_type_form_variants_list_failed'
+  | 'config_engine.request_type_on_behalf_replace_failed'
+  | 'config_engine.request_type_on_behalf_list_failed'
+  | 'config_engine.request_type_scope_overrides_replace_failed'
+  | 'config_engine.request_type_scope_overrides_list_failed'
+  | 'config_engine.request_type_reorder_failed'
+  | 'config_engine.request_type_unlink_failed'
+  | 'config_engine.request_type_link_failed'
+  | 'config_engine.coverage_matrix_failed'
+  | 'config_engine.name_hydrate_failed'
+  | 'config_engine.tenant_ids_check_failed'
+  | 'config_engine.config_entities_type_check_failed';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1960,6 +2124,157 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'notification.not_found',
   'team.not_found',
   'vendor.not_found',
+
+  // ─── F1 Sub-PR A — wrapPgError sweep, top 7 modules (2026-05-20) ────────
+  'person.search_failed',
+  'person.list_failed',
+  'person.create_failed',
+  'person.update_failed',
+  'person.membership_update_failed',
+  'person.membership_remove_failed',
+  'person.location_grant_list_failed',
+  'person.location_grant_create_failed',
+  'person.location_grant_remove_failed',
+  'person.authorization_load_failed',
+  'maintenance_plans.list_failed',
+  'maintenance_plans.lookup_failed',
+  'maintenance_plans.create_failed',
+  'maintenance_plans.update_failed',
+  'maintenance_plans.dependents_check_failed',
+  'maintenance_plans.deactivate_failed',
+  'maintenance_plans.delete_failed',
+  'maintenance_plans.actor_lookup_failed',
+  'pm_generator.asset_lookup_failed',
+  'pm_generator.asset_list_failed',
+  'pm_generator.create_pm_work_order_failed',
+  'pm_generator.advance_failed',
+  'pm_generator.due_plans_list_failed',
+  'pm_generator.tenants_list_failed',
+  'order.master_lookup_failed',
+  'order.clone_insert_failed',
+  'order.master_lines_load_failed',
+  'order.clone_asset_reservation_failed',
+  'order.clone_line_insert_failed',
+  'order.reeval_booking_lookup_failed',
+  'order.reeval_slot_lookup_failed',
+  'order.reeval_catalog_items_load_failed',
+  'order.reeval_menus_load_failed',
+  'order.line_override_failed',
+  'order.line_skip_failed',
+  'order.line_revert_failed',
+  'order.services_only_bundle_create_failed',
+  'order.create_failed',
+  'order.catalog_item_lookup_failed',
+  'order.resolve_menu_offer_failed',
+  'order.asset_check_failed',
+  'order.asset_reservation_create_failed',
+  'order.line_item_create_failed',
+  'order.cost_booking_lookup_failed',
+  'order.cost_slot_lookup_failed',
+  'order.cost_orders_list_failed',
+  'order.cost_series_lookup_failed',
+  'order.cost_line_items_load_failed',
+  'order.approval_role_expand_failed',
+  'order.approval_role_user_lookup_failed',
+  'order.approval_cost_center_lookup_failed',
+  'order.approval_existing_lookup_failed',
+  'order.approval_scope_merge_failed',
+  'order.approval_insert_failed',
+  'ticket.list_failed',
+  'ticket.lookup_failed',
+  'ticket.work_order_lookup_failed',
+  'ticket.inbox_activities_load_failed',
+  'ticket.distinct_tags_visible_failed',
+  'ticket.distinct_tags_failed',
+  'ticket.permission_check_failed',
+  'ticket.activities_list_failed',
+  'ticket.activity_create_failed',
+  'ticket.attachment_upload_failed',
+  'ticket.attachment_bucket_list_failed',
+  'ticket.attachment_bucket_create_failed',
+  'ticket.child_tasks_list_failed',
+  'ticket.inbox_fetch_failed',
+  'ticket.actor_team_list_failed',
+  'ticket.system_work_order_create_failed',
+  'ticket.visibility_ids_failed',
+  'ticket.dispatch_child_refetch_failed',
+  'ticket.dispatch_batch_refetch_failed',
+  'user_management.user_create_failed',
+  'user_management.user_lookup_failed',
+  'user_management.user_list_failed',
+  'user_management.user_update_failed',
+  'user_management.user_roles_list_failed',
+  'user_management.role_assignment_create_failed',
+  'user_management.role_assignment_update_failed',
+  'user_management.role_assignment_remove_failed',
+  'user_management.role_list_failed',
+  'user_management.role_create_failed',
+  'user_management.role_update_failed',
+  'user_management.persons_list_failed',
+  'user_management.person_create_failed',
+  'user_management.person_update_failed',
+  'user_management.role_audit_list_failed',
+  'user_management.effective_permissions_failed',
+  'user_management.user_not_found',
+  'user_management.role_not_found',
+  'user_management.role_assignment_not_found',
+  'room_rule.list_failed',
+  'room_rule.lookup_failed',
+  'room_rule.soft_delete_failed',
+  'room_rule.versions_list_failed',
+  'room_rule.version_lookup_failed',
+  'room_rule.scenario_list_failed',
+  'room_rule.scenario_create_failed',
+  'room_rule.scenario_lookup_failed',
+  'room_rule.active_rules_list_failed',
+  'room_rule.org_descendants_resolve_failed',
+  'room_rule.business_hours_resolve_failed',
+  'room_rule.candidate_rules_load_failed',
+  'room_rule.all_rules_load_failed',
+  'room_rule.ancestor_chain_load_failed',
+  'room_rule.space_chain_load_failed',
+  'room_rule.replay_load_failed',
+  'room_rule.space_descendants_resolve_failed',
+  'room_rule.space_names_load_failed',
+  'room_rule.person_names_load_failed',
+  'config_engine.entity_list_failed',
+  'config_engine.entity_create_failed',
+  'config_engine.draft_create_failed',
+  'config_engine.draft_update_failed',
+  'config_engine.publish_failed',
+  'config_engine.publish_pointer_failed',
+  'config_engine.criteria_set_list_failed',
+  'config_engine.criteria_set_lookup_failed',
+  'config_engine.criteria_set_create_failed',
+  'config_engine.criteria_set_update_failed',
+  'config_engine.criteria_set_match_load_failed',
+  'config_engine.category_list_failed',
+  'config_engine.category_tree_load_failed',
+  'config_engine.category_write_failed',
+  'config_engine.category_delete_failed',
+  'config_engine.request_type_list_failed',
+  'config_engine.request_type_lookup_failed',
+  'config_engine.request_type_create_failed',
+  'config_engine.request_type_update_failed',
+  'config_engine.request_type_categories_replace_failed',
+  'config_engine.request_type_categories_list_failed',
+  'config_engine.request_type_coverage_replace_failed',
+  'config_engine.request_type_coverage_list_failed',
+  'config_engine.request_type_audience_replace_failed',
+  'config_engine.request_type_audience_list_failed',
+  'config_engine.request_type_form_variants_replace_failed',
+  'config_engine.request_type_form_variants_list_failed',
+  'config_engine.request_type_on_behalf_replace_failed',
+  'config_engine.request_type_on_behalf_list_failed',
+  'config_engine.request_type_scope_overrides_replace_failed',
+  'config_engine.request_type_scope_overrides_list_failed',
+  'config_engine.request_type_reorder_failed',
+  'config_engine.request_type_unlink_failed',
+  'config_engine.request_type_link_failed',
+  'config_engine.coverage_matrix_failed',
+  'config_engine.name_hydrate_failed',
+  'config_engine.tenant_ids_check_failed',
+  'config_engine.config_entities_type_check_failed',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

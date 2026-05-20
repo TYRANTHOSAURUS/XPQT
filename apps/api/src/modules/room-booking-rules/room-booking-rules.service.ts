@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { PredicateEngineService } from './predicate-engine.service';
 import { getTemplate } from './rule-templates';
 import { ApprovalConfigCompilerService } from '../approval/approval-config-compiler.service';
@@ -123,7 +123,11 @@ export class RoomBookingRulesService {
     if (filters.effect) query = query.eq('effect', filters.effect);
 
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.list_failed', {
+        detail: 'Room booking rules list query failed',
+      });
+    }
     return data ?? [];
   }
 
@@ -135,7 +139,12 @@ export class RoomBookingRulesService {
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.lookup_failed', {
+        detail: `Room booking rule ${id} lookup failed`,
+        notFoundCode: 'room_rule.not_found',
+      });
+    }
     if (!data) throw AppErrors.notFoundWithCode('room_rule.not_found', `Rule ${id} not found`);
     return data;
   }
@@ -331,7 +340,12 @@ export class RoomBookingRulesService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.soft_delete_failed', {
+        detail: `Room booking rule ${id} soft-delete failed`,
+        notFoundCode: 'room_rule.not_found',
+      });
+    }
 
     await this.writeVersion(id, tenant.id, 'delete', before, data, actorUserId);
     await this.emitAudit('room_booking_rule.deleted', id, { name: before.name });
@@ -348,7 +362,11 @@ export class RoomBookingRulesService {
       .eq('rule_id', ruleId)
       .eq('tenant_id', tenant.id)
       .order('version_number', { ascending: false });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.versions_list_failed', {
+        detail: `Room booking rule ${ruleId} versions list failed`,
+      });
+    }
     return data ?? [];
   }
 
@@ -362,7 +380,12 @@ export class RoomBookingRulesService {
       .eq('tenant_id', tenant.id)
       .eq('version_number', versionNumber)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.version_lookup_failed', {
+        detail: `Room booking rule ${id} version ${versionNumber} lookup failed`,
+        notFoundCode: 'room_rule.version_not_found',
+      });
+    }
     if (!version) throw AppErrors.notFoundWithCode('room_rule.version_not_found', `Version ${versionNumber} not found`);
 
     const snap = (version as { snapshot: RuleSnapshot }).snapshot;

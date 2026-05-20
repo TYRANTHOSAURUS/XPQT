@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { wrapPgError } from '../../common/errors';
 import {
   advanceRecurrence,
   isRecurrenceUnit,
@@ -201,7 +202,11 @@ export class PMGeneratorService {
         .eq('tenant_id', plan.tenant_id)
         .eq('id', plan.asset_id)
         .maybeSingle();
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'pm_generator.asset_lookup_failed', {
+          detail: `pm-generator asset ${plan.asset_id} lookup failed for plan ${plan.id}`,
+        });
+      }
       if (!data) return [];
       if (!PMGeneratorService.IN_SERVICE_LIFECYCLE.includes(
         (data as { lifecycle_state: string }).lifecycle_state,
@@ -221,7 +226,11 @@ export class PMGeneratorService {
         .eq('asset_type_id', plan.asset_type_id)
         .in('lifecycle_state', PMGeneratorService.IN_SERVICE_LIFECYCLE)
         .order('id', { ascending: true });
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'pm_generator.asset_list_failed', {
+          detail: `pm-generator asset_type ${plan.asset_type_id} fan-out failed for plan ${plan.id}`,
+        });
+      }
       return ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
     }
     throw new Error(
@@ -249,7 +258,11 @@ export class PMGeneratorService {
       p_asset_id: assetId,
       p_run_at: plan.next_run_at,
     });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'pm_generator.create_pm_work_order_failed', {
+        detail: `pm-generator create_pm_work_order RPC failed for plan ${plan.id} asset ${assetId}`,
+      });
+    }
     return (data as string | null) ?? null;
   }
 
@@ -281,7 +294,11 @@ export class PMGeneratorService {
       .update({ next_run_at: advanced.toISOString() })
       .eq('id', planId)
       .eq('tenant_id', tenantId);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'pm_generator.advance_failed', {
+        detail: `pm-generator advancePlan update failed for plan ${planId}`,
+      });
+    }
   }
 
   async selectDuePlans(
@@ -299,7 +316,11 @@ export class PMGeneratorService {
       .lte('next_run_at', this.dueCutoffIso(runAt))
       .order('next_run_at', { ascending: true })
       .limit(limit);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'pm_generator.due_plans_list_failed', {
+        detail: `pm-generator selectDuePlans failed for tenant ${tenantId}`,
+      });
+    }
     return ((data ?? []) as DuePlanRow[]).filter((row) =>
       this.isDueWithLeadDays(row, runAt),
     );
@@ -336,7 +357,11 @@ export class PMGeneratorService {
       .select('id')
       .eq('status', 'active')
       .order('id', { ascending: true });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'pm_generator.tenants_list_failed', {
+        detail: 'pm-generator listActiveTenants failed',
+      });
+    }
     return ((data ?? []) as Array<{ id: string }>).map((r) => r.id);
   }
 }

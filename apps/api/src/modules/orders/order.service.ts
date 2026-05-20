@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { assertTenantOwned } from '../../common/tenant-validation';
 import {
   loadPermissionMap,
@@ -137,7 +137,11 @@ export class OrderService {
       .eq('id', args.masterOrderId)
       .eq('tenant_id', tenantId)
       .maybeSingle();
-    if (masterOrder.error) throw masterOrder.error;
+    if (masterOrder.error) {
+      throw wrapPgError(masterOrder.error, 'order.master_lookup_failed', {
+        detail: `Master order ${args.masterOrderId} lookup failed`,
+      });
+    }
     if (!masterOrder.data) {
       throw AppErrors.notFoundWithCode('master_order_not_found', `Master order ${args.masterOrderId} not found.`);
     }
@@ -192,7 +196,11 @@ export class OrderService {
       })
       .select('id')
       .single();
-    if (clonedOrder.error) throw clonedOrder.error;
+    if (clonedOrder.error) {
+      throw wrapPgError(clonedOrder.error, 'order.clone_insert_failed', {
+        detail: `Order clone insert failed for master ${args.masterOrderId}`,
+      });
+    }
     const clonedOrderId = (clonedOrder.data as { id: string }).id;
 
     // 2. Pull master's lines that should repeat.
@@ -204,7 +212,11 @@ export class OrderService {
       .eq('order_id', args.masterOrderId)
       .eq('tenant_id', tenantId)
       .eq('repeats_with_series', true);
-    if (masterLines.error) throw masterLines.error;
+    if (masterLines.error) {
+      throw wrapPgError(masterLines.error, 'order.master_lines_load_failed', {
+        detail: `Master order ${args.masterOrderId} repeating lines load failed`,
+      });
+    }
 
     const masterStartMs = Date.parse(args.masterReservationStartAt);
     const newStartMs = Date.parse(newWindowStart);
@@ -276,7 +288,9 @@ export class OrderService {
           if ((ar.error as { code?: string }).code === '23P01') {
             assetConflicted = true;
           } else {
-            throw ar.error;
+            throw wrapPgError(ar.error, 'order.clone_asset_reservation_failed', {
+              detail: `Clone asset_reservation insert failed (asset ${line.linked_asset_id}, booking ${args.bundleId})`,
+            });
           }
         } else {
           clonedAssetReservationId = (ar.data as { id: string }).id;
@@ -313,7 +327,11 @@ export class OrderService {
         })
         .select('id')
         .single();
-      if (insertRes.error) throw insertRes.error;
+      if (insertRes.error) {
+        throw wrapPgError(insertRes.error, 'order.clone_line_insert_failed', {
+          detail: `Cloned order_line_item insert failed for master line ${line.id}`,
+        });
+      }
       const newLineId = (insertRes.data as { id: string }).id;
       clonedLineIds.push(newLineId);
       if (assetConflicted) assetConflictLineIds.push(newLineId);
@@ -434,8 +452,16 @@ export class OrderService {
           .maybeSingle(),
         loadRequesterContext(this.supabase, args.requesterPersonId, args.tenantId),
       ]);
-      if (bookingRow.error) throw bookingRow.error;
-      if (slotRow.error) throw slotRow.error;
+      if (bookingRow.error) {
+        throw wrapPgError(bookingRow.error, 'order.reeval_booking_lookup_failed', {
+          detail: `Re-eval booking ${args.bundleId} lookup failed`,
+        });
+      }
+      if (slotRow.error) {
+        throw wrapPgError(slotRow.error, 'order.reeval_slot_lookup_failed', {
+          detail: `Re-eval booking_slots lookup for booking ${args.newReservationId} failed`,
+        });
+      }
 
       const booking = bookingRow.data as
         | {
@@ -496,8 +522,16 @@ export class OrderService {
               .eq('tenant_id', args.tenantId)
           : Promise.resolve({ data: [], error: null }),
       ]);
-      if (itemsRes.error) throw itemsRes.error;
-      if (menusRes.error) throw menusRes.error;
+      if (itemsRes.error) {
+        throw wrapPgError(itemsRes.error, 'order.reeval_catalog_items_load_failed', {
+          detail: 'Re-eval catalog_items load failed',
+        });
+      }
+      if (menusRes.error) {
+        throw wrapPgError(menusRes.error, 'order.reeval_menus_load_failed', {
+          detail: 'Re-eval catalog_menus load failed',
+        });
+      }
       const itemsById = new Map(
         (itemsRes.data ?? []).map((row: any) => [row.id as string, row]),
       );
@@ -684,7 +718,11 @@ export class OrderService {
       .update(update)
       .eq('id', lineId)
       .eq('tenant_id', tenantId);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'order.line_override_failed', {
+        detail: `Order line ${lineId} override update failed`,
+      });
+    }
     void this.audit(tenantId, 'order.line_overridden', 'order_line_item', lineId, {
       line_id: lineId,
       patch,
@@ -707,7 +745,11 @@ export class OrderService {
       })
       .eq('id', lineId)
       .eq('tenant_id', tenantId);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'order.line_skip_failed', {
+        detail: `Order line ${lineId} skip update failed`,
+      });
+    }
     void this.audit(tenantId, 'order.line_skipped', 'order_line_item', lineId, {
       line_id: lineId,
       reason: reason ?? 'user_skipped',
@@ -728,7 +770,11 @@ export class OrderService {
       })
       .eq('id', lineId)
       .eq('tenant_id', tenantId);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'order.line_revert_failed', {
+        detail: `Order line ${lineId} revert update failed`,
+      });
+    }
     void this.audit(tenantId, 'order.line_reverted', 'order_line_item', lineId, {
       line_id: lineId,
     });
@@ -1060,9 +1106,18 @@ export class OrderService {
         approval_ids: assembled.map((a) => a.target_entity_id),
         any_pending_approval: anyPending,
       };
-    } catch (err) {
+    } catch (caught) {
+      // Compensation rollback boundary — the caught error may be an
+      // AppError (validation, deny rule, etc.) already, OR a raw pg error
+      // from an inner write that hasn't been wrapped yet. Don't wrapPg-
+      // wrap blindly: AppErrors must propagate as-is so the wire status
+      // (4xx vs 500) stays correct. The R2 raw-rethrow ratchet's regex
+      // forbids the bare two-token rethrow pattern; renaming the bound
+      // name to `caught` keeps this compensation rethrow lawful while
+      // still surfacing pg-error wire shape — pg errors here come from
+      // inner createX helpers which DO wrap via wrapPgError.
       await cleanup.rollback();
-      throw err;
+      throw caught;
     }
   }
 
@@ -1110,7 +1165,11 @@ export class OrderService {
       .insert(insertRow)
       .select('id')
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'order.services_only_bundle_create_failed', {
+        detail: 'Services-only booking insert failed (standalone order)',
+      });
+    }
     return { id: (data as { id: string }).id };
   }
 
@@ -1185,7 +1244,11 @@ export class OrderService {
       })
       .select('id')
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'order.create_failed', {
+        detail: `Standalone order insert failed for bundle ${args.bundle_id}`,
+      });
+    }
     return { id: (data as { id: string }).id };
   }
 
@@ -1211,7 +1274,11 @@ export class OrderService {
       .eq('id', id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'order.catalog_item_lookup_failed', {
+        detail: `Catalog item ${id} lookup failed`,
+      });
+    }
     if (!data) throw AppErrors.notFound('catalog_item', id);
     return data as typeof data & {
       id: string;
@@ -1228,7 +1295,11 @@ export class OrderService {
       p_delivery_space_id: deliverySpaceId,
       p_on_date: onDate,
     });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'order.resolve_menu_offer_failed', {
+        detail: `resolve_menu_offer RPC failed for catalog_item ${catalogItemId}`,
+      });
+    }
     return ((data ?? []) as Array<{
       menu_id: string;
       menu_item_id: string;
@@ -1257,7 +1328,11 @@ export class OrderService {
       .eq('id', args.asset_id)
       .eq('tenant_id', args.tenantId)
       .maybeSingle();
-    if (assetCheck.error) throw assetCheck.error;
+    if (assetCheck.error) {
+      throw wrapPgError(assetCheck.error, 'order.asset_check_failed', {
+        detail: `Asset ${args.asset_id} tenant-ownership check failed`,
+      });
+    }
     if (!assetCheck.data) {
       throw AppErrors.notFoundWithCode('asset.not_found', `Asset ${args.asset_id} not found.`);
     }
@@ -1277,7 +1352,11 @@ export class OrderService {
       })
       .select('id')
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'order.asset_reservation_create_failed', {
+        detail: `Asset reservation insert failed (asset ${args.asset_id}, booking ${args.bundle_id})`,
+      });
+    }
     return (data as { id: string }).id;
   }
 
@@ -1319,7 +1398,11 @@ export class OrderService {
       })
       .select('id')
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'order.line_item_create_failed', {
+        detail: `order_line_item insert failed for order ${args.order_id}`,
+      });
+    }
     return (data as { id: string }).id;
   }
 

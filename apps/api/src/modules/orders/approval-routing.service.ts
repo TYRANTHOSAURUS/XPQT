@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import type { AttachPlanApproval } from '../booking-bundles/attach-plan.types';
@@ -343,7 +343,11 @@ export class ApprovalRoutingService {
         .eq('tenant_id', tenant.id)
         .eq('role_id', target.role_id)
         .eq('active', true);
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'order.approval_role_expand_failed', {
+          detail: `Approval-routing role ${target.role_id} expand failed`,
+        });
+      }
       const userIds = ((data ?? []) as Array<{ user_id: string }>).map((r) => r.user_id);
       if (userIds.length === 0) return [];
 
@@ -352,7 +356,11 @@ export class ApprovalRoutingService {
         .select('person_id')
         .eq('tenant_id', tenant.id)
         .in('id', userIds);
-      if (userErr) throw userErr;
+      if (userErr) {
+        throw wrapPgError(userErr, 'order.approval_role_user_lookup_failed', {
+          detail: `Approval-routing users lookup failed for role ${target.role_id}`,
+        });
+      }
       const personIds = ((users ?? []) as Array<{ person_id: string | null }>)
         .map((u) => u.person_id)
         .filter((id): id is string => Boolean(id));
@@ -374,7 +382,11 @@ export class ApprovalRoutingService {
           .eq('tenant_id', tenant.id)
           .eq('id', ctx.cost_center_id)
           .maybeSingle();
-        if (error) throw error;
+        if (error) {
+          throw wrapPgError(error, 'order.approval_cost_center_lookup_failed', {
+            detail: `Approval-routing derived approver cost_center ${ctx.cost_center_id} lookup failed`,
+          });
+        }
         const row = data as { default_approver_person_id: string | null } | null;
         return row?.default_approver_person_id ? [row.default_approver_person_id] : [];
       }
@@ -427,7 +439,11 @@ export class ApprovalRoutingService {
       .eq('approver_person_id', args.approver_person_id)
       .eq('status', 'pending')
       .maybeSingle();
-    if (existing.error) throw existing.error;
+    if (existing.error) {
+      throw wrapPgError(existing.error, 'order.approval_existing_lookup_failed', {
+        detail: `Approval-routing existing-row lookup failed for target ${args.target_entity_id}`,
+      });
+    }
 
     if (existing.data) {
       const merged = mergeBreakdown(
@@ -438,7 +454,11 @@ export class ApprovalRoutingService {
         .from('approvals')
         .update({ scope_breakdown: merged })
         .eq('id', (existing.data as { id: string }).id);
-      if (updateErr) throw updateErr;
+      if (updateErr) {
+        throw wrapPgError(updateErr, 'order.approval_scope_merge_failed', {
+          detail: `Approval-routing scope_breakdown merge failed for approval ${(existing.data as { id: string }).id}`,
+        });
+      }
       return {
         target_entity_type: args.target_entity_type,
         target_entity_id: args.target_entity_id,
@@ -468,7 +488,9 @@ export class ApprovalRoutingService {
       if ((insertErr as { code?: string }).code === '23505') {
         return this.upsertWithRetry(args, attempt + 1);
       }
-      throw insertErr;
+      throw wrapPgError(insertErr, 'order.approval_insert_failed', {
+        detail: `Approval-routing insert failed for target ${args.target_entity_id} approver ${args.approver_person_id}`,
+      });
     }
 
     return {

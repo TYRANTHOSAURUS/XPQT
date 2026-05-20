@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { throwZodError } from '../../common/errors/zod';
 import {
   CreateMaintenancePlanSchema,
@@ -101,7 +101,11 @@ export class MaintenancePlanService {
     const { data, error, count } = await request
       .order('next_run_at', { ascending: true })
       .range(offset, offset + limit - 1);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'maintenance_plans.list_failed', {
+        detail: 'Maintenance plans list query failed',
+      });
+    }
     return {
       rows: (data ?? []) as MaintenancePlanRow[],
       total: count ?? 0,
@@ -119,7 +123,12 @@ export class MaintenancePlanService {
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'maintenance_plans.lookup_failed', {
+        detail: `Maintenance plan ${id} lookup failed`,
+        notFoundCode: 'maintenance_plans.not_found',
+      });
+    }
     if (!data) {
       throw AppErrors.notFoundWithCode('maintenance_plans.not_found');
     }
@@ -172,7 +181,11 @@ export class MaintenancePlanService {
       .insert(insertRow)
       .select(SELECT_COLUMNS)
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'maintenance_plans.create_failed', {
+        detail: 'Maintenance plan insert failed',
+      });
+    }
     return data as MaintenancePlanRow;
   }
 
@@ -246,7 +259,12 @@ export class MaintenancePlanService {
       .eq('tenant_id', tenant.id)
       .select(SELECT_COLUMNS)
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'maintenance_plans.update_failed', {
+        detail: `Maintenance plan ${id} update failed`,
+        notFoundCode: 'maintenance_plans.not_found',
+      });
+    }
     return data as MaintenancePlanRow;
   }
 
@@ -272,7 +290,11 @@ export class MaintenancePlanService {
       .select('id', { count: 'exact', head: true })
       .eq('tenant_id', tenant.id)
       .eq('maintenance_plan_id', id);
-    if (countErr) throw countErr;
+    if (countErr) {
+      throw wrapPgError(countErr, 'maintenance_plans.dependents_check_failed', {
+        detail: `Maintenance plan ${id} dependents count failed`,
+      });
+    }
 
     if ((count ?? 0) > 0) {
       const { error } = await this.supabase.admin
@@ -280,7 +302,11 @@ export class MaintenancePlanService {
         .update({ active: false })
         .eq('id', id)
         .eq('tenant_id', tenant.id);
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'maintenance_plans.deactivate_failed', {
+          detail: `Maintenance plan ${id} soft-delete (deactivate) failed`,
+        });
+      }
       return { mode: 'soft' };
     }
 
@@ -289,7 +315,11 @@ export class MaintenancePlanService {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'maintenance_plans.delete_failed', {
+        detail: `Maintenance plan ${id} hard-delete failed`,
+      });
+    }
     return { mode: 'hard' };
   }
 
@@ -325,7 +355,11 @@ export class MaintenancePlanService {
       .eq('tenant_id', tenantId)
       .eq('auth_uid', authUid)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'maintenance_plans.actor_lookup_failed', {
+        detail: 'Maintenance plan actor user lookup failed',
+      });
+    }
     return (data as { id: string } | null)?.id ?? null;
   }
 }

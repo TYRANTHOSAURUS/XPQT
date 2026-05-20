@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import type { Request } from 'express';
 import {
   expandGranted,
@@ -80,7 +80,11 @@ export class UserManagementService {
       })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.user_create_failed', {
+        detail: `User insert failed (email ${dto.email})`,
+      });
+    }
     return data;
   }
 
@@ -105,7 +109,11 @@ export class UserManagementService {
       .eq('auth_uid', authUid)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.user_lookup_failed', {
+        detail: `User lookup by auth_uid failed`,
+      });
+    }
     return data;
   }
 
@@ -123,7 +131,11 @@ export class UserManagementService {
       `)
       .eq('tenant_id', tenant.id)
       .order('email');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.user_list_failed', {
+        detail: 'Users list query failed',
+      });
+    }
     return data;
   }
 
@@ -142,7 +154,12 @@ export class UserManagementService {
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.user_lookup_failed', {
+        detail: `User ${id} lookup failed`,
+        notFoundCode: 'user_management.user_not_found',
+      });
+    }
     return data;
   }
 
@@ -155,7 +172,12 @@ export class UserManagementService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.user_update_failed', {
+        detail: `User ${id} update failed`,
+        notFoundCode: 'user_management.user_not_found',
+      });
+    }
     return data;
   }
 
@@ -166,7 +188,11 @@ export class UserManagementService {
       .select('*, role:roles(id, name, description, type)')
       .eq('user_id', userId)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.user_roles_list_failed', {
+        detail: `User ${userId} role assignments list failed`,
+      });
+    }
     return data;
   }
 
@@ -195,7 +221,11 @@ export class UserManagementService {
       })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.role_assignment_create_failed', {
+        detail: `Role assignment insert failed (user ${userId} role ${dto.role_id})`,
+      });
+    }
     const created = data as { id: string } | null;
     await this.emitAudit({
       actor_user_id: actor?.userId ?? null,
@@ -233,7 +263,11 @@ export class UserManagementService {
       .eq('id', roleAssignmentId)
       .eq('user_id', userId)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.role_assignment_remove_failed', {
+        detail: `Role assignment delete failed (user ${userId} assignment ${roleAssignmentId})`,
+      });
+    }
 
     const snap = prev as { role_id: string } | null;
     await this.emitAudit({
@@ -257,7 +291,11 @@ export class UserManagementService {
       .eq('tenant_id', tenant.id)
       .eq('active', true)
       .order('name');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.role_list_failed', {
+        detail: 'Roles list query failed',
+      });
+    }
     return data;
   }
 
@@ -269,7 +307,11 @@ export class UserManagementService {
       .insert({ ...dto, permissions, tenant_id: tenant.id })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.role_create_failed', {
+        detail: `Role insert failed (name ${dto.name})`,
+      });
+    }
     await this.emitAudit({
       actor_user_id: actor?.userId ?? null,
       event_type: 'role.created',
@@ -307,7 +349,12 @@ export class UserManagementService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.role_update_failed', {
+        detail: `Role ${id} update failed`,
+        notFoundCode: 'user_management.role_not_found',
+      });
+    }
 
     const prevPerms = ((prev as { permissions?: string[] } | null)?.permissions ?? [])
       .slice()
@@ -371,7 +418,11 @@ export class UserManagementService {
       })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.role_assignment_create_failed', {
+        detail: `Role assignment insert failed (user ${dto.user_id} role ${dto.role_id})`,
+      });
+    }
     const created = data as { id: string } | null;
     await this.emitAudit({
       actor_user_id: actor?.userId ?? null,
@@ -408,7 +459,12 @@ export class UserManagementService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.role_assignment_update_failed', {
+        detail: `Role assignment ${id} update failed`,
+        notFoundCode: 'user_management.role_assignment_not_found',
+      });
+    }
     const row = data as { role_id: string; user_id: string } | null;
     await this.emitAudit({
       actor_user_id: actor?.userId ?? null,
@@ -435,7 +491,11 @@ export class UserManagementService {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.role_assignment_remove_failed', {
+        detail: `Role assignment ${id} delete failed`,
+      });
+    }
 
     const snap = prev as {
       role_id: string;
@@ -475,7 +535,11 @@ export class UserManagementService {
     if (type) query = query.eq('type', type);
 
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.persons_list_failed', {
+        detail: 'Persons list query failed (user-management admin)',
+      });
+    }
     return data;
   }
 
@@ -486,7 +550,11 @@ export class UserManagementService {
       .insert({ ...dto, tenant_id: tenant.id })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.person_create_failed', {
+        detail: 'Person insert failed (user-management admin)',
+      });
+    }
     return data;
   }
 
@@ -499,7 +567,12 @@ export class UserManagementService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.person_update_failed', {
+        detail: `Person ${id} update failed (user-management admin)`,
+        notFoundCode: 'person.not_found',
+      });
+    }
     return data;
   }
 
@@ -575,7 +648,11 @@ export class UserManagementService {
     if (filter.role_id) q = q.eq('details->>target_role_id', filter.role_id);
     if (filter.user_id) q = q.eq('details->>target_user_id', filter.user_id);
     const { data, error } = await q;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.role_audit_list_failed', {
+        detail: 'Role audit events list failed',
+      });
+    }
     // Reshape `details` back into the legacy top-level columns the web
     // RoleAuditEvent type expects. Anything in `details` beyond the three
     // target_* keys is the original payload.
@@ -641,7 +718,11 @@ export class UserManagementService {
       `)
       .eq('user_id', userId)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'user_management.effective_permissions_failed', {
+        detail: `Effective permissions resolve failed for user ${userId}`,
+      });
+    }
 
     const now = Date.now();
     type AssignmentRow = {

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { RuleResolverService, RuleRow } from './rule-resolver.service';
 import type { ImpactPreviewDraftDto } from './dto';
 
@@ -74,7 +74,12 @@ export class ImpactPreviewService {
       .eq('id', ruleId)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.lookup_failed', {
+        detail: `Room booking rule ${ruleId} impact-preview lookup failed`,
+        notFoundCode: 'room_rule.not_found',
+      });
+    }
     if (!data) throw AppErrors.notFoundWithCode('room_rule.not_found', `Rule ${ruleId} not found`);
     return this.previewRule(data as RuleRow);
   }
@@ -241,7 +246,11 @@ export class ImpactPreviewService {
 
     if (rule.target_scope === 'room' && rule.target_id) {
       const { data, error } = await base.eq('space_id', rule.target_id);
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'room_rule.replay_load_failed', {
+          detail: `Impact-preview replay slots failed for room scope ${rule.target_id}`,
+        });
+      }
       return flatten((data ?? []) as unknown as SlotJoinRow[]);
     }
 
@@ -253,20 +262,32 @@ export class ImpactPreviewService {
         'space_descendants',
         { root_id: rule.target_id },
       );
-      if (dErr) throw dErr;
+      if (dErr) {
+        throw wrapPgError(dErr, 'room_rule.space_descendants_resolve_failed', {
+          detail: `space_descendants RPC failed for root ${rule.target_id}`,
+        });
+      }
       const ids = ((descIds ?? []) as Array<string | { id?: string }>).map((row) =>
         typeof row === 'string' ? row : row?.id ?? '',
       );
       if (ids.length === 0) return [];
       const { data, error } = await base.in('space_id', ids);
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'room_rule.replay_load_failed', {
+          detail: `Impact-preview replay slots failed for space_subtree ${rule.target_id}`,
+        });
+      }
       return flatten((data ?? []) as unknown as SlotJoinRow[]);
     }
 
     // tenant + room_type: replay everything in the window. The per-rule
     // evaluation will filter by type/predicate.
     const { data, error } = await base;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.replay_load_failed', {
+        detail: 'Impact-preview replay slots failed (tenant/room_type scope)',
+      });
+    }
     return flatten((data ?? []) as unknown as SlotJoinRow[]);
   }
 
@@ -280,7 +301,11 @@ export class ImpactPreviewService {
       .select('id, name')
       .eq('tenant_id', tenantId)
       .in('id', ids);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.space_names_load_failed', {
+        detail: 'Impact-preview space-name hydrate failed',
+      });
+    }
     const map = new Map<string, string>();
     for (const r of (data ?? []) as Array<{ id: string; name: string }>) {
       map.set(r.id, r.name);
@@ -298,7 +323,11 @@ export class ImpactPreviewService {
       .select('id, first_name, last_name')
       .eq('tenant_id', tenantId)
       .in('id', ids);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.person_names_load_failed', {
+        detail: 'Impact-preview person-name hydrate failed',
+      });
+    }
     const map = new Map<string, string>();
     for (const r of (data ?? []) as Array<{
       id: string;
