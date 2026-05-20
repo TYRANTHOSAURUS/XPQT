@@ -28,7 +28,7 @@ XPQT/
 - `pnpm db:start` — start local Supabase
 - `pnpm db:reset` — reset database and re-run migrations **(local only!)**
 - `pnpm db:push` — push migrations to the **remote** Supabase project
-- `pnpm smoke:work-orders` / `pnpm smoke:tickets` / `pnpm smoke:edit-booking-scope` / `pnpm smoke:edit-booking` / `pnpm smoke:cancel-booking` / `pnpm smoke:create-multi-room` / `pnpm smoke:attach-services` / `pnpm smoke:cancel-order-line` / `pnpm smoke:recurrence-clone` / `pnpm smoke:floor-plans` / `pnpm smoke:visual-approval` / `pnpm smoke:cross-tenant` — live-API smoke probes (see Smoke gates below)
+- `pnpm smoke:work-orders` / `pnpm smoke:tickets` / `pnpm smoke:edit-booking-scope` / `pnpm smoke:edit-booking` / `pnpm smoke:cancel-booking` / `pnpm smoke:create-multi-room` / `pnpm smoke:attach-services` / `pnpm smoke:cancel-order-line` / `pnpm smoke:recurrence-clone` / `pnpm smoke:floor-plans` / `pnpm smoke:visual-approval` / `pnpm smoke:cross-tenant` / `pnpm smoke:prod-e2e` — live-API smoke probes (see Smoke gates below)
 
 ## Smoke gates (mandatory before claiming ship)
 
@@ -49,6 +49,7 @@ Run the gate before claiming complete:
 - `FloorPlanService` / `publish_floor_plan_draft` RPC / floor-plan editor → `pnpm smoke:floor-plans`
 - `BookingFlowService` consumer cutover / `ApprovalConfigCompilerService` / `grant_booking_approval` v2 / `ensure_room_booking_rule_workflow_definition` / `cancel_workflow_instance_with_approvals` (Phase 1.5 visual approval workflow) → `pnpm smoke:visual-approval`
 - `AuthGuard` / `AdminGuard` / `PermissionGuard` / global tenant binding / any admin/config controller using `TenantContext.current()` / `PersonController` (`@Get('me')` ordering before `@Get(':id')`; `PersonService.getMe`) / any migration touching schema-wide GRANT/REVOKE EXECUTE or the RLS-helper functions (`current_tenant_id` / `current_user_id` / `user_has_permission`) → `pnpm smoke:cross-tenant` (also covers browser-path RLS-helper EXECUTE regression — the blanket-`REVOKE EXECUTE` / 00435-outage class: a real browser JWT doing plain PostgREST reads must return 200, not `42501 permission denied for function`; AND the R1 unwrapped-throw regression — browser-token `GET /api/persons/me` must return 200 with `id`, not 500 `unknown.server_error`)
+- After any prod-deploy verification, or before claiming a backend bug fix is live in prod → `pnpm smoke:prod-e2e` (read-only post-deploy gate: `/api/health` + `/api/me/inbox(.count)` + `/api/persons/me` against the live Render service; three named failure classes — `transport` / `http-status` / `body-shape`)
 
 Exit 0 = green; exit 1 = at least one regression.
 
