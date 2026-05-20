@@ -291,7 +291,7 @@ That exact failure mode shipped on 2026-05-20: `/api/persons/me` returned `HTTP 
 
 **Read-only by design.** No fixtures seeded, no rows written, no teardown. Safe to run against prod after every deploy and from CI without coordination.
 
-**Cold-start tolerance.** Render free-tier services can take >30s to wake. Each probe gets `PROD_E2E_TIMEOUT_MS` (default 45s) per try and one automatic retry on transport-class failure (timeout / DNS / non-HTTP). Two consecutive transport fails still red the gate — this absorbs spin-up jitter, not real outages.
+**Cold-start tolerance.** Render free-tier services can take >30s to wake. Each probe gets `PROD_E2E_TIMEOUT_MS` (default 45s) per try and one automatic retry (`PROD_E2E_RETRIES`, default 1) on transient failure. The retry trigger is BOTH a transport throw (timeout / DNS / non-HTTP) AND a 5xx-gateway response (`502` / `503` / `504`) — Render's cold-start path can return either, and treating a cold-start 503 as a real `http-status` outage is the regression class R3 (codex tertiary) carves out. On retry exhaustion the failure CLASS is preserved (transport vs http-status); only the retry trigger is unified. Two consecutive transient fails still red the gate — this absorbs spin-up jitter, not real outages.
 
 **Three named failure classes** (mirrors the R3 precision model in `smoke:cross-tenant`):
 - **`transport`** — fetch threw (DNS / network / abort / non-HTTP). Surface: the underlying reason or `timeout after Nms`.
@@ -307,7 +307,7 @@ The same binary green/red outcome holds; the label tells the on-call which layer
 - **`GET /api/me/inbox/count`** (minted browser JWT) → HTTP 200 + `{ unread: number, total: number }`. Catches: per-route NestJS exception filter / DTO contract drift on the count surface.
 - **`GET /api/persons/me`** (minted browser JWT, gated by `R1_LANDED=1`) → HTTP 200 + `{ id: string, … }`. Gated until PR #36 (`fix/persons-me-apperror`) merges and prod redeploys — the route returns 500 pre-merge. Flip `R1_LANDED=1` once the redeploy is live; no code change required.
 
-**JWT mint** mirrors `smoke-cross-tenant.mjs`: Supabase admin magiclink → verify-redirect access_token, for `ADMIN_AUTH_UID=93d41232-35b5-424c-b215-bb5d55a2dfd9`. Requires `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_PUBLISHABLE_KEY` in `.env` (or the process env, for CI). No `JWT_SECRET` required — the Supabase admin client mints session tokens server-side.
+**JWT mint** mirrors `smoke-cross-tenant.mjs`: Supabase admin magiclink → verify-redirect access_token, for `ADMIN_AUTH_UID=93d41232-35b5-424c-b215-bb5d55a2dfd9` (default; override via `PROD_E2E_AUTH_UID=<uuid>` if the canonical user is rotated or deactivated — replacement MUST be an active admin in the canonical tenant). Requires `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_PUBLISHABLE_KEY` in `.env` (or the process env, for CI). No `JWT_SECRET` required — the Supabase admin client mints session tokens server-side. The minted token is NEVER logged (not even a prefix) — log surfaces only `admin browser JWT minted (token redacted)`. Verify-redirect parse failures surface only the redirect origin, never the full URL.
 
 **Not covered (by design):**
 - Writes. This is a read-only gate. Write-path coverage stays in the dev-API smoke gates.

@@ -20,12 +20,18 @@
  * session" gate.
  *
  * Read-only — no writes. Safe to run against prod after every deploy.
- * Cold-start tolerant: a 30s per-probe timeout absorbs Render free-tier
- * spin-up.
+ * Cold-start tolerant: a 45s per-probe timeout (PROD_E2E_TIMEOUT_MS) and
+ * retry-on-transient absorbs Render free-tier spin-up. The retry trigger
+ * is BOTH a transport throw AND a 5xx-gateway response (502 / 503 / 504)
+ * — Render's cold-start path can return either, and classifying a
+ * cold-start 503 as a real http-status outage is the bug R3 carves out.
+ * On retry exhaustion, the failure CLASS is preserved (transport vs
+ * http-status); only the retry trigger is unified.
  *
  * USAGE:
  *   node apps/api/scripts/smoke-prod-e2e.mjs
  *   PROD_BASE=https://other-host pnpm smoke:prod-e2e
+ *   PROD_E2E_AUTH_UID=<uuid> pnpm smoke:prod-e2e  # override the admin user used to mint the browser JWT
  *   R1_LANDED=1 pnpm smoke:prod-e2e        # enable persons/me probe once R1 merges
  *
  *   exit 0 = all probes pass; exit 1 = at least one regression.
@@ -84,7 +90,14 @@ function envOrProcess(key) {
 }
 
 const PROD_BASE = process.env.PROD_BASE || 'https://xpqt-api-eu.onrender.com';
-const ADMIN_AUTH_UID = '93d41232-35b5-424c-b215-bb5d55a2dfd9';
+// The admin user we mint a browser JWT for. Hard-coded UUID is the
+// canonical-tenant prod admin used during the 2026-05-20 R5 carve-out;
+// override via PROD_E2E_AUTH_UID if that user is rotated/deactivated.
+// Documented in docs/smoke-gates.md under the prod-e2e section. The user
+// MUST be active, hold the admin role, and live in the canonical tenant
+// that the prod-e2e probes exercise.
+const ADMIN_AUTH_UID =
+  process.env.PROD_E2E_AUTH_UID || '93d41232-35b5-424c-b215-bb5d55a2dfd9';
 // R1 (PR #36) ships GET /api/persons/me. Until it merges + prod redeploys,
 // the route returns 500 — gate the probe rather than baking a known-fail
 // into the script. Flip R1_LANDED=1 (or just leave it set after merge) to
@@ -143,7 +156,21 @@ async function mintTokenFor(authUid) {
   });
   const loc = v.headers.get('location');
   const m = loc?.match(/access_token=([^&]+)/);
-  if (!m) throw new Error(`no access_token in verify redirect: ${loc}`);
+  if (!m) {
+    // Don't surface `loc` — a partial/malformed verify redirect can
+    // include token material in the URL fragment/query. Surface only
+    // the origin (auth provider) to keep the failure diagnosable
+    // without leaking auth-material into logs / results.failed.
+    let redactedOrigin = '<no location header>';
+    if (loc) {
+      try {
+        redactedOrigin = new URL(loc).origin;
+      } catch {
+        redactedOrigin = '<unparseable redirect>';
+      }
+    }
+    throw new Error(`no access_token in verify redirect (origin=${redactedOrigin})`);
+  }
   return m[1];
 }
 
@@ -160,36 +187,70 @@ const results = { pass: 0, fail: 0, failed: [], total: 0 };
  *   class = transport   → fetch threw (DNS/network/abort/non-HTTP)
  *   class = http-status → got a response but status !== 200
  *   class = body-shape  → 200 + JSON, but `validate(json)` returned a reason
+ *
+ * Retry policy: BOTH a transport throw AND a 5xx-gateway response (502 /
+ * 503 / 504) are treated as RETRYABLE transients while
+ * `attempt < TRANSPORT_RETRIES`. Render free-tier cold starts can return
+ * either, and classifying a cold-start 503 as a real outage was the
+ * codex tertiary finding R3 carves out. On retry exhaustion the final
+ * outcome's CLASS is preserved — a final-attempt 503 still surfaces as
+ * `http-status` with the status code, not as `transport`. Retry-log
+ * messages name the probe + status (no headers, no URL params).
  */
+const GATEWAY_RETRY_STATUSES = new Set([502, 503, 504]);
+
 async function probe(name, { url, headers = {}, validate }) {
   results.total += 1;
-  let response;
+  let response = null;
   let lastTransportReason = null;
   for (let attempt = 0; attempt <= TRANSPORT_RETRIES; attempt += 1) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
-      response = await fetch(url, {
+      const res = await fetch(url, {
         method: 'GET',
         headers,
         signal: controller.signal,
       });
+      // 5xx-gateway statuses behave like a cold-start transport hiccup;
+      // retry while we have budget, then preserve `http-status` class on
+      // exhaustion (response is kept, lastTransportReason stays null).
+      if (GATEWAY_RETRY_STATUSES.has(res.status) && attempt < TRANSPORT_RETRIES) {
+        if (typeof res.body?.cancel === 'function') {
+          await res.body.cancel().catch(() => {});
+        }
+        console.log(
+          `  · ${name} attempt ${attempt + 1} got HTTP ${res.status} (gateway transient); retrying…`,
+        );
+        continue;
+      }
+      response = res;
       lastTransportReason = null;
       break;
     } catch (e) {
       lastTransportReason =
         e?.name === 'AbortError' ? `timeout after ${TIMEOUT_MS}ms` : String(e?.message || e);
       if (attempt < TRANSPORT_RETRIES) {
-        console.log(`  · ${name} transport attempt ${attempt + 1} failed (${lastTransportReason}); retrying…`);
+        console.log(
+          `  · ${name} attempt ${attempt + 1} transport failed (${lastTransportReason}); retrying…`,
+        );
       }
     } finally {
       clearTimeout(timer);
     }
   }
-  if (lastTransportReason) {
+  if (!response && lastTransportReason) {
     results.fail += 1;
     results.failed.push(`${name} [transport]: ${lastTransportReason}`);
     console.log(`  ✗ ${name} [transport] ${lastTransportReason}`);
+    return;
+  }
+  if (!response) {
+    // Defensive: loop exited without a response and without a captured
+    // transport reason. Treat as transport so we never silently no-op.
+    results.fail += 1;
+    results.failed.push(`${name} [transport]: no response after ${TRANSPORT_RETRIES + 1} attempt(s)`);
+    console.log(`  ✗ ${name} [transport] no response after ${TRANSPORT_RETRIES + 1} attempt(s)`);
     return;
   }
 
@@ -278,7 +339,10 @@ function validatePersonsMe(json) {
   let browserToken;
   try {
     browserToken = await mintTokenFor(ADMIN_AUTH_UID);
-    console.log(`\nadmin browser JWT minted: ${browserToken.slice(0, 16)}…`);
+    // Don't log any substring of the token — even a 16-char JWT prefix
+    // is enough to discriminate sessions in shared log surfaces. The
+    // confirmation that mint succeeded is the absence of the catch path.
+    console.log('\nadmin browser JWT minted (token redacted)');
   } catch (e) {
     console.log(`\n  ✗ JWT mint failed — every authenticated probe will be skipped as transport failure`);
     console.log(`     ${e?.message || e}`);
