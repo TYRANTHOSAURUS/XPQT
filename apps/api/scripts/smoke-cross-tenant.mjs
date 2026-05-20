@@ -1225,23 +1225,78 @@ async function probe(name, options) {
       }
 
       // ── 200 happy path ─────────────────────────────────────────────
+      // Codex tertiary (PR #38): a 200 status is NOT proof of a healthy
+      // PostgREST select on its own. Proxies, CDN error pages, or
+      // upstream contract drift can deliver `HTTP 200 + HTML` (or `HTTP
+      // 200 + JSON envelope code=42501`, a bizarre contract violation).
+      // Parse the body and require a JSON array (the only legitimate
+      // PostgREST select shape) before incrementing `results.pass`.
+      // Otherwise fail-close with a precise class label so a silently
+      // mis-shaped 200 can never mask the very regression the probe is
+      // here to catch.
       if (!transportReason && rr.status === 200) {
-        // 200 + `permission denied for function` in body would be a
-        // bizarre PostgREST contract violation; treat as class (a) to
-        // keep fail-closed even if the upstream shape drifts.
-        if (rrBody.includes('permission denied for function')) {
+        const ct = rr.headers.get('content-type') || '';
+        const looksJson = ct.includes('application/json');
+        if (!looksJson) {
+          // 200 + non-JSON body — never legitimate from PostgREST. Treat
+          // as transport/5xx class (proxy/CDN error page, gateway HTML,
+          // etc.) so a green run is genuinely green.
           results.fail += 1;
           results.failed.push(
-            `browser-path RLS read ${tbl} [42501-rls-helper]: 200-with-helperDenied-body — ${rrBody.slice(0, 160)}`,
+            `browser-path RLS read ${tbl} [transport-or-5xx]: HTTP 200 + non-JSON content-type "${ct}" — ${rrBody.slice(0, 160)}`,
           );
           console.log(
-            `  ✗ browser-path RLS read /rest/v1/${tbl} [42501-rls-helper] → HTTP 200 but body contains 'permission denied for function' — 42501 RLS-helper EXECUTE regression (blanket REVOKE EXECUTE class; the 00435-outage type) — ${rrBody.slice(0, 160)}`,
+            `  ✗ browser-path RLS read /rest/v1/${tbl} [transport-or-5xx] → HTTP 200 + non-JSON content-type "${ct}" — fail-close on suspicious response (proxy/CDN error page?); not an RLS-helper EXECUTE regression.`,
           );
           continue;
         }
+        let parsed200;
+        try {
+          parsed200 = JSON.parse(rrBody);
+        } catch {
+          results.fail += 1;
+          results.failed.push(
+            `browser-path RLS read ${tbl} [transport-or-5xx]: HTTP 200 + unparseable JSON — ${rrBody.slice(0, 160)}`,
+          );
+          console.log(
+            `  ✗ browser-path RLS read /rest/v1/${tbl} [transport-or-5xx] → HTTP 200 + JSON parse error — fail-close on unparseable body; not an RLS-helper EXECUTE regression.`,
+          );
+          continue;
+        }
+        if (!Array.isArray(parsed200)) {
+          // Could be `{code, message, ...}` PostgREST error envelope.
+          // If the envelope says 42501 / permission denied for function,
+          // classify as class (a) even though the status is 200 (it's a
+          // catastrophic contract violation but still THE regression).
+          const code = (parsed200 && typeof parsed200 === 'object' && parsed200.code) || '';
+          const msg =
+            (parsed200 && typeof parsed200 === 'object' && parsed200.message) || '';
+          if (code === '42501' || /permission denied for function/i.test(msg)) {
+            results.fail += 1;
+            results.failed.push(
+              `browser-path RLS read ${tbl} [42501-rls-helper]: HTTP 200 envelope code=42501 — ${rrBody.slice(0, 160)}`,
+            );
+            console.log(
+              `  ✗ browser-path RLS read /rest/v1/${tbl} [42501-rls-helper] → HTTP 200 + JSON envelope code=42501 (catastrophic RLS-helper regression delivered with a 200 status — fail-close).`,
+            );
+            continue;
+          }
+          // Non-array, non-42501-error JSON: not a PostgREST select
+          // shape. Fail closed under transport-or-5xx (upstream contract
+          // drift), not as a green pass.
+          results.fail += 1;
+          results.failed.push(
+            `browser-path RLS read ${tbl} [transport-or-5xx]: HTTP 200 + non-array JSON — ${rrBody.slice(0, 160)}`,
+          );
+          console.log(
+            `  ✗ browser-path RLS read /rest/v1/${tbl} [transport-or-5xx] → HTTP 200 + JSON is not an array (PostgREST select returns [] or [{...}]) — fail-close on suspicious shape.`,
+          );
+          continue;
+        }
+        // Genuine pass: HTTP 200 + JSON array (PostgREST SELECT result).
         results.pass += 1;
         console.log(
-          `  ✓ browser-path RLS read /rest/v1/${tbl} → HTTP 200 (RLS-helper EXECUTE intact; non-admin browser session)`,
+          `  ✓ browser-path RLS read /rest/v1/${tbl} → HTTP 200 (RLS-helper EXECUTE intact; non-admin browser session; ${parsed200.length} row(s))`,
         );
         continue;
       }
@@ -1250,6 +1305,13 @@ async function probe(name, options) {
       // Parse the body once; if non-JSON, we treat it as class (c)
       // when paired with a 4xx (PostgREST always returns JSON on
       // failure, so non-JSON 4xx is transport/proxy interference).
+      // Codex tertiary (PR #38): also capture content-type so the
+      // class (a) substring check is gated on a JSON envelope; a 4xx
+      // HTML proxy error page that happens to contain the literal
+      // text "permission denied for function" must NOT be mislabeled
+      // as the 42501 RLS-helper class.
+      const ct = !transportReason ? rr.headers.get('content-type') || '' : '';
+      const looksJson = ct.includes('application/json');
       let parsedBody = null;
       let bodyIsJson = false;
       if (!transportReason) {
@@ -1261,9 +1323,16 @@ async function probe(name, options) {
         }
       }
 
-      // Class (a): 42501-rls-helper — substring OR JSON code === '42501'
+      // Class (a): 42501-rls-helper — only when the response actually
+      // looks like a PostgREST JSON envelope. Gate the substring check
+      // on `looksJson` (content-type) AND `bodyIsJson` (body actually
+      // parses) so an HTML proxy error page containing the literal
+      // text "permission denied for function" can't be misattributed.
       const helperDenied =
-        !transportReason && rrBody.includes('permission denied for function');
+        !transportReason &&
+        looksJson &&
+        bodyIsJson &&
+        /permission denied for function/i.test(rrBody);
       const jsonCode42501 = bodyIsJson && parsedBody?.code === '42501';
       if (helperDenied || jsonCode42501) {
         const status = rr?.status ?? 'n/a';
