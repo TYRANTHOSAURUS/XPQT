@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { wrapPgError } from '../../common/errors';
 
 export interface CreateAssetDto {
   name: string;
@@ -37,9 +37,8 @@ export class AssetService {
       .eq('active', true)
       .order('name');
     if (error) {
-      throw AppErrors.server('asset.type_list_failed', {
+      throw wrapPgError(error, 'asset.type_list_failed', {
         detail: 'Asset type list query failed',
-        cause: error,
       });
     }
     return data;
@@ -53,9 +52,8 @@ export class AssetService {
       .select()
       .single();
     if (error) {
-      throw AppErrors.server('asset.type_create_failed', {
+      throw wrapPgError(error, 'asset.type_create_failed', {
         detail: 'Asset type insert failed',
-        cause: error,
       });
     }
     return data;
@@ -88,9 +86,8 @@ export class AssetService {
 
     const { data, error } = await query;
     if (error) {
-      throw AppErrors.server('asset.list_failed', {
+      throw wrapPgError(error, 'asset.list_failed', {
         detail: 'Asset list query failed',
-        cause: error,
       });
     }
     return data;
@@ -110,9 +107,9 @@ export class AssetService {
       .eq('tenant_id', tenant.id)
       .single();
     if (error) {
-      throw AppErrors.server('asset.lookup_failed', {
+      throw wrapPgError(error, 'asset.lookup_failed', {
         detail: `Asset lookup failed for id ${id}`,
-        cause: error,
+        notFoundCode: 'asset.not_found',
       });
     }
     return data;
@@ -126,9 +123,8 @@ export class AssetService {
       .select()
       .single();
     if (error) {
-      throw AppErrors.server('asset.create_failed', {
+      throw wrapPgError(error, 'asset.create_failed', {
         detail: 'Asset insert failed',
-        cause: error,
       });
     }
     return data;
@@ -144,9 +140,9 @@ export class AssetService {
       .select()
       .single();
     if (error) {
-      throw AppErrors.server('asset.update_failed', {
+      throw wrapPgError(error, 'asset.update_failed', {
         detail: `Asset update failed for id ${id}`,
-        cause: error,
+        notFoundCode: 'asset.not_found',
       });
     }
     return data;
@@ -165,9 +161,8 @@ export class AssetService {
       .eq('tenant_id', tenant.id)
       .order('created_at', { ascending: false });
     if (error) {
-      throw AppErrors.server('asset.history_list_failed', {
+      throw wrapPgError(error, 'asset.history_list_failed', {
         detail: `Asset history query failed for id ${assetId}`,
-        cause: error,
       });
     }
     return data;

@@ -7,6 +7,26 @@ throw surfacing as `unknown.server_error` 500 from `/api/persons/me`. R2 is
 the bug-class sweep — every `/api/*` controller is either AppError-migrated
 or explicitly documented as deferred with owner + reason.
 
+### Fold (post-review, 2026-05-20)
+
+Three independent reviewers (plan + code + codex tertiary) all flagged the
+same critical wire-code regression in the initial PR: the mechanical
+`AppErrors.server(...)` fold collapsed all PostgrestError / pg-native
+errors to 500, bypassing the global filter's existing PGRST116→404 /
+23505→409 / 23503→409 mapping. The fold adds:
+
+1. `apps/api/src/common/errors/wrap-pg-error.ts` — wrapper helper that
+   preserves the 404/409 wire shape while still surfacing a
+   module-specific 500 code for everything else.
+2. 6 new module-specific `<entity>.not_found` codes
+   (`business_hours`/`catalog_menu`/`delegation`/`notification`/`team`/`vendor`).
+   `asset.not_found` already existed in the registry.
+3. A second ratchet in `scripts/check-app-errors.sh` that forbids bare
+   `throw error;` / `throw err;` in the 10 swept modules' `*.service.ts`
+   files — catches the R1 bug class going forward.
+4. Honest enumeration of deferred raw-throw sites in other migrated
+   modules (235 sites across 27 modules — see "Deferred" section below).
+
 ## Methodology
 
 1. Enumerated every `@Controller(...)` under `apps/api/src/` →
@@ -44,7 +64,7 @@ nests requiring fresh code design.
 |---|---|---|---|---|
 | asset | `/api/assets`, `/api/asset-types` | `asset.service.ts:38,49,79,96,107,120,136` (7 sites — all `if (error) throw error;`) | Yes — desk/admin reads + writes | **MIGRATE** |
 | business-hours | `/api/business-hours` | `business-hours.service.ts:44,56,67,80` (4 sites) | Yes — admin reads + writes | **MIGRATE** |
-| catalog-menu | `/api/catalog-items`, `/api/catalog-menus` (+ items + resolve) | `catalog-menu.service.ts:57,69,84,97,109,120,134,146,169,199,222,249,262,274,284` (13 sites including duplicate/bulk/resolve) | Yes — admin reads + booking flow resolveOffer | **MIGRATE** |
+| catalog-menu | `/api/catalog-items`, `/api/catalog-menus` (+ items + resolve) | `catalog-menu.service.ts:57,69,84,97,109,120,134,146,169,199,222,249,262,274,284` (15 sites including duplicate/bulk/resolve) | Yes — admin reads + booking flow resolveOffer | **MIGRATE** |
 | delegation | `/api/delegations` | `delegation.service.ts:27,38,51` (3 sites) | Yes — admin reads + writes | **MIGRATE** |
 | notification | `/api/notifications`, `/api/notification-templates` | `notification.service.ts:67,134,152,171,228` (5 raw rethrows: `send`-insert, `listTemplates`, `createTemplate`-entity, `createTemplate`-version, `updateTemplate`-version) | Yes — admin template surface; `send` is internal producer | **MIGRATE** |
 | team | `/api/teams` (+ members) | `team.service.ts:16,28,44,57,68,79,91` (7 sites) | Yes — desk/admin reads + writes | **MIGRATE** |
@@ -64,18 +84,72 @@ nests requiring fresh code design.
 `privacy-compliance`, `routing`, `apps/api/src/common`, `visitors`,
 `maintenance`.
 
-### Deferred — none
+### Deferred — explicit owner = R2-follow-up (raw-throw cleanup in other migrated modules)
 
-There is no module with `/api/*` reach that has raw rethrows and is left
-out of this PR. The 7 modules listed above cover every reachable
-controller surface with raw `throw error` Postgres rethrows.
+There is no module with `/api/*` reach that has raw rethrows AND is left
+out of THIS PR's 7-module sweep. The 7 modules above cover every
+reachable controller surface where the entire module was raw-rethrow
+prior to R2.
 
-Future tightening (NOT in scope for R2 — proposed as a follow-up):
+However, **existing migrated modules carry 235 residual raw `throw error;`
+sites across 27 modules**, not covered by either ratchet today. Pre-R2
+they were already in `MIGRATED_MODULES` (so the Nest-exception gate
+applies) but the SECOND ratchet `RAW_RETHROW_FORBIDDEN` only fires for
+the 10 modules explicitly added to `RAW_RETHROW_SWEPT_MODULES`. These
+236 sites are explicitly deferred to a focused follow-up PR — not
+forgotten, not "no deferred".
 
-| Item | Owner | Reason | Risk |
-|---|---|---|---|
-| Extend `scripts/check-app-errors.sh` to also forbid bare `throw error;` in migrated modules | `(R2-follow-up)` | Today's gate only catches `throw new BadRequestException(...)`-style sites. A migrated module can still raw-rethrow PostgrestError. Wider gate = stricter contract. | Low — likely catches dozens of "still works because the filter maps it" sites in migrated modules. Each needs a typed code. Lots of mechanical work. Out of scope for R2 because R2's DoD is reachable controllers covered, not gate hardening. |
-| Migrate residual raw rethrows inside existing migrated modules (e.g. `room-booking-rules` 20 sites, `config-engine` 30 sites, `user-management` 19 sites — uncovered by today's gate) | `(R2-follow-up)` | The filter normalises these to `db.constraint`/`db.unique_violation`/etc. — wire shape is correct but the wire `code` is generic, not domain-specific. R1's specific failure (R1 PostgrestError → `unknown.server_error`) was the catastrophic case; the residuals are best-practice tightening. | Low — current behaviour ships `db.constraint` 500 which the renderer copy treats correctly; the client just doesn't see a precise code. |
+Behaviour: the global filter's `fromPostgrestError` / `fromPgNativeError`
+branches still normalise these into `db.constraint` / `db.unique_violation`
+/ `db.fk_violation` / `permission.denied`. Wire shape is correct, but the
+wire `code` is generic rather than domain-specific. The catastrophic R1
+class (PostgrestError → `unknown.server_error`) lives ONLY in modules
+whose PostgrestError shape evades both filter branches; today's filter
+covers PGRST* prefixes + pg-native `severity`, which is the common case.
+
+| Module | Raw-throw sites | Reason for deferral |
+|---|---:|---|
+| config-engine | 31 | Out of R2 scope — sweep + ratchet to be done in a focused follow-up PR |
+| room-booking-rules | 20 | Same |
+| user-management | 19 | Same |
+| ticket | 13 | Same |
+| orders | 13 | Same |
+| maintenance | 13 | Same |
+| person | 12 | Same — R1 cleaned `/api/persons/me`; the rest of the module still has residuals |
+| work-orders | 10 | Same |
+| workflow | 10 | Same |
+| webhook | 9 | Same |
+| service-catalog | 8 | Same |
+| visitors | 8 | Same |
+| booking-bundles | 7 | Same |
+| org-node | 7 | Same |
+| portal | 7 | Same |
+| calendar-sync | 7 | Same |
+| approval | 6 | Same |
+| routing | 6 | Same |
+| sla | 5 | Same |
+| space | 5 | Same |
+| cost-centers | 5 | Same |
+| bundle-templates | 5 | Same |
+| service-routing | 5 | Same |
+| search | 1 | Same |
+| outbox | 1 | Same |
+| tenant | 1 | Same |
+| daily-list | 1 | Same |
+| **Total** | **235** | |
+
+Enumeration command:
+
+```bash
+for m in $(ls apps/api/src/modules); do
+  count=$(grep -rE 'throw[[:space:]]+(error|err)[[:space:]]*;' \
+    apps/api/src/modules/$m/ --include='*.service.ts' \
+    --exclude='*.spec.ts' 2>/dev/null | wc -l)
+  [ "$count" -gt 0 ] && echo "$m: $count"
+done
+```
+
+Run before opening the follow-up PR to confirm the count hasn't drifted.
 
 ## Codes introduced this PR
 
@@ -91,18 +165,74 @@ Future tightening (NOT in scope for R2 — proposed as a follow-up):
 - `team.list_failed`, `team.lookup_failed`, `team.create_failed`, `team.update_failed`, `team.member_list_failed`, `team.member_add_failed`, `team.member_remove_failed`
 - `vendor.list_failed`, `vendor.lookup_failed`, `vendor.create_failed`, `vendor.update_failed`, `vendor.service_area_list_failed`, `vendor.service_area_add_failed`, `vendor.service_area_remove_failed`
 
-42 new codes total. All follow the existing pattern (mirror `person.lookup_failed`, `org_node.create_failed`, `announcement.list_failed`).
+### Plus 6 `<entity>.not_found` codes added in the post-review fold (used by `wrapPgError`'s `notFoundCode` option):
 
-## Gate update
+- `business_hours.not_found`
+- `catalog_menu.not_found`
+- `delegation.not_found`
+- `notification.not_found`
+- `team.not_found`
+- `vendor.not_found`
 
-`scripts/check-app-errors.sh` `MIGRATED_MODULES` extended from 35 → 42:
-+ `apps/api/src/modules/asset`
-+ `apps/api/src/modules/business-hours`
-+ `apps/api/src/modules/catalog-menu`
-+ `apps/api/src/modules/delegation`
-+ `apps/api/src/modules/notification`
-+ `apps/api/src/modules/team`
-+ `apps/api/src/modules/vendor`
+(`asset.not_found` was already registered pre-R2, so the asset module
+re-uses it; only 6 new not_found codes are introduced by this PR.)
 
-Post-PR expected output:
-`Phase 7.A.3 ratchet: 0 raw throws across 42 migrated module(s).`
+**51 new codes total** (45 `*_failed` codes + 6 `*_not_found` codes). All
+follow the existing pattern (mirror `person.lookup_failed`,
+`org_node.create_failed`, `announcement.list_failed`).
+
+## Gate enforcement
+
+`pnpm errors:check-app-errors` runs `scripts/check-app-errors.sh` and now
+enforces TWO ratchets:
+
+### Ratchet 1 — `MIGRATED_MODULES` (Nest exception classes)
+
+Extended from 35 → 45 modules. R2 adds the 7 swept modules + 3 modules
+that were already AppError-clean but missing from the list
+(`floor-plan`, `inbox`, `notifications` — the plural one).
+
+Forbids: `throw new (BadRequest|NotFound|Forbidden|Unauthorized|Conflict|UnprocessableEntity|InternalServerError)Exception\b`
+
+### Ratchet 2 — `RAW_RETHROW_SWEPT_MODULES` (raw Postgres rethrows)
+
+New in R2. Extends the gate with a SECOND list covering the 10 modules
+whose `*.service.ts` files are demonstrably clean of bare
+`throw error;` Postgres rethrows. Catches the R1 bug class going forward.
+
+Forbids in `*.service.ts` only: `throw[[:space:]]+(error|err)[[:space:]]*;`
+
+The 10 modules: `asset`, `business-hours`, `catalog-menu`, `delegation`,
+`notification`, `team`, `vendor`, `floor-plan`, `inbox`, `notifications`.
+
+Modules NOT in this second list are intentionally excluded — see the
+Deferred section's 235-site backlog.
+
+### EN/NL message parity
+
+NOT enforced by `pnpm errors:check-app-errors`. Parity is enforced by
+`apps/api/src/common/errors/messages.spec.ts` (Jest), which runs as part
+of `pnpm -C apps/api test`. The spec asserts:
+- Every EN code has a NL translation.
+- NL has no extra codes beyond EN.
+- NL message count matches EN count.
+
+The PR adds the 6 new not_found codes + their NL translations together;
+the spec passes locally.
+
+### Wire-code precision (PGRST116 / 23505 / 23503)
+
+NOT enforced by a CI gate. Preserved by convention via the `wrapPgError`
+helper. Code-review verification: every replacement of
+`AppErrors.server(...)` in this PR uses `wrapPgError(error, code, opts)`,
+and `notFoundCode` is supplied at every `.single()` / `.maybeSingle()`
+read site so PGRST116 maps to 404. A future tightening: add a lint
+that flags `AppErrors.server(...)` immediately after a supabase call (no
+unit-test gate for this today).
+
+### Expected post-PR output
+
+```
+Phase 7.A.3 ratchet: 0 raw throws across 45 migrated module(s).
+R2 raw-rethrow ratchet: 0 raw rethrows across 10 swept module(s).
+```

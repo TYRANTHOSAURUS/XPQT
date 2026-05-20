@@ -65,12 +65,50 @@ MIGRATED_MODULES=(
   "apps/api/src/modules/notification"
   "apps/api/src/modules/team"
   "apps/api/src/modules/vendor"
+  # R2 follow-up — already-clean modules folded into the gate as a
+  # one-line ratchet improvement (they were AppError-migrated organically
+  # but never added to MIGRATED_MODULES).
+  "apps/api/src/modules/floor-plan"
+  "apps/api/src/modules/inbox"
+  "apps/api/src/modules/notifications"
+)
+
+# Modules with the SWEPT raw-rethrow class (`if (error) throw error;`).
+# These get a SECOND ratchet (RAW_RETHROW_FORBIDDEN) on top of the Nest-
+# exception ratchet, so the R1/R2 bug class (a fresh raw rethrow in one
+# of these specific modules) is caught by CI going forward.
+#
+# Scope is intentionally narrower than MIGRATED_MODULES — adding a module
+# here is a promise that its service files are clean today. Other migrated
+# modules (config-engine, room-booking-rules, user-management) have many
+# residual raw rethrows; they're explicitly deferred to a future R2-follow-up
+# PR (see triage doc "Deferred" section). Don't add them here without a
+# matching cleanup PR.
+RAW_RETHROW_SWEPT_MODULES=(
+  "apps/api/src/modules/asset"
+  "apps/api/src/modules/business-hours"
+  "apps/api/src/modules/catalog-menu"
+  "apps/api/src/modules/delegation"
+  "apps/api/src/modules/notification"
+  "apps/api/src/modules/team"
+  "apps/api/src/modules/vendor"
+  "apps/api/src/modules/floor-plan"
+  "apps/api/src/modules/inbox"
+  "apps/api/src/modules/notifications"
 )
 
 # Forbidden patterns. The filter handles legacy throws via `generic.*` codes,
 # but inside a migrated module the AppError factory is the only sanctioned
 # way to throw an HTTP error.
 FORBIDDEN='throw new (BadRequest|NotFound|Forbidden|Unauthorized|Conflict|UnprocessableEntity|InternalServerError)Exception\b'
+
+# Additional forbidden pattern for swept modules: bare `throw error;` /
+# `throw err;` Postgres rethrows. These bypass the AppError → typed-code
+# path, so the wire `code` collapses to a generic `db.constraint` /
+# `unknown.server_error` rather than a domain code. R1 (PR #36) demonstrated
+# the R1 bug class — a PostgrestError shape that wasn't caught by either
+# normalize branch and surfaced as `unknown.server_error` 500.
+RAW_RETHROW_FORBIDDEN='throw[[:space:]]+(error|err)[[:space:]]*;'
 
 violations=0
 for module in "${MIGRATED_MODULES[@]}"; do
@@ -93,13 +131,44 @@ for module in "${MIGRATED_MODULES[@]}"; do
   fi
 done
 
-if [ "$violations" -gt 0 ]; then
-  echo "Phase 7.A.3 ratchet: $violations migrated module(s) reintroduced raw throws."
-  echo "Use AppError factories from apps/api/src/common/errors instead."
-  echo "If a throw genuinely cannot use AppError (e.g. bootstrap-time errors"
-  echo "before the filter is wired), add an inline ESLint override and a"
-  echo "// phase-7: reason-not-app-error explanation comment."
+# Second ratchet — raw `throw error;` Postgres rethrows in swept modules.
+# Scope: *.service.ts only (controllers don't catch supabase errors; the
+# rethrow class only appears at the service layer). Excludes .spec.ts as
+# above.
+rethrow_violations=0
+for module in "${RAW_RETHROW_SWEPT_MODULES[@]}"; do
+  if [ ! -d "$module" ]; then
+    echo "warn: rethrow-swept module not found: $module" >&2
+    continue
+  fi
+
+  matches=$(grep -rEn "$RAW_RETHROW_FORBIDDEN" "$module" --include='*.service.ts' --exclude='*.spec.ts' || true)
+  if [ -n "$matches" ]; then
+    echo "[FAIL] Raw Postgres rethrow found in swept module: $module"
+    echo "Use wrapPgError(error, '<module>.<op>_failed', { detail, notFoundCode? })"
+    echo "from apps/api/src/common/errors/wrap-pg-error.ts to preserve wire-code"
+    echo "precision (PGRST116→404, 23505/23503→409)."
+    echo "$matches"
+    echo
+    rethrow_violations=$((rethrow_violations + 1))
+  fi
+done
+
+if [ "$violations" -gt 0 ] || [ "$rethrow_violations" -gt 0 ]; then
+  if [ "$violations" -gt 0 ]; then
+    echo "Phase 7.A.3 ratchet: $violations migrated module(s) reintroduced raw throws."
+    echo "Use AppError factories from apps/api/src/common/errors instead."
+    echo "If a throw genuinely cannot use AppError (e.g. bootstrap-time errors"
+    echo "before the filter is wired), add an inline ESLint override and a"
+    echo "// phase-7: reason-not-app-error explanation comment."
+  fi
+  if [ "$rethrow_violations" -gt 0 ]; then
+    echo "R2 raw-rethrow ratchet: $rethrow_violations swept module(s) reintroduced"
+    echo "the R1 bug class (bare \`throw error;\` from Postgres). Use wrapPgError"
+    echo "from apps/api/src/common/errors instead."
+  fi
   exit 1
 fi
 
 echo "Phase 7.A.3 ratchet: 0 raw throws across ${#MIGRATED_MODULES[@]} migrated module(s)."
+echo "R2 raw-rethrow ratchet: 0 raw rethrows across ${#RAW_RETHROW_SWEPT_MODULES[@]} swept module(s)."

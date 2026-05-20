@@ -1179,7 +1179,20 @@ export type KnownErrorCode =
   | 'vendor.update_failed'
   | 'vendor.service_area_list_failed'
   | 'vendor.service_area_add_failed'
-  | 'vendor.service_area_remove_failed';
+  | 'vendor.service_area_remove_failed'
+
+  // ─── R2 AppError sweep follow-up (2026-05-20) — wrapPgError ─────────────
+  // Module-specific `<entity>.not_found` codes registered so wrapPgError
+  // can use a typed `notFoundCode` for `PGRST116` (no rows from `.single()`)
+  // lookups. `asset.not_found` already existed; the rest are net new.
+  // Wire status 404 — same as `generic.not_found` but lets the client
+  // toast distinguish per-entity. Spec §3.4 + triage doc.
+  | 'business_hours.not_found'
+  | 'catalog_menu.not_found'
+  | 'delegation.not_found'
+  | 'notification.not_found'
+  | 'team.not_found'
+  | 'vendor.not_found';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1940,6 +1953,13 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'vendor.service_area_list_failed',
   'vendor.service_area_add_failed',
   'vendor.service_area_remove_failed',
+  // ─── R2 follow-up (2026-05-20) — wrapPgError `<entity>.not_found` ─────────
+  'business_hours.not_found',
+  'catalog_menu.not_found',
+  'delegation.not_found',
+  'notification.not_found',
+  'team.not_found',
+  'vendor.not_found',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

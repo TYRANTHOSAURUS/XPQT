@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { wrapPgError } from '../../common/errors';
 
 export interface WorkingHoursDay {
   start: string;
@@ -43,9 +43,8 @@ export class BusinessHoursService {
       .eq('tenant_id', tenant.id)
       .order('name');
     if (error) {
-      throw AppErrors.server('business_hours.list_failed', {
+      throw wrapPgError(error, 'business_hours.list_failed', {
         detail: 'Business hours calendar list query failed',
-        cause: error,
       });
     }
     return data;
@@ -60,9 +59,9 @@ export class BusinessHoursService {
       .eq('tenant_id', tenant.id)
       .single();
     if (error) {
-      throw AppErrors.server('business_hours.lookup_failed', {
+      throw wrapPgError(error, 'business_hours.lookup_failed', {
         detail: `Business hours calendar lookup failed for id ${id}`,
-        cause: error,
+        notFoundCode: 'business_hours.not_found',
       });
     }
     return data;
@@ -76,9 +75,8 @@ export class BusinessHoursService {
       .select()
       .single();
     if (error) {
-      throw AppErrors.server('business_hours.create_failed', {
+      throw wrapPgError(error, 'business_hours.create_failed', {
         detail: 'Business hours calendar insert failed',
-        cause: error,
       });
     }
     return data;
@@ -94,9 +92,9 @@ export class BusinessHoursService {
       .select()
       .single();
     if (error) {
-      throw AppErrors.server('business_hours.update_failed', {
+      throw wrapPgError(error, 'business_hours.update_failed', {
         detail: `Business hours calendar update failed for id ${id}`,
-        cause: error,
+        notFoundCode: 'business_hours.not_found',
       });
     }
     return data;

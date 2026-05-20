@@ -2214,6 +2214,14 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'vendor.service_area_list_failed': { title: "Couldn't load vendor service areas" },
   'vendor.service_area_add_failed': { title: "Couldn't add that service area" },
   'vendor.service_area_remove_failed': { title: "Couldn't remove that service area" },
+
+  // ─── R2 follow-up — module-specific `not_found` for wrapPgError ───────────
+  'business_hours.not_found': { title: "We can't find that business hours calendar" },
+  'catalog_menu.not_found': { title: "We can't find that menu" },
+  'delegation.not_found': { title: "We can't find that delegation" },
+  'notification.not_found': { title: "We can't find that notification" },
+  'team.not_found': { title: "We can't find that team" },
+  'vendor.not_found': { title: "We can't find that vendor" },
 };
 
 /**

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { wrapPgError } from '../../common/errors';
 
 @Injectable()
 export class TeamService {
@@ -15,9 +15,8 @@ export class TeamService {
       .eq('tenant_id', tenant.id)
       .order('name');
     if (error) {
-      throw AppErrors.server('team.list_failed', {
+      throw wrapPgError(error, 'team.list_failed', {
         detail: 'Team list query failed',
-        cause: error,
       });
     }
     return data;
@@ -32,9 +31,12 @@ export class TeamService {
       .eq('tenant_id', tenant.id)
       .maybeSingle();
     if (error) {
-      throw AppErrors.server('team.lookup_failed', {
+      // `.maybeSingle()` returns `data: null` (not an error) when no rows
+      // match, so PGRST116 won't typically fire here. The notFoundCode is
+      // wired up anyway as defense-in-depth in case supabase-js evolves.
+      throw wrapPgError(error, 'team.lookup_failed', {
         detail: `Team lookup failed for id ${id}`,
-        cause: error,
+        notFoundCode: 'team.not_found',
       });
     }
     return data;
@@ -53,9 +55,11 @@ export class TeamService {
       .select()
       .single();
     if (error) {
-      throw AppErrors.server('team.create_failed', {
+      // 23505 (unique team name within tenant) → 409 db.unique_violation
+      // via wrapPgError. 23503 (FK violation on org_node_id) → 409
+      // db.fk_violation. Anything else → 500 team.create_failed.
+      throw wrapPgError(error, 'team.create_failed', {
         detail: 'Team insert failed',
-        cause: error,
       });
     }
     return data;
@@ -71,9 +75,9 @@ export class TeamService {
       .select()
       .single();
     if (error) {
-      throw AppErrors.server('team.update_failed', {
+      throw wrapPgError(error, 'team.update_failed', {
         detail: `Team update failed for id ${id}`,
-        cause: error,
+        notFoundCode: 'team.not_found',
       });
     }
     return data;
@@ -87,9 +91,8 @@ export class TeamService {
       .eq('team_id', teamId)
       .eq('tenant_id', tenant.id);
     if (error) {
-      throw AppErrors.server('team.member_list_failed', {
+      throw wrapPgError(error, 'team.member_list_failed', {
         detail: `Team member list query failed for team ${teamId}`,
-        cause: error,
       });
     }
     return data;
@@ -103,9 +106,10 @@ export class TeamService {
       .select()
       .single();
     if (error) {
-      throw AppErrors.server('team.member_add_failed', {
+      // 23505 (already a member) → 409 db.unique_violation.
+      // 23503 (unknown team_id / user_id) → 409 db.fk_violation.
+      throw wrapPgError(error, 'team.member_add_failed', {
         detail: `Team member insert failed for team ${teamId} user ${userId}`,
-        cause: error,
       });
     }
     return data;
@@ -120,9 +124,8 @@ export class TeamService {
       .eq('user_id', userId)
       .eq('tenant_id', tenant.id);
     if (error) {
-      throw AppErrors.server('team.member_remove_failed', {
+      throw wrapPgError(error, 'team.member_remove_failed', {
         detail: `Team member delete failed for team ${teamId} user ${userId}`,
-        cause: error,
       });
     }
     return { removed: true };

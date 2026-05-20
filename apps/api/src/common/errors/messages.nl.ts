@@ -2152,6 +2152,14 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'vendor.service_area_list_failed': { title: 'Kon de werkgebieden niet laden' },
   'vendor.service_area_add_failed': { title: 'Kon dat werkgebied niet toevoegen' },
   'vendor.service_area_remove_failed': { title: 'Kon dat werkgebied niet verwijderen' },
+
+  // ─── R2 follow-up — module-specific `not_found` for wrapPgError ───────────
+  'business_hours.not_found': { title: 'We kunnen die werktijdenkalender niet vinden' },
+  'catalog_menu.not_found': { title: 'We kunnen dat menu niet vinden' },
+  'delegation.not_found': { title: 'We kunnen die delegatie niet vinden' },
+  'notification.not_found': { title: 'We kunnen die melding niet vinden' },
+  'team.not_found': { title: 'We kunnen dat team niet vinden' },
+  'vendor.not_found': { title: 'We kunnen die leverancier niet vinden' },
 };
 
 /**

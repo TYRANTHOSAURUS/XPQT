@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { wrapPgError } from '../../common/errors';
 
 export interface CreateNotificationTemplateDto {
   name: string;
@@ -66,9 +66,8 @@ export class NotificationService {
       .select();
 
     if (error) {
-      throw AppErrors.server('notification.send_failed', {
+      throw wrapPgError(error, 'notification.send_failed', {
         detail: 'Notification insert failed',
-        cause: error,
       });
     }
 
@@ -138,9 +137,8 @@ export class NotificationService {
       .eq('config_type', 'notification_template')
       .order('display_name');
     if (error) {
-      throw AppErrors.server('notification.template_list_failed', {
+      throw wrapPgError(error, 'notification.template_list_failed', {
         detail: 'Notification template list query failed',
-        cause: error,
       });
     }
     return data;
@@ -161,9 +159,8 @@ export class NotificationService {
       .select()
       .single();
     if (entityError) {
-      throw AppErrors.server('notification.template_create_failed', {
+      throw wrapPgError(entityError, 'notification.template_create_failed', {
         detail: 'Notification template config_entities insert failed',
-        cause: entityError,
       });
     }
 
@@ -185,9 +182,8 @@ export class NotificationService {
       .select()
       .single();
     if (versionError) {
-      throw AppErrors.server('notification.template_create_failed', {
+      throw wrapPgError(versionError, 'notification.template_create_failed', {
         detail: 'Notification template config_versions insert failed',
-        cause: versionError,
       });
     }
 
@@ -247,9 +243,9 @@ export class NotificationService {
       .select()
       .single();
     if (error) {
-      throw AppErrors.server('notification.template_update_failed', {
+      throw wrapPgError(error, 'notification.template_update_failed', {
         detail: `Notification template config_versions insert failed for entity ${id}`,
-        cause: error,
+        notFoundCode: 'notification.not_found',
       });
     }
 
