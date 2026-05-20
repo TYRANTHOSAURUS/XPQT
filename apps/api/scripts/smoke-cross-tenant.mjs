@@ -35,7 +35,8 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -435,6 +436,606 @@ async function mintTokenFor(authUid) {
 }
 
 const mintAdminToken = () => mintTokenFor(ADMIN_AUTH_UID);
+
+// ─────────────────────────────────────────────────────────────────────
+// R4 — Realtime channel CDC probe.
+//
+// Closes the "Realtime channel path NOT exercised end-to-end" gap on
+// the `inbox_notifications` publication. Full design + scope/labels
+// rationale lives in docs/follow-ups/audits/04-rls-security.md
+// (Scope-of-this-probe → R4 fold). WHY-only comments inline below.
+// ─────────────────────────────────────────────────────────────────────
+
+// Per-run fixture UUIDs — driven by the post-run audit assertion that
+// every fixture row was torn down (count must be 0).
+const r4ProbeFixtureIds = [];
+
+// ─── Concurrent-run safety (FIX C) ──────────────────────────────────
+// Handoff Rule 2 anticipates concurrent gate runs. Two R4 probes racing
+// on ADMIN's shared `raw_app_meta_data.tenant_id` will silently break
+// each other: A's finally-restore can land between B's mutation and
+// B's mint. A Postgres advisory lock serializes the probe across
+// processes; non-blocking `pg_try_advisory_lock` lets a losing run
+// skip cleanly instead of waiting.
+//
+// supabase-js cannot RPC `pg_*` builtins (PostgREST exposes only
+// `public` schema functions by default), so we shell out to psql with
+// the same connection + auth pattern already used by ensureTenantBFixture.
+const R4_ADVISORY_LOCK_KEY = 0x52345200; // R4 sentinel; stable across runs
+
+function r4DbArgs() {
+  const dbPass = env.SUPABASE_DB_PASS;
+  if (!dbPass) {
+    throw new Error(
+      'R4 advisory lock: SUPABASE_DB_PASS missing from .env',
+    );
+  }
+  const dbUrl =
+    env.SUPABASE_DB_URL ||
+    'postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres';
+  return { dbUrl, pgEnv: { ...process.env, PGPASSWORD: dbPass } };
+}
+
+// Spawn a long-lived psql child that holds the session open across the
+// JS probe. The advisory lock is session-scoped, so it dies with the
+// psql process on any crash path (no orphan-lock risk). Returns the
+// child; the caller reads the t/f from pg_try_advisory_lock via
+// readLockResult and releases via releaseR4Lock.
+function r4LockSession() {
+  const { dbUrl, pgEnv } = r4DbArgs();
+  const child = spawn(
+    'psql',
+    [dbUrl, '-X', '-A', '-t', '-q', '-v', 'ON_ERROR_STOP=1'],
+    { env: pgEnv, stdio: ['pipe', 'pipe', 'pipe'] },
+  );
+  child.stdin.write(`SELECT pg_try_advisory_lock(${R4_ADVISORY_LOCK_KEY});\n`);
+  return child;
+}
+
+// Read one line of psql output (the t/f from pg_try_advisory_lock) with
+// a short timeout — if psql can't connect we don't want to hang.
+function readLockResult(child) {
+  return new Promise((resolve, reject) => {
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => {
+      reject(new Error('R4 lock acquire timed out (psql unresponsive)'));
+    }, 10_000);
+    const onData = (chunk) => {
+      out += chunk.toString();
+      const line = out.split(/\r?\n/).map((s) => s.trim()).find((s) => s === 't' || s === 'f');
+      if (line) {
+        clearTimeout(timer);
+        child.stdout.off('data', onData);
+        resolve(line === 't');
+      }
+    };
+    child.stdout.on('data', onData);
+    child.stderr.on('data', (c) => { err += c.toString(); });
+    child.once('exit', (code) => {
+      clearTimeout(timer);
+      if (out.includes('\nt\n') || out.trim() === 't') resolve(true);
+      else if (out.includes('\nf\n') || out.trim() === 'f') resolve(false);
+      else reject(new Error(`psql exited (${code}) before lock result; stderr=${err.trim()}`));
+    });
+  });
+}
+
+function releaseR4Lock(child) {
+  if (!child || child.killed) return;
+  try {
+    child.stdin.write(`SELECT pg_advisory_unlock(${R4_ADVISORY_LOCK_KEY});\n\\q\n`);
+    child.stdin.end();
+  } catch {
+    /* best-effort — session close will release the session-scoped lock */
+  }
+  // Hard guarantee: kill the child if it lingers.
+  setTimeout(() => { try { child.kill('SIGTERM'); } catch {} }, 2000).unref();
+}
+
+async function realtimeChannelProbe() {
+  console.log('\n─── R4: Realtime channel CDC probe (inbox_notifications)');
+
+  // FIX C (concurrent-run safety): take an advisory lock BEFORE touching
+  // ADMIN's shared app_metadata. A losing run skips cleanly — the parallel
+  // run is presumably testing the same path.
+  let lockChild = null;
+  try {
+    lockChild = r4LockSession();
+    const acquired = await readLockResult(lockChild);
+    if (!acquired) {
+      console.log(
+        '  · realtime probe — skipping [realtime-skipped-concurrent-run] (another smoke:cross-tenant run holds the R4 advisory lock)',
+      );
+      results.skipped = (results.skipped || 0) + 1;
+      releaseR4Lock(lockChild);
+      return;
+    }
+  } catch (e) {
+    // If we can't even attempt the lock (psql missing / DB unreachable),
+    // failing the gate is correct — the brief mandates concurrent-run
+    // safety as a MUST-FIX.
+    results.fail += 1;
+    results.failed.push(
+      `R4 realtime [realtime-lock-acquire-failed]: ${e?.message ?? e}`,
+    );
+    console.log(
+      `  ✗ realtime probe: could not acquire R4 advisory lock — ${e?.message ?? e}`,
+    );
+    if (lockChild) releaseR4Lock(lockChild);
+    return;
+  }
+
+  // inbox_notifications.user_id references public.users(id), NOT auth.users.id.
+  const adm = supa();
+  const { data: userRow, error: userErr } = await adm
+    .from('users')
+    .select('id')
+    .eq('auth_uid', ADMIN_AUTH_UID)
+    .eq('tenant_id', TENANT_A_ID)
+    .maybeSingle();
+  if (userErr || !userRow?.id) {
+    results.fail += 1;
+    results.failed.push(
+      'R4 realtime: could not resolve admin users.id (cannot seed fixture)',
+    );
+    console.log(
+      `  ✗ realtime probe: could not resolve admin users.id — ${userErr?.message ?? 'no row'}`,
+    );
+    releaseR4Lock(lockChild);
+    return;
+  }
+  const adminUserId = userRow.id;
+
+  // `let` (not const) — the cold-broker retry path reassigns this to a
+  // fresh UUID per attempt so a stale subscription cannot deliver to a
+  // newer attempt's filter. r4ProbeFixtureIds.push per-attempt so the
+  // post-run audit covers every id we wrote.
+  let fixtureId = randomUUID();
+  r4ProbeFixtureIds.push(fixtureId);
+  console.log(`  fixture id: ${fixtureId}`);
+
+  const { data: adminUser, error: adminUserErr } = await adm.auth.admin
+    .getUserById(ADMIN_AUTH_UID);
+  if (adminUserErr || !adminUser?.user) {
+    results.fail += 1;
+    results.failed.push(
+      `R4 realtime: could not fetch admin auth user — ${adminUserErr?.message ?? 'no user'}`,
+    );
+    console.log(
+      `  ✗ realtime probe: could not fetch admin auth user — ${adminUserErr?.message ?? 'no user'}`,
+    );
+    releaseR4Lock(lockChild);
+    return;
+  }
+
+  // FIX A (BLOCK-MERGE): signal/exception handlers BEFORE the mutation.
+  // Ctrl-C between mutation and finally would otherwise leave the
+  // tenant_id claim persisted in shared prod state. Guard flag ensures
+  // emergency restore fires at most once. We also best-effort delete
+  // the fixture row so SIGINT mid-probe doesn't leave it in shared DB.
+  let restoreNeeded = false;
+  let restoreInProgress = false;
+  const emergencyRestore = async (reason) => {
+    if (!restoreNeeded || restoreInProgress) return;
+    restoreInProgress = true;
+    try {
+      const { error: restoreErr } = await adm.auth.admin.updateUserById(
+        ADMIN_AUTH_UID,
+        { app_metadata: { tenant_id: null } },
+      );
+      if (restoreErr) {
+        console.error(
+          `! emergency R4 restore (${reason}) FAILED: ${restoreErr.message} — manual cleanup:\n` +
+            `    PGPASSWORD='${env.SUPABASE_DB_PASS}' psql "${env.SUPABASE_DB_URL || 'postgresql://postgres@db.iwbqnyrvycqgnatratrk.supabase.co:5432/postgres'}" -c "update auth.users set raw_app_meta_data = raw_app_meta_data - 'tenant_id' where id = '${ADMIN_AUTH_UID}'::uuid;"`,
+        );
+      } else {
+        console.error(`✓ emergency R4 restore (${reason}) ok`);
+      }
+      // Best-effort fixture-row delete (fixture-clutter hygiene, not
+      // security-critical — the row carries no cross-tenant data).
+      try {
+        await adm.from('inbox_notifications').delete().eq('id', fixtureId);
+      } catch {
+        /* best-effort */
+      }
+    } catch (e) {
+      console.error(
+        `! emergency R4 restore (${reason}) threw: ${e?.message ?? e}`,
+      );
+    } finally {
+      restoreNeeded = false;
+      try { releaseR4Lock(lockChild); } catch {}
+    }
+  };
+  const sigintHandler = () => { emergencyRestore('SIGINT').then(() => process.exit(130)).catch(() => process.exit(130)); };
+  const sigtermHandler = () => { emergencyRestore('SIGTERM').then(() => process.exit(143)).catch(() => process.exit(143)); };
+  const uncaughtHandler = (err) => {
+    console.error('uncaughtException during R4:', err);
+    emergencyRestore('uncaughtException').then(() => process.exit(2)).catch(() => process.exit(2));
+  };
+  process.once('SIGINT', sigintHandler);
+  process.once('SIGTERM', sigtermHandler);
+  process.once('uncaughtException', uncaughtHandler);
+
+  // CRITICAL: Supabase Auth's updateUserById({ app_metadata }) MERGES
+  // the supplied keys rather than REPLACING. To DELETE a key the restore
+  // must send `{ tenant_id: null }` (verified empirically). The restore
+  // payload is idempotent across crashed prior runs — they self-heal.
+  const snapshotAppMeta = adminUser.user.app_metadata ?? {};
+  const patchedAppMeta = { ...snapshotAppMeta, tenant_id: TENANT_A_ID };
+  restoreNeeded = true;
+  const { error: patchErr } = await adm.auth.admin.updateUserById(
+    ADMIN_AUTH_UID,
+    { app_metadata: patchedAppMeta },
+  );
+  if (patchErr) {
+    restoreNeeded = false; // patch never applied
+    process.removeListener('SIGINT', sigintHandler);
+    process.removeListener('SIGTERM', sigtermHandler);
+    process.removeListener('uncaughtException', uncaughtHandler);
+    releaseR4Lock(lockChild);
+    results.fail += 1;
+    results.failed.push(
+      `R4 realtime: could not patch app_metadata.tenant_id — ${patchErr.message}`,
+    );
+    console.log(
+      `  ✗ realtime probe: could not patch app_metadata.tenant_id — ${patchErr.message}`,
+    );
+    return;
+  }
+
+  let browserSupa = null;
+  let channel = null;
+  try {
+    // Mint a fresh ADMIN browser JWT — the patched app_metadata flows
+    // into the freshly-minted access_token via the magiclink→verify
+    // path. Token reuse across long probe chains would also risk the
+    // access_token nearing expiry by the time the WS upgrade happens,
+    // so we always mint here.
+    const browserTok = await mintTokenFor(ADMIN_AUTH_UID);
+
+    // Construct a SEPARATE supabase client bound to the browser JWT.
+    // - apikey: the SUPABASE_PUBLISHABLE_KEY (anon key) — what the
+    //   browser actually sends.
+    // - global.headers.Authorization: pins the JWT for REST calls (not
+    //   used here, but required for consistency with the WS handshake).
+    // - realtime.params.apikey: forwarded as a query-string param on
+    //   the WebSocket upgrade — Realtime reads JWT claims off this for
+    //   per-subscriber RLS evaluation. supabase-js v2's setAuth path is
+    //   the canonical way to bind a user JWT to a Realtime client.
+    // - auth.persistSession=false: smoke is one-shot; no localStorage.
+    // - auth.autoRefreshToken=false: short-lived token, no refresh.
+    browserSupa = createClient(
+      env.SUPABASE_URL,
+      env.SUPABASE_PUBLISHABLE_KEY,
+      {
+        auth: { persistSession: false, autoRefreshToken: false },
+        global: { headers: { Authorization: `Bearer ${browserTok}` } },
+        realtime: { params: { apikey: env.SUPABASE_PUBLISHABLE_KEY } },
+      },
+    );
+    // The canonical browser-side flow uses `setSession` after sign-in to
+    // bind the JWT to the realtime socket. We replicate that without
+    // mounting a full auth flow.
+    browserSupa.realtime.setAuth(browserTok);
+
+    // 2-attempt retry: the Supabase Realtime broker's FIRST subscription
+    // to a (filter, role) combo can take >15s on a cold start. Empirically
+    // observed flake rate ~1/6 cold runs (other 5 arrive 207-532ms); warm
+    // path P99 < 1s. We retry ONCE with a fresh fixtureId + fresh channel
+    // on cdc-timeout. Real RLS-helper EXECUTE regressions on the Realtime
+    // leg (the 00435-class outage this probe exists to catch) would fail
+    // BOTH attempts because they are deterministic — the retry doesn't
+    // mask the catastrophic class, only cold-broker noise. subscribe-
+    // failed is NOT a cold-broker symptom (the WS handshake either works
+    // or it doesn't) so we fail-fast on that — no retry.
+    const attemptReasons = [];
+    let cdcLatencyMs = null;
+    let succeeded = false;
+    const MAX_ATTEMPTS = 2;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      if (attempt > 1) {
+        // Tear down the prior channel and start over with a fresh fixture id.
+        // The stale channel might still be alive on the broker side — if its
+        // delayed event ever arrives it would land on the OLD channel callback
+        // (already unsubscribed), not the new one, so no cross-attempt pollution.
+        try { await channel?.unsubscribe(); } catch { /* best-effort */ }
+        channel = null;
+        fixtureId = randomUUID();
+        r4ProbeFixtureIds.push(fixtureId);
+        console.log(`  retrying with fresh fixture id: ${fixtureId} (cold-broker mitigation)`);
+      }
+
+      let receivedPayload = null;
+      const channelName = `r4-probe-${randomUUID()}`;
+      channel = browserSupa
+        .channel(channelName)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'inbox_notifications',
+            filter: `id=eq.${fixtureId}`,
+          },
+          (payload) => {
+            receivedPayload = payload;
+          },
+        );
+
+      // Subscribe is async-callback-shaped. Resolve on SUBSCRIBED; reject
+      // on any terminal failure status. Bound the wait so a stuck handshake
+      // fails the probe instead of hanging forever.
+      let subscribeError = null;
+      let subscribeStatus = null;
+      try {
+        subscribeStatus = await new Promise((resolve, reject) => {
+          const subscribeDeadline = setTimeout(() => {
+            reject(new Error('subscribe handshake timed out after 10000ms'));
+          }, 10_000);
+          channel.subscribe((status, err) => {
+            if (status === 'SUBSCRIBED') {
+              clearTimeout(subscribeDeadline);
+              resolve(status);
+            } else if (
+              status === 'CHANNEL_ERROR' ||
+              status === 'TIMED_OUT' ||
+              status === 'CLOSED'
+            ) {
+              clearTimeout(subscribeDeadline);
+              reject(err || new Error(`subscribe status: ${status}`));
+            }
+          });
+        });
+      } catch (e) {
+        subscribeError = e;
+      }
+
+      if (subscribeError || subscribeStatus !== 'SUBSCRIBED') {
+        const reason =
+          subscribeError?.message ??
+          `unexpected status ${subscribeStatus ?? 'null'}`;
+        attemptReasons.push(`attempt ${attempt}: subscribe-failed (${reason})`);
+        // subscribe-failed is NOT cold-broker — fail-fast, no retry.
+        results.fail += 1;
+        results.failed.push(
+          `R4 realtime [realtime-channel-subscribe-failed]: ${attemptReasons.join(' | ')}`,
+        );
+        console.log(
+          `  ✗ realtime channel subscribe failed [realtime-channel-subscribe-failed] — ${reason}`,
+        );
+        return;
+      }
+
+      console.log('  realtime channel SUBSCRIBED; inserting fixture row');
+
+      // Short post-subscribe settle. Empirically the Realtime broker
+      // SOMETIMES needs a few hundred ms after the SUBSCRIBED ack before
+      // its per-subscriber row-filter pipeline is actually wired up to
+      // the replication slot. Without this, ~1/7 runs missed the event
+      // (the slot emitted before the subscription filter was provisioned
+      // server-side). 250ms is well under the 15s probe budget and
+      // dwarfs the publication→WS latency, so it does NOT mask a real
+      // regression.
+      await new Promise((r) => setTimeout(r, 250));
+
+      // Service-role INSERT — bypasses RLS (insert always succeeds when
+      // the row matches FKs) so the test of CDC delivery is isolated
+      // from the RLS happy path. The DELIVERY side still depends on the
+      // per-subscriber RLS policy seeing the row for the browser JWT.
+      // event_kind prefix `r4-probe-` lets the post-run audit query
+      // confirm zero leaked rows.
+      const insertStart = Date.now();
+      const { error: insErr } = await adm.from('inbox_notifications').insert({
+        id: fixtureId,
+        tenant_id: TENANT_A_ID,
+        user_id: adminUserId,
+        event_kind: 'r4-probe-realtime-cdc',
+        payload: { fixtureId, probe: 'r4-realtime-channel', attempt },
+      });
+      if (insErr) {
+        results.fail += 1;
+        results.failed.push(
+          `R4 realtime: fixture INSERT failed (attempt ${attempt}) — ${insErr.message}`,
+        );
+        console.log(
+          `  ✗ realtime probe: fixture INSERT failed — ${insErr.message}`,
+        );
+        return;
+      }
+
+      // Wait for the CDC event to land on the channel callback.
+      // See timeout rationale in the function docstring above.
+      const timeoutMs = 15000;
+      const deadline = Date.now() + timeoutMs;
+      while (!receivedPayload && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      cdcLatencyMs = Date.now() - insertStart;
+
+      if (!receivedPayload) {
+        attemptReasons.push(
+          `attempt ${attempt}: cdc-timeout (${timeoutMs}ms, fixture ${fixtureId})`,
+        );
+        if (attempt < MAX_ATTEMPTS) {
+          console.log(
+            `  · attempt ${attempt}/${MAX_ATTEMPTS}: cdc-timeout — retrying once (cold-broker mitigation)`,
+          );
+          // Best-effort delete the timed-out fixture row to keep audit
+          // clean. The outer `finally` only deletes the CURRENT fixtureId
+          // (the one from the succeeded attempt), so stale rows would
+          // accumulate otherwise.
+          try {
+            await adm.from('inbox_notifications').delete().eq('id', fixtureId);
+          } catch { /* best-effort */ }
+          continue;
+        }
+        results.fail += 1;
+        results.failed.push(
+          `R4 realtime [realtime-cdc-timeout]: ${attemptReasons.join(' | ')} — RLS-helper EXECUTE regression on the Realtime leg (a 00435-class outage) OR Realtime backend outage / publication drift / replication-slot stall (failed BOTH attempts so this is not a cold-broker false-positive)`,
+        );
+        console.log(
+          `  ✗ realtime CDC did not arrive after ${MAX_ATTEMPTS} attempts [realtime-cdc-timeout] — both attempts failed, not a cold-broker false-positive`,
+        );
+        return;
+      }
+
+      // Validate payload before declaring success.
+      const newRow = receivedPayload?.new ?? {};
+      if (newRow.id !== fixtureId) {
+        results.fail += 1;
+        results.failed.push(
+          `R4 realtime [realtime-payload-mismatch] (attempt ${attempt}): received id ${String(newRow.id)} !== fixture ${fixtureId}`,
+        );
+        console.log(
+          `  ✗ realtime payload id mismatch [realtime-payload-mismatch] — got ${String(newRow.id)}, expected ${fixtureId}`,
+        );
+        return;
+      }
+      if (newRow.tenant_id !== TENANT_A_ID) {
+        // Defense-in-depth: filter+RLS should already gate this, but if
+        // this ever fires it's a Realtime-layer cross-tenant leak — load
+        // a precise label so it surfaces loudly.
+        results.fail += 1;
+        results.failed.push(
+          `R4 realtime [realtime-leak-foreign-tenant] (attempt ${attempt}): received tenant_id ${String(newRow.tenant_id)} !== ${TENANT_A_ID}`,
+        );
+        console.log(
+          `  ✗ realtime payload tenant_id leak [realtime-leak-foreign-tenant] — got ${String(newRow.tenant_id)}, expected ${TENANT_A_ID}`,
+        );
+        return;
+      }
+
+      // Success.
+      succeeded = true;
+      if (attempt > 1) {
+        console.log(
+          `  (succeeded on attempt ${attempt} after cold-broker retry)`,
+        );
+      }
+      break;
+    }
+
+    if (!succeeded) return; // defensive — all failure paths returned above
+
+    results.pass += 1;
+    console.log(
+      `  ✓ Realtime channel /inbox_notifications → received CDC event for fixture ${fixtureId} in ${cdcLatencyMs} ms (browser JWT + publication membership + per-subscriber RLS eval all intact)`,
+    );
+  } finally {
+    // Teardown runs on EVERY exit path. Order: channel close → fixture
+    // delete → app_metadata restore → restore verification → signal
+    // handler deregistration → lock release. Each step is independent
+    // so a failure in one does not skip the next.
+    if (channel) {
+      try {
+        await channel.unsubscribe();
+      } catch (e) {
+        console.log(
+          `  ! realtime channel unsubscribe failed (non-fatal): ${e?.message ?? e}`,
+        );
+      }
+    }
+    if (browserSupa) {
+      try {
+        // Removing from the client registry lets the process exit
+        // cleanly (otherwise WS heartbeats keep the event loop alive).
+        await browserSupa.removeAllChannels();
+      } catch {
+        /* best-effort */
+      }
+    }
+    try {
+      const { error: delErr } = await adm
+        .from('inbox_notifications')
+        .delete()
+        .eq('id', fixtureId);
+      if (delErr) {
+        console.log(
+          `  ! realtime fixture delete failed (non-fatal): ${delErr.message} — id ${fixtureId} may have leaked, audit with: psql -c "select count(*) from public.inbox_notifications where event_kind like 'r4-probe-%';"`,
+        );
+      }
+    } catch (e) {
+      console.log(
+        `  ! realtime fixture delete threw (non-fatal): ${e?.message ?? e} — id ${fixtureId} may have leaked`,
+      );
+    }
+    // FIX B (BLOCK-MERGE): restore is GATE-FAILING, not log-only.
+    // A green CDC probe + failed restore = silently dirty prod state.
+    // Send { tenant_id: null } (not the snapshot) — updateUserById
+    // merges, and `null` is the only payload that DELETES the key.
+    let restoreOk = false;
+    try {
+      const { error: restoreErr } = await adm.auth.admin.updateUserById(
+        ADMIN_AUTH_UID,
+        { app_metadata: { tenant_id: null } },
+      );
+      if (restoreErr) {
+        results.fail += 1;
+        results.failed.push(
+          `realtime-admin-metadata-restore-failed: ${restoreErr.message} — ADMIN.app_metadata.tenant_id is leaked; manual psql: \`update auth.users set raw_app_meta_data = raw_app_meta_data - 'tenant_id' where id = '${ADMIN_AUTH_UID}'::uuid;\``,
+        );
+        console.log(
+          `  ✗ realtime-admin-metadata-restore-failed — ADMIN's tenant_id claim still set; gate failed.`,
+        );
+      } else {
+        restoreOk = true;
+        console.log('  ✓ realtime: ADMIN app_metadata restore call ok');
+      }
+    } catch (e) {
+      results.fail += 1;
+      results.failed.push(
+        `realtime-admin-metadata-restore-threw: ${e?.message ?? e} — manual psql: \`update auth.users set raw_app_meta_data = raw_app_meta_data - 'tenant_id' where id = '${ADMIN_AUTH_UID}'::uuid;\``,
+      );
+      console.log(
+        `  ✗ realtime-admin-metadata-restore-threw — gate failed: ${e?.message ?? e}`,
+      );
+    }
+    // FIX B (BLOCK-MERGE): VERIFY the key was actually deleted, not
+    // just set to null. If verification reads tenant_id !== undefined,
+    // the next gate run silently picks up the leaked claim.
+    if (restoreOk) {
+      try {
+        const { data: verifyData, error: verifyErr } =
+          await adm.auth.admin.getUserById(ADMIN_AUTH_UID);
+        const tenantClaim = verifyData?.user?.app_metadata?.tenant_id;
+        if (verifyErr || tenantClaim != null) {
+          results.fail += 1;
+          results.failed.push(
+            `realtime-admin-metadata-restore-verification-failed: tenant_id=${JSON.stringify(tenantClaim)} err=${verifyErr?.message ?? 'none'}`,
+          );
+          console.log(
+            `  ✗ realtime-admin-metadata-restore-verification-failed — tenant_id still present (${JSON.stringify(tenantClaim)})`,
+          );
+        } else {
+          restoreNeeded = false;
+          console.log(
+            '  ✓ realtime: ADMIN app_metadata.tenant_id verified absent',
+          );
+        }
+      } catch (e) {
+        results.fail += 1;
+        results.failed.push(
+          `realtime-admin-metadata-restore-verification-threw: ${e?.message ?? e}`,
+        );
+        console.log(
+          `  ✗ realtime-admin-metadata-restore-verification-threw — ${e?.message ?? e}`,
+        );
+      }
+    }
+    // Deregister signal handlers now that the normal restore path
+    // completed (success or fail-the-gate; either way the JS finally
+    // ran). The emergency restore would no-op (restoreNeeded=false)
+    // even if it fired after this point, but removing the handlers
+    // keeps signal semantics clean for callers that orchestrate this.
+    process.removeListener('SIGINT', sigintHandler);
+    process.removeListener('SIGTERM', sigtermHandler);
+    process.removeListener('uncaughtException', uncaughtHandler);
+    // FIX C: release the advisory lock so concurrent runs can proceed.
+    releaseR4Lock(lockChild);
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Probe runner — shared shape with smoke-tickets.mjs.
@@ -1382,9 +1983,72 @@ async function probe(name, options) {
     console.log(`  ✗ Browser-direct PostgREST proof threw: ${e.message}`);
   }
 
+  // ── R4 (handoff-residuals 2026-05-20): Realtime channel CDC probe ──
+  // Runs outside the browser-direct PostgREST try block so a thrown
+  // failure on the REST leg does not skip the Realtime leg. The probe
+  // has its own internal try/finally for teardown safety; failures
+  // surface via results.fail with one of the four R4 labels:
+  // realtime-channel-subscribe-failed, realtime-cdc-timeout,
+  // realtime-payload-mismatch, realtime-leak-foreign-tenant.
+  try {
+    await realtimeChannelProbe();
+  } catch (e) {
+    results.fail += 1;
+    results.failed.push(`R4 realtime probe threw: ${e?.message ?? e}`);
+    console.log(`  ✗ R4 realtime probe threw: ${e?.message ?? e}`);
+  }
+
+  // FIX F: post-run fixture-row teardown verification. Service-role
+  // SELECT must return zero rows for every fixture id minted this run.
+  // Any nonzero count = the finally-delete failed silently — a leak in
+  // the shared remote DB that the gate must surface.
+  if (r4ProbeFixtureIds.length) {
+    try {
+      const { data: leakRows, error: leakErr } = await supa()
+        .from('inbox_notifications')
+        .select('id')
+        .in('id', r4ProbeFixtureIds);
+      if (leakErr) {
+        results.fail += 1;
+        results.failed.push(
+          `R4 fixture teardown verification errored: ${leakErr.message}`,
+        );
+        console.log(
+          `  ✗ R4 fixture teardown verification errored: ${leakErr.message}`,
+        );
+      } else if (leakRows && leakRows.length > 0) {
+        results.fail += 1;
+        results.failed.push(
+          `R4 fixture teardown leak: ${leakRows.length} row(s) still present (${leakRows.map((r) => r.id).join(', ')})`,
+        );
+        console.log(
+          `  ✗ R4 fixture teardown leak — ${leakRows.length} row(s) still in inbox_notifications: ${leakRows.map((r) => r.id).join(', ')}`,
+        );
+      } else {
+        console.log(
+          `  ✓ R4 fixture teardown verified: 0 of ${r4ProbeFixtureIds.length} fixture rows remain`,
+        );
+      }
+    } catch (e) {
+      results.fail += 1;
+      results.failed.push(
+        `R4 fixture teardown verification threw: ${e?.message ?? e}`,
+      );
+      console.log(
+        `  ✗ R4 fixture teardown verification threw: ${e?.message ?? e}`,
+      );
+    }
+  }
+
   console.log('');
+  if (r4ProbeFixtureIds.length) {
+    console.log(
+      `R4 fixture ids this run: ${r4ProbeFixtureIds.join(', ')}`,
+    );
+  }
+  const skippedSuffix = results.skipped ? `, ${results.skipped} skipped` : '';
   console.log(
-    `Result: ${results.pass} pass, ${results.fail} fail${
+    `Result: ${results.pass} pass, ${results.fail} fail${skippedSuffix}${
       results.failed.length ? ` — ${results.failed.join(', ')}` : ''
     }`,
   );
