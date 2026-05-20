@@ -1144,6 +1144,13 @@ async function probe(name, options) {
     }
 
     // ── Browser-path RLS-helper EXECUTE regression (00435 outage class) ──
+    // Three named failure classes (R3 precision fold, 2026-05-20):
+    //   (a) `42501-rls-helper`  — the catastrophic 00435-outage class
+    //   (b) `postgrest-4xx`     — PostgREST 4xx unrelated to RLS helpers
+    //   (c) `transport-or-5xx`  — fetch threw, body is not JSON, or >= 500
+    // Fail-closed binary outcome preserved; only the label is precise.
+    // Mirrors the same three-class vocabulary `smoke:prod-e2e` (R5) ships.
+    //
     // The 2026-05-19 P0 outage: migration
     // 00435_revoke_browser_execute_grants.sql (formerly 00417) ran a
     // blanket `REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA public FROM
@@ -1168,55 +1175,206 @@ async function probe(name, options) {
     // browser token — a non-admin session is the true outage-victim
     // profile and avoids any admin OR-branch a policy might carry.
     //
-    // REGRESSION (fail) fires on ANY of: (a) HTTP status !== 200,
-    // (b) body contains `permission denied for function`, or
-    // (c) the PostgREST JSON error `code` === '42501'. A healthy
-    // `200 []` stays GREEN: a browser JWT carries no tenant_id claim,
-    // so current_tenant_id() = NULL → `tenant_id = NULL` → 0 rows.
-    // That empty read is the correct healthy state; this probe's job
-    // is specifically to catch the 42501 / blanket-REVOKE-EXECUTE
-    // class, NOT empty-read regressions.
+    // Fail-closed binary outcome preserved — ANY non-200 still flags
+    // the probe — but the failure LABEL is split into three named
+    // classes so a 504 cold start or a 4xx PostgREST envelope unrelated
+    // to function permissions is not mislabeled as the catastrophic
+    // 42501 / blanket-REVOKE-EXECUTE class (codex MERGE-with-nit on
+    // PR #34 `5d50dd55`; R3 in handoff-residuals 2026-05-20). Mirrors
+    // the same three-class naming model `smoke:prod-e2e` (R5) ships:
+    //
+    //   (a) `42501-rls-helper`    — the actual catastrophic regression.
+    //       Body contains `permission denied for function` OR parsed
+    //       JSON `code === '42501'`. The 00435-outage class.
+    //   (b) `postgrest-4xx`       — HTTP status in 400..499 but body
+    //       does NOT match (a). Surfaces the PostgREST `.code` field
+    //       (e.g. `42P01` table not found, `42703` column not found,
+    //       `PGRST116` no rows, JWT errors). Unrelated to RLS-helper
+    //       EXECUTE; do not blame it on 00435-class.
+    //   (c) `transport-or-5xx`    — HTTP status >= 500, body is not
+    //       JSON, or fetch threw (DNS/network/abort). Cold-start /
+    //       gateway / unreachable; not a security regression.
+    //
+    // A healthy `200 []` stays GREEN: a browser JWT carries no
+    // tenant_id claim, so current_tenant_id() = NULL → `tenant_id =
+    // NULL` → 0 rows. That empty read is the correct healthy state;
+    // this probe's job is specifically to catch the 42501 /
+    // blanket-REVOKE-EXECUTE class, NOT empty-read regressions.
     const rlsBrowserTok = await mintTokenFor(NONADMIN_AUTH_UID);
     for (const tbl of ['inbox_notifications', 'bookings', 'tickets']) {
-      const rr = await fetch(
-        `${env.SUPABASE_URL}/rest/v1/${tbl}?select=id&limit=1`,
-        {
-          headers: {
-            apikey: env.SUPABASE_PUBLISHABLE_KEY,
-            Authorization: `Bearer ${rlsBrowserTok}`,
-          },
-        },
-      );
-      const rrBody = await rr.text();
-      const helperDenied = rrBody.includes('permission denied for function');
-      let jsonCode42501 = false;
+      // Per-table try/catch so a fetch throw on one table classifies as
+      // (c) `transport-or-5xx` against THAT table, instead of aborting
+      // the whole probe loop into the outer catch (which would lose
+      // per-table attribution).
+      let rr;
+      let rrBody;
+      let transportReason = null;
       try {
-        if (JSON.parse(rrBody)?.code === '42501') jsonCode42501 = true;
-      } catch {
-        /* non-JSON body (e.g. `[]`) — not a 42501 error envelope */
+        rr = await fetch(
+          `${env.SUPABASE_URL}/rest/v1/${tbl}?select=id&limit=1`,
+          {
+            headers: {
+              apikey: env.SUPABASE_PUBLISHABLE_KEY,
+              Authorization: `Bearer ${rlsBrowserTok}`,
+            },
+          },
+        );
+        rrBody = await rr.text();
+      } catch (e) {
+        transportReason = e?.message || String(e);
       }
-      const regression =
-        rr.status !== 200 || helperDenied || jsonCode42501;
-      if (!regression) {
+
+      // ── 200 happy path ─────────────────────────────────────────────
+      // Codex tertiary (PR #38): a 200 status is NOT proof of a healthy
+      // PostgREST select on its own. Proxies, CDN error pages, or
+      // upstream contract drift can deliver `HTTP 200 + HTML` (or `HTTP
+      // 200 + JSON envelope code=42501`, a bizarre contract violation).
+      // Parse the body and require a JSON array (the only legitimate
+      // PostgREST select shape) before incrementing `results.pass`.
+      // Otherwise fail-close with a precise class label so a silently
+      // mis-shaped 200 can never mask the very regression the probe is
+      // here to catch.
+      if (!transportReason && rr.status === 200) {
+        const ct = rr.headers.get('content-type') || '';
+        const looksJson = ct.includes('application/json');
+        if (!looksJson) {
+          // 200 + non-JSON body — never legitimate from PostgREST. Treat
+          // as transport/5xx class (proxy/CDN error page, gateway HTML,
+          // etc.) so a green run is genuinely green.
+          results.fail += 1;
+          results.failed.push(
+            `browser-path RLS read ${tbl} [transport-or-5xx]: HTTP 200 + non-JSON content-type "${ct}" — ${rrBody.slice(0, 160)}`,
+          );
+          console.log(
+            `  ✗ browser-path RLS read /rest/v1/${tbl} [transport-or-5xx] → HTTP 200 + non-JSON content-type "${ct}" — fail-close on suspicious response (proxy/CDN error page?); not an RLS-helper EXECUTE regression.`,
+          );
+          continue;
+        }
+        let parsed200;
+        try {
+          parsed200 = JSON.parse(rrBody);
+        } catch {
+          results.fail += 1;
+          results.failed.push(
+            `browser-path RLS read ${tbl} [transport-or-5xx]: HTTP 200 + unparseable JSON — ${rrBody.slice(0, 160)}`,
+          );
+          console.log(
+            `  ✗ browser-path RLS read /rest/v1/${tbl} [transport-or-5xx] → HTTP 200 + JSON parse error — fail-close on unparseable body; not an RLS-helper EXECUTE regression.`,
+          );
+          continue;
+        }
+        if (!Array.isArray(parsed200)) {
+          // Could be `{code, message, ...}` PostgREST error envelope.
+          // If the envelope says 42501 / permission denied for function,
+          // classify as class (a) even though the status is 200 (it's a
+          // catastrophic contract violation but still THE regression).
+          const code = (parsed200 && typeof parsed200 === 'object' && parsed200.code) || '';
+          const msg =
+            (parsed200 && typeof parsed200 === 'object' && parsed200.message) || '';
+          if (code === '42501' || /permission denied for function/i.test(msg)) {
+            results.fail += 1;
+            results.failed.push(
+              `browser-path RLS read ${tbl} [42501-rls-helper]: HTTP 200 envelope code=42501 — ${rrBody.slice(0, 160)}`,
+            );
+            console.log(
+              `  ✗ browser-path RLS read /rest/v1/${tbl} [42501-rls-helper] → HTTP 200 + JSON envelope code=42501 (catastrophic RLS-helper regression delivered with a 200 status — fail-close).`,
+            );
+            continue;
+          }
+          // Non-array, non-42501-error JSON: not a PostgREST select
+          // shape. Fail closed under transport-or-5xx (upstream contract
+          // drift), not as a green pass.
+          results.fail += 1;
+          results.failed.push(
+            `browser-path RLS read ${tbl} [transport-or-5xx]: HTTP 200 + non-array JSON — ${rrBody.slice(0, 160)}`,
+          );
+          console.log(
+            `  ✗ browser-path RLS read /rest/v1/${tbl} [transport-or-5xx] → HTTP 200 + JSON is not an array (PostgREST select returns [] or [{...}]) — fail-close on suspicious shape.`,
+          );
+          continue;
+        }
+        // Genuine pass: HTTP 200 + JSON array (PostgREST SELECT result).
         results.pass += 1;
         console.log(
-          `  ✓ browser-path RLS read /rest/v1/${tbl} → HTTP 200 (RLS-helper EXECUTE intact; non-admin browser session)`,
+          `  ✓ browser-path RLS read /rest/v1/${tbl} → HTTP 200 (RLS-helper EXECUTE intact; non-admin browser session; ${parsed200.length} row(s))`,
         );
-      } else {
-        const sqlstate =
-          helperDenied || jsonCode42501 ? ' SQLSTATE 42501' : '';
+        continue;
+      }
+
+      // ── Classify non-200 / transport failures ──────────────────────
+      // Parse the body once; if non-JSON, we treat it as class (c)
+      // when paired with a 4xx (PostgREST always returns JSON on
+      // failure, so non-JSON 4xx is transport/proxy interference).
+      // Codex tertiary (PR #38): also capture content-type so the
+      // class (a) substring check is gated on a JSON envelope; a 4xx
+      // HTML proxy error page that happens to contain the literal
+      // text "permission denied for function" must NOT be mislabeled
+      // as the 42501 RLS-helper class.
+      const ct = !transportReason ? rr.headers.get('content-type') || '' : '';
+      const looksJson = ct.includes('application/json');
+      let parsedBody = null;
+      let bodyIsJson = false;
+      if (!transportReason) {
+        try {
+          parsedBody = JSON.parse(rrBody);
+          bodyIsJson = true;
+        } catch {
+          /* non-JSON body */
+        }
+      }
+
+      // Class (a): 42501-rls-helper — only when the response actually
+      // looks like a PostgREST JSON envelope. Gate the substring check
+      // on `looksJson` (content-type) AND `bodyIsJson` (body actually
+      // parses) so an HTML proxy error page containing the literal
+      // text "permission denied for function" can't be misattributed.
+      const helperDenied =
+        !transportReason &&
+        looksJson &&
+        bodyIsJson &&
+        /permission denied for function/i.test(rrBody);
+      const jsonCode42501 = bodyIsJson && parsedBody?.code === '42501';
+      if (helperDenied || jsonCode42501) {
+        const status = rr?.status ?? 'n/a';
         results.fail += 1;
         results.failed.push(
-          `browser-path RLS read ${tbl}${sqlstate} — browser-path RLS-helper EXECUTE regression (blanket REVOKE EXECUTE class; the 00435-outage type) — service_role-path gates miss it`,
+          `browser-path RLS read ${tbl} [42501-rls-helper]: HTTP ${status} SQLSTATE 42501 — ${rrBody.slice(0, 160)}`,
         );
         console.log(
-          `  ✗ browser-path RLS read /rest/v1/${tbl} → HTTP ${rr.status}${
-            helperDenied || jsonCode42501
-              ? ` (42501 permission denied for function — table ${tbl})`
-              : ''
-          } — browser-path RLS-helper EXECUTE regression (blanket REVOKE EXECUTE class; the 00435-outage type) — service_role-path gates miss it. ${rrBody.slice(0, 200)}`,
+          `  ✗ browser-path RLS read /rest/v1/${tbl} [42501-rls-helper] → HTTP ${status} (42501 permission denied for function — table ${tbl}) — 42501 RLS-helper EXECUTE regression (blanket REVOKE EXECUTE class; the 00435-outage type) — service_role-path gates miss it. ${rrBody.slice(0, 160)}`,
         );
+        continue;
       }
+
+      // Class (c): transport-or-5xx — fetch threw, status >= 500, or non-JSON body
+      if (
+        transportReason ||
+        (rr.status >= 500) ||
+        !bodyIsJson
+      ) {
+        const reason = transportReason
+          ? `fetch threw: ${transportReason}`
+          : `HTTP ${rr.status}${bodyIsJson ? '' : ' non-JSON body'} — ${rrBody?.slice(0, 160) ?? ''}`;
+        results.fail += 1;
+        results.failed.push(
+          `browser-path RLS read ${tbl} [transport-or-5xx]: ${reason}`,
+        );
+        console.log(
+          `  ✗ browser-path RLS read /rest/v1/${tbl} [transport-or-5xx] → ${reason} — not an RLS-helper EXECUTE regression; transport / gateway / unreachable. Investigate cold-start, proxy, or DNS before blaming 00435-class.`,
+        );
+        continue;
+      }
+
+      // Class (b): postgrest-4xx — status in 400..499, body is JSON, not 42501
+      const pgCode = parsedBody?.code ?? '<no .code>';
+      const pgMessage = parsedBody?.message ?? '';
+      results.fail += 1;
+      results.failed.push(
+        `browser-path RLS read ${tbl} [postgrest-4xx]: HTTP ${rr.status} code=${pgCode} — ${String(pgMessage).slice(0, 160)}`,
+      );
+      console.log(
+        `  ✗ browser-path RLS read /rest/v1/${tbl} [postgrest-4xx] → HTTP ${rr.status} — code=${pgCode} — ${String(pgMessage).slice(0, 160)} — PostgREST 4xx unrelated to RLS-helper EXECUTE (not the 00435-outage class). ${rrBody.slice(0, 160)}`,
+      );
     }
   } catch (e) {
     results.fail += 1;
