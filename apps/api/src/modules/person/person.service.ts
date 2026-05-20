@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Request } from 'express';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppError, AppErrors } from '../../common/errors';
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -95,10 +95,20 @@ export class PersonService {
     }
 
     const tenant = TenantContext.current();
+    // DTO scrub (R1 plan-review C2, 2026-05-20): the inner `persons` select
+    // is an EXPLICIT column allowlist, NOT `*`. Wildcards leaked HR-class
+    // columns like `manager_person_id`, `cost_center`, `division`,
+    // `department`, `external_source` back to the authenticated user about
+    // themselves — fine for /admin/persons/:id (which is permission-gated),
+    // not fine for the self-service `/persons/me` surface. The column set
+    // here is a deliberate subset matching `portal.service.ts:162-165`
+    // (the canonical "what does the requester see about themselves" set).
+    // `org_node_id` is dropped from the membership projection because
+    // `org_node.id` carries the same value.
     const { data, error } = await this.supabase.admin
       .from('users')
       .select(
-        `id, person_id, persons:persons!person_id(*, primary_membership:person_org_memberships(org_node_id, is_primary, org_node:org_nodes(id, name, code)))`,
+        `id, person_id, persons:persons!person_id(id, first_name, last_name, email, phone, type, default_location_id, avatar_url, primary_membership:person_org_memberships(is_primary, org_node:org_nodes(id, name, code)))`,
       )
       .eq('id', platformUserId)
       .eq('tenant_id', tenant.id)
@@ -122,12 +132,32 @@ export class PersonService {
           persons: Record<string, unknown> | Record<string, unknown>[] | null;
         }
       | null;
-    if (!row || !row.person_id) {
+    // R1 plan-review I4 (2026-05-20): distinguish two failure modes that
+    // were previously collapsed into `person.not_found`:
+    //   (a) `data` is null → no users row at all. Either the user was
+    //       deleted between AuthGuard and this call (race) or there's a
+    //       cross-tenant slip AuthGuard didn't catch. Genuinely "not found".
+    //   (b) `data.person_id` is null OR the embedded `persons` is empty →
+    //       the user EXISTS but isn't linked to a person yet (service
+    //       account, mid-onboarding, manually-inserted row). The frontend
+    //       needs to render "your profile isn't linked — contact admin",
+    //       not "person 404 — bad URL". The 422 status (Unprocessable
+    //       Entity) matches the semantics: the request is well-formed,
+    //       the server understands it, but the user's state prevents
+    //       fulfilment.
+    if (!row) {
       throw AppErrors.notFound('person');
+    }
+    if (!row.person_id) {
+      throw new AppError('person.no_profile_link', 422, {
+        detail: 'User has no linked person record',
+      });
     }
     const person = Array.isArray(row.persons) ? row.persons[0] : row.persons;
     if (!person) {
-      throw AppErrors.notFound('person');
+      throw new AppError('person.no_profile_link', 422, {
+        detail: 'User has linked person_id but persons row is missing',
+      });
     }
     return person;
   }

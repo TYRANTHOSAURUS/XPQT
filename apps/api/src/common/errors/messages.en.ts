@@ -1009,6 +1009,9 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'person.lookup_failed': {
     title: "Couldn't look up your profile",
   },
+  'person.no_profile_link': {
+    title: "Your account isn't linked to a person profile yet.",
+  },
 
   // ─── org-node (Phase 7.B-1.org-node) ─────────────────────────────────────
   'org_node.not_found': {

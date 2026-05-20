@@ -1009,6 +1009,9 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'person.lookup_failed': {
     title: 'Kon je profiel niet opzoeken',
   },
+  'person.no_profile_link': {
+    title: 'Je account is nog niet gekoppeld aan een persoonsprofiel.',
+  },
 
   // ─── org-node (Phase 7.B-1.org-node) ─────────────────────────────────────
   'org_node.not_found': {
