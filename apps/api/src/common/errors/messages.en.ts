@@ -2157,6 +2157,71 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't delete plan",
     detail: 'Work orders still reference this plan. Deactivate the plan instead, or remove the linked work orders first.',
   },
+
+  // ─── R2 AppError sweep (2026-05-20) ─────────────────────────────────────
+  // Domain-specific 500 codes replacing raw Postgres rethrows in modules
+  // that previously fell through to db.constraint / unknown.server_error.
+  // Voice: "Couldn't <verb> <thing>" per §3.4. Detail omitted by default —
+  // throw sites pass an ops-only detail via AppErrors.server(code, {detail}).
+  'asset.type_list_failed': { title: "Couldn't load asset types" },
+  'asset.type_create_failed': { title: "Couldn't create that asset type" },
+  'asset.list_failed': { title: "Couldn't load assets" },
+  'asset.lookup_failed': { title: "Couldn't look up that asset" },
+  'asset.create_failed': { title: "Couldn't create that asset" },
+  'asset.update_failed': { title: "Couldn't update that asset" },
+  'asset.history_list_failed': { title: "Couldn't load asset history" },
+
+  'business_hours.list_failed': { title: "Couldn't load business hours" },
+  'business_hours.lookup_failed': { title: "Couldn't look up that business hours calendar" },
+  'business_hours.create_failed': { title: "Couldn't create that business hours calendar" },
+  'business_hours.update_failed': { title: "Couldn't update that business hours calendar" },
+
+  'catalog_menu.list_failed': { title: "Couldn't load menus" },
+  'catalog_menu.lookup_failed': { title: "Couldn't look up that menu" },
+  'catalog_menu.create_failed': { title: "Couldn't create that menu" },
+  'catalog_menu.update_failed': { title: "Couldn't update that menu" },
+  'catalog_menu.item_list_failed': { title: "Couldn't load menu items" },
+  'catalog_menu.item_add_failed': { title: "Couldn't add that menu item" },
+  'catalog_menu.item_update_failed': { title: "Couldn't update that menu item" },
+  'catalog_menu.item_remove_failed': { title: "Couldn't remove that menu item" },
+  'catalog_menu.duplicate_failed': { title: "Couldn't duplicate that menu" },
+  'catalog_menu.bulk_update_failed': { title: "Couldn't apply those menu changes" },
+  'catalog_menu.bulk_delete_failed': { title: "Couldn't remove those menu items" },
+  'catalog_menu.catalog_item_list_failed': { title: "Couldn't load catalog items" },
+  'catalog_menu.resolve_offer_failed': { title: "Couldn't resolve a menu offer" },
+
+  'delegation.list_failed': { title: "Couldn't load delegations" },
+  'delegation.create_failed': { title: "Couldn't create that delegation" },
+  'delegation.update_failed': { title: "Couldn't update that delegation" },
+
+  'notification.send_failed': { title: "Couldn't send that notification" },
+  'notification.template_list_failed': { title: "Couldn't load notification templates" },
+  'notification.template_create_failed': { title: "Couldn't create that notification template" },
+  'notification.template_update_failed': { title: "Couldn't update that notification template" },
+
+  'team.list_failed': { title: "Couldn't load teams" },
+  'team.lookup_failed': { title: "Couldn't look up that team" },
+  'team.create_failed': { title: "Couldn't create that team" },
+  'team.update_failed': { title: "Couldn't update that team" },
+  'team.member_list_failed': { title: "Couldn't load team members" },
+  'team.member_add_failed': { title: "Couldn't add that team member" },
+  'team.member_remove_failed': { title: "Couldn't remove that team member" },
+
+  'vendor.list_failed': { title: "Couldn't load vendors" },
+  'vendor.lookup_failed': { title: "Couldn't look up that vendor" },
+  'vendor.create_failed': { title: "Couldn't create that vendor" },
+  'vendor.update_failed': { title: "Couldn't update that vendor" },
+  'vendor.service_area_list_failed': { title: "Couldn't load vendor service areas" },
+  'vendor.service_area_add_failed': { title: "Couldn't add that service area" },
+  'vendor.service_area_remove_failed': { title: "Couldn't remove that service area" },
+
+  // ─── R2 follow-up — module-specific `not_found` for wrapPgError ───────────
+  'business_hours.not_found': { title: "We can't find that business hours calendar" },
+  'catalog_menu.not_found': { title: "We can't find that menu" },
+  'delegation.not_found': { title: "We can't find that delegation" },
+  'notification.not_found': { title: "We can't find that notification" },
+  'team.not_found': { title: "We can't find that team" },
+  'vendor.not_found': { title: "We can't find that vendor" },
 };
 
 /**

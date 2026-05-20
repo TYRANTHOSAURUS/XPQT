@@ -24,3 +24,4 @@ export {
 export { AllExceptionsFilter } from './all-exceptions.filter';
 export { resolveMessageEn, type ErrorMessage } from './messages.en';
 export { mapRpcErrorToAppError } from './map-rpc-error';
+export { wrapPgError, type WrapPgErrorOptions } from './wrap-pg-error';

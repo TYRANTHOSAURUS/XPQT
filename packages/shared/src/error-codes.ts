@@ -1123,7 +1123,76 @@ export type KnownErrorCode =
   | 'maintenance_plans.target_mutex_violation'
   | 'maintenance_plans.invalid_recurrence'
   | 'maintenance_plans.not_found'
-  | 'maintenance_plans.in_use';
+  | 'maintenance_plans.in_use'
+
+  // ─── R2 AppError sweep (2026-05-20) ─────────────────────────────────────
+  // Domain-specific 500 codes replacing raw `if (error) throw error;`
+  // Postgres rethrows in modules that previously fell through the global
+  // filter's PostgrestError / pg-native branches to `db.constraint` 500
+  // (and in the R1 PostgrestError-without-string-code edge case, all the
+  // way to `unknown.server_error`). Each code follows the canonical
+  // pattern from R1's person migration (PR #36): operator-friendly title,
+  // optional ops-only detail at the throw site via `AppErrors.server(code,
+  // { detail, cause })`. Triage: docs/follow-ups/r2-apperror-sweep-triage-
+  // 2026-05-20.md.
+  | 'asset.type_list_failed'
+  | 'asset.type_create_failed'
+  | 'asset.list_failed'
+  | 'asset.lookup_failed'
+  | 'asset.create_failed'
+  | 'asset.update_failed'
+  | 'asset.history_list_failed'
+  | 'business_hours.list_failed'
+  | 'business_hours.lookup_failed'
+  | 'business_hours.create_failed'
+  | 'business_hours.update_failed'
+  | 'catalog_menu.list_failed'
+  | 'catalog_menu.lookup_failed'
+  | 'catalog_menu.create_failed'
+  | 'catalog_menu.update_failed'
+  | 'catalog_menu.item_list_failed'
+  | 'catalog_menu.item_add_failed'
+  | 'catalog_menu.item_update_failed'
+  | 'catalog_menu.item_remove_failed'
+  | 'catalog_menu.duplicate_failed'
+  | 'catalog_menu.bulk_update_failed'
+  | 'catalog_menu.bulk_delete_failed'
+  | 'catalog_menu.catalog_item_list_failed'
+  | 'catalog_menu.resolve_offer_failed'
+  | 'delegation.list_failed'
+  | 'delegation.create_failed'
+  | 'delegation.update_failed'
+  | 'notification.send_failed'
+  | 'notification.template_list_failed'
+  | 'notification.template_create_failed'
+  | 'notification.template_update_failed'
+  | 'team.list_failed'
+  | 'team.lookup_failed'
+  | 'team.create_failed'
+  | 'team.update_failed'
+  | 'team.member_list_failed'
+  | 'team.member_add_failed'
+  | 'team.member_remove_failed'
+  | 'vendor.list_failed'
+  | 'vendor.lookup_failed'
+  | 'vendor.create_failed'
+  | 'vendor.update_failed'
+  | 'vendor.service_area_list_failed'
+  | 'vendor.service_area_add_failed'
+  | 'vendor.service_area_remove_failed'
+
+  // ─── R2 AppError sweep follow-up (2026-05-20) — wrapPgError ─────────────
+  // Module-specific `<entity>.not_found` codes registered so wrapPgError
+  // can use a typed `notFoundCode` for `PGRST116` (no rows from `.single()`)
+  // lookups. `asset.not_found` already existed; the rest are net new.
+  // Wire status 404 — same as `generic.not_found` but lets the client
+  // toast distinguish per-entity. Spec §3.4 + triage doc.
+  | 'business_hours.not_found'
+  | 'catalog_menu.not_found'
+  | 'delegation.not_found'
+  | 'notification.not_found'
+  | 'team.not_found'
+  | 'vendor.not_found';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -1838,6 +1907,59 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'maintenance_plans.invalid_recurrence',
   'maintenance_plans.not_found',
   'maintenance_plans.in_use',
+  // ─── R2 AppError sweep (2026-05-20) — see KnownErrorCode union ──────────
+  'asset.type_list_failed',
+  'asset.type_create_failed',
+  'asset.list_failed',
+  'asset.lookup_failed',
+  'asset.create_failed',
+  'asset.update_failed',
+  'asset.history_list_failed',
+  'business_hours.list_failed',
+  'business_hours.lookup_failed',
+  'business_hours.create_failed',
+  'business_hours.update_failed',
+  'catalog_menu.list_failed',
+  'catalog_menu.lookup_failed',
+  'catalog_menu.create_failed',
+  'catalog_menu.update_failed',
+  'catalog_menu.item_list_failed',
+  'catalog_menu.item_add_failed',
+  'catalog_menu.item_update_failed',
+  'catalog_menu.item_remove_failed',
+  'catalog_menu.duplicate_failed',
+  'catalog_menu.bulk_update_failed',
+  'catalog_menu.bulk_delete_failed',
+  'catalog_menu.catalog_item_list_failed',
+  'catalog_menu.resolve_offer_failed',
+  'delegation.list_failed',
+  'delegation.create_failed',
+  'delegation.update_failed',
+  'notification.send_failed',
+  'notification.template_list_failed',
+  'notification.template_create_failed',
+  'notification.template_update_failed',
+  'team.list_failed',
+  'team.lookup_failed',
+  'team.create_failed',
+  'team.update_failed',
+  'team.member_list_failed',
+  'team.member_add_failed',
+  'team.member_remove_failed',
+  'vendor.list_failed',
+  'vendor.lookup_failed',
+  'vendor.create_failed',
+  'vendor.update_failed',
+  'vendor.service_area_list_failed',
+  'vendor.service_area_add_failed',
+  'vendor.service_area_remove_failed',
+  // ─── R2 follow-up (2026-05-20) — wrapPgError `<entity>.not_found` ─────────
+  'business_hours.not_found',
+  'catalog_menu.not_found',
+  'delegation.not_found',
+  'notification.not_found',
+  'team.not_found',
+  'vendor.not_found',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

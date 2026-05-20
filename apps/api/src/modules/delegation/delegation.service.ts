@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { wrapPgError } from '../../common/errors';
 
 export interface CreateDelegationDto {
   delegator_user_id: string;
@@ -24,7 +25,11 @@ export class DelegationService {
       `)
       .eq('tenant_id', tenant.id)
       .order('starts_at', { ascending: false });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'delegation.list_failed', {
+        detail: 'Delegation list query failed',
+      });
+    }
     return data;
   }
 
@@ -35,7 +40,11 @@ export class DelegationService {
       .insert({ ...dto, tenant_id: tenant.id })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'delegation.create_failed', {
+        detail: 'Delegation insert failed',
+      });
+    }
     return data;
   }
 
@@ -48,7 +57,12 @@ export class DelegationService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'delegation.update_failed', {
+        detail: `Delegation update failed for id ${id}`,
+        notFoundCode: 'delegation.not_found',
+      });
+    }
     return data;
   }
 

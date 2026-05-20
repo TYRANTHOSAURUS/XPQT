@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { wrapPgError } from '../../common/errors';
 
 export interface CreateMenuDto {
   vendor_id: string;
@@ -54,7 +55,11 @@ export class CatalogMenuService {
     if (filter.service_type) q = q.eq('service_type', filter.service_type);
     if (filter.status) q = q.eq('status', filter.status);
     const { data, error } = await q.order('effective_from', { ascending: false });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'catalog_menu.list_failed', {
+        detail: 'Catalog menu list query failed',
+      });
+    }
     return data;
   }
 
@@ -66,7 +71,12 @@ export class CatalogMenuService {
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'catalog_menu.lookup_failed', {
+        detail: `Catalog menu lookup failed for id ${id}`,
+        notFoundCode: 'catalog_menu.not_found',
+      });
+    }
     return data;
   }
 
@@ -81,7 +91,13 @@ export class CatalogMenuService {
       })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      // 23505 (unique menu name+vendor+effective_from) → 409.
+      // 23503 (FK violation on vendor_id / space_id) → 409.
+      throw wrapPgError(error, 'catalog_menu.create_failed', {
+        detail: 'Catalog menu insert failed',
+      });
+    }
     return data;
   }
 
@@ -94,7 +110,12 @@ export class CatalogMenuService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'catalog_menu.update_failed', {
+        detail: `Catalog menu update failed for id ${id}`,
+        notFoundCode: 'catalog_menu.not_found',
+      });
+    }
     return data;
   }
 
@@ -106,7 +127,11 @@ export class CatalogMenuService {
       .eq('menu_id', menuId)
       .eq('tenant_id', tenant.id)
       .order('created_at');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'catalog_menu.item_list_failed', {
+        detail: `Menu item list query failed for menu ${menuId}`,
+      });
+    }
     return data;
   }
 
@@ -117,7 +142,13 @@ export class CatalogMenuService {
       .insert({ ...dto, menu_id: menuId, tenant_id: tenant.id })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      // 23505 (unique catalog_item_id within menu) → 409 db.unique_violation.
+      // 23503 (FK violation on menu_id / catalog_item_id) → 409 db.fk_violation.
+      throw wrapPgError(error, 'catalog_menu.item_add_failed', {
+        detail: `Menu item insert failed for menu ${menuId}`,
+      });
+    }
     return data;
   }
 
@@ -131,7 +162,14 @@ export class CatalogMenuService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      // PGRST116 → 404 catalog_menu.not_found (closest existing per-entity
+      // code; menu_items doesn't have its own not_found code yet).
+      throw wrapPgError(error, 'catalog_menu.item_update_failed', {
+        detail: `Menu item update failed for menu ${menuId} item ${itemId}`,
+        notFoundCode: 'catalog_menu.not_found',
+      });
+    }
     return data;
   }
 
@@ -143,7 +181,11 @@ export class CatalogMenuService {
       .eq('id', itemId)
       .eq('menu_id', menuId)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'catalog_menu.item_remove_failed', {
+        detail: `Menu item delete failed for menu ${menuId} item ${itemId}`,
+      });
+    }
     return { removed: true };
   }
 
@@ -166,7 +208,11 @@ export class CatalogMenuService {
       })
       .select()
       .single();
-    if (menuErr) throw menuErr;
+    if (menuErr) {
+      throw wrapPgError(menuErr, 'catalog_menu.duplicate_failed', {
+        detail: `Catalog menu duplicate (insert) failed for source ${id}`,
+      });
+    }
 
     const sourceItems = await this.listItems(id);
     if (sourceItems.length === 0) return newMenu;
@@ -196,7 +242,11 @@ export class CatalogMenuService {
     const { error: itemsErr } = await this.supabase.admin
       .from('menu_items')
       .insert(newItems);
-    if (itemsErr) throw itemsErr;
+    if (itemsErr) {
+      throw wrapPgError(itemsErr, 'catalog_menu.duplicate_failed', {
+        detail: `Catalog menu duplicate (items insert) failed for source ${id}`,
+      });
+    }
 
     return newMenu;
   }
@@ -219,7 +269,11 @@ export class CatalogMenuService {
       .eq('menu_id', menuId)
       .eq('tenant_id', tenant.id)
       .in('id', itemIds);
-    if (fetchErr) throw fetchErr;
+    if (fetchErr) {
+      throw wrapPgError(fetchErr, 'catalog_menu.bulk_update_failed', {
+        detail: `Bulk menu item fetch failed for menu ${menuId}`,
+      });
+    }
 
     const pct = patch.price_adjustment_percent ?? 0;
     const flat = patch.price_adjustment_flat ?? 0;
@@ -246,7 +300,11 @@ export class CatalogMenuService {
         .eq('id', id)
         .eq('menu_id', menuId)
         .eq('tenant_id', tenant.id);
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'catalog_menu.bulk_update_failed', {
+          detail: `Bulk menu item update failed for menu ${menuId} item ${id}`,
+        });
+      }
     }
     return { updated: updates.length };
   }
@@ -259,7 +317,11 @@ export class CatalogMenuService {
       .eq('menu_id', menuId)
       .eq('tenant_id', tenant.id)
       .in('id', itemIds);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'catalog_menu.bulk_delete_failed', {
+        detail: `Bulk menu item delete failed for menu ${menuId}`,
+      });
+    }
     return { removed: itemIds.length };
   }
 
@@ -271,7 +333,11 @@ export class CatalogMenuService {
       .eq('tenant_id', tenant.id)
       .eq('active', true)
       .order('name');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'catalog_menu.catalog_item_list_failed', {
+        detail: 'Catalog item list query failed',
+      });
+    }
     return data;
   }
 
@@ -281,7 +347,11 @@ export class CatalogMenuService {
       p_delivery_space_id: dto.delivery_space_id,
       p_on_date: dto.on_date ?? new Date().toISOString().slice(0, 10),
     });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'catalog_menu.resolve_offer_failed', {
+        detail: `resolve_menu_offer RPC failed for item ${dto.catalog_item_id} space ${dto.delivery_space_id}`,
+      });
+    }
     return data?.[0] ?? null;
   }
 }

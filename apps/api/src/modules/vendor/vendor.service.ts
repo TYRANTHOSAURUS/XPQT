@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { wrapPgError } from '../../common/errors';
 
 export interface CreateVendorDto {
   name: string;
@@ -29,7 +30,11 @@ export class VendorService {
       .select('*, owning_team:teams(id, name)')
       .eq('tenant_id', tenant.id)
       .order('name');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'vendor.list_failed', {
+        detail: 'Vendor list query failed',
+      });
+    }
     return data;
   }
 
@@ -41,7 +46,12 @@ export class VendorService {
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'vendor.lookup_failed', {
+        detail: `Vendor lookup failed for id ${id}`,
+        notFoundCode: 'vendor.not_found',
+      });
+    }
     return data;
   }
 
@@ -52,7 +62,13 @@ export class VendorService {
       .insert({ ...dto, tenant_id: tenant.id })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      // 23505 (unique vendor name within tenant) → 409 db.unique_violation.
+      // 23503 (FK violation on owning_team_id) → 409 db.fk_violation.
+      throw wrapPgError(error, 'vendor.create_failed', {
+        detail: 'Vendor insert failed',
+      });
+    }
     return data;
   }
 
@@ -65,7 +81,12 @@ export class VendorService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'vendor.update_failed', {
+        detail: `Vendor update failed for id ${id}`,
+        notFoundCode: 'vendor.not_found',
+      });
+    }
     return data;
   }
 
@@ -77,7 +98,11 @@ export class VendorService {
       .eq('vendor_id', vendorId)
       .eq('tenant_id', tenant.id)
       .order('service_type');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'vendor.service_area_list_failed', {
+        detail: `Vendor service area list query failed for vendor ${vendorId}`,
+      });
+    }
     return data;
   }
 
@@ -95,7 +120,13 @@ export class VendorService {
       })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      // 23505 (already an area for this space/service_type) → 409.
+      // 23503 (FK violation on vendor_id / space_id) → 409 db.fk_violation.
+      throw wrapPgError(error, 'vendor.service_area_add_failed', {
+        detail: `Vendor service area insert failed for vendor ${vendorId}`,
+      });
+    }
     return data;
   }
 
@@ -107,7 +138,11 @@ export class VendorService {
       .eq('id', serviceAreaId)
       .eq('vendor_id', vendorId)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'vendor.service_area_remove_failed', {
+        detail: `Vendor service area delete failed for vendor ${vendorId} area ${serviceAreaId}`,
+      });
+    }
     return { removed: true };
   }
 }

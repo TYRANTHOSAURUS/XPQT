@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { wrapPgError } from '../../common/errors';
 
 export interface CreateAssetDto {
   name: string;
@@ -35,7 +36,11 @@ export class AssetService {
       .eq('tenant_id', tenant.id)
       .eq('active', true)
       .order('name');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'asset.type_list_failed', {
+        detail: 'Asset type list query failed',
+      });
+    }
     return data;
   }
 
@@ -46,7 +51,11 @@ export class AssetService {
       .insert({ ...dto, tenant_id: tenant.id })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'asset.type_create_failed', {
+        detail: 'Asset type insert failed',
+      });
+    }
     return data;
   }
 
@@ -76,7 +85,11 @@ export class AssetService {
     if (filters?.space_id) query = query.eq('assigned_space_id', filters.space_id);
 
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'asset.list_failed', {
+        detail: 'Asset list query failed',
+      });
+    }
     return data;
   }
 
@@ -93,7 +106,12 @@ export class AssetService {
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'asset.lookup_failed', {
+        detail: `Asset lookup failed for id ${id}`,
+        notFoundCode: 'asset.not_found',
+      });
+    }
     return data;
   }
 
@@ -104,7 +122,11 @@ export class AssetService {
       .insert({ ...dto, tenant_id: tenant.id })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'asset.create_failed', {
+        detail: 'Asset insert failed',
+      });
+    }
     return data;
   }
 
@@ -117,7 +139,12 @@ export class AssetService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'asset.update_failed', {
+        detail: `Asset update failed for id ${id}`,
+        notFoundCode: 'asset.not_found',
+      });
+    }
     return data;
   }
 
@@ -133,7 +160,11 @@ export class AssetService {
       .eq('asset_id', assetId)
       .eq('tenant_id', tenant.id)
       .order('created_at', { ascending: false });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'asset.history_list_failed', {
+        detail: `Asset history query failed for id ${assetId}`,
+      });
+    }
     return data;
   }
 }
