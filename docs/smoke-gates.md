@@ -324,6 +324,24 @@ The same binary green/red outcome holds; the label tells the on-call which layer
 
 **JWT mint** mirrors `smoke-cross-tenant.mjs`: Supabase admin magiclink → verify-redirect access_token, for `ADMIN_AUTH_UID=93d41232-35b5-424c-b215-bb5d55a2dfd9` (default; override via `PROD_E2E_AUTH_UID=<uuid>` if the canonical user is rotated or deactivated — replacement MUST be an active admin in the canonical tenant). Requires `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_PUBLISHABLE_KEY` in `.env` (or the process env, for CI). No `JWT_SECRET` required — the Supabase admin client mints session tokens server-side. The minted token is NEVER logged (not even a prefix) — log surfaces only `admin browser JWT minted (token redacted)`. Verify-redirect parse failures surface only the redirect origin, never the full URL.
 
+**Running the gate in CI (F4, 2026-05-20).** A `prod-e2e-smoke` job in `.github/workflows/deploy.yml` runs this script after the Render `live` confirmation. The job depends on the `render` job and inherits strict failure semantics (a red probe fails the workflow). For the job to function, three GitHub Actions secrets MUST be set on the repo:
+
+| Secret name | Role | Source |
+|---|---|---|
+| `SUPABASE_URL` | Project URL the SDK + verify-redirect host derive from. | `.env` local mirror — value is public-by-design but still required as a secret. |
+| `SUPABASE_SECRET_KEY` | Service-role key. Used by `supabase.auth.admin.generateLink('magiclink')` to mint a session token server-side for the canonical admin user. NEVER exposed to the client. | `.env` local mirror — sensitive. |
+| `SUPABASE_PUBLISHABLE_KEY` | Anon/publishable key. Passed into `createClient(...)`'s second arg so the verify-redirect uses the correct site URL. NEVER substituted with the service-role key in CI. | `.env` local mirror — public-by-design but still required. |
+
+User-side wire-up (one-time):
+
+```bash
+gh secret set SUPABASE_URL              # paste the SUPABASE_URL value from .env
+gh secret set SUPABASE_SECRET_KEY       # paste the SUPABASE_SECRET_KEY value from .env
+gh secret set SUPABASE_PUBLISHABLE_KEY  # paste the SUPABASE_PUBLISHABLE_KEY value from .env
+```
+
+The PR that introduces the CI job stays DRAFT until the secrets are confirmed present — running the job without them reds every deploy with `SUPABASE_URL and SUPABASE_SECRET_KEY required`. Once the user signals secrets landed, merge the PR; no code change required to enable.
+
 **Not covered (by design):**
 - Writes. This is a read-only gate. Write-path coverage stays in the dev-API smoke gates.
 - Realtime channel. The Realtime regression class is covered by `smoke:cross-tenant`'s browser-path RLS probe.

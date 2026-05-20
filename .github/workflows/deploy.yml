@@ -117,3 +117,62 @@ jobs:
             esac
           done
           echo "Timed out waiting for Render deploy"; exit 1
+
+  prod-e2e-smoke:
+    # F4 (2026-05-20) — post-deploy gate against live Render. Hits four
+    # authenticated browser surfaces (/api/health, /api/me/inbox,
+    # /api/me/inbox/count, /api/persons/me) and fails the workflow if
+    # any of the three named failure classes fire (transport /
+    # http-status / body-shape). The same gate runs locally via
+    # `pnpm smoke:prod-e2e` for manual post-deploy verification.
+    #
+    # PREREQUISITES BEFORE ENABLING THIS JOB:
+    #   gh secret set SUPABASE_URL              # https://iwbqnyrvycqgnatratrk.supabase.co
+    #   gh secret set SUPABASE_SECRET_KEY       # service-role key used to mint a real browser JWT
+    #   gh secret set SUPABASE_PUBLISHABLE_KEY  # anon key passed through Supabase SDK init
+    #
+    # The smoke script reads these from `process.env` first, falling
+    # back to `.env` for local runs. In CI the `.env` file is not
+    # present — the secrets MUST be in the GH Actions secret store, or
+    # this job will fail with `SUPABASE_URL and SUPABASE_SECRET_KEY
+    # required` and red every deploy. The companion PR that introduces
+    # this job is held DRAFT until the user confirms the secrets are
+    # in place. Do not merge that PR before then.
+    name: Smoke (prod e2e — authenticated browser surfaces)
+    needs: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        # Only @supabase/supabase-js + the apps/api script are needed to
+        # run the smoke; the broader monorepo install is fast (~30s) and
+        # avoids divergence vs. the validate job. No frozen lockfile to
+        # tolerate pnpm hot-fix updates.
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build shared
+        # Required by apps/api scripts that import @prequest/shared.
+        run: pnpm --filter @prequest/shared build
+
+      - name: Smoke prod-e2e (live Render)
+        # R1_LANDED=1 — every prod-deploy after PR #36 has the
+        # /api/persons/me fix; the gate's R1 probe is permanently on.
+        # On red exit, the workflow fails — Render rollback / fix-forward
+        # are operator decisions, not auto-rolled here.
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          R1_LANDED: '1'
+        run: pnpm smoke:prod-e2e
