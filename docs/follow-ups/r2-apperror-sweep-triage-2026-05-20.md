@@ -109,14 +109,7 @@ covers PGRST* prefixes + pg-native `severity`, which is the common case.
 
 | Module | Raw-throw sites | Reason for deferral |
 |---|---:|---|
-| config-engine | 31 | Out of R2 scope — sweep + ratchet to be done in a focused follow-up PR |
-| room-booking-rules | 20 | Same |
-| user-management | 19 | Same |
-| ticket | 13 | Same |
-| orders | 13 | Same |
-| maintenance | 13 | Same |
-| person | 12 | Same — R1 cleaned `/api/persons/me`; the rest of the module still has residuals |
-| work-orders | 10 | Same |
+| work-orders | 10 | Out of R2 scope — sweep + ratchet to be done in a focused follow-up PR |
 | workflow | 10 | Same |
 | webhook | 9 | Same |
 | service-catalog | 8 | Same |
@@ -136,7 +129,7 @@ covers PGRST* prefixes + pg-native `severity`, which is the common case.
 | outbox | 1 | Same |
 | tenant | 1 | Same |
 | daily-list | 1 | Same |
-| **Total** | **235** | |
+| **Total** | **114** | |
 
 Enumeration command:
 
@@ -150,6 +143,30 @@ done
 ```
 
 Run before opening the follow-up PR to confirm the count hasn't drifted.
+
+## Sub-PR A migration (2026-05-20)
+
+The seven highest-traffic modules from the 27-module backlog above were
+migrated to `wrapPgError` in F1 Sub-PR A `(pending merge)`:
+
+| Module | Sites migrated (incl. named-var rethrows) |
+|---|---:|
+| person | 12 |
+| maintenance | 13 |
+| orders | 16 (13 simple + 3 named — `seriesErr` / `userErr` / `updateErr` / `insertErr`; plus the `caught` compensation rename in `createStandalone`) |
+| ticket | 18 (13 simple + 5 named — `activityError` / `woResult.error` / 3× `permErr` / `createError` / 2× `fetchError` in dispatch.service.ts) |
+| user-management | 19 |
+| room-booking-rules | 21 (20 simple + 1 named — `dErr` in `impact-preview.service.ts`, `result.error` in `loadAncestorChain`) |
+| config-engine | 21 (broader scan: 7 simple in config-engine.service.ts incl. `entityError`/`versionError`/`publishError`/`updateError`; 5 in criteria-set.service.ts incl. `pErr`/`mErr`; 8 in service-catalog.service.ts incl. `orderErr`/`unlinkErr`/`linkErr`; 19 in request-type.service.ts) |
+
+Total: ~120 wrapPgError sites added across the seven modules. All
+`RAW_RETHROW_SWEPT_MODULES` entries added in the same PR — gate now
+covers 17 swept modules (was 10). Codes registered in
+`packages/shared/src/error-codes.ts` + EN/NL parity in
+`apps/api/src/common/errors/messages.{en,nl}.ts`.
+
+The deferred table above reflects post-Sub-PR-A residuals: 114 sites
+across 20 modules.
 
 ## Codes introduced this PR
 
@@ -196,17 +213,20 @@ Forbids: `throw new (BadRequest|NotFound|Forbidden|Unauthorized|Conflict|Unproce
 
 ### Ratchet 2 — `RAW_RETHROW_SWEPT_MODULES` (raw Postgres rethrows)
 
-New in R2. Extends the gate with a SECOND list covering the 10 modules
+New in R2. Extends the gate with a SECOND list covering the modules
 whose `*.service.ts` files are demonstrably clean of bare
 `throw error;` Postgres rethrows. Catches the R1 bug class going forward.
 
 Forbids in `*.service.ts` only: `throw[[:space:]]+(error|err)[[:space:]]*;`
 
-The 10 modules: `asset`, `business-hours`, `catalog-menu`, `delegation`,
-`notification`, `team`, `vendor`, `floor-plan`, `inbox`, `notifications`.
+R2 seeded the list with 10 modules: `asset`, `business-hours`,
+`catalog-menu`, `delegation`, `notification`, `team`, `vendor`,
+`floor-plan`, `inbox`, `notifications`. F1 Sub-PR A added 7 more:
+`person`, `maintenance`, `orders`, `ticket`, `user-management`,
+`room-booking-rules`, `config-engine` — bringing the total to 17.
 
-Modules NOT in this second list are intentionally excluded — see the
-Deferred section's 235-site backlog.
+Modules NOT in this list are intentionally excluded — see the Deferred
+section's 114-site backlog (post-Sub-PR-A; 235 pre-Sub-PR-A).
 
 ### EN/NL message parity
 
@@ -234,5 +254,8 @@ unit-test gate for this today).
 
 ```
 Phase 7.A.3 ratchet: 0 raw throws across 45 migrated module(s).
-R2 raw-rethrow ratchet: 0 raw rethrows across 10 swept module(s).
+R2 raw-rethrow ratchet: 0 raw rethrows across 17 swept module(s).
 ```
+
+(Post-Sub-PR-A. Pre-Sub-PR-A the count was `0 raw rethrows across 10
+swept module(s)`.)

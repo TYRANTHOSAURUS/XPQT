@@ -95,6 +95,15 @@ RAW_RETHROW_SWEPT_MODULES=(
   "apps/api/src/modules/floor-plan"
   "apps/api/src/modules/inbox"
   "apps/api/src/modules/notifications"
+  # F1 Sub-PR A — top-7 wrapPgError sweep (2026-05-20).
+  # Triage: docs/follow-ups/r2-apperror-sweep-triage-2026-05-20.md §Sub-PR A.
+  "apps/api/src/modules/person"
+  "apps/api/src/modules/maintenance"
+  "apps/api/src/modules/orders"
+  "apps/api/src/modules/ticket"
+  "apps/api/src/modules/user-management"
+  "apps/api/src/modules/room-booking-rules"
+  "apps/api/src/modules/config-engine"
 )
 
 # Forbidden patterns. The filter handles legacy throws via `generic.*` codes,

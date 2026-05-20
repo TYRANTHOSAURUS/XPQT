@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 
 type ScopeKind = 'tenant' | 'space' | 'space_group';
 
@@ -73,7 +73,11 @@ export class RequestTypeService {
     if (domain) query = query.eq('domain', domain);
 
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_list_failed', {
+        detail: 'Request types list query failed',
+      });
+    }
     return data;
   }
 
@@ -86,7 +90,12 @@ export class RequestTypeService {
       .eq('tenant_id', tenant.id)
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_lookup_failed', {
+        detail: `Request type ${id} lookup failed`,
+        notFoundCode: 'config_engine.request_type_not_found',
+      });
+    }
     return data;
   }
 
@@ -125,7 +134,11 @@ export class RequestTypeService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_create_failed', {
+        detail: `Request type insert failed (name ${dto.name})`,
+      });
+    }
     return data;
   }
 
@@ -139,7 +152,12 @@ export class RequestTypeService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_update_failed', {
+        detail: `Request type ${id} update failed`,
+        notFoundCode: 'config_engine.request_type_not_found',
+      });
+    }
     return data;
   }
 
@@ -154,7 +172,11 @@ export class RequestTypeService {
       p_tenant_id: tenant.id,
       p_category_ids: categoryIds ?? [],
     });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_categories_replace_failed', {
+        detail: `Request type ${requestTypeId} categories replace failed`,
+      });
+    }
     return this.listCategories(requestTypeId);
   }
 
@@ -165,7 +187,11 @@ export class RequestTypeService {
       .select('category_id')
       .eq('tenant_id', tenant.id)
       .eq('request_type_id', requestTypeId);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_categories_list_failed', {
+        detail: `Request type ${requestTypeId} categories list failed`,
+      });
+    }
     return ((data ?? []) as Array<{ category_id: string }>).map((r) => r.category_id);
   }
 
@@ -184,7 +210,11 @@ export class RequestTypeService {
       p_tenant_id: tenant.id,
       p_rules: rules,
     });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_coverage_replace_failed', {
+        detail: `Request type ${requestTypeId} coverage replace failed`,
+      });
+    }
     return this.listCoverage(requestTypeId);
   }
 
@@ -196,7 +226,11 @@ export class RequestTypeService {
       .eq('tenant_id', tenant.id)
       .eq('request_type_id', requestTypeId)
       .order('created_at');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_coverage_list_failed', {
+        detail: `Request type ${requestTypeId} coverage list failed`,
+      });
+    }
     return data;
   }
 
@@ -212,7 +246,11 @@ export class RequestTypeService {
       p_tenant_id: tenant.id,
       p_rules: rules,
     });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_audience_replace_failed', {
+        detail: `Request type ${requestTypeId} audience replace failed`,
+      });
+    }
     return this.listAudience(requestTypeId);
   }
 
@@ -224,7 +262,11 @@ export class RequestTypeService {
       .eq('tenant_id', tenant.id)
       .eq('request_type_id', requestTypeId)
       .order('created_at');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_audience_list_failed', {
+        detail: `Request type ${requestTypeId} audience list failed`,
+      });
+    }
     return data;
   }
 
@@ -256,7 +298,11 @@ export class RequestTypeService {
       p_tenant_id: tenant.id,
       p_variants: variants,
     });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_form_variants_replace_failed', {
+        detail: `Request type ${requestTypeId} form variants replace failed`,
+      });
+    }
     return this.listFormVariants(requestTypeId);
   }
 
@@ -269,7 +315,11 @@ export class RequestTypeService {
       .eq('request_type_id', requestTypeId)
       .order('priority', { ascending: false })
       .order('created_at');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_form_variants_list_failed', {
+        detail: `Request type ${requestTypeId} form variants list failed`,
+      });
+    }
     return data;
   }
 
@@ -285,7 +335,11 @@ export class RequestTypeService {
       p_tenant_id: tenant.id,
       p_rules: rules,
     });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_on_behalf_replace_failed', {
+        detail: `Request type ${requestTypeId} on-behalf rules replace failed`,
+      });
+    }
     return this.listOnBehalfRules(requestTypeId);
   }
 
@@ -296,7 +350,11 @@ export class RequestTypeService {
       .select('*, criteria_set:criteria_sets(id, name)')
       .eq('tenant_id', tenant.id)
       .eq('request_type_id', requestTypeId);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_on_behalf_list_failed', {
+        detail: `Request type ${requestTypeId} on-behalf rules list failed`,
+      });
+    }
     return data;
   }
 
@@ -351,7 +409,11 @@ export class RequestTypeService {
       p_tenant_id: tenant.id,
       p_overrides: overrides,
     });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_scope_overrides_replace_failed', {
+        detail: `Request type ${requestTypeId} scope overrides replace failed`,
+      });
+    }
     return this.listScopeOverrides(requestTypeId);
   }
 
@@ -363,7 +425,11 @@ export class RequestTypeService {
       .eq('tenant_id', tenant.id)
       .eq('request_type_id', requestTypeId)
       .order('created_at');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_scope_overrides_list_failed', {
+        detail: `Request type ${requestTypeId} scope overrides list failed`,
+      });
+    }
     return data;
   }
 
@@ -381,7 +447,11 @@ export class RequestTypeService {
       p_tenant_id: tenant.id,
       p_request_type_id: requestTypeId,
     });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.coverage_matrix_failed', {
+        detail: `Request type ${requestTypeId} coverage matrix RPC failed`,
+      });
+    }
 
     type MatrixRow = {
       site_id: string;
@@ -578,7 +648,11 @@ export class RequestTypeService {
       .select('*')
       .eq('tenant_id', tenantId)
       .in('id', ids);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.name_hydrate_failed', {
+        detail: `Coverage matrix name-hydrate failed for table ${table}`,
+      });
+    }
     const map = new Map<string, string>();
     for (const row of (data ?? []) as unknown as Array<Record<string, unknown>>) {
       const name = row[nameColumn];
@@ -598,7 +672,12 @@ export class RequestTypeService {
       .eq('id', requestTypeId)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.request_type_lookup_failed', {
+        detail: `Request type ${requestTypeId} existence check failed`,
+        notFoundCode: 'config_engine.request_type_not_found',
+      });
+    }
     if (!data) throw AppErrors.notFoundWithCode('config_engine.request_type_not_found', 'Request type not found in this tenant');
   }
 
@@ -625,7 +704,11 @@ export class RequestTypeService {
       .select('id')
       .eq('tenant_id', tenant.id)
       .in('id', nonEmpty);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.tenant_ids_check_failed', {
+        detail: `assertIdsInTenant lookup failed for table ${table}`,
+      });
+    }
     const found = new Set(((data ?? []) as Array<{ id: string }>).map((r) => r.id));
     const missing = nonEmpty.filter((id) => !found.has(id));
     if (missing.length > 0) {
@@ -656,7 +739,11 @@ export class RequestTypeService {
       .select('id, config_type')
       .eq('tenant_id', tenant.id)
       .in('id', nonEmpty);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.config_entities_type_check_failed', {
+        detail: 'assertConfigEntitiesOfType lookup failed',
+      });
+    }
     const rows = (data ?? []) as Array<{ id: string; config_type: string }>;
     const byId = new Map(rows.map((r) => [r.id, r.config_type]));
     const problems: string[] = [];

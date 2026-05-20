@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import type { Predicate } from './dto';
 
 /**
@@ -353,7 +353,11 @@ export class PredicateEngineService {
       const { data, error } = await this.supabase.admin.rpc('org_node_descendants', {
         root_id: root,
       });
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'room_rule.org_descendants_resolve_failed', {
+          detail: `org_node_descendants RPC failed for root ${root}`,
+        });
+      }
       const ids = ((data ?? []) as Array<string | { id?: string }>).map((row) =>
         typeof row === 'string' ? row : row?.id ?? '',
       );
@@ -372,7 +376,11 @@ export class PredicateEngineService {
         Promise.resolve(
           this.supabase.admin.rpc('in_business_hours', { at, calendar_id: cal }),
         ).then(({ data, error }) => {
-          if (error) throw error;
+          if (error) {
+            throw wrapPgError(error, 'room_rule.business_hours_resolve_failed', {
+              detail: `in_business_hours RPC failed for calendar ${cal} at ${at}`,
+            });
+          }
           ctx.resolved.in_business_hours[key] = Boolean(data);
         }),
       );

@@ -4,7 +4,7 @@ import {
   buildDispatchChildId,
   buildDispatchIdempotencyKey,
 } from '@prequest/shared';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -349,7 +349,12 @@ export class DispatchService {
       .eq('id', childId)
       .eq('tenant_id', tenant.id)
       .single();
-    if (fetchError) throw fetchError;
+    if (fetchError) {
+      throw wrapPgError(fetchError, 'ticket.dispatch_child_refetch_failed', {
+        detail: `Dispatch child work_order ${childId} refetch failed`,
+        notFoundCode: 'ticket.not_found',
+      });
+    }
     return child as Record<string, unknown>;
   }
 
@@ -594,7 +599,11 @@ export class DispatchService {
       .select('*')
       .in('id', childIds)
       .eq('tenant_id', tenant.id);
-    if (fetchError) throw fetchError;
+    if (fetchError) {
+      throw wrapPgError(fetchError, 'ticket.dispatch_batch_refetch_failed', {
+        detail: 'Dispatch batch children refetch failed',
+      });
+    }
 
     const byId = new Map<string, Record<string, unknown>>();
     for (const row of (children ?? []) as Array<Record<string, unknown>>) {

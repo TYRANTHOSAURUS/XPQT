@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 
 export interface RoleAssignmentCtx {
@@ -208,7 +208,11 @@ export class TicketVisibilityService {
     if (!ctx.user_id) return [];
     const { data, error } = await this.supabase.admin
       .rpc('ticket_visibility_ids', { p_user_id: ctx.user_id, p_tenant_id: ctx.tenant_id });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'ticket.visibility_ids_failed', {
+        detail: `ticket_visibility_ids RPC failed for user ${ctx.user_id}`,
+      });
+    }
     return (data as Array<string | { id: string }> | null)?.map((row) =>
       typeof row === 'string' ? row : row.id,
     ) ?? [];

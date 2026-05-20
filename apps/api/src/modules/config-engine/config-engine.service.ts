@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { assertTenantOwned } from '../../common/tenant-validation';
 
 export interface CreateConfigEntityDto {
@@ -28,7 +28,11 @@ export class ConfigEngineService {
       .eq('config_type', configType)
       .order('display_name');
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.entity_list_failed', {
+        detail: `Config entities list failed for type ${configType}`,
+      });
+    }
     return data;
   }
 
@@ -60,7 +64,11 @@ export class ConfigEngineService {
       .select()
       .single();
 
-    if (entityError) throw entityError;
+    if (entityError) {
+      throw wrapPgError(entityError, 'config_engine.entity_create_failed', {
+        detail: `Config entity insert failed (type ${dto.config_type})`,
+      });
+    }
 
     // Create the first version as draft
     const { data: version, error: versionError } = await this.supabase.admin
@@ -75,7 +83,11 @@ export class ConfigEngineService {
       .select()
       .single();
 
-    if (versionError) throw versionError;
+    if (versionError) {
+      throw wrapPgError(versionError, 'config_engine.draft_create_failed', {
+        detail: `Initial draft version insert failed for entity ${entity.id}`,
+      });
+    }
 
     return { ...entity, draft_version: version };
   }
@@ -118,7 +130,11 @@ export class ConfigEngineService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.draft_create_failed', {
+        detail: `Draft version insert failed for entity ${entityId}`,
+      });
+    }
     return data;
   }
 
@@ -146,7 +162,11 @@ export class ConfigEngineService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.draft_update_failed', {
+        detail: `Draft update failed for entity ${entityId}`,
+      });
+    }
     return data;
   }
 
@@ -174,7 +194,11 @@ export class ConfigEngineService {
       .eq('id', draft.id)
       .eq('tenant_id', tenant.id);
 
-    if (publishError) throw publishError;
+    if (publishError) {
+      throw wrapPgError(publishError, 'config_engine.publish_failed', {
+        detail: `Config version ${draft.id} publish status update failed`,
+      });
+    }
 
     // Update entity to point to this version. Codex post-fix review 2026-05-08:
     // entityId came in via path param; without tenant filter, supabase.admin
@@ -187,7 +211,11 @@ export class ConfigEngineService {
       .eq('id', entityId)
       .eq('tenant_id', tenant.id);
 
-    if (updateError) throw updateError;
+    if (updateError) {
+      throw wrapPgError(updateError, 'config_engine.publish_pointer_failed', {
+        detail: `Config entity ${entityId} published-pointer update failed`,
+      });
+    }
 
     // Log audit event
     await this.supabase.admin.from('audit_events').insert({

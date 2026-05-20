@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 
 const BUCKET = 'portal-assets';
 const COVER_MAX_BYTES = 2 * 1024 * 1024;
@@ -48,7 +48,11 @@ export class ServiceCatalogService {
       .eq('active', true)
       .order('display_order');
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.category_list_failed', {
+        detail: 'Service catalog categories list failed',
+      });
+    }
     return data;
   }
 
@@ -76,9 +80,21 @@ export class ServiceCatalogService {
         .eq('tenant_id', tenant.id),
     ]);
 
-    if (categoriesRes.error) throw categoriesRes.error;
-    if (requestTypesRes.error) throw requestTypesRes.error;
-    if (linksRes.error) throw linksRes.error;
+    if (categoriesRes.error) {
+      throw wrapPgError(categoriesRes.error, 'config_engine.category_tree_load_failed', {
+        detail: 'Service catalog tree categories load failed',
+      });
+    }
+    if (requestTypesRes.error) {
+      throw wrapPgError(requestTypesRes.error, 'config_engine.category_tree_load_failed', {
+        detail: 'Service catalog tree request_types load failed',
+      });
+    }
+    if (linksRes.error) {
+      throw wrapPgError(linksRes.error, 'config_engine.category_tree_load_failed', {
+        detail: 'Service catalog tree request_type_categories load failed',
+      });
+    }
 
     const categories = (categoriesRes.data ?? []) as CategoryRow[];
     const requestTypes = (requestTypesRes.data ?? []) as RequestTypeRow[];
@@ -124,7 +140,9 @@ export class ServiceCatalogService {
     if (msg.includes('category_cycle') || msg.includes('category_self_parent')) {
       throw AppErrors.validationFailed('config_engine.invalid_hierarchy', { detail: 'This parent assignment would create a cycle.' });
     }
-    throw error;
+    throw wrapPgError(error, 'config_engine.category_write_failed', {
+      detail: `Service catalog category write failed${msg ? `: ${msg}` : ''}`,
+    });
   }
 
   async createCategory(dto: { name: string; description?: string; icon?: string; parent_category_id?: string; display_order?: number }) {
@@ -231,19 +249,31 @@ export class ServiceCatalogService {
         .update({ display_order: u.display_order })
         .eq('id', u.id)
         .eq('tenant_id', tenant.id);
-      if (orderErr) throw orderErr;
+      if (orderErr) {
+        throw wrapPgError(orderErr, 'config_engine.request_type_reorder_failed', {
+          detail: `Request type ${u.id} display_order update failed`,
+        });
+      }
 
       const { error: unlinkErr } = await this.supabase.admin
         .from('request_type_categories')
         .delete()
         .eq('request_type_id', u.id)
         .eq('tenant_id', tenant.id);
-      if (unlinkErr) throw unlinkErr;
+      if (unlinkErr) {
+        throw wrapPgError(unlinkErr, 'config_engine.request_type_unlink_failed', {
+          detail: `Request type ${u.id} category unlink failed`,
+        });
+      }
 
       const { error: linkErr } = await this.supabase.admin
         .from('request_type_categories')
         .insert({ tenant_id: tenant.id, request_type_id: u.id, category_id: u.category_id });
-      if (linkErr) throw linkErr;
+      if (linkErr) {
+        throw wrapPgError(linkErr, 'config_engine.request_type_link_failed', {
+          detail: `Request type ${u.id} category link insert failed`,
+        });
+      }
     }
     return { updated: updates.length };
   }
@@ -256,7 +286,11 @@ export class ServiceCatalogService {
       .eq('id', id)
       .eq('tenant_id', tenant.id);
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'config_engine.category_delete_failed', {
+        detail: `Service catalog category ${id} soft-delete failed`,
+      });
+    }
     return { deleted: true };
   }
 

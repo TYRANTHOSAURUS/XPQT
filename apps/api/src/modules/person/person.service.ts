@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Request } from 'express';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppError, AppErrors } from '../../common/errors';
+import { AppError, AppErrors, wrapPgError } from '../../common/errors';
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -28,7 +28,11 @@ export class PersonService {
       .order('first_name')
       .limit(20);
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'person.search_failed', {
+        detail: 'Person search query failed',
+      });
+    }
     return data;
   }
 
@@ -46,7 +50,11 @@ export class PersonService {
       .order('first_name')
       .limit(100);
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'person.list_failed', {
+        detail: 'Person list query failed',
+      });
+    }
     return data;
   }
 
@@ -61,7 +69,12 @@ export class PersonService {
       .eq('tenant_id', tenant.id)
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'person.lookup_failed', {
+        detail: `Person ${id} lookup failed`,
+        notFoundCode: 'person.not_found',
+      });
+    }
     return data;
   }
 
@@ -71,8 +84,9 @@ export class PersonService {
    * Previously a `GET /api/persons/me` request matched the controller's
    * `@Get(':id')` route with `id='me'`, which forwarded `'me'` into
    * `getById()` → Postgres rejected it as an invalid UUID → the
-   * `if (error) throw error;` re-threw the raw PostgrestError → the
-   * global filter mapped it to `unknown.server_error` 500.
+   * `if (error) throw error` (legacy bare rethrow) re-surfaced the raw
+   * PostgrestError → the global filter mapped it to
+   * `unknown.server_error` 500.
    *
    * This method resolves the caller's own person row via the
    * AuthGuard-attached `request.user.platformUserId` (the auth_uid → users
@@ -222,7 +236,11 @@ export class PersonService {
       .insert({ ...personFields, tenant_id: tenant.id })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'person.create_failed', {
+        detail: 'Person insert failed',
+      });
+    }
 
     if (primary_org_node_id) {
       await this.upsertPrimaryMembership(data.id, primary_org_node_id);
@@ -243,7 +261,12 @@ export class PersonService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'person.update_failed', {
+        detail: `Person ${id} update failed`,
+        notFoundCode: 'person.not_found',
+      });
+    }
 
     if (primary_org_node_id !== undefined) {
       if (primary_org_node_id === null) {
@@ -270,7 +293,11 @@ export class PersonService {
     if (type) query = query.eq('type', type);
 
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'person.list_failed', {
+        detail: 'Person listByType query failed',
+      });
+    }
     return data;
   }
 
@@ -283,7 +310,11 @@ export class PersonService {
       .eq('person_id', personId)
       .eq('tenant_id', tenant.id)
       .eq('is_primary', true);
-    if (demoteErr) throw demoteErr;
+    if (demoteErr) {
+      throw wrapPgError(demoteErr, 'person.membership_update_failed', {
+        detail: `Person ${personId} membership demote failed`,
+      });
+    }
 
     const { error } = await this.supabase.admin
       .from('person_org_memberships')
@@ -302,7 +333,9 @@ export class PersonService {
           detail: 'Another organisation change for this person is in progress. Reload and try again.',
         });
       }
-      throw error;
+      throw wrapPgError(error, 'person.membership_update_failed', {
+        detail: `Person ${personId} membership upsert failed`,
+      });
     }
   }
 
@@ -314,7 +347,11 @@ export class PersonService {
       .eq('person_id', personId)
       .eq('tenant_id', tenant.id)
       .eq('is_primary', true);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'person.membership_remove_failed', {
+        detail: `Person ${personId} primary membership clear failed`,
+      });
+    }
   }
 
   // ── Portal-scope slice: location grants ──────────────────────────────────
@@ -327,7 +364,11 @@ export class PersonService {
       .eq('person_id', personId)
       .eq('tenant_id', tenant.id)
       .order('granted_at');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'person.location_grant_list_failed', {
+        detail: `Person ${personId} location grants list failed`,
+      });
+    }
     return data;
   }
 
@@ -348,7 +389,11 @@ export class PersonService {
       })
       .select('id, space_id, granted_by_user_id, granted_at, note')
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'person.location_grant_create_failed', {
+        detail: `Person ${personId} location grant insert failed`,
+      });
+    }
     return data;
   }
 
@@ -360,7 +405,11 @@ export class PersonService {
       .eq('id', grantId)
       .eq('person_id', personId)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'person.location_grant_remove_failed', {
+        detail: `Person ${personId} location grant ${grantId} delete failed`,
+      });
+    }
     return { ok: true };
   }
 
@@ -381,7 +430,11 @@ export class PersonService {
       'portal_authorized_root_matches',
       { p_person_id: personId, p_tenant_id: tenant.id },
     );
-    if (rpcErr) throw rpcErr;
+    if (rpcErr) {
+      throw wrapPgError(rpcErr, 'person.authorization_load_failed', {
+        detail: `Person ${personId} portal_authorized_root_matches RPC failed`,
+      });
+    }
 
     const matches = ((rows ?? []) as Array<{ root_id: string; source: string; grant_id: string | null }>);
     if (matches.length === 0) return [];

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { wrapPgError } from '../../common/errors';
 
 /**
  * Per-line + bundle + annualised cost computation. Honors the three units
@@ -81,9 +82,21 @@ export class CostService {
         .eq('booking_id', bundleId)
         .eq('tenant_id', tenantId),
     ]);
-    if (bookingRes.error) throw bookingRes.error;
-    if (slotRes.error) throw slotRes.error;
-    if (ordersRes.error) throw ordersRes.error;
+    if (bookingRes.error) {
+      throw wrapPgError(bookingRes.error, 'order.cost_booking_lookup_failed', {
+        detail: `Cost-breakdown booking ${bundleId} lookup failed`,
+      });
+    }
+    if (slotRes.error) {
+      throw wrapPgError(slotRes.error, 'order.cost_slot_lookup_failed', {
+        detail: `Cost-breakdown booking_slots lookup for booking ${bundleId} failed`,
+      });
+    }
+    if (ordersRes.error) {
+      throw wrapPgError(ordersRes.error, 'order.cost_orders_list_failed', {
+        detail: `Cost-breakdown orders lookup for booking ${bundleId} failed`,
+      });
+    }
 
     const booking = bookingRes.data as
       | {
@@ -107,7 +120,11 @@ export class CostService {
         .eq('id', booking.recurrence_series_id)
         .eq('tenant_id', tenantId)
         .maybeSingle();
-      if (seriesErr) throw seriesErr;
+      if (seriesErr) {
+        throw wrapPgError(seriesErr, 'order.cost_series_lookup_failed', {
+          detail: `Cost-breakdown recurrence_series ${booking.recurrence_series_id} lookup failed`,
+        });
+      }
       recurrenceRule = (seriesRow as { recurrence_rule: typeof recurrenceRule } | null)
         ?.recurrence_rule ?? null;
     }
@@ -164,7 +181,11 @@ export class CostService {
       .select('id, catalog_item_id, quantity, unit_price, policy_snapshot')
       .in('order_id', orderIds)
       .eq('tenant_id', tenantId);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'order.cost_line_items_load_failed', {
+        detail: 'Cost-breakdown order_line_items load failed',
+      });
+    }
     return ((data ?? []) as Array<{
       id: string;
       catalog_item_id: string;

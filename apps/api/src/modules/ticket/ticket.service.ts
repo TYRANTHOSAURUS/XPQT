@@ -6,7 +6,7 @@ import {
   buildCreateTicketId,
   buildReassignIdempotencyKey,
 } from '@prequest/shared';
-import { AppError, AppErrors, mapRpcErrorToAppError } from '../../common/errors';
+import { AppError, AppErrors, mapRpcErrorToAppError, wrapPgError } from '../../common/errors';
 import { hasOwnDefined } from '../../common/has-own-defined';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { probeCommandOperationSuccess } from '../../common/command-operations-probe';
@@ -366,7 +366,11 @@ export class TicketService {
     }
 
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'ticket.list_failed', {
+        detail: 'Ticket list query failed',
+      });
+    }
 
     // Step 1c.10c: list reads from tickets (case-only). Synthesize
     // ticket_kind='case' for every item so frontend type contracts hold.
@@ -494,7 +498,11 @@ export class TicketService {
       .in('visibility', ['internal', 'external'])
       .order('created_at', { ascending: false });
 
-    if (activityError) throw activityError;
+    if (activityError) {
+      throw wrapPgError(activityError, 'ticket.inbox_activities_load_failed', {
+        detail: 'Inbox latest-activity preview load failed',
+      });
+    }
 
     const latestByTicket = new Map<string, InboxActivityPreview>();
     for (const row of activityRows ?? []) {
@@ -575,7 +583,11 @@ export class TicketService {
           .select('tags')
           .eq('tenant_id', tenant.id)
           .not('tags', 'is', null);
-        if (error) throw error;
+        if (error) {
+          throw wrapPgError(error, 'ticket.distinct_tags_visible_failed', {
+            detail: 'tickets_visible_for_actor distinct-tags read failed',
+          });
+        }
         const tagSet = new Set<string>();
         // The Supabase typings for `.rpc(...).select(...)` widen `data` to
         // `Row | Row[]`, so coerce explicitly before iterating.
@@ -593,7 +605,11 @@ export class TicketService {
     const { data, error } = await this.supabase.admin.rpc('tickets_distinct_tags', {
       tenant: tenant.id,
     });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'ticket.distinct_tags_failed', {
+        detail: 'tickets_distinct_tags RPC failed',
+      });
+    }
     return (data ?? []).map((row: { tag: string }) => row.tag);
   }
 
@@ -628,7 +644,9 @@ export class TicketService {
     // PostgREST .single() returns error.code='PGRST116' when no row matches.
     // Other errors are real DB problems and must propagate.
     if (error && (error as { code?: string }).code !== 'PGRST116') {
-      throw error;
+      throw wrapPgError(error, 'ticket.lookup_failed', {
+        detail: `Ticket ${id} case lookup failed`,
+      });
     }
     if (data) {
       return { ...data, ticket_kind: 'case' as const };
@@ -641,7 +659,11 @@ export class TicketService {
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    if (woResult.error) throw woResult.error;
+    if (woResult.error) {
+      throw wrapPgError(woResult.error, 'ticket.work_order_lookup_failed', {
+        detail: `Ticket ${id} work_order fallback lookup failed`,
+      });
+    }
     if (woResult.data) {
       return { ...woResult.data, ticket_kind: 'work_order' as const };
     }
@@ -949,7 +971,11 @@ export class TicketService {
               p_permission: 'tickets.change_priority',
             },
           );
-          if (permErr) throw permErr;
+          if (permErr) {
+            throw wrapPgError(permErr, 'ticket.permission_check_failed', {
+              detail: `user_has_permission RPC failed for tickets.change_priority (user ${ctx.user_id})`,
+            });
+          }
           if (!hasChange) {
             throw AppErrors.forbidden(
               'ticket.priority_change_forbidden',
@@ -966,7 +992,11 @@ export class TicketService {
               p_permission: 'tickets.assign',
             },
           );
-          if (permErr) throw permErr;
+          if (permErr) {
+            throw wrapPgError(permErr, 'ticket.permission_check_failed', {
+              detail: `user_has_permission RPC failed for tickets.assign (user ${ctx.user_id})`,
+            });
+          }
           if (!hasAssign) {
             throw AppErrors.forbidden(
               'ticket.assign_forbidden',
@@ -1298,7 +1328,11 @@ export class TicketService {
             p_permission: 'tickets.assign',
           },
         );
-        if (permErr) throw permErr;
+        if (permErr) {
+          throw wrapPgError(permErr, 'ticket.permission_check_failed', {
+            detail: `user_has_permission RPC failed for tickets.assign on reassign (user ${ctx.user_id})`,
+          });
+        }
         if (!hasAssign) {
           throw AppErrors.forbidden(
             'ticket.assign_forbidden',
@@ -1558,7 +1592,11 @@ export class TicketService {
     }
 
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'ticket.activities_list_failed', {
+        detail: `Ticket ${ticketId} activities list failed`,
+      });
+    }
     if (!data) return [];
 
     // Collect every unique attachment path that still needs a signed URL into
@@ -1640,7 +1678,11 @@ export class TicketService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'ticket.activity_create_failed', {
+        detail: `Ticket ${ticketId} activity insert failed`,
+      });
+    }
     return data;
   }
 
@@ -1671,7 +1713,11 @@ export class TicketService {
             upsert: false,
           });
 
-        if (error) throw error;
+        if (error) {
+          throw wrapPgError(error, 'ticket.attachment_upload_failed', {
+            detail: `Ticket ${ticketId} attachment upload failed for ${file.originalname}`,
+          });
+        }
 
         return {
           name: file.originalname,
@@ -1740,7 +1786,11 @@ export class TicketService {
     }
     const { data, error } = await childQuery.order('created_at');
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'ticket.child_tasks_list_failed', {
+        detail: `Ticket ${parentTicketId} child work_orders list failed`,
+      });
+    }
     // Step 1c.10c: synthesize ticket_kind='work_order' for frontend
     // WorkOrderRow type continuity.
     return (data ?? []).map((row) => ({ ...row, ticket_kind: 'work_order' as const }));
@@ -1960,7 +2010,11 @@ export class TicketService {
     if (this.attachmentBucketReady) return;
 
     const { data: buckets, error } = await this.supabase.admin.storage.listBuckets();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'ticket.attachment_bucket_list_failed', {
+        detail: 'Ticket attachment bucket listBuckets failed',
+      });
+    }
 
     const exists = buckets?.some((bucket) => bucket.name === TICKET_ATTACHMENT_BUCKET);
     if (!exists) {
@@ -1973,7 +2027,9 @@ export class TicketService {
       );
 
       if (createError && !createError.message.toLowerCase().includes('already')) {
-        throw createError;
+        throw wrapPgError(createError, 'ticket.attachment_bucket_create_failed', {
+          detail: 'Ticket attachment bucket createBucket failed',
+        });
       }
     }
 
@@ -2030,7 +2086,11 @@ export class TicketService {
     query = applyFilters(query);
 
     const { data, error } = await query.limit(200);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'ticket.inbox_fetch_failed', {
+        detail: 'Inbox tickets fetch failed',
+      });
+    }
 
     return (data ?? []).map((row) => ({
       id: row.id as string,
@@ -2067,7 +2127,11 @@ export class TicketService {
       .eq('tenant_id', tenant.id)
       .eq('user_id', userId);
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'ticket.actor_team_list_failed', {
+        detail: `team_members list failed for user ${userId}`,
+      });
+    }
     return (data ?? []).map((row) => row.team_id as string);
   }
 
@@ -2243,7 +2307,11 @@ export class TicketService {
       .insert(insertRow)
       .select('id')
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'ticket.system_work_order_create_failed', {
+        detail: 'System-origin work_order insert failed',
+      });
+    }
 
     const ticketId = (data as { id: string }).id;
 

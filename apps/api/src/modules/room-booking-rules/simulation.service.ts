@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { RuleResolverService, RuleRow } from './rule-resolver.service';
 import type { BookingScenario, SaveScenarioDto, SimulateDto } from './dto';
 
@@ -82,7 +82,11 @@ export class SimulationService {
       .select('*')
       .eq('tenant_id', tenant.id)
       .order('created_at', { ascending: false });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.scenario_list_failed', {
+        detail: 'Simulation scenarios list query failed',
+      });
+    }
     return data ?? [];
   }
 
@@ -99,7 +103,11 @@ export class SimulationService {
       })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.scenario_create_failed', {
+        detail: `Simulation scenario insert failed (name ${dto.name})`,
+      });
+    }
     return data;
   }
 
@@ -111,7 +119,12 @@ export class SimulationService {
       .eq('id', scenarioId)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.scenario_lookup_failed', {
+        detail: `Simulation scenario ${scenarioId} lookup failed`,
+        notFoundCode: 'room_rule.scenario_not_found',
+      });
+    }
     if (!data) throw AppErrors.notFoundWithCode('room_rule.scenario_not_found', `Scenario ${scenarioId} not found`);
 
     const result = await this.run({
@@ -140,7 +153,11 @@ export class SimulationService {
       .select('*')
       .eq('tenant_id', tenant.id)
       .eq('active', true);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.active_rules_list_failed', {
+        detail: 'Simulation active-rules fetch failed',
+      });
+    }
     return (data ?? []) as RuleRow[];
   }
 

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import {
   loadPermissionMap,
   loadRequesterContext,
@@ -227,7 +227,11 @@ export class RuleResolverService {
       // policy_snapshot leaked into the idempotency-hashed payload even
       // with ZERO wall-clock movement). Lowest-id wins among equals.
       .order('id', { ascending: true });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.candidate_rules_load_failed', {
+        detail: 'Rule resolver candidate-rules fetch failed',
+      });
+    }
     return (data ?? []) as RuleRow[];
   }
 
@@ -241,7 +245,11 @@ export class RuleResolverService {
       // audit-03 D-6 (V3-order) — deterministic tie-break (see
       // fetchCandidateRules). Comparator unchanged; lowest-id wins on ties.
       .order('id', { ascending: true });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'room_rule.all_rules_load_failed', {
+        detail: 'Rule resolver fetchAllRules failed',
+      });
+    }
     return (data ?? []) as RuleRow[];
   }
 
@@ -260,7 +268,11 @@ export class RuleResolverService {
         .eq('id', current)
         .eq('tenant_id', tenantId)
         .maybeSingle();
-      if (result.error) throw result.error;
+      if (result.error) {
+        throw wrapPgError(result.error, 'room_rule.ancestor_chain_load_failed', {
+          detail: `Rule resolver loadAncestorChain failed at space ${current}`,
+        });
+      }
       const row = result.data as { id: string; parent_id: string | null } | null;
       if (!row) break;
       ids.push(row.id);
@@ -292,7 +304,11 @@ export class RuleResolverService {
         .select('id, type, parent_id, capacity, min_attendees, default_calendar_id')
         .eq('tenant_id', tenantId)
         .in('id', Array.from(layer));
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'room_rule.space_chain_load_failed', {
+          detail: 'Rule resolver loadSpacesWithAncestors layer query failed',
+        });
+      }
       const nextLayer = new Set<string>();
       for (const row of (data ?? []) as Array<{
         id: string;
