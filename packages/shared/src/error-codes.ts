@@ -399,6 +399,8 @@ export type KnownErrorCode =
 
   // ─── person module migration (Phase 7.B-1.person) ────────────────────────
   | 'person.org_change_in_progress'
+  | 'person.lookup_failed'
+  | 'person.no_profile_link'
 
   // ─── org-node module migration (Phase 7.B-1.org-node) ────────────────────
   | 'org_node.not_found'
@@ -433,6 +435,11 @@ export type KnownErrorCode =
   | 'auth.role_lookup_failed'
   | 'auth.user_not_in_tenant'
   | 'auth.admin_required'
+  // R1 tertiary fold (2026-05-20): 500-class — AuthGuard's post-condition
+  // (request.user.platformUserId is set) was violated. NOT a client-
+  // credential bug; a server/config bug (guard chain ordering, middleware
+  // swap). Never tell the client to reauth — they already authed.
+  | 'auth.guard_contract_violation'
 
   // ─── webhook migration (Phase 7.B-1.webhook) ─────────────────────────────
   | 'webhook.not_found'
@@ -1389,6 +1396,8 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'announcement.invalid_payload',
   'announcement.insert_no_row',
   'person.org_change_in_progress',
+  'person.lookup_failed',
+  'person.no_profile_link',
   'org_node.not_found',
   'org_node.name_required',
   'org_node.create_failed',
@@ -1456,6 +1465,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'auth.role_lookup_failed',
   'auth.user_not_in_tenant',
   'auth.admin_required',
+  'auth.guard_contract_violation',
   'webhook.not_found',
   'webhook.tenant_resolution_failed',
   'webhook.invalid_mapping',

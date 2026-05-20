@@ -1006,6 +1006,12 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't change that person's organisation",
     detail: 'Another organisation change for this person is in progress. Reload and try again.',
   },
+  'person.lookup_failed': {
+    title: "Couldn't look up your profile",
+  },
+  'person.no_profile_link': {
+    title: "Your account isn't linked to a person profile yet.",
+  },
 
   // ─── org-node (Phase 7.B-1.org-node) ─────────────────────────────────────
   'org_node.not_found': {
@@ -1269,6 +1275,9 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'auth.admin_required': {
     title: "You don't have access to this",
     detail: 'An admin role is required.',
+  },
+  'auth.guard_contract_violation': {
+    title: 'Server configuration error.',
   },
 
   // ─── webhook (Phase 7.B-1.webhook) ───────────────────────────────────────

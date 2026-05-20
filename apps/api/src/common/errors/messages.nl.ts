@@ -1006,6 +1006,12 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon de organisatie van die persoon niet wijzigen',
     detail: 'Een andere organisatiewijziging voor deze persoon is bezig. Herlaad en probeer het opnieuw.',
   },
+  'person.lookup_failed': {
+    title: 'Kon je profiel niet opzoeken',
+  },
+  'person.no_profile_link': {
+    title: 'Je account is nog niet gekoppeld aan een persoonsprofiel.',
+  },
 
   // ─── org-node (Phase 7.B-1.org-node) ─────────────────────────────────────
   'org_node.not_found': {
@@ -1269,6 +1275,9 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'auth.admin_required': {
     title: 'Je hebt geen toegang hiertoe',
     detail: 'Een beheerdersrol is vereist.',
+  },
+  'auth.guard_contract_violation': {
+    title: 'Serverconfiguratiefout.',
   },
 
   // ─── webhook (Phase 7.B-1.webhook) ───────────────────────────────────────
