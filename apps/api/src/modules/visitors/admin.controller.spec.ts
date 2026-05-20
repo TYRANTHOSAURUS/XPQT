@@ -234,21 +234,45 @@ describe('VisitorsAdminController', () => {
   });
 
   describe('listAll (visibility-bypass)', () => {
-    it('rejects without visitors.read_all (403)', async () => {
-      const h = makeHarness({ permissionDenied: true });
-      await expect(h.controller.listAll(makeReq())).rejects.toMatchObject({ status: 403 });
+    // Why this changed: commit cb610e55 (re-gate visitors/admin) replaced
+    // the in-body `permissions.requirePermission(req, 'visitors.read_all')`
+    // check with the declarative `@RequirePermission('visitors.read_all')`
+    // decorator. As a side effect, `listAll` no longer takes `@Req() req`
+    // as its first parameter; the new signature is `(status?, buildingId?,
+    // limit?)`. The decorator is enforced by `PermissionMetadataGuard` at
+    // the framework boundary — unit tests that `new` the controller
+    // directly never traverse the guard, so the "rejects without
+    // visitors.read_all" assertion belongs at the integration/smoke layer
+    // (`pnpm smoke:cross-tenant` covers this surface). What we CAN assert
+    // here is that the decorator metadata is wired correctly + the
+    // tenant-scoped SQL still fires with a clamped limit.
+    it('decorator metadata declares visitors.read_all', () => {
+      // `@RequirePermission('visitors.read_all')` sets the
+      // `requiredPermission` reflect-metadata key on the method (see
+      // common/require-permission.decorator.ts:41). The guard reads it
+      // via `Reflector.getAllAndOverride(PERMISSION_KEY, ...)` at
+      // request time.
+      const key = Reflect.getMetadata(
+        'requiredPermission',
+        VisitorsAdminController.prototype.listAll,
+      );
+      expect(key).toBe('visitors.read_all');
     });
 
     it('happy path: filters on tenant', async () => {
       const h = makeHarness();
-      await h.controller.listAll(makeReq(), 'expected', BUILDING_ID, '50');
-      expect(h.permissions.requirePermission).toHaveBeenCalledWith(expect.anything(), 'visitors.read_all');
+      await h.controller.listAll('expected', BUILDING_ID, '50');
       expect(h.queryMany).toHaveBeenCalled();
+      const params = h.queryMany.mock.calls[0]![1] as unknown[];
+      // First positional param is the tenant id (mocked TENANT_ID via
+      // the spied TenantContext.current). Asserts the listAll query is
+      // tenant-scoped.
+      expect(params[0]).toBe(TENANT_ID);
     });
 
     it('clamps limit', async () => {
       const h = makeHarness();
-      await h.controller.listAll(makeReq(), undefined, undefined, '99999');
+      await h.controller.listAll(undefined, undefined, '99999');
       const params = h.queryMany.mock.calls[0]![1] as unknown[];
       // Second param is the limit; clamped to max 500.
       expect(params[1]).toBe(500);
