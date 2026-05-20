@@ -2098,6 +2098,60 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon het plan niet verwijderen',
     detail: 'Er zijn nog werkorders die naar dit plan verwijzen. Deactiveer het plan, of verwijder eerst de gekoppelde werkorders.',
   },
+
+  // ─── R2 AppError sweep (2026-05-20) ─────────────────────────────────────
+  // NL parity for the codes registered in messages.en.ts §R2.
+  'asset.type_list_failed': { title: 'Kon asset-typen niet laden' },
+  'asset.type_create_failed': { title: 'Kon dat asset-type niet aanmaken' },
+  'asset.list_failed': { title: 'Kon assets niet laden' },
+  'asset.lookup_failed': { title: 'Kon die asset niet opzoeken' },
+  'asset.create_failed': { title: 'Kon die asset niet aanmaken' },
+  'asset.update_failed': { title: 'Kon die asset niet bijwerken' },
+  'asset.history_list_failed': { title: 'Kon de assetgeschiedenis niet laden' },
+
+  'business_hours.list_failed': { title: 'Kon de openingstijden niet laden' },
+  'business_hours.lookup_failed': { title: 'Kon die openingstijdenkalender niet opzoeken' },
+  'business_hours.create_failed': { title: 'Kon die openingstijdenkalender niet aanmaken' },
+  'business_hours.update_failed': { title: 'Kon die openingstijdenkalender niet bijwerken' },
+
+  'catalog_menu.list_failed': { title: 'Kon menu’s niet laden' },
+  'catalog_menu.lookup_failed': { title: 'Kon dat menu niet opzoeken' },
+  'catalog_menu.create_failed': { title: 'Kon dat menu niet aanmaken' },
+  'catalog_menu.update_failed': { title: 'Kon dat menu niet bijwerken' },
+  'catalog_menu.item_list_failed': { title: 'Kon menuonderdelen niet laden' },
+  'catalog_menu.item_add_failed': { title: 'Kon dat menuonderdeel niet toevoegen' },
+  'catalog_menu.item_update_failed': { title: 'Kon dat menuonderdeel niet bijwerken' },
+  'catalog_menu.item_remove_failed': { title: 'Kon dat menuonderdeel niet verwijderen' },
+  'catalog_menu.duplicate_failed': { title: 'Kon dat menu niet dupliceren' },
+  'catalog_menu.bulk_update_failed': { title: 'Kon die menu-aanpassingen niet doorvoeren' },
+  'catalog_menu.bulk_delete_failed': { title: 'Kon die menuonderdelen niet verwijderen' },
+  'catalog_menu.catalog_item_list_failed': { title: 'Kon de catalogus niet laden' },
+  'catalog_menu.resolve_offer_failed': { title: 'Kon geen menuaanbod vinden' },
+
+  'delegation.list_failed': { title: 'Kon delegaties niet laden' },
+  'delegation.create_failed': { title: 'Kon die delegatie niet aanmaken' },
+  'delegation.update_failed': { title: 'Kon die delegatie niet bijwerken' },
+
+  'notification.send_failed': { title: 'Kon die notificatie niet versturen' },
+  'notification.template_list_failed': { title: 'Kon de notificatiesjablonen niet laden' },
+  'notification.template_create_failed': { title: 'Kon dat notificatiesjabloon niet aanmaken' },
+  'notification.template_update_failed': { title: 'Kon dat notificatiesjabloon niet bijwerken' },
+
+  'team.list_failed': { title: 'Kon teams niet laden' },
+  'team.lookup_failed': { title: 'Kon dat team niet opzoeken' },
+  'team.create_failed': { title: 'Kon dat team niet aanmaken' },
+  'team.update_failed': { title: 'Kon dat team niet bijwerken' },
+  'team.member_list_failed': { title: 'Kon teamleden niet laden' },
+  'team.member_add_failed': { title: 'Kon dat teamlid niet toevoegen' },
+  'team.member_remove_failed': { title: 'Kon dat teamlid niet verwijderen' },
+
+  'vendor.list_failed': { title: 'Kon leveranciers niet laden' },
+  'vendor.lookup_failed': { title: 'Kon die leverancier niet opzoeken' },
+  'vendor.create_failed': { title: 'Kon die leverancier niet aanmaken' },
+  'vendor.update_failed': { title: 'Kon die leverancier niet bijwerken' },
+  'vendor.service_area_list_failed': { title: 'Kon de werkgebieden niet laden' },
+  'vendor.service_area_add_failed': { title: 'Kon dat werkgebied niet toevoegen' },
+  'vendor.service_area_remove_failed': { title: 'Kon dat werkgebied niet verwijderen' },
 };
 
 /**

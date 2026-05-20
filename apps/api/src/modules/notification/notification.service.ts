@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { AppErrors } from '../../common/errors';
 
 export interface CreateNotificationTemplateDto {
   name: string;
@@ -64,7 +65,12 @@ export class NotificationService {
       .insert(notifications)
       .select();
 
-    if (error) throw error;
+    if (error) {
+      throw AppErrors.server('notification.send_failed', {
+        detail: 'Notification insert failed',
+        cause: error,
+      });
+    }
 
     // Process pending notifications (email delivery happens here)
     // For now, mark email notifications as sent immediately
@@ -131,7 +137,12 @@ export class NotificationService {
       .eq('tenant_id', tenant.id)
       .eq('config_type', 'notification_template')
       .order('display_name');
-    if (error) throw error;
+    if (error) {
+      throw AppErrors.server('notification.template_list_failed', {
+        detail: 'Notification template list query failed',
+        cause: error,
+      });
+    }
     return data;
   }
 
@@ -149,7 +160,12 @@ export class NotificationService {
       })
       .select()
       .single();
-    if (entityError) throw entityError;
+    if (entityError) {
+      throw AppErrors.server('notification.template_create_failed', {
+        detail: 'Notification template config_entities insert failed',
+        cause: entityError,
+      });
+    }
 
     const { data: version, error: versionError } = await this.supabase.admin
       .from('config_versions')
@@ -168,7 +184,12 @@ export class NotificationService {
       })
       .select()
       .single();
-    if (versionError) throw versionError;
+    if (versionError) {
+      throw AppErrors.server('notification.template_create_failed', {
+        detail: 'Notification template config_versions insert failed',
+        cause: versionError,
+      });
+    }
 
     // Cross-tenant write fix (codex post-fix review 2026-05-08): write the
     // current_published_version_id with explicit tenant filter. The id was
@@ -225,7 +246,12 @@ export class NotificationService {
       })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw AppErrors.server('notification.template_update_failed', {
+        detail: `Notification template config_versions insert failed for entity ${id}`,
+        cause: error,
+      });
+    }
 
     // Cross-tenant write fix: tenant_id is in scope from the rename branch
     // above (or just defensively re-read). Filter explicitly.

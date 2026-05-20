@@ -56,6 +56,15 @@ MIGRATED_MODULES=(
   "apps/api/src/common"
   "apps/api/src/modules/visitors"
   "apps/api/src/modules/maintenance"
+  # R2 AppError sweep (2026-05-20) — handoff residual R2.
+  # Triage: docs/follow-ups/r2-apperror-sweep-triage-2026-05-20.md.
+  "apps/api/src/modules/asset"
+  "apps/api/src/modules/business-hours"
+  "apps/api/src/modules/catalog-menu"
+  "apps/api/src/modules/delegation"
+  "apps/api/src/modules/notification"
+  "apps/api/src/modules/team"
+  "apps/api/src/modules/vendor"
 )
 
 # Forbidden patterns. The filter handles legacy throws via `generic.*` codes,
