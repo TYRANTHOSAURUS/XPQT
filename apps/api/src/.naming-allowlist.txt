@@ -716,7 +716,9 @@ apps/api/src/modules/orders/order.service.ts:1146:      args.bundle_id,
 apps/api/src/modules/orders/order.service.ts:1176:    // Column rename: orders.booking_bundle_id → orders.booking_id (00278:109).
 apps/api/src/modules/orders/order.service.ts:1177:    // bundle_id is the booking id under canonicalisation.
 apps/api/src/modules/orders/order.service.ts:1183:        booking_id: args.bundle_id,
+apps/api/src/modules/orders/order.service.ts:1249:        detail: `Standalone order insert failed for bundle ${args.bundle_id}`,
 apps/api/src/modules/orders/order.service.ts:1255:    bundle_id: string;
+apps/api/src/modules/orders/order.service.ts:1357:        detail: `Asset reservation insert failed (asset ${args.asset_id}, booking ${args.bundle_id})`,
 apps/api/src/modules/orders/order.service.ts:1273:    // Column rename: asset_reservations.booking_bundle_id → booking_id
 apps/api/src/modules/orders/order.service.ts:1274:    // (00278:136). bundle_id is the booking id post-canonicalisation.
 apps/api/src/modules/orders/order.service.ts:1284:        booking_id: args.bundle_id,
