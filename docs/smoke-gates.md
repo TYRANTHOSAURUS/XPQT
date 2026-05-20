@@ -278,6 +278,15 @@ Script: `apps/api/scripts/smoke-cross-tenant.mjs`.
 
 - **`/api/persons/me` returns 200 with person.id** (1): authenticated browser token → `GET ${API_BASE}/api/persons/me` → 200 with a JSON body containing a non-empty `id`. Distinguishes three regression classes in the failure label: `unknown.server_error` (the original R1 bug regressed — raw throw in the persons-me path), non-200 with any other code (an AppError shape did surface but the endpoint is still broken), wrong body shape (no `id`).
 
+**Parallel safety (F2 fold, 2026-05-20):** the gate hits SHARED REMOTE DB state — the Slice 11.2b/11.4/11.5 proof seeds a role with `spaces.create` + `request_types.use` + `visitors.configure` onto a SHARED `NONADMIN_USER_ID` and the Slice-9/10 negative probes (`POST /spaces` / `POST /admin/visitors/types` expect 403) assume that user holds none of those keys. Two concurrent gate runs therefore race in two ways: (a) static fixture UUIDs collide on `on conflict (id) do update` and the proof-space teardown (`delete from public.spaces where ... name = '<static>'`) cross-deletes the other run's row; (b) the proof seed grants permissions to the shared user, and any parallel negative-403 probe running during that window incorrectly 2xxs. The fix has two layers:
+
+- **Per-run UUIDs for fixture-row hygiene.** `PROOF_ROLE_ID`, `PROOF_ASSIGNMENT_ID`, `IDOR_NOTIF_ID`, `SELF_GRANT_INSERT_ID` are now `randomUUID()` at script load. The Slice-11.2b proof-space name is `xtenant-11.2b-proof-${randomUUID()}` (teardown deletes by name, not row id). This layer addresses (a) and makes crash-leaked rows trivially identifiable.
+- **Script-level advisory lock** (`pg_try_advisory_lock(0x58544e54 /* 'XTNT' */)`) acquired BEFORE any probe runs and released in `finally`. Session-scoped so it dies with the psql child on SIGKILL/OOM (no orphan-lock risk). On contention the second run logs `cross-tenant-skipped-concurrent-run — another smoke:cross-tenant run holds the script advisory lock; this run is a no-op to avoid racing the shared-DB fixture seeds. Exiting 0.` and exits 0. This layer addresses (b) — per-run UUIDs by themselves cannot prevent the user-permission overlap, because both runs would still grant the same keys to the shared user during their respective seed-to-teardown windows.
+
+The R4 Realtime probe's pre-existing internal advisory lock (`R4_ADVISORY_LOCK_KEY = 0x52345200`) is preserved as a separate concern (scoped to the ADMIN `raw_app_meta_data.tenant_id` mutation in the realtime channel probe). With the script-level lock holding the outer mutex, the R4 lock is now functionally a no-op (only one run can ever reach the realtime probe), but it stays in place so that any future code path that exercises R4 outside the script-lock boundary remains race-safe.
+
+Choosing skip-and-exit-0 (rather than block-and-wait) matches the R4-internal pattern and means CI/dev never blocks indefinitely on a stuck prior run.
+
 ---
 
 ## `pnpm smoke:prod-e2e`

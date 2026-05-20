@@ -86,14 +86,34 @@ const TEAM_ID = '94000000-0000-0000-0000-000000000001';
 // structurally could NOT: a non-admin role (type='agent', NOT 'admin')
 // holding exactly `spaces.create` can POST /spaces. Under the old
 // AdminGuard (hard role.type==='admin') this same role 403'd; under
-// @RequirePermission('spaces.create') it passes the guard. Fixed UUIDs
-// so the finally-cleanup is deterministic. Assigned to the existing
-// NONADMIN user — the proof section runs LAST (after every Slice-9/10
-// probe that asserts this user 403s) so it cannot perturb them, and
-// user_has_permission re-evaluates roles.permissions live per request
-// (no token re-mint needed).
-const PROOF_ROLE_ID = '91000000-0000-0000-0000-0000000011b2';
-const PROOF_ASSIGNMENT_ID = '96000000-0000-0000-0000-0000000011b2';
+// @RequirePermission('spaces.create') it passes the guard. Assigned to
+// the existing NONADMIN user — the proof section runs LAST (after every
+// Slice-9/10 probe that asserts this user 403s) so it cannot perturb
+// them, and user_has_permission re-evaluates roles.permissions live per
+// request (no token re-mint needed).
+//
+// Per-run UUIDs (F2 parallel-safety, 2026-05-20): the seed fixture is
+// shared-DB state; concurrent gate runs would collide on the row id
+// during `on conflict do update` (interleaved teardown) and during the
+// cleanup `delete from public.spaces where ... name = '<static>'`
+// (cross-process row deletion). The seed-then-teardown window itself is
+// further serialized by the script-level advisory lock acquired in
+// `main` — see `tryAcquireScriptLock` below — because the seed grants
+// `spaces.create` + `visitors.configure` to a SHARED `NONADMIN_USER_ID`,
+// and any Slice-10 negative probe (`POST /spaces` / `POST /admin/visitors/types`
+// expects 403) running while the seed is live would incorrectly 2xx.
+// Per-run UUIDs by themselves don't fix that — they're for crash-safe
+// row hygiene; the lock fixes the user-permission overlap.
+const PROOF_ROLE_ID = randomUUID();
+const PROOF_ASSIGNMENT_ID = randomUUID();
+// Per-run unique proof-space name (F2 parallel-safety): the proof posts
+// a space named `xtenant-11.2b-proof` and the teardown deletes by name
+// (no row id is observable from the API). With two concurrent runs and
+// a static name, Run B's teardown would delete Run A's row mid-run —
+// harmless given the script-level lock above, but the per-run name is
+// belt-and-suspenders so a crash that leaks the lock doesn't cause a
+// cross-process delete.
+const PROOF_SPACE_NAME = `xtenant-11.2b-proof-${randomUUID()}`;
 
 // Notification same-tenant IDOR proof (docs/follow-ups/audits/04-rls-security.md
 // — codex 2026-05-18 remaining item #1). A notification owned by some
@@ -101,9 +121,17 @@ const PROOF_ASSIGNMENT_ID = '96000000-0000-0000-0000-0000000011b2';
 // NotificationController consumer routes (POST /notifications/:id/read,
 // /notifications/person/:personId*, .../read-all) updated/read by
 // id/personId with NO recipient binding (supabase.admin bypasses RLS) —
-// any same-tenant authed user could flip anyone's read-state. Fixed UUID
-// so the finally-cleanup is deterministic.
-const IDOR_NOTIF_ID = '9a000000-0000-0000-0000-00000000d0e1';
+// any same-tenant authed user could flip anyone's read-state.
+// Per-run UUID (F2 parallel-safety): same fixture-hygiene rationale as
+// PROOF_ROLE_ID — concurrent runs collide on `on conflict (id) do update`.
+const IDOR_NOTIF_ID = randomUUID();
+// Per-run UUID for the browser-direct self-grant attempt (F2): the
+// INSERT is expected to be 401/403-denied — the row id only becomes
+// observable in the regression case. Per-run UUIDs ensure that even a
+// double-regression (parallel runs both hit the bug) does not collide
+// on the unique-id constraint when both INSERTs land before either
+// cleanup runs.
+const SELF_GRANT_INSERT_ID = randomUUID();
 
 // Mirror smoke-tickets.mjs:86-87 — TENANT_B fixture seed shape.
 const TENANT_B_ID = '00000000-0000-0000-0000-0000000000b1';
@@ -199,10 +227,11 @@ function cleanupProofRoleFixture() {
     const { dbPass, dbUrl } = proofDbArgs();
     // Order: assignment → role (FK), then any space the proof POST
     // actually created (idempotent; harmless if it 400'd on the body).
+    // F2: name filter is per-run unique to avoid cross-process deletion.
     const sql = `
       delete from public.user_role_assignments where id = '${PROOF_ASSIGNMENT_ID}';
       delete from public.roles where id = '${PROOF_ROLE_ID}';
-      delete from public.spaces where tenant_id = '${TENANT_A_ID}' and name = 'xtenant-11.2b-proof';
+      delete from public.spaces where tenant_id = '${TENANT_A_ID}' and name = '${PROOF_SPACE_NAME}';
     `;
     execFileSync('psql', [dbUrl, '-v', 'ON_ERROR_STOP=1', '-c', sql], {
       env: { ...process.env, PGPASSWORD: dbPass },
@@ -530,6 +559,53 @@ function releaseR4Lock(child) {
     /* best-effort — session close will release the session-scoped lock */
   }
   // Hard guarantee: kill the child if it lingers.
+  setTimeout(() => { try { child.kill('SIGTERM'); } catch {} }, 2000).unref();
+}
+
+// ─── Script-level advisory lock (F2 parallel-safety) ────────────────
+// Distinct key from R4. Wraps the WHOLE probe run so concurrent
+// `pnpm smoke:cross-tenant` invocations serialize on the parts that
+// truly cannot interleave: the Slice 11.2b/11.4/11.5 proof seeds
+// `spaces.create` + `request_types.use` + `visitors.configure` onto a
+// SHARED user (NONADMIN_USER_ID), and any parallel Slice-10 negative
+// probe (`POST /spaces` / `POST /admin/visitors/types` expects 403)
+// running during that window incorrectly 2xxs.
+//
+// On contention, the second run emits the
+// `cross-tenant-skipped-concurrent-run` marker and exits 0 — matching
+// the R4-internal pattern. A session-scoped lock dies with the psql
+// child, so a SIGKILL on Run A immediately unblocks Run B.
+//
+// Why not just extend R4? R4's lock is scoped to the realtime probe
+// (it only needs to serialize the ADMIN app_metadata mutation). The
+// proof seed/probes is a wider, earlier window — keeping the locks
+// separate makes the failure surface (lock label + skip marker)
+// unambiguous about which class skipped, and keeps R4 self-contained.
+const SCRIPT_ADVISORY_LOCK_KEY = 0x58544e54; // 'XTNT' sentinel; stable across runs
+
+function scriptLockSession() {
+  const { dbUrl, pgEnv } = r4DbArgs(); // reuses the same conn args
+  const child = spawn(
+    'psql',
+    [dbUrl, '-X', '-A', '-t', '-q', '-v', 'ON_ERROR_STOP=1'],
+    { env: pgEnv, stdio: ['pipe', 'pipe', 'pipe'] },
+  );
+  child.stdin.write(
+    `SELECT pg_try_advisory_lock(${SCRIPT_ADVISORY_LOCK_KEY});\n`,
+  );
+  return child;
+}
+
+function releaseScriptLock(child) {
+  if (!child || child.killed) return;
+  try {
+    child.stdin.write(
+      `SELECT pg_advisory_unlock(${SCRIPT_ADVISORY_LOCK_KEY});\n\\q\n`,
+    );
+    child.stdin.end();
+  } catch {
+    /* best-effort — session close releases the session-scoped lock */
+  }
   setTimeout(() => { try { child.kill('SIGTERM'); } catch {} }, 2000).unref();
 }
 
@@ -1090,6 +1166,34 @@ async function probe(name, options) {
   console.log(`tenant A: ${TENANT_A_ID}`);
   console.log(`tenant B: ${TENANT_B_ID}`);
 
+  // F2 parallel-safety: acquire the script-level advisory lock FIRST.
+  // On contention, emit the skip marker and exit 0 (the second run
+  // would race the Slice-11.2b proof seed against the Slice-10 negative
+  // probes — see SCRIPT_ADVISORY_LOCK_KEY rationale above). Session-
+  // scoped so a crashed run releases automatically.
+  const scriptLockChild = scriptLockSession();
+  let scriptLockAcquired = false;
+  try {
+    scriptLockAcquired = await readLockResult(scriptLockChild);
+  } catch (e) {
+    // psql unreachable / DB down → fail the gate. The brief mandates
+    // concurrent-run safety as a MUST-FIX; if we can't even attempt
+    // the lock, we cannot guarantee safety.
+    console.error(
+      `cross-tenant [script-lock-acquire-failed]: ${e?.message ?? e}`,
+    );
+    try { releaseScriptLock(scriptLockChild); } catch {}
+    process.exit(1);
+  }
+  if (!scriptLockAcquired) {
+    console.log(
+      'cross-tenant-skipped-concurrent-run — another smoke:cross-tenant run holds the script advisory lock; this run is a no-op to avoid racing the shared-DB fixture seeds. Exiting 0.',
+    );
+    releaseScriptLock(scriptLockChild);
+    process.exit(0);
+  }
+
+  try {
   await ensureTenantBFixture();
   const token = await mintAdminToken();
   console.log(`admin JWT minted (tenant A): ${token.slice(0, 16)}…`);
@@ -1419,7 +1523,9 @@ async function probe(name, options) {
       url: `${API_BASE}/api/spaces`,
       method: 'POST',
       headers: nonAdminA,
-      body: { name: 'xtenant-11.2b-proof', type: 'site' },
+      // F2: per-run unique name; the cleanup deletes by this name and
+      // a static name would cross-delete a parallel run's row.
+      body: { name: PROOF_SPACE_NAME, type: 'site' },
       expect: 'not_forbidden',
     });
     // Slice 11.4 proof: the SAME non-admin role also holds
@@ -1562,7 +1668,10 @@ async function probe(name, options) {
         Prefer: 'return=representation',
       },
       body: JSON.stringify({
-        id: '9b000000-0000-0000-0000-00000000dead',
+        // F2: per-run UUID — only observable on regression (denial is the
+        // green path; the id never lands). Avoids cross-process unique
+        // collision in the catastrophic double-regression case.
+        id: SELF_GRANT_INSERT_ID,
         tenant_id: TENANT_A_ID,
         user_id: ADMIN_AUTH_UID,
         role_id: ADMIN_ROLE_ID,
@@ -1585,7 +1694,7 @@ async function probe(name, options) {
         execFileSync(
           'psql',
           [dbUrl, '-v', 'ON_ERROR_STOP=1', '-c',
-           `delete from public.user_role_assignments where id = '9b000000-0000-0000-0000-00000000dead';`],
+           `delete from public.user_role_assignments where id = '${SELF_GRANT_INSERT_ID}';`],
           { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
         );
       } catch (e) {
@@ -2052,8 +2161,19 @@ async function probe(name, options) {
       results.failed.length ? ` — ${results.failed.join(', ')}` : ''
     }`,
   );
+  } finally {
+    // F2: always release the script-level lock so the next concurrent
+    // run isn't blocked. The session-scoped lock would die with the
+    // psql child anyway, but explicit release keeps semantics clean.
+    // MUST run BEFORE process.exit (which short-circuits async finally).
+    try { releaseScriptLock(scriptLockChild); } catch {}
+  }
   process.exit(results.fail > 0 ? 1 : 0);
 })().catch((e) => {
   console.error(e);
+  // Best-effort lock release on uncaught-throw path. We can't reference
+  // scriptLockChild here directly (closure scope ends at the IIFE body),
+  // so rely on the session-scoped lock dying with the psql child when
+  // the process exits.
   process.exit(2);
 });
