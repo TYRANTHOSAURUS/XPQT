@@ -247,7 +247,7 @@ All fabricated test data is cleaned up on exit.
 
 ## `pnpm smoke:cross-tenant`
 
-**Required before claiming complete:** any work touching `AuthGuard`, `AdminGuard`, `PermissionGuard`, the global tenant binding bridge, or any admin/config controller that previously read `TenantContext.current()` without bridging `auth_uid → users`.
+**Required before claiming complete:** any work touching `AuthGuard`, `AdminGuard`, `PermissionGuard`, the global tenant binding bridge, or any admin/config controller that previously read `TenantContext.current()` without bridging `auth_uid → users`. **Also required (R1 tertiary fold, 2026-05-20):** any work touching `PersonController.getMe` / `PersonService.getMe` / the `GET /api/persons/me` route — the gate's R1 probe (see below) catches both the original unwrapped-throw regression class AND the cross-tenant FK-leak class fixed in the same fold (the `users.person_id → persons(id)` FK at `supabase/migrations/00003_people_users_roles.sql:38` is NOT composite-tenant-scoped, so the persons read must explicitly re-assert `tenant_id`; the smoke probe asserts the 200/`person.id` contract end-to-end via the browser-token path).
 
 Script: `apps/api/scripts/smoke-cross-tenant.mjs`.
 

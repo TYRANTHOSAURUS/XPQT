@@ -1276,6 +1276,9 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "You don't have access to this",
     detail: 'An admin role is required.',
   },
+  'auth.guard_contract_violation': {
+    title: 'Server configuration error.',
+  },
 
   // ─── webhook (Phase 7.B-1.webhook) ───────────────────────────────────────
   'webhook.not_found': {

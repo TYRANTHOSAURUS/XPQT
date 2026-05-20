@@ -1276,6 +1276,9 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Je hebt geen toegang hiertoe',
     detail: 'Een beheerdersrol is vereist.',
   },
+  'auth.guard_contract_violation': {
+    title: 'Serverconfiguratiefout.',
+  },
 
   // ─── webhook (Phase 7.B-1.webhook) ───────────────────────────────────────
   'webhook.not_found': {

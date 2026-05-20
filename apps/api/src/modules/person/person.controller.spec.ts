@@ -23,32 +23,44 @@
  *     were silent.
  *   - FIX 4 (code-review item 2): the captured `.select(...)` string
  *     argument is asserted to contain the canonical
- *     `persons:persons!person_id` substring so an alias drift (e.g.
- *     `person:persons!person_id`) — which would silently break the
- *     hydration path under the mock since the mock fakes `data.persons`
- *     unconditionally — fails the suite.
+ *     `persons!person_id` substring so an alias drift that breaks
+ *     hydration is caught.
+ *
+ * R1 tertiary fold (codex P0, 2026-05-20):
+ *   - FIX A: split the original single-join read into a two-query
+ *     sequence (users → persons), defense-in-depth against a bad/
+ *     back-filled `users.person_id` FK pointing at a foreign-tenant
+ *     `persons` row (the FK at 00003:38 is NOT composite-tenant-scoped
+ *     and the service-role admin client bypasses RLS). The harness now
+ *     wires TWO from-mocks (`users` then `persons`) and the
+ *     FK-points-to-wrong-tenant defense test asserts the second persons
+ *     query's `.eq('tenant_id', ...)` filter catches a row the bad FK
+ *     points at.
+ *   - FIX B: missing `platformUserId` now throws
+ *     `auth.guard_contract_violation` 500 (NOT `auth.unauthorized` 401).
+ *     If AuthGuard ran successfully it WILL be set; if it's missing the
+ *     guard chain is broken — a server/config bug, not a credential bug.
+ *     A 401 would loop the client through reauth forever.
  *
  * Coverage:
  *   1. Happy path — returns the joined person row.
  *   2. Missing `platformUserId` (defensive — AuthGuard would normally have
- *      already 401'd) → `auth.unauthorized` 401.
- *   3. Supabase error → `person.lookup_failed` 500.
+ *      already 401'd) → `auth.guard_contract_violation` 500 (FIX B).
+ *   3. Supabase error on the users read → `person.lookup_failed` 500.
  *   4. `data.person_id` null (user exists, no linked person) →
  *      `person.no_profile_link` 422 (NOT `person.not_found`).
  *   5. No `users` row found (cross-tenant slip would normally never
  *      happen because AuthGuard already gated on this; defensive) →
  *      `person.not_found` 404.
- *   6. Persons join returned as a single-element array (PostgREST
- *      cardinality variance) is still unwrapped correctly.
- *   7. Tenant binding — the `.eq('tenant_id', TENANT_ID)` call happens
- *      with the exact tenant id from `TenantContext.current()`. Fails if
- *      the tenant filter is dropped or replaced.
- *   8. Select-string regression guard — the `.select(...)` argument
- *      literally contains `persons:persons!person_id`. Fails on alias
- *      drift.
- *   9. `persons` resolves to an empty array (PostgREST returned no
- *      embedded row even though person_id is set) → also
- *      `person.no_profile_link` 422.
+ *   6. Bad FK / cross-tenant FK — `users.person_id` points at a `persons`
+ *      row in a DIFFERENT tenant; the second query's `.eq('tenant_id', ...)`
+ *      filter rejects → `person.no_profile_link` 422, not a 200 leak (FIX A).
+ *   7. Tenant binding — users query: `.eq('tenant_id', TENANT_ID)`.
+ *   8. Tenant binding — persons query: `.eq('tenant_id', TENANT_ID)` is
+ *      called with the EXACT current tenant id (FIX A defense-in-depth).
+ *   9. Select-string regression guard — the persons `.select(...)` argument
+ *      literally contains `primary_membership` and does NOT contain `*`.
+ *  10. Supabase error on the persons read → `person.lookup_failed` 500.
  */
 
 import type { Request } from 'express';
@@ -59,17 +71,41 @@ import { PersonController } from './person.controller';
 const TENANT_ID = '11111111-1111-4111-8111-111111111111';
 const PLATFORM_USER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const PERSON_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const FOREIGN_TENANT_ID = '22222222-2222-4222-8222-222222222222';
+const FOREIGN_PERSON_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 interface HarnessOpts {
-  usersRow?: {
-    id: string;
-    person_id: string | null;
-    persons:
-      | Record<string, unknown>
-      | Record<string, unknown>[]
-      | null;
-  } | null;
-  supabaseError?: { message: string; code?: string } | null;
+  /**
+   * `usersRow`: shape returned by the users query.
+   *   - `undefined` (default) → happy-path user with PERSON_ID linked.
+   *   - explicit value → use as-is.
+   *   - `null` → simulate "no users row".
+   */
+  usersRow?: { id: string; person_id: string | null } | null;
+  usersError?: { message: string; code?: string } | null;
+  /**
+   * `personsRow`: shape returned by the persons query.
+   *   - `undefined` (default) → happy-path person.
+   *   - explicit value → use as-is.
+   *   - `null` → simulate "row missing or in another tenant" (the
+   *     post-`.eq('tenant_id', ...)` result for a cross-tenant FK).
+   */
+  personsRow?: Record<string, unknown> | null;
+  personsError?: { message: string; code?: string } | null;
+}
+
+interface UserQueryCapture {
+  select: jest.Mock;
+  eqId: jest.Mock;
+  eqTenant: jest.Mock;
+  maybeSingle: jest.Mock;
+}
+
+interface PersonQueryCapture {
+  select: jest.Mock;
+  eqId: jest.Mock;
+  eqTenant: jest.Mock;
+  maybeSingle: jest.Mock;
 }
 
 function makeHarness(opts: HarnessOpts = {}) {
@@ -79,51 +115,58 @@ function makeHarness(opts: HarnessOpts = {}) {
 
   const usersRow =
     opts.usersRow === undefined
-      ? {
-          id: PLATFORM_USER_ID,
-          person_id: PERSON_ID,
-          persons: {
-            id: PERSON_ID,
-            first_name: 'Otak',
-            last_name: 'Batak',
-            email: 'otakbatak@gmail.com',
-            primary_membership: [],
-          },
-        }
+      ? { id: PLATFORM_USER_ID, person_id: PERSON_ID }
       : opts.usersRow;
 
-  const maybeSingle = jest.fn(async () => ({
-    data: usersRow,
-    error: opts.supabaseError ?? null,
-  }));
-
-  // FIX 3 + FIX 4 (R1 review folds, 2026-05-20): observable `.select(...)`
-  // + `.eq(...)` capture. The chain has to STAY a chain (the impl does
-  // `.from('users').select(...).eq(...).eq(...).maybeSingle()`), so each
-  // step returns the next link — but every step is now a real `jest.fn`
-  // we can introspect afterwards. This is what catches both:
-  //   - tenant-binding drops (FIX 3): if `.eq('tenant_id', ...)` is
-  //     removed, the second `eq` call disappears from the call log and
-  //     the dedicated assertion fails.
-  //   - select-string alias drift (FIX 4): if the projection is renamed
-  //     from `persons:persons!person_id` to `person:persons!person_id`,
-  //     the runtime mock still hydrates `data.persons` (which is fake),
-  //     so the legacy spec passed. The substring assertion below catches
-  //     that silently-broken case.
-  const eqTenant = jest.fn(() => ({ maybeSingle }));
-  const eqId = jest.fn(() => ({ eq: eqTenant }));
-  const select = jest.fn(() => ({ eq: eqId }));
-
-  const supabase = {
-    admin: {
-      from: jest.fn((table: string) => {
-        if (table === 'users') {
-          return { select };
+  const personsRow =
+    opts.personsRow === undefined
+      ? {
+          id: PERSON_ID,
+          first_name: 'Otak',
+          last_name: 'Batak',
+          email: 'otakbatak@gmail.com',
+          primary_membership: [],
         }
-        return {};
-      }),
-    },
+      : opts.personsRow;
+
+  // Users query chain: from('users').select(...).eq('id', x).eq('tenant_id', y).maybeSingle()
+  const usersMaybeSingle = jest.fn(async () => ({
+    data: usersRow,
+    error: opts.usersError ?? null,
+  }));
+  const usersEqTenant = jest.fn(() => ({ maybeSingle: usersMaybeSingle }));
+  const usersEqId = jest.fn(() => ({ eq: usersEqTenant }));
+  const usersSelect = jest.fn(() => ({ eq: usersEqId }));
+
+  // Persons query chain: from('persons').select(...).eq('id', x).eq('tenant_id', y).maybeSingle()
+  const personsMaybeSingle = jest.fn(async () => ({
+    data: personsRow,
+    error: opts.personsError ?? null,
+  }));
+  const personsEqTenant = jest.fn(() => ({ maybeSingle: personsMaybeSingle }));
+  const personsEqId = jest.fn(() => ({ eq: personsEqTenant }));
+  const personsSelect = jest.fn(() => ({ eq: personsEqId }));
+
+  const userQuery: UserQueryCapture = {
+    select: usersSelect,
+    eqId: usersEqId,
+    eqTenant: usersEqTenant,
+    maybeSingle: usersMaybeSingle,
   };
+  const personQuery: PersonQueryCapture = {
+    select: personsSelect,
+    eqId: personsEqId,
+    eqTenant: personsEqTenant,
+    maybeSingle: personsMaybeSingle,
+  };
+
+  const from = jest.fn((table: string) => {
+    if (table === 'users') return { select: usersSelect };
+    if (table === 'persons') return { select: personsSelect };
+    return {};
+  });
+
+  const supabase = { admin: { from } };
 
   const permissions = { requirePermission: jest.fn() };
   const controller = new PersonController(
@@ -131,7 +174,7 @@ function makeHarness(opts: HarnessOpts = {}) {
     new (require('./person.service').PersonService)(supabase as any),
     permissions as never,
   );
-  return { controller, maybeSingle, select, eqId, eqTenant };
+  return { controller, userQuery, personQuery, from };
 }
 
 function makeReq(opts: { platformUserId?: string | null } = {}): Request {
@@ -148,7 +191,7 @@ function makeReq(opts: { platformUserId?: string | null } = {}): Request {
   } as unknown as Request;
 }
 
-describe('PersonController.getMe (R1)', () => {
+describe('PersonController.getMe (R1 + tertiary fold)', () => {
   afterEach(() => {
     jest.restoreAllMocks();
   });
@@ -161,23 +204,27 @@ describe('PersonController.getMe (R1)', () => {
       first_name: 'Otak',
       last_name: 'Batak',
     });
-    expect(h.maybeSingle).toHaveBeenCalledTimes(1);
+    // Both queries fired (users then persons).
+    expect(h.userQuery.maybeSingle).toHaveBeenCalledTimes(1);
+    expect(h.personQuery.maybeSingle).toHaveBeenCalledTimes(1);
   });
 
-  it('throws auth.unauthorized 401 when platformUserId is missing', async () => {
+  it('throws auth.guard_contract_violation 500 when platformUserId is missing (FIX B — 500 not 401)', async () => {
     const h = makeHarness();
-    await expect(
-      h.controller.getMe(makeReq({ platformUserId: null })),
-    ).rejects.toMatchObject({
-      status: 401,
-      code: 'auth.unauthorized',
+    const err = await h.controller.getMe(makeReq({ platformUserId: null })).catch((e) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect(err).toMatchObject({
+      status: 500,
+      code: 'auth.guard_contract_violation',
     });
-    expect(h.maybeSingle).not.toHaveBeenCalled();
+    // No DB calls were made.
+    expect(h.userQuery.maybeSingle).not.toHaveBeenCalled();
+    expect(h.personQuery.maybeSingle).not.toHaveBeenCalled();
   });
 
-  it('throws person.lookup_failed 500 when supabase returns an error', async () => {
+  it('throws person.lookup_failed 500 when the users read errors', async () => {
     const h = makeHarness({
-      supabaseError: { message: 'connection reset', code: 'PGRST500' },
+      usersError: { message: 'connection reset', code: 'PGRST500' },
     });
     const err = await h.controller.getMe(makeReq()).catch((e) => e);
     expect(err).toBeInstanceOf(AppError);
@@ -185,15 +232,28 @@ describe('PersonController.getMe (R1)', () => {
       status: 500,
       code: 'person.lookup_failed',
     });
+    // Persons query MUST NOT have fired — short-circuited on users error.
+    expect(h.personQuery.maybeSingle).not.toHaveBeenCalled();
+  });
+
+  it('throws person.lookup_failed 500 when the persons read errors', async () => {
+    const h = makeHarness({
+      personsError: { message: 'pg dropped connection', code: 'PGRST500' },
+    });
+    const err = await h.controller.getMe(makeReq()).catch((e) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect(err).toMatchObject({
+      status: 500,
+      code: 'person.lookup_failed',
+    });
+    // Both queries fired (users succeeded, persons errored).
+    expect(h.userQuery.maybeSingle).toHaveBeenCalledTimes(1);
+    expect(h.personQuery.maybeSingle).toHaveBeenCalledTimes(1);
   });
 
   it('throws person.no_profile_link 422 when the user row has person_id=null (FIX 2 — distinct from not_found)', async () => {
     const h = makeHarness({
-      usersRow: {
-        id: PLATFORM_USER_ID,
-        person_id: null,
-        persons: null,
-      },
+      usersRow: { id: PLATFORM_USER_ID, person_id: null },
     });
     const err = await h.controller.getMe(makeReq()).catch((e) => e);
     expect(err).toBeInstanceOf(AppError);
@@ -201,22 +261,8 @@ describe('PersonController.getMe (R1)', () => {
       status: 422,
       code: 'person.no_profile_link',
     });
-  });
-
-  it('throws person.no_profile_link 422 when persons join is an empty array (FIX 2 — embedded miss)', async () => {
-    const h = makeHarness({
-      usersRow: {
-        id: PLATFORM_USER_ID,
-        person_id: PERSON_ID,
-        persons: [],
-      },
-    });
-    const err = await h.controller.getMe(makeReq()).catch((e) => e);
-    expect(err).toBeInstanceOf(AppError);
-    expect(err).toMatchObject({
-      status: 422,
-      code: 'person.no_profile_link',
-    });
+    // The persons query MUST NOT have fired — no FK to follow.
+    expect(h.personQuery.maybeSingle).not.toHaveBeenCalled();
   });
 
   it('throws person.not_found 404 when no users row matches (genuinely missing)', async () => {
@@ -225,50 +271,82 @@ describe('PersonController.getMe (R1)', () => {
       status: 404,
       code: 'person.not_found',
     });
+    // The persons query MUST NOT have fired — no users row to deref.
+    expect(h.personQuery.maybeSingle).not.toHaveBeenCalled();
   });
 
-  it('unwraps the persons join when PostgREST returns a single-element array', async () => {
+  it('FIX A (codex P0) — bad FK / cross-tenant FK: users.person_id points at a row in another tenant, the persons .eq(tenant_id) filter catches it and surfaces as 422 (NOT a 200 leak)', async () => {
+    // The bad-FK scenario: users.person_id = FOREIGN_PERSON_ID (which lives
+    // in tenant FOREIGN_TENANT_ID). The persons query asks for
+    //   id=FOREIGN_PERSON_ID AND tenant_id=TENANT_ID
+    // → 0 rows → null. We simulate that here by returning null from the
+    // persons read, then asserting:
+    //  (a) the persons query DID fire with the bad FK as the id filter
+    //      AND with the CURRENT tenant id (NOT the foreign one) — proving
+    //      the defense-in-depth filter is what caught the leak,
+    //  (b) the response surfaces as person.no_profile_link 422 — not a
+    //      200 with a foreign person.
     const h = makeHarness({
-      usersRow: {
-        id: PLATFORM_USER_ID,
-        person_id: PERSON_ID,
-        persons: [
-          {
-            id: PERSON_ID,
-            first_name: 'Array',
-            last_name: 'Shape',
-            primary_membership: [],
-          },
-        ],
-      },
+      usersRow: { id: PLATFORM_USER_ID, person_id: FOREIGN_PERSON_ID },
+      personsRow: null,
     });
-    const result = (await h.controller.getMe(makeReq())) as {
-      id: string;
-      first_name: string;
-    };
-    expect(result.id).toBe(PERSON_ID);
-    expect(result.first_name).toBe('Array');
+    const err = await h.controller.getMe(makeReq()).catch((e) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect(err).toMatchObject({
+      status: 422,
+      code: 'person.no_profile_link',
+    });
+    // The persons query DID fire (proves we attempted the second read).
+    expect(h.personQuery.eqId).toHaveBeenCalledWith('id', FOREIGN_PERSON_ID);
+    // CRITICAL: the tenant filter on the persons read was the CURRENT
+    // tenant, NOT the foreign tenant. This is the defense — RLS doesn't
+    // catch the leak under the admin client, but the explicit
+    // .eq('tenant_id', current) does.
+    expect(h.personQuery.eqTenant).toHaveBeenCalledWith('tenant_id', TENANT_ID);
+    // Sanity: did NOT accidentally use FOREIGN_TENANT_ID as the filter.
+    expect(h.personQuery.eqTenant).not.toHaveBeenCalledWith(
+      'tenant_id',
+      FOREIGN_TENANT_ID,
+    );
   });
 
   it('binds the tenant filter on the users query (FIX 3 — tenant-binding regression guard)', async () => {
     const h = makeHarness();
     await h.controller.getMe(makeReq());
     // First .eq binds the user id; second .eq binds the tenant. Drop
-    // either one and this assertion fails.
-    expect(h.eqId).toHaveBeenCalledWith('id', PLATFORM_USER_ID);
-    expect(h.eqTenant).toHaveBeenCalledWith('tenant_id', TENANT_ID);
+    // either one and these assertions fail.
+    expect(h.userQuery.eqId).toHaveBeenCalledWith('id', PLATFORM_USER_ID);
+    expect(h.userQuery.eqTenant).toHaveBeenCalledWith('tenant_id', TENANT_ID);
   });
 
-  it('uses the canonical persons:persons!person_id select alias (FIX 4 — alias regression guard)', async () => {
+  it('binds the tenant filter on the persons query (FIX A — defense-in-depth)', async () => {
     const h = makeHarness();
     await h.controller.getMe(makeReq());
-    expect(h.select).toHaveBeenCalledTimes(1);
-    const selectArg = h.select.mock.calls[0]?.[0];
-    expect(typeof selectArg).toBe('string');
-    expect(selectArg as string).toContain('persons:persons!person_id');
+    expect(h.personQuery.eqId).toHaveBeenCalledWith('id', PERSON_ID);
+    expect(h.personQuery.eqTenant).toHaveBeenCalledWith('tenant_id', TENANT_ID);
+  });
+
+  it('uses an explicit persons select projection (FIX 4 — select-string regression guard)', async () => {
+    const h = makeHarness();
+    await h.controller.getMe(makeReq());
+    expect(h.personQuery.select).toHaveBeenCalledTimes(1);
+    const personsSelectArg = h.personQuery.select.mock.calls[0]?.[0];
+    expect(typeof personsSelectArg).toBe('string');
+    // The persons projection MUST include primary_membership (alias drift
+    // here breaks the canonical /admin/persons binding).
+    expect(personsSelectArg as string).toContain('primary_membership');
     // DTO scrub (FIX 1): make sure we're NOT shipping the wildcard back.
-    // If a future change re-introduces `*` inside the persons join this
-    // assertion catches it before it leaks HR columns to the requester.
-    expect(selectArg as string).not.toMatch(/persons!person_id\(\*/);
+    // If a future change re-introduces `*` this assertion catches it
+    // before it leaks HR columns to the requester.
+    expect(personsSelectArg as string).not.toContain('*');
+    // The users query select MUST be a narrow projection — id + person_id
+    // only. A regression that re-introduces a wildcard or a relational
+    // hydration here also fails this guard.
+    expect(h.userQuery.select).toHaveBeenCalledTimes(1);
+    const usersSelectArg = h.userQuery.select.mock.calls[0]?.[0];
+    expect(typeof usersSelectArg).toBe('string');
+    expect(usersSelectArg as string).toContain('person_id');
+    expect(usersSelectArg as string).not.toContain('persons!person_id');
+    expect(usersSelectArg as string).not.toContain('*');
   });
 });
