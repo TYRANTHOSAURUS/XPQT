@@ -469,7 +469,17 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
     expect(cascadeSpy.mock.calls[0][0] as Array<unknown>).toHaveLength(2);
 
     // splitSeries CALLED on the commit path; returns NEW_SERIES_ID.
-    expect(recurrence.splitSeries).toHaveBeenCalledWith(PIVOT_BOOKING_ID);
+    // Why this signature changed: commit cf0531d1 ("fix(booking-audit
+    // slice4): atomic idempotent split_recurrence_series (P1-2)") made
+    // splitSeries a thin wrapper over the new `split_recurrence_series`
+    // RPC (migration 00411) keyed on (bookingId, crid). Signature is
+    // now (bookingId, actor, clientRequestId) — see
+    // recurrence.service.ts:1052.
+    expect(recurrence.splitSeries).toHaveBeenCalledWith(
+      PIVOT_BOOKING_ID,
+      expect.objectContaining({ user_id: 'U', auth_uid: 'U' }),
+      CLIENT_REQUEST_ID,
+    );
 
     // Assembler sees the NEW series id, no forwardOnly filter (the new
     // series only has forward rows by construction).
@@ -729,15 +739,25 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
   // C2-plan-rev: start_at / end_at smuggled in body silently dropped.
   // C2-code-rev: scope value never validated (garbage falls through to series).
 
-  it('C1 (codex-revised): retry on `this_and_following` commit skips splitSeries; assembler+RPC still run; RPC returns cached envelope', async () => {
-    // First attempt: splitSeries succeeded + RPC committed + cached_result
-    // stored under (tenant, idempotency_key). Response dropped before
-    // reaching the client (network failure). On retry the pivot is now
-    // on the POST-SPLIT series (splitSeries moved it). The pre-check
-    // detects outcome='success' and sets skipSplitSeries=true; the
-    // assembler runs against pivot.recurrence_series_id (which IS the
-    // new series id); the RPC returns the cached envelope verbatim
-    // (00371:266-267).
+  it('C1 (slice4 cutover): retry on `this_and_following` commit re-invokes splitSeries; the split RPC cache-hits and returns the same new_series_id; assembler+edit-RPC still run; RPC returns cached envelope', async () => {
+    // Why this changed: commit cf0531d1 ("fix(booking-audit slice4):
+    // atomic idempotent split_recurrence_series (P1-2)") removed the
+    // TS-layer pre-check that previously suppressed splitSeries on
+    // retry. splitSeries is now atomic+idempotent in the RPC (migration
+    // 00411); the wrapper is called on every commit attempt and the
+    // underlying RPC's own `command_operations` gate ensures the second
+    // call cache-hits and returns the SAME new_series_id (no orphan
+    // series). The TS layer no longer owns retry-skip; the RPC does.
+    // See reservation.service.ts:1828-1854.
+    //
+    // First attempt: splitSeries succeeded + edit_booking_scope RPC
+    // committed + cached_result stored under (tenant, idempotency_key).
+    // Response dropped before reaching the client (network failure). On
+    // retry the pivot is now on the POST-SPLIT series (splitSeries moved
+    // it). splitSeries is called again, cache-hits (RPC-level), returns
+    // the SAME new_series_id; assembler runs against the new series id
+    // (= pivot.recurrence_series_id post-split); edit_booking_scope RPC
+    // returns the cached envelope verbatim (00371:266-267).
     const cachedEnvelope = {
       committed: 3,
       series_id: NEW_SERIES_ID,
@@ -789,13 +809,21 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
       ),
     );
 
-    // splitSeries MUST NOT fire (the C1 hazard the pre-check guards against).
-    expect(recurrence.splitSeries).not.toHaveBeenCalled();
+    // splitSeries IS called (slice 4: RPC owns idempotency end-to-end).
+    // The split-RPC's `command_operations` gate ensures the second call
+    // cache-hits and returns the SAME new_series_id; the post-split
+    // pivot is already on that series so no orphan is minted.
+    expect(recurrence.splitSeries).toHaveBeenCalledTimes(1);
+    expect(recurrence.splitSeries).toHaveBeenCalledWith(
+      PIVOT_BOOKING_ID,
+      expect.objectContaining({ user_id: 'U' }),
+      CLIENT_REQUEST_ID,
+    );
 
     // Assembler MUST fire — the RPC needs the assembled plans to compare
     // payload_hash against cached. The assembler reads against the
-    // POST-SPLIT series id (pivot.recurrence_series_id, which the first
-    // attempt's splitSeries moved the pivot to).
+    // POST-SPLIT series id (the splitSeries mock returns NEW_SERIES_ID,
+    // matching the first attempt's outcome).
     expect(assemble.assembleScopeEditPlan).toHaveBeenCalledTimes(1);
     const assembleArgs = captured.args as {
       effectiveSeriesId: string;
@@ -812,12 +840,11 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
     );
     expect(rpcArgs.p_dry_run).toBe(false);
 
-    // Pre-check read DID happen with the expected key (commit mode → gated on).
-    expect(supabase.calls.commandOpsReads).toHaveLength(1);
-    expect(supabase.calls.commandOpsReads[0].tenantId).toBe(TENANT.id);
-    expect(supabase.calls.commandOpsReads[0].idempotencyKey).toBe(
-      buildEditBookingIdempotencyKey(PIVOT_BOOKING_ID, CLIENT_REQUEST_ID, 'scope'),
-    );
+    // Slice 4: the TS-layer command_operations pre-check is GONE — the
+    // RPC owns the cached_result return + payload_hash check itself.
+    // We assert the pre-check does NOT fire (no TS read of
+    // command_operations) to lock the architecture in place.
+    expect(supabase.calls.commandOpsReads).toHaveLength(0);
 
     // Response shape comes from RPC (cached envelope replayed verbatim).
     // new_series_id is surfaced from pivot.recurrence_series_id (post-split
@@ -985,57 +1012,33 @@ describe('ReservationService.editScope (B.4 Step 2F.3)', () => {
       expect((caught as AppError).status).toBe(409);
     });
 
-    // splitSeries MUST NOT fire (pre-check still suppressed it).
-    expect(recurrence.splitSeries).not.toHaveBeenCalled();
+    // Why this changed: commit cf0531d1 removed the TS-layer pre-check;
+    // splitSeries is now atomic+idempotent in the RPC and fires on
+    // every commit attempt. On a payload-mismatched retry the split-RPC
+    // cache-hits + returns the same new_series_id; the edit-scope RPC
+    // then raises command_operations.payload_mismatch.
+    expect(recurrence.splitSeries).toHaveBeenCalledTimes(1);
     // Assembler MUST fire (the RPC needs plans to compute payload_hash).
     expect(assemble.assembleScopeEditPlan).toHaveBeenCalledTimes(1);
     // RPC MUST fire (it's the layer that detects payload_mismatch).
     expect(supabase.calls.rpc).toHaveLength(1);
   });
 
-  it('C1 (codex-revised): pre-check read error surfaces command_operations.unexpected_state', async () => {
-    // If the command_operations read transiently fails, we cannot tell
-    // whether a cached row exists. Bailing before splitSeries fires is
-    // safer than firing splitSeries blindly (which could orphan a series
-    // if the cached row actually exists). Code path:
-    //   supabase.from('command_operations').select().eq().eq().maybeSingle()
-    //   → { data: null, error: <transient> }
-    //   → throw AppErrors.server('command_operations.unexpected_state', ...)
-    const supabase = makeSupabase({
-      cachedError: { code: '57014', message: 'statement timeout' },
-    });
-    const recurrence = makeRecurrence();
-    const assemble = makeAssembleEditPlan();
-    const svc = buildService({
-      supabase,
-      visibility: makeVisibility(),
-      conflict: makeConflictGuard(),
-      recurrence,
-      assemble,
-      bundleEventBus: makeBundleEventBus(),
-    });
-
-    await TenantContext.run(TENANT, async () => {
-      let caught: unknown;
-      try {
-        await svc.editScope(
-          PIVOT_BOOKING_ID,
-          { scope: 'this_and_following', space_id: NEW_SPACE_ID },
-          makeActor(),
-          CLIENT_REQUEST_ID,
-        );
-      } catch (err) {
-        caught = err;
-      }
-      expect(caught).toBeInstanceOf(AppError);
-      expect((caught as AppError).code).toBe('command_operations.unexpected_state');
-    });
-
-    // splitSeries / assembler / RPC MUST NOT fire (we bailed early).
-    expect(recurrence.splitSeries).not.toHaveBeenCalled();
-    expect(assemble.assembleScopeEditPlan).not.toHaveBeenCalled();
-    expect(supabase.calls.rpc).toHaveLength(0);
-  });
+  // REMOVED (was: "C1 (codex-revised): pre-check read error surfaces
+  // command_operations.unexpected_state"). Why this changed: commit
+  // cf0531d1 ("fix(booking-audit slice4): atomic idempotent
+  // split_recurrence_series (P1-2)") REMOVED the TS-layer pre-check
+  // entirely. The pre-check was the layer that read command_operations
+  // BEFORE splitSeries to decide whether to skip the side effect; with
+  // the atomic+idempotent split_recurrence_series RPC (migration 00411)
+  // that gating moved into the RPC and the TS read is gone. There is
+  // no code path that surfaces `command_operations.unexpected_state` on
+  // a pre-check read error anymore — the assertion tests behaviour the
+  // architecture deliberately retired. RPC-level transient errors are
+  // covered by `mapRpcErrorToAppError` + the dedicated RPC-error specs
+  // (e.g. the payload_mismatch test above). See
+  // reservation.service.ts:1828-1854 + recurrence.service.ts:1052
+  // for the new shape.
 
   it('C1 (codex-revised): cached row with outcome=in_progress does NOT skip splitSeries', async () => {
     // Only outcome='success' sets skipSplitSeries=true. An in_progress

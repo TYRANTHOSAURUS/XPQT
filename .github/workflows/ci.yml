@@ -112,6 +112,31 @@ jobs:
       - name: Typecheck api
         run: pnpm --filter @prequest/api run lint
 
+      - name: Jest (apps/api) — motivating files only
+        # F3 (2026-05-20): the `check` job only typechecked — jest specs
+        # did NOT gate PRs. Two specs (visitors/admin.controller.spec.ts
+        # + reservations/reservation-edit-scope.spec.ts) were silently
+        # red on main across multiple sessions before they got the
+        # fix-or-skip treatment in this PR. This step locks the gate on
+        # those two files only so any future regression on them is
+        # caught pre-merge.
+        #
+        # NARROW SCOPE: the broader `pnpm --filter @prequest/api run
+        # test` runs the full 191-suite jest pass locally (~25s wall),
+        # BUT a handful of specs in the api suite need a live Postgres
+        # (e.g. `visitors/migrations.spec.ts` opens a pg client to
+        # validate the RLS predicate on 00248–00258). The `check` job
+        # has no Postgres; those specs belong in `migration-smoke` /
+        # `concurrency-harness`, both of which run a real DB. Pinning
+        # this step to just the two motivating files preserves the
+        # zero-DB invariant of the `check` job AND closes the loop on
+        # the specific silent-drift that motivated F3.
+        #
+        # If the broader suite becomes safe to run with no DB (e.g.
+        # by gating db-needing specs on dbAvailable in afterAll
+        # cleanup), broaden this step then — don't do it speculatively.
+        run: pnpm --filter @prequest/api run test -- visitors/admin.controller.spec.ts reservations/reservation-edit-scope.spec.ts
+
   migration-smoke:
     name: Migration smoke (db:reset + invariants)
     runs-on: ubuntu-latest
