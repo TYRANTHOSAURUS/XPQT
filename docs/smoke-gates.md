@@ -273,3 +273,46 @@ Script: `apps/api/scripts/smoke-cross-tenant.mjs`.
 **Also covers — R1 `/api/persons/me` unwrapped-throw regression (handoff-residuals 2026-05-20):** the prod incident was a `GET /api/persons/me` returning `HTTP 500 {"code":"unknown.server_error",...}` because no `@Get('me')` route existed — the `@Get(':id')` pattern captured `'me'`, Postgres rejected it as an invalid UUID, and the raw error fell through to the global filter as the catch-all `unknown.server_error`. The same browser-token branch above now asserts:
 
 - **`/api/persons/me` returns 200 with person.id** (1): authenticated browser token → `GET ${API_BASE}/api/persons/me` → 200 with a JSON body containing a non-empty `id`. Distinguishes three regression classes in the failure label: `unknown.server_error` (the original R1 bug regressed — raw throw in the persons-me path), non-200 with any other code (an AppError shape did surface but the endpoint is still broken), wrong body shape (no `id`).
+
+---
+
+## `pnpm smoke:prod-e2e`
+
+**Required after every prod deploy, and before claiming any backend bug fix is live in prod.** This is the post-deploy "did prod come up green for an authenticated browser session" gate.
+
+Script: `apps/api/scripts/smoke-prod-e2e.mjs`. Default target: `https://xpqt-api-eu.onrender.com` (`PROD_BASE` env override).
+
+**The gate this protects.** Every other smoke gate in this repo hits a dev API (`http://localhost:3001`/`:3010`). They cannot catch a route that:
+- builds + typechecks cleanly,
+- passes service-role-path probes,
+- but throws an unwrapped (non-`AppError`) exception under a real authenticated browser JWT on the deployed instance.
+
+That exact failure mode shipped on 2026-05-20: `/api/persons/me` returned `HTTP 500 unknown.server_error` and sat invisible until a transient `_prod-e2e-verify.mjs` was hand-rolled outside the smoke-gate set. R5 of `ai/handoff-residuals-2026-05-20.md` carved out the reusable gate. PR #36 (R1) fixes the underlying bug.
+
+**Read-only by design.** No fixtures seeded, no rows written, no teardown. Safe to run against prod after every deploy and from CI without coordination.
+
+**Cold-start tolerance.** Render free-tier services can take >30s to wake. Each probe gets `PROD_E2E_TIMEOUT_MS` (default 45s) per try and one automatic retry (`PROD_E2E_RETRIES`, default 1) on transient failure. The retry trigger is BOTH a transport throw (timeout / DNS / non-HTTP) AND a 5xx-gateway response (`502` / `503` / `504`) — Render's cold-start path can return either, and treating a cold-start 503 as a real `http-status` outage is the regression class R3 (codex tertiary) carves out. On retry exhaustion the failure CLASS is preserved (transport vs http-status); only the retry trigger is unified. Two consecutive transient fails still red the gate — this absorbs spin-up jitter, not real outages.
+
+**Three named failure classes** (mirrors the R3 precision model in `smoke:cross-tenant`):
+- **`transport`** — fetch threw (DNS / network / abort / non-HTTP). Surface: the underlying reason or `timeout after Nms`.
+- **`http-status`** — got a response, status !== 200. Surface: status + first 200 chars of body.
+- **`body-shape`** — got 200 + JSON, but the response shape doesn't match the contract. Surface: which field was missing or had the wrong type.
+
+The same binary green/red outcome holds; the label tells the on-call which layer failed.
+
+**4 probes:**
+
+- **`GET /api/health`** (no auth) → HTTP 200 + `{ status: "ok" }`. Catches: the deploy built but the API process isn't healthy.
+- **`GET /api/me/inbox`** (minted browser JWT) → HTTP 200 + `{ items: InboxItemDto[], nextCursor: string | null }`. Catches: AuthGuard / AsyncLocalStorage tenant binding / `InboxService.resolveActor` regressions on the real authenticated path.
+- **`GET /api/me/inbox/count`** (minted browser JWT) → HTTP 200 + `{ unread: number, total: number }`. Catches: per-route NestJS exception filter / DTO contract drift on the count surface.
+- **`GET /api/persons/me`** (minted browser JWT, gated by `R1_LANDED=1`) → HTTP 200 + `{ id: string, … }`. Gated until PR #36 (`fix/persons-me-apperror`) merges and prod redeploys — the route returns 500 pre-merge. Flip `R1_LANDED=1` once the redeploy is live; no code change required.
+
+**JWT mint** mirrors `smoke-cross-tenant.mjs`: Supabase admin magiclink → verify-redirect access_token, for `ADMIN_AUTH_UID=93d41232-35b5-424c-b215-bb5d55a2dfd9` (default; override via `PROD_E2E_AUTH_UID=<uuid>` if the canonical user is rotated or deactivated — replacement MUST be an active admin in the canonical tenant). Requires `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_PUBLISHABLE_KEY` in `.env` (or the process env, for CI). No `JWT_SECRET` required — the Supabase admin client mints session tokens server-side. The minted token is NEVER logged (not even a prefix) — log surfaces only `admin browser JWT minted (token redacted)`. Verify-redirect parse failures surface only the redirect origin, never the full URL.
+
+**Not covered (by design):**
+- Writes. This is a read-only gate. Write-path coverage stays in the dev-API smoke gates.
+- Realtime channel. The Realtime regression class is covered by `smoke:cross-tenant`'s browser-path RLS probe.
+- Cross-tenant attacks. Same — `smoke:cross-tenant` is the gate for that class.
+- Per-tenant data correctness. Prod data drift is out of scope; this gate is "is the API answering at all under a real session."
+
+**Exit codes:** 0 = all probes green. 1 = at least one probe red (any class). 2 = uncaught exception (treat as red).

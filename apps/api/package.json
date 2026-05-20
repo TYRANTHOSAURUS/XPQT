@@ -24,7 +24,8 @@
     "smoke:cancel-order-line": "node scripts/smoke-cancel-order-line.mjs",
     "smoke:recurrence-clone": "node scripts/smoke-recurrence-clone.mjs",
     "smoke:visual-approval": "node scripts/smoke-visual-approval.mjs",
-    "smoke:cross-tenant": "node scripts/smoke-cross-tenant.mjs"
+    "smoke:cross-tenant": "node scripts/smoke-cross-tenant.mjs",
+    "smoke:prod-e2e": "node scripts/smoke-prod-e2e.mjs"
   },
   "dependencies": {
     "@azure/msal-node": "^5.1.4",
