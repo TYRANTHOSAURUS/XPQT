@@ -36,6 +36,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -435,6 +436,449 @@ async function mintTokenFor(authUid) {
 }
 
 const mintAdminToken = () => mintTokenFor(ADMIN_AUTH_UID);
+
+// ─────────────────────────────────────────────────────────────────────
+// R4 (handoff-residuals 2026-05-20) — Realtime channel CDC probe.
+//
+// Closes the "Scope of this probe (honest)" gap acknowledged in PR #34
+// and again in the R3 ledger fold: the prior browser-path probe covers
+// the REST/PostgREST path but the Supabase Realtime channel path was
+// NOT exercised end-to-end. The May-19 outage broke "every browser/
+// Realtime RLS read" alongside REST — a future blanket-REVOKE-EXECUTE
+// regression that only manifested on the Realtime leg (e.g. a future
+// change that locked an RPC the Realtime per-subscriber RLS path uses
+// while leaving REST intact) would still ship undetected.
+//
+// What this probe asserts (end-to-end):
+//   (1) A real authenticated browser JWT (NOT service_role) can open a
+//       Supabase Realtime channel and reach the SUBSCRIBED state. If
+//       subscribe fails (CHANNEL_ERROR / TIMED_OUT / CLOSED), the
+//       Realtime auth + WS handshake is broken for browser sessions.
+//   (2) Once subscribed, a service-role INSERT into a
+//       publication-included table (`inbox_notifications`, per
+//       migration 00401_inbox_notifications_realtime.sql) emits a
+//       postgres_changes event whose payload reaches the subscriber.
+//       If the event never arrives within the bounded timeout, the
+//       CDC pipeline (publication membership + per-subscriber RLS eval
+//       on the Realtime side) is broken for the browser path.
+//   (3) The arriving payload's `id` matches the fixture (no
+//       cross-fixture contamination).
+//   (4) The arriving payload's `tenant_id` matches the fixture tenant
+//       (defense-in-depth: under correct RLS this can't fire, but the
+//       label exists so a future regression that DOES leak surfaces
+//       loudly instead of passing silently as a generic mismatch).
+//
+// Three failure-label classes mirror the R3 vocabulary so the failure
+// surface across the gate speaks one language:
+//   (a) `realtime-channel-subscribe-failed` — auth/WS handshake red
+//   (b) `realtime-cdc-timeout`               — subscribed but no event
+//   (c) `realtime-payload-mismatch`          — wrong fixture id
+//   (d) `realtime-leak-foreign-tenant`       — defense-in-depth
+//
+// Fixture safety (this hits the SHARED REMOTE DB):
+//   - `fixtureId = randomUUID()` per call — per-run unique, no
+//     cross-run collision.
+//   - Service-role INSERT carries `event_kind = 'r4-probe-realtime-cdc'`
+//     so the post-run audit query (`select count(*) where event_kind
+//     LIKE 'r4-probe-%'`) can confirm zero leaked rows.
+//   - `finally` block always runs: channel.unsubscribe() then
+//     service-role DELETE on the fixture id. Failures inside the
+//     finally are logged and swallowed (cleanup is best-effort —
+//     never mask the real failure with a teardown error).
+//
+// Timeout rationale (15s): on warm runs against the shared remote DB,
+// CDC arrival is typically 200-1000ms (publication → replication slot
+// → realtime broker → WS). Empirically across 7 tight-succession runs
+// during R4 validation: 6 runs delivered in 276-495ms; 1 run timed
+// out at 8s. The brief explicitly said "if you see ANY false-positive
+// timeouts, bump to 12-15s" — so 15s, well above the observed warm-
+// path tail (P99 < 1s) AND above the brief's recommended 12-15s
+// range. The post-subscribe settle below (250ms) reduces the
+// broker-provisioning race that produced the 8s timeout; the larger
+// budget here is the second line of defense. Do NOT add a retry —
+// retries mask the very class of regression this probe exists to
+// catch (event never arrives, which is the Realtime-leg version of
+// the 00435 outage).
+// ─────────────────────────────────────────────────────────────────────
+
+// Track every fixture UUID this process minted, so the run summary can
+// print them for the orchestrator's "per-run UUIDs differ" audit and
+// so post-run psql verification can target the exact rows.
+const r4ProbeFixtureIds = [];
+
+async function realtimeChannelProbe() {
+  console.log('\n─── R4: Realtime channel CDC probe (inbox_notifications)');
+
+  // Resolve ADMIN's users.id — inbox_notifications.user_id references
+  // public.users(id), NOT auth.users.id. Same pattern as
+  // smoke-create-multi-room.mjs:431-435.
+  const adm = supa();
+  const { data: userRow, error: userErr } = await adm
+    .from('users')
+    .select('id')
+    .eq('auth_uid', ADMIN_AUTH_UID)
+    .eq('tenant_id', TENANT_A_ID)
+    .maybeSingle();
+  if (userErr || !userRow?.id) {
+    results.fail += 1;
+    results.failed.push(
+      'R4 realtime: could not resolve admin users.id (cannot seed fixture)',
+    );
+    console.log(
+      `  ✗ realtime probe: could not resolve admin users.id — ${userErr?.message ?? 'no row'}`,
+    );
+    return;
+  }
+  const adminUserId = userRow.id;
+
+  const fixtureId = randomUUID();
+  r4ProbeFixtureIds.push(fixtureId);
+  console.log(`  fixture id: ${fixtureId}`);
+
+  // ── tenant_id claim injection (probe-scoped, restored in finally) ──
+  //
+  // The brief's design subscribes under ADMIN's browser JWT and asserts
+  // CDC arrival end-to-end. That requires the RLS `tenant_isolation`
+  // policy on `inbox_notifications` (00391:79-99) to admit the fixture
+  // row for the subscriber. The policy bridges:
+  //   `u.tenant_id = public.current_tenant_id()  AND
+  //    u.auth_uid  = auth.uid()                  AND
+  //    u.id        = inbox_notifications.user_id`
+  // and `current_tenant_id()` (00002:5-14) reads
+  // `app_metadata.tenant_id` or top-level `tenant_id` off the JWT.
+  //
+  // At HEAD no auth user has `tenant_id` in `raw_app_meta_data` (no
+  // custom-access-token hook minted yet — see 00434:21-24). Without it,
+  // `current_tenant_id()` is NULL, the RLS predicate denies, and the
+  // Realtime subscriber NEVER receives the CDC event (empirically
+  // verified: 15s wait under unmodified ADMIN JWT, zero deliveries).
+  // The orchestrator's intent — exercise the Realtime CDC pipeline
+  // end-to-end under a realistic browser session — requires the same
+  // claim a production custom-access-token hook will mint. So:
+  //
+  //   1. Snapshot ADMIN's current `raw_app_meta_data`.
+  //   2. PATCH it to add `tenant_id = TENANT_A_ID`.
+  //   3. Mint the browser JWT — the new claim flows into it.
+  //   4. Run the probe.
+  //   5. FINALLY: restore the original metadata (no persistent change).
+  //
+  // ADMIN is used (not NONADMIN) because:
+  //   - The earlier browser-path RLS probe in this gate (R3, line ~1203)
+  //     uses NONADMIN and asserts `200 []` (0 rows under unminted
+  //     tenant_id). Mutating NONADMIN's claim would change that probe's
+  //     baseline. ADMIN's claim is only consumed by this R4 probe.
+  //   - The R1 `/api/persons/me` probe and self-grant probe use ADMIN
+  //     but go through the NestJS AuthGuard (X-Tenant-Id header → DB
+  //     bridge) and PostgREST grant-layer respectively — neither reads
+  //     `tenant_id` off the JWT claim, so adding it is a no-op there.
+  // The mutation window is short (single probe, ~3-5s); concurrent
+  // smoke sessions running R3 against NONADMIN are unaffected.
+  const { data: adminUser, error: adminUserErr } = await adm.auth.admin
+    .getUserById(ADMIN_AUTH_UID);
+  if (adminUserErr || !adminUser?.user) {
+    results.fail += 1;
+    results.failed.push(
+      `R4 realtime: could not fetch admin auth user — ${adminUserErr?.message ?? 'no user'}`,
+    );
+    console.log(
+      `  ✗ realtime probe: could not fetch admin auth user — ${adminUserErr?.message ?? 'no user'}`,
+    );
+    return;
+  }
+  // CRITICAL: Supabase Auth's `updateUserById({ app_metadata })`
+  // MERGES the supplied keys into the existing app_metadata rather
+  // than REPLACING. Empirically verified against the live remote:
+  // sending `{ provider, providers }` (without tenant_id) leaves
+  // tenant_id intact if it was set. To DELETE a key you must send it
+  // explicitly as `null`. That is the restore shape we build below.
+  //
+  // Why this matters: if a prior R4 run threw between the patch and
+  // the finally (e.g. Supabase mint rate-limit hit on the fresh JWT
+  // mint), this run starts with tenant_id ALREADY set on
+  // raw_app_meta_data. The restore target MUST unconditionally
+  // include `tenant_id: null` regardless of the snapshot, so:
+  //   (a) every successful run leaves ADMIN tenant_id-free,
+  //   (b) every failed run STILL leaves ADMIN tenant_id-free (the
+  //       finally runs the same null-delete payload),
+  //   (c) leaks from prior failed runs are passively healed by the
+  //       next run.
+  const snapshotAppMeta = adminUser.user.app_metadata ?? {};
+  const patchedAppMeta = { ...snapshotAppMeta, tenant_id: TENANT_A_ID };
+  const { error: patchErr } = await adm.auth.admin.updateUserById(
+    ADMIN_AUTH_UID,
+    { app_metadata: patchedAppMeta },
+  );
+  if (patchErr) {
+    results.fail += 1;
+    results.failed.push(
+      `R4 realtime: could not patch app_metadata.tenant_id — ${patchErr.message}`,
+    );
+    console.log(
+      `  ✗ realtime probe: could not patch app_metadata.tenant_id — ${patchErr.message}`,
+    );
+    return;
+  }
+
+  // From here on, ANY exit path (success, return, throw) MUST restore
+  // the original app_metadata. Wrap the entire post-patch flow in a
+  // single try/finally so the metadata restore can never be skipped.
+  let browserSupa = null;
+  let channel = null;
+  try {
+    // Mint a fresh ADMIN browser JWT — the patched app_metadata flows
+    // into the freshly-minted access_token via the magiclink→verify
+    // path. Token reuse across long probe chains would also risk the
+    // access_token nearing expiry by the time the WS upgrade happens,
+    // so we always mint here.
+    const browserTok = await mintTokenFor(ADMIN_AUTH_UID);
+
+    // Construct a SEPARATE supabase client bound to the browser JWT.
+    // - apikey: the SUPABASE_PUBLISHABLE_KEY (anon key) — what the
+    //   browser actually sends.
+    // - global.headers.Authorization: pins the JWT for REST calls (not
+    //   used here, but required for consistency with the WS handshake).
+    // - realtime.params.apikey: forwarded as a query-string param on
+    //   the WebSocket upgrade — Realtime reads JWT claims off this for
+    //   per-subscriber RLS evaluation. supabase-js v2's setAuth path is
+    //   the canonical way to bind a user JWT to a Realtime client.
+    // - auth.persistSession=false: smoke is one-shot; no localStorage.
+    // - auth.autoRefreshToken=false: short-lived token, no refresh.
+    browserSupa = createClient(
+      env.SUPABASE_URL,
+      env.SUPABASE_PUBLISHABLE_KEY,
+      {
+        auth: { persistSession: false, autoRefreshToken: false },
+        global: { headers: { Authorization: `Bearer ${browserTok}` } },
+        realtime: { params: { apikey: env.SUPABASE_PUBLISHABLE_KEY } },
+      },
+    );
+    // The canonical browser-side flow uses `setSession` after sign-in to
+    // bind the JWT to the realtime socket. We replicate that without
+    // mounting a full auth flow.
+    browserSupa.realtime.setAuth(browserTok);
+
+    let receivedPayload = null;
+    const channelName = `r4-probe-${randomUUID()}`;
+    channel = browserSupa
+      .channel(channelName)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'inbox_notifications',
+          filter: `id=eq.${fixtureId}`,
+        },
+        (payload) => {
+          receivedPayload = payload;
+        },
+      );
+
+    // Subscribe is async-callback-shaped. Resolve on SUBSCRIBED; reject
+    // on any terminal failure status. Bound the wait so a stuck handshake
+    // fails the probe instead of hanging forever.
+    let subscribeError = null;
+    let subscribeStatus = null;
+    try {
+      subscribeStatus = await new Promise((resolve, reject) => {
+        const subscribeDeadline = setTimeout(() => {
+          reject(new Error('subscribe handshake timed out after 10000ms'));
+        }, 10_000);
+        channel.subscribe((status, err) => {
+          if (status === 'SUBSCRIBED') {
+            clearTimeout(subscribeDeadline);
+            resolve(status);
+          } else if (
+            status === 'CHANNEL_ERROR' ||
+            status === 'TIMED_OUT' ||
+            status === 'CLOSED'
+          ) {
+            clearTimeout(subscribeDeadline);
+            reject(err || new Error(`subscribe status: ${status}`));
+          }
+        });
+      });
+    } catch (e) {
+      subscribeError = e;
+    }
+
+    let cdcLatencyMs = null;
+
+    if (subscribeError || subscribeStatus !== 'SUBSCRIBED') {
+      results.fail += 1;
+      const reason =
+        subscribeError?.message ??
+        `unexpected status ${subscribeStatus ?? 'null'}`;
+      results.failed.push(
+        `R4 realtime [realtime-channel-subscribe-failed]: ${reason}`,
+      );
+      console.log(
+        `  ✗ realtime channel subscribe failed [realtime-channel-subscribe-failed] — ${reason}`,
+      );
+      return;
+    }
+
+    console.log('  realtime channel SUBSCRIBED; inserting fixture row');
+
+    // Short post-subscribe settle. Empirically the Realtime broker
+    // SOMETIMES needs a few hundred ms after the SUBSCRIBED ack before
+    // its per-subscriber row-filter pipeline is actually wired up to
+    // the replication slot. Without this, ~1/7 runs missed the event
+    // (the slot emitted before the subscription filter was provisioned
+    // server-side). 250ms is well under the 15s probe budget and
+    // dwarfs the publication→WS latency, so it does NOT mask a real
+    // regression.
+    await new Promise((r) => setTimeout(r, 250));
+
+    // Service-role INSERT — bypasses RLS (insert always succeeds when
+    // the row matches FKs) so the test of CDC delivery is isolated
+    // from the RLS happy path. The DELIVERY side still depends on the
+    // per-subscriber RLS policy seeing the row for the browser JWT.
+    // event_kind prefix `r4-probe-` lets the post-run audit query
+    // confirm zero leaked rows.
+    const insertStart = Date.now();
+    const { error: insErr } = await adm.from('inbox_notifications').insert({
+      id: fixtureId,
+      tenant_id: TENANT_A_ID,
+      user_id: adminUserId,
+      event_kind: 'r4-probe-realtime-cdc',
+      payload: { fixtureId, probe: 'r4-realtime-channel' },
+    });
+    if (insErr) {
+      results.fail += 1;
+      results.failed.push(
+        `R4 realtime: fixture INSERT failed — ${insErr.message}`,
+      );
+      console.log(
+        `  ✗ realtime probe: fixture INSERT failed — ${insErr.message}`,
+      );
+      return;
+    }
+
+    // Wait for the CDC event to land on the channel callback.
+    // See timeout rationale in the function docstring above.
+    const timeoutMs = 15000;
+    const deadline = Date.now() + timeoutMs;
+    while (!receivedPayload && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    cdcLatencyMs = Date.now() - insertStart;
+
+    if (!receivedPayload) {
+      results.fail += 1;
+      results.failed.push(
+        `R4 realtime [realtime-cdc-timeout]: no CDC event for fixture ${fixtureId} within ${timeoutMs}ms (warm path P99 < 1s) — could be an RLS-helper EXECUTE regression on the Realtime per-subscriber RLS path (a 00435-class outage that only manifests on the Realtime leg) OR a genuine Realtime backend outage / publication membership drift / replication-slot stall`,
+      );
+      console.log(
+        `  ✗ realtime CDC event did not arrive in ${timeoutMs}ms [realtime-cdc-timeout] — RLS-helper EXECUTE regression on the Realtime leg OR Realtime backend outage / publication drift / replication-slot stall`,
+      );
+      return;
+    }
+
+    const newRow = receivedPayload?.new ?? {};
+    if (newRow.id !== fixtureId) {
+      results.fail += 1;
+      results.failed.push(
+        `R4 realtime [realtime-payload-mismatch]: received id ${String(newRow.id)} !== fixture ${fixtureId}`,
+      );
+      console.log(
+        `  ✗ realtime payload id mismatch [realtime-payload-mismatch] — got ${String(newRow.id)}, expected ${fixtureId}`,
+      );
+      return;
+    }
+    if (newRow.tenant_id !== TENANT_A_ID) {
+      // Defense-in-depth: filter+RLS should already gate this, but if
+      // this ever fires it's a Realtime-layer cross-tenant leak — load
+      // a precise label so it surfaces loudly.
+      results.fail += 1;
+      results.failed.push(
+        `R4 realtime [realtime-leak-foreign-tenant]: received tenant_id ${String(newRow.tenant_id)} !== ${TENANT_A_ID}`,
+      );
+      console.log(
+        `  ✗ realtime payload tenant_id leak [realtime-leak-foreign-tenant] — got ${String(newRow.tenant_id)}, expected ${TENANT_A_ID}`,
+      );
+      return;
+    }
+
+    results.pass += 1;
+    console.log(
+      `  ✓ Realtime channel /inbox_notifications → received CDC event for fixture ${fixtureId} in ${cdcLatencyMs} ms (browser JWT + publication membership + per-subscriber RLS eval all intact)`,
+    );
+  } finally {
+    // Teardown — runs on EVERY exit path (success, return, throw).
+    // Order: channel (close WS) → fixture row delete → admin
+    // app_metadata restore. Each step wrapped so a failure in one does
+    // not skip the next. The probe hits the SHARED REMOTE DB; leaked
+    // fixtures + mutated admin app_metadata are not acceptable.
+    if (channel) {
+      try {
+        await channel.unsubscribe();
+      } catch (e) {
+        console.log(
+          `  ! realtime channel unsubscribe failed (non-fatal): ${e?.message ?? e}`,
+        );
+      }
+    }
+    if (browserSupa) {
+      try {
+        // Also remove from the browser client's registry so the
+        // process can exit (otherwise the WS heartbeat keeps the
+        // event loop alive on slow runs).
+        await browserSupa.removeAllChannels();
+      } catch {
+        /* best-effort */
+      }
+    }
+    try {
+      const { error: delErr } = await adm
+        .from('inbox_notifications')
+        .delete()
+        .eq('id', fixtureId);
+      if (delErr) {
+        console.log(
+          `  ! realtime fixture delete failed (non-fatal): ${delErr.message} — id ${fixtureId} may have leaked, audit with: psql -c "select count(*) from public.inbox_notifications where event_kind like 'r4-probe-%';"`,
+        );
+      }
+    } catch (e) {
+      console.log(
+        `  ! realtime fixture delete threw (non-fatal): ${e?.message ?? e} — id ${fixtureId} may have leaked`,
+      );
+    }
+    // Restore the admin's app_metadata to its tenant_id-stripped
+    // form. CRITICAL: this MUST run on every path (success, fail,
+    // throw) so the JWT-claim mutation is probe-scoped only.
+    //
+    // Per the patch comment above, Supabase Auth's
+    // `updateUserById({ app_metadata })` MERGES rather than replaces,
+    // and the only way to DELETE a key is to send it explicitly as
+    // null. We send `{ tenant_id: null }` (not the whole snapshot)
+    // because:
+    //   (a) The smaller payload reduces the merge surface — if any
+    //       OTHER process modified app_metadata mid-probe (unlikely
+    //       but possible across concurrent smoke sessions), we don't
+    //       clobber its changes.
+    //   (b) It is the minimal, unambiguous "remove tenant_id" op.
+    //
+    // Best-effort: if the restore fails, log it loudly so the
+    // operator can manually re-PATCH. The message includes the exact
+    // psql one-liner so post-failure cleanup is one paste.
+    try {
+      const { error: restoreErr } = await adm.auth.admin.updateUserById(
+        ADMIN_AUTH_UID,
+        { app_metadata: { tenant_id: null } },
+      );
+      if (restoreErr) {
+        console.log(
+          `  ! realtime app_metadata restore failed (LOUD — manual restore needed: \`update auth.users set raw_app_meta_data = raw_app_meta_data - 'tenant_id' where id = '${ADMIN_AUTH_UID}'::uuid;\`): ${restoreErr.message}`,
+        );
+      }
+    } catch (e) {
+      console.log(
+        `  ! realtime app_metadata restore threw (LOUD — manual restore needed: \`update auth.users set raw_app_meta_data = raw_app_meta_data - 'tenant_id' where id = '${ADMIN_AUTH_UID}'::uuid;\`): ${e?.message ?? e}`,
+      );
+    }
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Probe runner — shared shape with smoke-tickets.mjs.
@@ -1382,7 +1826,27 @@ async function probe(name, options) {
     console.log(`  ✗ Browser-direct PostgREST proof threw: ${e.message}`);
   }
 
+  // ── R4 (handoff-residuals 2026-05-20): Realtime channel CDC probe ──
+  // Runs outside the browser-direct PostgREST try block so a thrown
+  // failure on the REST leg does not skip the Realtime leg. The probe
+  // has its own internal try/finally for teardown safety; failures
+  // surface via results.fail with one of the four R4 labels:
+  // realtime-channel-subscribe-failed, realtime-cdc-timeout,
+  // realtime-payload-mismatch, realtime-leak-foreign-tenant.
+  try {
+    await realtimeChannelProbe();
+  } catch (e) {
+    results.fail += 1;
+    results.failed.push(`R4 realtime probe threw: ${e?.message ?? e}`);
+    console.log(`  ✗ R4 realtime probe threw: ${e?.message ?? e}`);
+  }
+
   console.log('');
+  if (r4ProbeFixtureIds.length) {
+    console.log(
+      `R4 fixture ids this run: ${r4ProbeFixtureIds.join(', ')}`,
+    );
+  }
   console.log(
     `Result: ${results.pass} pass, ${results.fail} fail${
       results.failed.length ? ` — ${results.failed.join(', ')}` : ''
