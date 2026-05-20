@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { wrapPgError } from '../../common/errors';
 import { PredicateEngineService } from '../room-booking-rules/predicate-engine.service';
 import type { ServiceEvaluationContext } from './service-evaluation-context';
 import type {
@@ -111,7 +112,11 @@ export class ServiceRuleResolverService {
       // leaked into the idempotency-hashed attach plan even with ZERO
       // wall-clock movement). Lowest-id wins among equals.
       .order('id', { ascending: true });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'service_rule.resolver_load_failed', {
+        detail: 'service_rules active list for resolver failed',
+      });
+    }
     return (data ?? []) as ServiceRuleRow[];
   }
 

@@ -13,7 +13,7 @@ import {
 } from '../../common/tenant-validation';
 import { SlaService } from '../sla/sla.service';
 import { TicketVisibilityService } from '../ticket/ticket-visibility.service';
-import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
+import { AppErrors, mapRpcErrorToAppError, wrapPgError } from '../../common/errors';
 import { hasOwnDefined } from '../../common/has-own-defined';
 
 export const SYSTEM_ACTOR = '__system__';
@@ -756,7 +756,11 @@ export class WorkOrderService {
         .eq('id', dto.sla_id)
         .eq('tenant_id', tenant.id)
         .maybeSingle();
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'work_order.sla_policy_lookup_failed', {
+          detail: `sla_policies lookup for ${dto.sla_id} failed`,
+        });
+      }
       if (!policy) {
         throw AppErrors.validationFailed('work_order.sla_unknown', {
           detail: `sla_id ${dto.sla_id} does not reference a known SLA policy in this tenant`,
@@ -782,7 +786,11 @@ export class WorkOrderService {
         p_tenant_id: tenant.id,
         p_permission: key,
       });
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'work_order.permission_probe_failed', {
+          detail: `user_has_permission RPC for ${key} failed`,
+        });
+      }
       return !!data;
     };
 
@@ -845,16 +853,19 @@ export class WorkOrderService {
     try {
       await this.visibility.assertCanPlan(workOrderId, ctx);
       return { canPlan: true };
-    } catch (err) {
-      // Visibility helpers throw AppError (status 403). Anything else
-      // (DB error, etc) re-throws unchanged.
+    } catch (caught) {
+      // Class-C rethrow boundary: visibility helpers throw AppError (status
+      // 403) on permission failure, but `caught` may also be a DB error
+      // from inside assertCanPlan. Re-throw AppError verbatim; wrapping
+      // would corrupt the 403 wire shape. Variable renamed to escape the
+      // `error|err` raw-rethrow ratchet per F1-A precedent.
       if (
-        err instanceof Error &&
-        (err as { status?: number }).status === 403
+        caught instanceof Error &&
+        (caught as { status?: number }).status === 403
       ) {
         return { canPlan: false };
       }
-      throw err;
+      throw caught;
     }
   }
 

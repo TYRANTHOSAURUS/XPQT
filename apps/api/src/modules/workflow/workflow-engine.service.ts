@@ -6,7 +6,7 @@ import {
   UPDATE_TICKET_ALLOWED_FIELD_SET,
   type KnownErrorCode,
 } from '@prequest/shared';
-import { AppError, AppErrors, mapRpcErrorToAppError } from '../../common/errors';
+import { AppError, AppErrors, mapRpcErrorToAppError, wrapPgError } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { assertTenantOwned } from '../../common/tenant-validation';
@@ -1085,7 +1085,11 @@ export class WorkflowEngineService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'workflow.instance_create_ticket_failed', {
+        detail: `workflow_instances insert for ticket ${ticketId} (def ${workflowDefinitionId}) failed`,
+      });
+    }
 
     await this.emit(instance.id, 'instance_started', { node_id: triggerNode.id, node_type: 'trigger' });
     await this.advance(instance.id, graph, triggerNode.id, ticketId);
@@ -1160,7 +1164,11 @@ export class WorkflowEngineService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'workflow.instance_create_booking_failed', {
+        detail: `workflow_instances insert for booking ${bookingId} (def ${workflowDefinitionId}) failed`,
+      });
+    }
 
     await this.emit(instance.id, 'instance_started', { node_id: triggerNode.id, node_type: 'trigger' });
     await this.advance(instance.id, graph, triggerNode.id, bookingId);

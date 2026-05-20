@@ -143,7 +143,11 @@ describe('SearchService.search', () => {
     );
   });
 
-  it('throws on RPC errors so callers see the Postgres reason', async () => {
+  it('wraps RPC errors as AppError with the search.global_search_failed code (no raw pg leak)', async () => {
+    // F1 Sub-PR B (2026-05-21): wrapPgError replaces the raw `throw error;`
+    // rethrow. The wire body now carries the registered code instead of
+    // the raw "permission denied" pg message — same wire-shape rule the
+    // global filter applies (no vendor names / sql leaks).
     const supabase = makeSupabase({
       rpcRows: [],
       rpcError: { message: 'permission denied for function search_global' },
@@ -151,7 +155,8 @@ describe('SearchService.search', () => {
     const svc = new SearchService(supabase);
 
     await expect(withTenant(() => svc.search('any', 'meeting'))).rejects.toMatchObject({
-      message: expect.stringContaining('permission denied'),
+      code: 'search.global_search_failed',
+      status: 500,
     });
   });
 });

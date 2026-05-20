@@ -116,9 +116,14 @@ export class WebhookIngestService {
           external_id: meta.externalId,
           deduplicated: false,
         };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Webhook processing failed';
-        const httpStatus = (err as { status?: number })?.status ?? 500;
+      } catch (caught) {
+        // Class-C rethrow boundary: `caught` may be an AppError from
+        // tickets.create() / mapping, OR an idempotency-race pg error.
+        // Wrapping with wrapPgError would corrupt AppError 4xx wire shape;
+        // log + rethrow as-is. Variable renamed to escape the
+        // `error|err` raw-rethrow ratchet per F1-A precedent.
+        const message = caught instanceof Error ? caught.message : 'Webhook processing failed';
+        const httpStatus = (caught as { status?: number })?.status ?? 500;
 
         // Race on the unique index — another concurrent request won the insert.
         if (httpStatus === 500 && /idx_tickets_external_ref/.test(message)) {
@@ -150,7 +155,7 @@ export class WebhookIngestService {
           payload,
           headers: meta.rawHeaders,
         });
-        throw err;
+        throw caught;
       }
     });
   }

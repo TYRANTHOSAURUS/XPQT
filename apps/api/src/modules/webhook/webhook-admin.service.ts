@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { createHash, randomBytes } from 'crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { WebhookMappingService } from './webhook-mapping.service';
 import { validateWebhookMapping } from './webhook-mapping-validator';
 import type { RequestTypeContext } from './webhook-mapping-validator';
@@ -55,7 +55,11 @@ export class WebhookAdminService {
       .select('id, tenant_id, workflow_id, name, active, ticket_defaults, field_mapping, default_request_type_id, request_type_rules, default_requester_person_id, requester_lookup, allowed_cidrs, rate_limit_per_minute, last_used_at, created_at')
       .eq('tenant_id', tenant.id)
       .order('created_at', { ascending: false });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'webhook.list_failed', {
+        detail: 'workflow_webhooks list query failed',
+      });
+    }
     return (data ?? []) as Omit<WebhookRow, 'api_key_hash'>[];
   }
 
@@ -83,7 +87,11 @@ export class WebhookAdminService {
       .select('id, tenant_id, workflow_id, name, active, ticket_defaults, field_mapping, default_request_type_id, request_type_rules, default_requester_person_id, requester_lookup, allowed_cidrs, rate_limit_per_minute, last_used_at, created_at')
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'webhook.create_failed', {
+        detail: `workflow_webhooks insert for "${dto.name}" failed`,
+      });
+    }
     const webhook = data as Omit<WebhookRow, 'api_key_hash'>;
     const validation = await this.validateAgainstRequestType(webhook.default_request_type_id ?? null, webhook, tenant.id);
     return { webhook, api_key: apiKey, validation };
@@ -99,7 +107,12 @@ export class WebhookAdminService {
       .eq('tenant_id', tenant.id)
       .select('id, tenant_id, workflow_id, name, active, ticket_defaults, field_mapping, default_request_type_id, request_type_rules, default_requester_person_id, requester_lookup, allowed_cidrs, rate_limit_per_minute, last_used_at, created_at')
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'webhook.update_failed', {
+        detail: `workflow_webhooks update for ${id} failed`,
+        notFoundCode: 'webhook.not_found',
+      });
+    }
     const webhook = data as Omit<WebhookRow, 'api_key_hash'>;
     const validation = await this.validateAgainstRequestType(webhook.default_request_type_id ?? null, webhook, tenant.id);
     return { webhook, validation };
@@ -112,7 +125,11 @@ export class WebhookAdminService {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'webhook.delete_failed', {
+        detail: `workflow_webhooks delete for ${id} failed`,
+      });
+    }
   }
 
   async rotateApiKey(id: string): Promise<{ api_key: string }> {
@@ -123,7 +140,12 @@ export class WebhookAdminService {
       .update({ api_key_hash: apiKeyHash })
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'webhook.rotate_api_key_failed', {
+        detail: `workflow_webhooks api_key rotate for ${id} failed`,
+        notFoundCode: 'webhook.not_found',
+      });
+    }
     return { api_key: apiKey };
   }
 
@@ -162,7 +184,12 @@ export class WebhookAdminService {
       .eq('id', id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'webhook.lookup_failed', {
+        detail: `workflow_webhooks lookup for ${id} failed`,
+        notFoundCode: 'webhook.not_found',
+      });
+    }
     if (!data) throw AppErrors.notFoundWithCode('webhook.not_found', 'Webhook not found');
     return data as Omit<WebhookRow, 'api_key_hash'>;
   }

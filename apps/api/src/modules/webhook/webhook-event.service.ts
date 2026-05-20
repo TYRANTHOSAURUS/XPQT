@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { wrapPgError } from '../../common/errors';
 
 export interface WebhookEventRow {
   id: string;
@@ -79,7 +80,11 @@ export class WebhookEventService {
     if (filters.status) q = q.eq('status', filters.status);
     if (filters.external_id) q = q.eq('external_id', filters.external_id);
     const { data, error } = await q;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'webhook.events_list_failed', {
+        detail: `webhook_events list for webhook ${webhookId} failed`,
+      });
+    }
     return (data ?? []) as WebhookEventRow[];
   }
 

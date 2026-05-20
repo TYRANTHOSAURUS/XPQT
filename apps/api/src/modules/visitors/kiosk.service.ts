@@ -4,7 +4,7 @@ import {
   Logger,
   forwardRef } from '@nestjs/common';
 import { createHash, randomBytes } from 'node:crypto';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { DbService } from '../../common/db/db.service';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -157,7 +157,11 @@ export class KioskService {
         active: true })
       .eq('id', kioskTokenId)
       .eq('tenant_id', tenantId);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'visitors.kiosk_token_rotate_failed', {
+        detail: `kiosk_tokens rotate update for ${kioskTokenId} failed`,
+      });
+    }
 
     await this.audit('kiosk.token_rotated', tenantId, null, {
       kiosk_token_id: kioskTokenId,
@@ -184,7 +188,11 @@ export class KioskService {
       .update({ active: false })
       .eq('id', kioskTokenId)
       .eq('tenant_id', tenantId);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'visitors.kiosk_token_revoke_failed', {
+        detail: `kiosk_tokens revoke update for ${kioskTokenId} failed`,
+      });
+    }
 
     await this.audit('kiosk.token_revoked', tenantId, null, {
       kiosk_token_id: kioskTokenId,

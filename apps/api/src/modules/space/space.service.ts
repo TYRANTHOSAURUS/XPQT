@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { isValidSpaceParent, SpaceType } from '@prequest/shared';
 
 export interface CreateSpaceDto {
@@ -61,7 +61,11 @@ export class SpaceService {
     if (filters?.search) query = query.ilike('name', `%${filters.search}%`);
 
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'space.list_failed', {
+        detail: 'spaces list query failed',
+      });
+    }
     return data;
   }
 
@@ -92,7 +96,11 @@ export class SpaceService {
       .order('type')
       .order('name');
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'space.hierarchy_load_failed', {
+        detail: 'spaces hierarchy query failed',
+      });
+    }
 
     const childCounts = new Map<string | null, number>();
     for (const s of data ?? []) {
@@ -113,7 +121,11 @@ export class SpaceService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'space.create_failed', {
+        detail: 'spaces insert failed',
+      });
+    }
     return data;
   }
 
@@ -127,7 +139,12 @@ export class SpaceService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'space.update_failed', {
+        detail: `spaces update for ${id} failed`,
+        notFoundCode: 'space.not_found',
+      });
+    }
     return data;
   }
 
@@ -144,7 +161,12 @@ export class SpaceService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'space.move_failed', {
+        detail: `spaces parent_id update for ${id} failed`,
+        notFoundCode: 'space.not_found',
+      });
+    }
     return data;
   }
 

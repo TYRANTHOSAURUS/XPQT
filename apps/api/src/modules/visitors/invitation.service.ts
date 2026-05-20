@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { createHash, randomBytes } from 'node:crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
@@ -328,7 +328,11 @@ export class InvitationService {
     const { data, error } = await this.supabase.admin.rpc('portal_authorized_space_ids', {
       p_person_id: personId,
       p_tenant_id: tenant.id });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'visitors.invitation_scope_check_failed', {
+        detail: `portal_authorized_space_ids RPC for invitation scope check (person ${personId}) failed`,
+      });
+    }
 
     // The function returns either an array of uuids OR an array of {id} rows
     // depending on the postgrest negotiation. Normalise.
@@ -353,7 +357,11 @@ export class InvitationService {
       .eq('tenant_id', tenant.id)
       .eq('active', true)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'visitors.visitor_type_lookup_failed', {
+        detail: `visitor_types lookup for ${typeId} failed`,
+      });
+    }
     return (data as VisitorTypeRow | null) ?? null;
   }
 
@@ -411,7 +419,11 @@ export class InvitationService {
       .eq('active', true)
       .eq('email', email)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'visitors.dedup_lookup_failed', {
+        detail: 'persons dedup lookup by email failed',
+      });
+    }
     return (data as { id: string } | null) ?? null;
   }
 

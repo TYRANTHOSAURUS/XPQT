@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 
 /**
  * Three-tier bundle visibility per spec §3.5.
@@ -126,7 +126,11 @@ export class BundleVisibilityService {
         .eq('target_entity_type', 'booking')
         .eq('approver_person_id', ctx.person_id)
         .limit(1);
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'bundle.visibility_approval_probe_failed', {
+          detail: `approvals visibility probe for booking ${bundle.id} failed`,
+        });
+      }
       if ((data ?? []).length > 0) return;
     }
 
@@ -141,7 +145,11 @@ export class BundleVisibilityService {
         .eq('booking_id', bundle.id)
         .eq('assigned_user_id', ctx.user_id)
         .limit(1);
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'bundle.visibility_work_order_probe_failed', {
+          detail: `work_orders visibility probe for booking ${bundle.id} failed`,
+        });
+      }
       if ((data ?? []).length > 0) return;
     }
 

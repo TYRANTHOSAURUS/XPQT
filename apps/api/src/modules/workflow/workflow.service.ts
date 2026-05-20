@@ -1,7 +1,7 @@
 import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppError, AppErrors } from '../../common/errors';
+import { AppError, AppErrors, wrapPgError } from '../../common/errors';
 import { WorkflowValidatorService } from './workflow-validator.service';
 import { WorkflowEngineService, type WorkflowEntityKind } from './workflow-engine.service';
 
@@ -75,7 +75,11 @@ export class WorkflowService {
       .eq('tenant_id', tenant.id)
       .order('name');
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'workflow.list_failed', {
+        detail: 'workflow_definitions list query failed',
+      });
+    }
     return data;
   }
 
@@ -113,7 +117,11 @@ export class WorkflowService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'workflow.create_failed', {
+        detail: `workflow_definitions insert for "${dto.name}" failed`,
+      });
+    }
     return data;
   }
 
@@ -128,7 +136,12 @@ export class WorkflowService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'workflow.update_graph_failed', {
+        detail: `workflow_definitions graph update for ${id} failed`,
+        notFoundCode: 'workflow.not_found',
+      });
+    }
     return data;
   }
 
@@ -147,7 +160,12 @@ export class WorkflowService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'workflow.publish_failed', {
+        detail: `workflow_definitions publish update for ${id} failed`,
+        notFoundCode: 'workflow.not_found',
+      });
+    }
     return data;
   }
 
@@ -160,7 +178,12 @@ export class WorkflowService {
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'workflow.unpublish_failed', {
+        detail: `workflow_definitions unpublish update for ${id} failed`,
+        notFoundCode: 'workflow.not_found',
+      });
+    }
     return data;
   }
 
@@ -180,7 +203,11 @@ export class WorkflowService {
       })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'workflow.clone_failed', {
+        detail: `workflow_definitions clone insert from ${id} failed`,
+      });
+    }
     return data;
   }
 
@@ -192,7 +219,11 @@ export class WorkflowService {
       .eq('ticket_id', ticketId)
       .eq('tenant_id', tenant.id);
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'workflow.instances_for_ticket_failed', {
+        detail: `workflow_instances list for ticket ${ticketId} failed`,
+      });
+    }
     return data;
   }
 
@@ -216,7 +247,11 @@ export class WorkflowService {
       .eq('workflow_instance_id', instanceId)
       .eq('tenant_id', tenant.id)
       .order('created_at', { ascending: true });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'workflow.instance_events_list_failed', {
+        detail: `workflow_instance_events list for instance ${instanceId} failed`,
+      });
+    }
     return data;
   }
 

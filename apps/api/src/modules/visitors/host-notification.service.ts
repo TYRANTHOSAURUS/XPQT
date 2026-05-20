@@ -2,7 +2,7 @@ import {
   Injectable,
   Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import { NotificationService } from '../notification/notification.service';
 import { VisitorEventBus } from './visitor-event-bus';
@@ -356,7 +356,11 @@ export class HostNotificationService {
       )
       .eq('visitor_id', visitorId)
       .eq('tenant_id', tenantId);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'visitors.pending_hosts_load_failed', {
+        detail: `visitor_hosts pending list for visitor ${visitorId} failed`,
+      });
+    }
 
     type JoinedRow = {
       person_id: string;
@@ -386,7 +390,12 @@ export class HostNotificationService {
       .select('id, tenant_id, primary_host_person_id, first_name, last_name, company, building_id, expected_at')
       .eq('id', visitorId)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'visitors.visitor_lookup_failed', {
+        detail: `visitors lookup for ${visitorId} failed`,
+        notFoundCode: 'visitor.not_found',
+      });
+    }
     if (!data) {
       throw AppErrors.notFound('visitor', visitorId);
     }
@@ -404,7 +413,11 @@ export class HostNotificationService {
       .select('id, visitor_id, person_id, tenant_id, notified_at, acknowledged_at')
       .eq('visitor_id', visitorId)
       .eq('tenant_id', tenantId);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'visitors.hosts_load_failed', {
+        detail: `visitor_hosts load for visitor ${visitorId} failed`,
+      });
+    }
     return (data ?? []) as HostRow[];
   }
 

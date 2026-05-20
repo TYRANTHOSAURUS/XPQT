@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { wrapPgError } from '../../common/errors';
 import { ChosenBy } from './resolver.types';
 
 export interface DecisionFilter {
@@ -87,7 +88,11 @@ export class RoutingAuditService {
     if (filter.since) query = query.gte('decided_at', filter.since);
 
     const { data, error, count } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'routing.decisions_list_failed', {
+        detail: 'routing_decisions list query failed',
+      });
+    }
 
     const raw = (data ?? []) as Array<Record<string, unknown>>;
 
@@ -191,7 +196,11 @@ export class RoutingAuditService {
     }
 
     const { data, error, count } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'routing.dualrun_logs_list_failed', {
+        detail: 'routing_dualrun_logs list query failed',
+      });
+    }
 
     const raw = (data ?? []) as Array<Record<string, unknown>>;
 
