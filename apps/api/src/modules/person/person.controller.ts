@@ -34,6 +34,25 @@ export class PersonController {
     return this.personService.list();
   }
 
+  /**
+   * R1 (handoff-residuals 2026-05-20): real `/persons/me` route.
+   *
+   * Order matters — this MUST be declared BEFORE `@Get(':id')`. NestJS
+   * matches routes in declaration order; the `:id` pattern would otherwise
+   * capture `me` and forward it to `personService.getById('me')`, which
+   * Postgres rejects as an invalid UUID → raw throw → 500
+   * `unknown.server_error`. See `person.service.ts:getMe` for the
+   * AuthGuard-bridged resolution.
+   *
+   * No extra permission gate: AuthGuard is global (app.module.ts) and the
+   * endpoint returns the caller's OWN person record only — same
+   * authorisation model as `/api/me/inbox` (inbox.controller.ts:14-38).
+   */
+  @Get('me')
+  async getMe(@Req() request: Request) {
+    return this.personService.getMe(request);
+  }
+
   @Get(':id')
   async getById(@Param('id') id: string) {
     return this.personService.getById(id);

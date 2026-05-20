@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { Request } from 'express';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { AppErrors } from '../../common/errors';
@@ -62,6 +63,73 @@ export class PersonService {
 
     if (error) throw error;
     return data;
+  }
+
+  /**
+   * R1 (handoff-residuals 2026-05-20): real `/api/persons/me` endpoint.
+   *
+   * Previously a `GET /api/persons/me` request matched the controller's
+   * `@Get(':id')` route with `id='me'`, which forwarded `'me'` into
+   * `getById()` → Postgres rejected it as an invalid UUID → the
+   * `if (error) throw error;` re-threw the raw PostgrestError → the
+   * global filter mapped it to `unknown.server_error` 500.
+   *
+   * This method resolves the caller's own person row via the
+   * AuthGuard-attached `request.user.platformUserId` (the auth_uid → users
+   * bridge already runs once per request — see `auth/auth.guard.ts:82`),
+   * joins `persons` through the `users.person_id` FK (migration 00003),
+   * and returns the same joined shape `getById` returns so the existing
+   * UI bindings work unchanged.
+   *
+   * Failure paths use AppError factories per the error-handling spec
+   * (`docs/superpowers/specs/2026-05-02-error-handling-system-design.md`):
+   *   - missing platformUserId          → 401 auth.unauthorized
+   *   - supabase error                  → 500 person.lookup_failed
+   *   - no users row / no linked person → 404 person.not_found
+   */
+  async getMe(request: Request) {
+    const platformUserId = (request as { user?: { platformUserId?: string } })
+      .user?.platformUserId;
+    if (!platformUserId) {
+      throw AppErrors.unauthorized('AuthGuard did not attach platformUserId');
+    }
+
+    const tenant = TenantContext.current();
+    const { data, error } = await this.supabase.admin
+      .from('users')
+      .select(
+        `id, person_id, persons:persons!person_id(*, primary_membership:person_org_memberships(org_node_id, is_primary, org_node:org_nodes(id, name, code)))`,
+      )
+      .eq('id', platformUserId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+
+    if (error) {
+      throw AppErrors.server('person.lookup_failed', {
+        detail: 'User-to-person lookup failed',
+        cause: error,
+      });
+    }
+
+    // The PostgREST relational join can hydrate as either an object or
+    // a single-element array depending on the FK cardinality detection.
+    // `users.person_id` is a nullable FK (cardinality "to-one") so it
+    // normally lands as an object; normalise defensively.
+    const row = data as
+      | {
+          id: string;
+          person_id: string | null;
+          persons: Record<string, unknown> | Record<string, unknown>[] | null;
+        }
+      | null;
+    if (!row || !row.person_id) {
+      throw AppErrors.notFound('person');
+    }
+    const person = Array.isArray(row.persons) ? row.persons[0] : row.persons;
+    if (!person) {
+      throw AppErrors.notFound('person');
+    }
+    return person;
   }
 
   async create(dto: {

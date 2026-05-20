@@ -1006,6 +1006,9 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon de organisatie van die persoon niet wijzigen',
     detail: 'Een andere organisatiewijziging voor deze persoon is bezig. Herlaad en probeer het opnieuw.',
   },
+  'person.lookup_failed': {
+    title: 'Kon je profiel niet opzoeken',
+  },
 
   // ─── org-node (Phase 7.B-1.org-node) ─────────────────────────────────────
   'org_node.not_found': {

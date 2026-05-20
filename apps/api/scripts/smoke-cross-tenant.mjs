@@ -992,6 +992,57 @@ async function probe(name, options) {
       }
     }
 
+    // ── R1 (handoff-residuals 2026-05-20): /api/persons/me must not 500 ──
+    // The exact prod incident this gate replaces: a missing `@Get('me')`
+    // route in person.controller.ts let `GET /api/persons/me` fall through
+    // to `@Get(':id')` with `id='me'` → Postgres invalid-UUID → unwrapped
+    // raw throw → global filter wrapped as `unknown.server_error` 500.
+    // Healthy state: 200 with a JSON body carrying an `id`. Failure modes:
+    //   - 500 unknown.server_error  → R1 regressed (someone reordered the
+    //     routes or removed @Get('me'))
+    //   - !200 with any other code  → an AppError shape did surface but
+    //     the endpoint is still broken
+    //   - non-JSON body / no `id`   → wrong shape regression
+    // Same minted ADMIN browser token used for the self-grant probe above.
+    {
+      const pr = await fetch(`${API_BASE}/api/persons/me`, {
+        headers: {
+          Authorization: `Bearer ${browserTok}`,
+          'X-Tenant-Id': TENANT_A_ID,
+        },
+      });
+      const prBodyRaw = await pr.text();
+      let prCode = null;
+      let prId = null;
+      try {
+        const parsed = JSON.parse(prBodyRaw);
+        prCode = parsed?.code ?? null;
+        prId = parsed?.id ?? null;
+      } catch {
+        /* non-JSON body — caught below as wrong-shape regression */
+      }
+      const personsMeRegression =
+        pr.status !== 200 || typeof prId !== 'string' || prId.length === 0;
+      if (!personsMeRegression) {
+        results.pass += 1;
+        console.log(
+          `  ✓ browser-token GET /api/persons/me → HTTP 200 with person.id (R1: real @Get('me') route + AppError envelope intact)`,
+        );
+      } else {
+        results.fail += 1;
+        const reason =
+          pr.status === 500 && prCode === 'unknown.server_error'
+            ? 'unknown.server_error — raw throw in persons-me path; the original R1 bug regressed'
+            : pr.status !== 200
+              ? `HTTP ${pr.status}${prCode ? ` (code=${prCode})` : ''} — wrong status`
+              : 'wrong body shape — missing person.id';
+        results.failed.push(`R1 /api/persons/me regression: ${reason}`);
+        console.log(
+          `  ✗ browser-token GET /api/persons/me → ${reason}. Body: ${prBodyRaw.slice(0, 200)}`,
+        );
+      }
+    }
+
     // ── 00435 → 00436: EXECUTE posture is the Supabase RLS default ──
     // 2026-05-19 P0 incident: 00435_revoke_browser_execute_grants.sql
     // (formerly 00417) did `REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA

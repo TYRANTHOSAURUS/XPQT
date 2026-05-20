@@ -399,6 +399,7 @@ export type KnownErrorCode =
 
   // ─── person module migration (Phase 7.B-1.person) ────────────────────────
   | 'person.org_change_in_progress'
+  | 'person.lookup_failed'
 
   // ─── org-node module migration (Phase 7.B-1.org-node) ────────────────────
   | 'org_node.not_found'
@@ -1389,6 +1390,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'announcement.invalid_payload',
   'announcement.insert_no_row',
   'person.org_change_in_progress',
+  'person.lookup_failed',
   'org_node.not_found',
   'org_node.name_required',
   'org_node.create_failed',

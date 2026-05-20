@@ -1006,6 +1006,9 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't change that person's organisation",
     detail: 'Another organisation change for this person is in progress. Reload and try again.',
   },
+  'person.lookup_failed': {
+    title: "Couldn't look up your profile",
+  },
 
   // ─── org-node (Phase 7.B-1.org-node) ─────────────────────────────────────
   'org_node.not_found': {
