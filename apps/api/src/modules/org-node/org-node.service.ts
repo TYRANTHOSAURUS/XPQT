@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppError, AppErrors } from '../../common/errors';
+import { AppError, AppErrors, wrapPgError } from '../../common/errors';
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -53,7 +53,11 @@ export class OrgNodeService {
       .select('*')
       .eq('tenant_id', tenant.id)
       .order('name');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'org_node.list_failed', {
+        detail: 'org_nodes list query failed',
+      });
+    }
 
     const ids = (data ?? []).map((r) => r.id);
     if (ids.length === 0) return [];
@@ -75,9 +79,21 @@ export class OrgNodeService {
         .eq('tenant_id', tenant.id)
         .in('org_node_id', ids),
     ]);
-    if (members.error) throw members.error;
-    if (grants.error) throw grants.error;
-    if (teams.error) throw teams.error;
+    if (members.error) {
+      throw wrapPgError(members.error, 'org_node.member_count_failed', {
+        detail: 'person_org_memberships count query failed',
+      });
+    }
+    if (grants.error) {
+      throw wrapPgError(grants.error, 'org_node.grant_count_failed', {
+        detail: 'org_node_location_grants count query failed',
+      });
+    }
+    if (teams.error) {
+      throw wrapPgError(teams.error, 'org_node.team_count_failed', {
+        detail: 'teams count query failed',
+      });
+    }
 
     const tally = (rows: { org_node_id: string }[] | null) => {
       const m = new Map<string, number>();
@@ -104,7 +120,12 @@ export class OrgNodeService {
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'org_node.lookup_failed', {
+        detail: `org_nodes lookup for ${id} failed`,
+        notFoundCode: 'org_node.not_found',
+      });
+    }
     if (!data) throw AppErrors.notFound('org_node', id);
     return data as OrgNodeRow;
   }
@@ -186,7 +207,11 @@ export class OrgNodeService {
       .eq('tenant_id', tenant.id)
       .eq('is_primary', true)
       .order('created_at');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'org_node.list_members_failed', {
+        detail: `person_org_memberships list for org_node ${nodeId} failed`,
+      });
+    }
     return data;
   }
 
@@ -200,7 +225,11 @@ export class OrgNodeService {
         .eq('person_id', personId)
         .eq('tenant_id', tenant.id)
         .eq('is_primary', true);
-      if (demoteErr) throw demoteErr;
+      if (demoteErr) {
+        throw wrapPgError(demoteErr, 'org_node.demote_primary_failed', {
+          detail: `person_org_memberships demote-primary for person ${personId} failed`,
+        });
+      }
     }
 
     const { data, error } = await this.supabase.admin
@@ -237,7 +266,11 @@ export class OrgNodeService {
       .eq('org_node_id', nodeId)
       .eq('person_id', personId)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'org_node.remove_member_failed', {
+        detail: `person_org_memberships delete (org_node=${nodeId}, person=${personId}) failed`,
+      });
+    }
     return { ok: true };
   }
 
@@ -250,7 +283,11 @@ export class OrgNodeService {
       .eq('org_node_id', nodeId)
       .eq('tenant_id', tenant.id)
       .order('granted_at');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'org_node.list_grants_failed', {
+        detail: `org_node_location_grants list for org_node ${nodeId} failed`,
+      });
+    }
     return data;
   }
 
@@ -284,7 +321,11 @@ export class OrgNodeService {
       .eq('id', grantId)
       .eq('org_node_id', nodeId)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'org_node.remove_grant_failed', {
+        detail: `org_node_location_grants delete (grant=${grantId}, org_node=${nodeId}) failed`,
+      });
+    }
     return { ok: true };
   }
 
@@ -297,7 +338,11 @@ export class OrgNodeService {
       .eq('org_node_id', nodeId)
       .eq('tenant_id', tenant.id)
       .order('name');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'org_node.list_attached_teams_failed', {
+        detail: `teams list for org_node ${nodeId} failed`,
+      });
+    }
     return data;
   }
 }

@@ -12,7 +12,7 @@ import type {
 } from './sla-threshold.types';
 import { crossingKey } from './sla-threshold.types';
 import { percentElapsed, selectApplicableThresholds } from './sla-threshold.helpers';
-import { AppErrors, mapRpcErrorToAppError } from '../../common/errors';
+import { AppErrors, mapRpcErrorToAppError, wrapPgError } from '../../common/errors';
 import { probeCommandOperationSuccess } from '../../common/command-operations-probe';
 
 @Injectable()
@@ -42,7 +42,11 @@ export class SlaService {
     if (tenantId) q1 = q1.eq('tenant_id', tenantId);
     // Codex round 3: don't ignore real DB errors on the first attempt.
     const { data: caseHit, error: caseErr } = await q1.select('id').maybeSingle();
-    if (caseErr) throw caseErr;
+    if (caseErr) {
+      throw wrapPgError(caseErr, 'sla.target_update_failed', {
+        detail: `tickets update for sla target ${id} failed`,
+      });
+    }
     if (caseHit) return;
 
     let q2 = this.supabase.admin.from('work_orders').update(patch).eq('id', id);
@@ -51,7 +55,11 @@ export class SlaService {
     // hides stale timer/crossing references otherwise. Use .select('id') so
     // we can count affected rows.
     const { data: woHit, error } = await q2.select('id').maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'sla.target_update_failed', {
+        detail: `work_orders update for sla target ${id} failed`,
+      });
+    }
     if (!woHit) {
       throw AppErrors.server('sla.target_missing', {
         detail: `updateTicketOrWorkOrder: id ${id} not found in tickets or work_orders`,
@@ -579,7 +587,11 @@ export class SlaService {
       .eq('tenant_id', tenantId)
       .order('timer_type');
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'sla.timers_list_failed', {
+        detail: `sla_timers list for ticket ${ticketId} failed`,
+      });
+    }
     return data;
   }
 
@@ -1027,7 +1039,11 @@ export class SlaService {
       .eq('id', userId)
       .eq('tenant_id', tenantId)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'sla.user_person_lookup_failed', {
+        detail: `users.person_id lookup for user ${userId} failed`,
+      });
+    }
     return (data?.person_id as string | null) ?? null;
   }
 
@@ -1046,7 +1062,11 @@ export class SlaService {
       .from('sla_threshold_crossings')
       .insert(row);
     // Ignore unique_violation (23505) — another cron tick beat us to it.
-    if (error && (error as { code?: string }).code !== '23505') throw error;
+    if (error && (error as { code?: string }).code !== '23505') {
+      throw wrapPgError(error, 'sla.crossing_write_failed', {
+        detail: `sla_threshold_crossings insert for timer ${row.sla_timer_id} failed`,
+      });
+    }
   }
 
   // audit-02 P0-2 (2026-05-16): `writeActivity` was DELETED here. It
@@ -1405,7 +1425,11 @@ export class SlaService {
       .eq('ticket_id', ticketId)
       .eq('tenant_id', tenantId)
       .order('fired_at', { ascending: false });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'sla.crossings_list_failed', {
+        detail: `sla_threshold_crossings list for ticket ${ticketId} failed`,
+      });
+    }
 
     // Resolve target display names in two batched lookups (persons + teams).
     const personIds = (rows ?? [])

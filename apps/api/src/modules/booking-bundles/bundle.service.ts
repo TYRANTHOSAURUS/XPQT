@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import {
   loadPermissionMap,
@@ -900,7 +900,12 @@ export class BundleService {
       .eq('id', assetId)
       .eq('tenant_id', tenantId)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'bundle.attach_plan_asset_lookup_failed', {
+        detail: `assets tenant-scope check for ${assetId} failed`,
+        notFoundCode: 'asset.not_found',
+      });
+    }
     if (!data) {
       throw AppErrors.notFound('asset', assetId);
     }
@@ -935,7 +940,12 @@ export class BundleService {
       .eq('id', args.bundle_id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'bundle.add_lines_booking_lookup_failed', {
+        detail: `bookings lookup for addLinesToBundle (${args.bundle_id}) failed`,
+        notFoundCode: 'bundle.not_found',
+      });
+    }
     if (!data) {
       throw AppErrors.notFound('bundle', args.bundle_id);
     }
@@ -1475,7 +1485,12 @@ export class BundleService {
       .eq('id', id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'bundle.load_booking_failed', {
+        detail: `bookings load for bundle ${id} failed`,
+        notFoundCode: 'booking.not_found',
+      });
+    }
     if (!data) {
       throw AppErrors.notFound('booking', id);
     }

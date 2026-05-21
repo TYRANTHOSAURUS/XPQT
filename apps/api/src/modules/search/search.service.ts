@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { wrapPgError } from '../../common/errors';
 
 export type SearchKind =
   | 'ticket'
@@ -74,7 +75,11 @@ export class SearchService {
       p_per_type_limit: Math.min(Math.max(perTypeLimit, 1), 20),
     });
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'search.global_search_failed', {
+        detail: 'search_global RPC failed',
+      });
+    }
 
     const rows = (data ?? []) as RpcRow[];
     const groups: Record<string, SearchHit[]> = {};

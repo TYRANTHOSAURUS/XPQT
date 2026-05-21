@@ -1356,7 +1356,155 @@ export type KnownErrorCode =
   | 'config_engine.coverage_matrix_failed'
   | 'config_engine.name_hydrate_failed'
   | 'config_engine.tenant_ids_check_failed'
-  | 'config_engine.config_entities_type_check_failed';
+  | 'config_engine.config_entities_type_check_failed'
+
+  // ─── F1 Sub-PR B — wrapPgError sweep, remaining 20 modules (2026-05-21) ──
+  // Closes the residual raw-rethrow surface from R2's deferred backlog.
+  // Same shape as Sub-PR A: `wrapPgError` keeps PGRST116→404 / 23505/23503→409
+  // wire precision via the helper's branch arms, and the `<op>_failed` code
+  // is the module-specific 500 fallback. Spec §3.4 +
+  // docs/follow-ups/r2-apperror-sweep-triage-2026-05-20.md.
+  | 'search.global_search_failed'
+  | 'outbox.mark_consumed_failed'
+  | 'tenant.meal_windows_list_failed'
+
+  | 'sla.target_update_failed'
+  | 'sla.timers_list_failed'
+  | 'sla.user_person_lookup_failed'
+  | 'sla.crossing_write_failed'
+  | 'sla.crossings_list_failed'
+
+  | 'space.list_failed'
+  | 'space.hierarchy_load_failed'
+  | 'space.create_failed'
+  | 'space.update_failed'
+  | 'space.move_failed'
+
+  | 'cost_center.list_failed'
+  | 'cost_center.lookup_failed'
+  | 'cost_center.create_failed'
+  | 'cost_center.update_failed'
+  | 'cost_center.delete_failed'
+
+  | 'bundle_template.list_failed'
+  | 'bundle_template.lookup_failed'
+  | 'bundle_template.create_failed'
+  | 'bundle_template.update_failed'
+  | 'bundle_template.delete_failed'
+
+  | 'service_routing.list_failed'
+  | 'service_routing.lookup_failed'
+  | 'service_routing.create_failed'
+  | 'service_routing.update_failed'
+  | 'service_routing.delete_failed'
+
+  | 'approval.pending_for_actor_failed'
+  | 'approval.pending_count_failed'
+  | 'approval.pending_stale_probe_failed'
+  | 'approval.for_entity_failed'
+  | 'approval.create_single_step_failed'
+  | 'approval.create_sequential_chain_failed'
+  | 'approval.create_parallel_group_failed'
+  | 'approval.respond_update_failed'
+
+  | 'routing.coverage_resolve_failed'
+  | 'routing.coverage_domains_load_failed'
+  | 'routing.coverage_spaces_load_failed'
+  | 'routing.simulator_request_type_lookup_failed'
+  | 'routing.scope_override_resolve_failed'
+  | 'routing.decisions_list_failed'
+  | 'routing.dualrun_logs_list_failed'
+
+  | 'bundle.visibility_approval_probe_failed'
+  | 'bundle.visibility_work_order_probe_failed'
+  | 'bundle.cascade_line_lookup_failed'
+  | 'bundle.cascade_order_lookup_failed'
+  | 'bundle.cascade_booking_lookup_failed'
+  | 'bundle.attach_plan_asset_lookup_failed'
+  | 'bundle.add_lines_booking_lookup_failed'
+  | 'bundle.load_booking_failed'
+
+  | 'org_node.list_failed'
+  | 'org_node.member_count_failed'
+  | 'org_node.grant_count_failed'
+  | 'org_node.team_count_failed'
+  | 'org_node.lookup_failed'
+  | 'org_node.demote_primary_failed'
+  | 'org_node.list_members_failed'
+  | 'org_node.remove_member_failed'
+  | 'org_node.list_grants_failed'
+  | 'org_node.remove_grant_failed'
+  | 'org_node.list_attached_teams_failed'
+
+  | 'portal.onboardable_locations_failed'
+  | 'portal.claim_default_location_failed'
+  | 'portal.update_profile_failed'
+  | 'portal.avatar_upload_failed'
+  | 'portal.avatar_update_failed'
+  | 'portal.remove_avatar_failed'
+  | 'portal.catalog_visible_ids_failed'
+  | 'portal.catalog_criteria_match_failed'
+  | 'portal.authorized_root_matches_failed'
+  | 'portal.authorized_space_ids_failed'
+
+  | 'calendar_sync.my_link_lookup_failed'
+  | 'calendar_sync.connect_upsert_failed'
+  | 'calendar_sync.force_resync_link_lookup_failed'
+  | 'calendar_sync.health_spaces_failed'
+  | 'calendar_sync.conflicts_list_failed'
+  | 'calendar_sync.resolve_conflict_update_failed'
+  | 'calendar_sync.actor_resolve_failed'
+  | 'calendar_sync.reconciler_spaces_load_failed'
+  | 'calendar_sync.reconciler_reservations_load_failed'
+
+  | 'service_rule.resolver_load_failed'
+  | 'service_rule.list_failed'
+  | 'service_rule.lookup_failed'
+  | 'service_rule.create_failed'
+  | 'service_rule.update_failed'
+  | 'service_rule.delete_failed'
+  | 'service_rule.templates_list_failed'
+  | 'service_rule.template_lookup_failed'
+  | 'service_rule.create_from_template_failed'
+
+  | 'visitors.pending_hosts_load_failed'
+  | 'visitors.visitor_lookup_failed'
+  | 'visitors.hosts_load_failed'
+  | 'visitors.kiosk_token_rotate_failed'
+  | 'visitors.kiosk_token_revoke_failed'
+  | 'visitors.invitation_scope_check_failed'
+  | 'visitors.visitor_type_lookup_failed'
+  | 'visitors.dedup_lookup_failed'
+
+  | 'webhook.events_list_failed'
+  | 'webhook.auth_lookup_failed'
+  | 'webhook.list_failed'
+  | 'webhook.create_failed'
+  | 'webhook.update_failed'
+  | 'webhook.delete_failed'
+  | 'webhook.rotate_api_key_failed'
+  | 'webhook.lookup_failed'
+
+  | 'work_order.planning_user_labels_failed'
+  | 'work_order.planning_team_labels_failed'
+  | 'work_order.planning_vendor_labels_failed'
+  | 'work_order.planning_request_types_failed'
+  | 'work_order.planning_parent_case_teams_failed'
+  | 'work_order.planning_team_roster_failed'
+  | 'work_order.planning_active_vendors_failed'
+  | 'work_order.sla_policy_lookup_failed'
+  | 'work_order.permission_probe_failed'
+
+  | 'workflow.list_failed'
+  | 'workflow.create_failed'
+  | 'workflow.update_graph_failed'
+  | 'workflow.publish_failed'
+  | 'workflow.unpublish_failed'
+  | 'workflow.clone_failed'
+  | 'workflow.instances_for_ticket_failed'
+  | 'workflow.instance_events_list_failed'
+  | 'workflow.instance_create_ticket_failed'
+  | 'workflow.instance_create_booking_failed';
 
 /**
  * Runtime set of registered codes. Filter uses this to validate every
@@ -2275,6 +2423,149 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'config_engine.name_hydrate_failed',
   'config_engine.tenant_ids_check_failed',
   'config_engine.config_entities_type_check_failed',
+
+  // ─── F1 Sub-PR B — wrapPgError sweep, remaining 20 modules (2026-05-21) ──
+  'search.global_search_failed',
+  'outbox.mark_consumed_failed',
+  'tenant.meal_windows_list_failed',
+
+  'sla.target_update_failed',
+  'sla.timers_list_failed',
+  'sla.user_person_lookup_failed',
+  'sla.crossing_write_failed',
+  'sla.crossings_list_failed',
+
+  'space.list_failed',
+  'space.hierarchy_load_failed',
+  'space.create_failed',
+  'space.update_failed',
+  'space.move_failed',
+
+  'cost_center.list_failed',
+  'cost_center.lookup_failed',
+  'cost_center.create_failed',
+  'cost_center.update_failed',
+  'cost_center.delete_failed',
+
+  'bundle_template.list_failed',
+  'bundle_template.lookup_failed',
+  'bundle_template.create_failed',
+  'bundle_template.update_failed',
+  'bundle_template.delete_failed',
+
+  'service_routing.list_failed',
+  'service_routing.lookup_failed',
+  'service_routing.create_failed',
+  'service_routing.update_failed',
+  'service_routing.delete_failed',
+
+  'approval.pending_for_actor_failed',
+  'approval.pending_count_failed',
+  'approval.pending_stale_probe_failed',
+  'approval.for_entity_failed',
+  'approval.create_single_step_failed',
+  'approval.create_sequential_chain_failed',
+  'approval.create_parallel_group_failed',
+  'approval.respond_update_failed',
+
+  'routing.coverage_resolve_failed',
+  'routing.coverage_domains_load_failed',
+  'routing.coverage_spaces_load_failed',
+  'routing.simulator_request_type_lookup_failed',
+  'routing.scope_override_resolve_failed',
+  'routing.decisions_list_failed',
+  'routing.dualrun_logs_list_failed',
+
+  'bundle.visibility_approval_probe_failed',
+  'bundle.visibility_work_order_probe_failed',
+  'bundle.cascade_line_lookup_failed',
+  'bundle.cascade_order_lookup_failed',
+  'bundle.cascade_booking_lookup_failed',
+  'bundle.attach_plan_asset_lookup_failed',
+  'bundle.add_lines_booking_lookup_failed',
+  'bundle.load_booking_failed',
+
+  'org_node.list_failed',
+  'org_node.member_count_failed',
+  'org_node.grant_count_failed',
+  'org_node.team_count_failed',
+  'org_node.lookup_failed',
+  'org_node.demote_primary_failed',
+  'org_node.list_members_failed',
+  'org_node.remove_member_failed',
+  'org_node.list_grants_failed',
+  'org_node.remove_grant_failed',
+  'org_node.list_attached_teams_failed',
+
+  'portal.onboardable_locations_failed',
+  'portal.claim_default_location_failed',
+  'portal.update_profile_failed',
+  'portal.avatar_upload_failed',
+  'portal.avatar_update_failed',
+  'portal.remove_avatar_failed',
+  'portal.catalog_visible_ids_failed',
+  'portal.catalog_criteria_match_failed',
+  'portal.authorized_root_matches_failed',
+  'portal.authorized_space_ids_failed',
+
+  'calendar_sync.my_link_lookup_failed',
+  'calendar_sync.connect_upsert_failed',
+  'calendar_sync.force_resync_link_lookup_failed',
+  'calendar_sync.health_spaces_failed',
+  'calendar_sync.conflicts_list_failed',
+  'calendar_sync.resolve_conflict_update_failed',
+  'calendar_sync.actor_resolve_failed',
+  'calendar_sync.reconciler_spaces_load_failed',
+  'calendar_sync.reconciler_reservations_load_failed',
+
+  'service_rule.resolver_load_failed',
+  'service_rule.list_failed',
+  'service_rule.lookup_failed',
+  'service_rule.create_failed',
+  'service_rule.update_failed',
+  'service_rule.delete_failed',
+  'service_rule.templates_list_failed',
+  'service_rule.template_lookup_failed',
+  'service_rule.create_from_template_failed',
+
+  'visitors.pending_hosts_load_failed',
+  'visitors.visitor_lookup_failed',
+  'visitors.hosts_load_failed',
+  'visitors.kiosk_token_rotate_failed',
+  'visitors.kiosk_token_revoke_failed',
+  'visitors.invitation_scope_check_failed',
+  'visitors.visitor_type_lookup_failed',
+  'visitors.dedup_lookup_failed',
+
+  'webhook.events_list_failed',
+  'webhook.auth_lookup_failed',
+  'webhook.list_failed',
+  'webhook.create_failed',
+  'webhook.update_failed',
+  'webhook.delete_failed',
+  'webhook.rotate_api_key_failed',
+  'webhook.lookup_failed',
+
+  'work_order.planning_user_labels_failed',
+  'work_order.planning_team_labels_failed',
+  'work_order.planning_vendor_labels_failed',
+  'work_order.planning_request_types_failed',
+  'work_order.planning_parent_case_teams_failed',
+  'work_order.planning_team_roster_failed',
+  'work_order.planning_active_vendors_failed',
+  'work_order.sla_policy_lookup_failed',
+  'work_order.permission_probe_failed',
+
+  'workflow.list_failed',
+  'workflow.create_failed',
+  'workflow.update_graph_failed',
+  'workflow.publish_failed',
+  'workflow.unpublish_failed',
+  'workflow.clone_failed',
+  'workflow.instances_for_ticket_failed',
+  'workflow.instance_events_list_failed',
+  'workflow.instance_create_ticket_failed',
+  'workflow.instance_create_booking_failed',
 ]);
 
 /** Type-guard: is `code` a registered KnownErrorCode? */

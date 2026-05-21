@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 
@@ -95,7 +95,11 @@ export class RoutingCoverageService {
       p_tenant_id: tenant.id,
       p_space_ids: effectiveSpaces.map((s) => s.id),
       p_domains: domains});
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'routing.coverage_resolve_failed', {
+        detail: 'resolve_coverage RPC failed',
+      });
+    }
 
     const rawCells = (data ?? []) as Array<{
       space_id: string;
@@ -158,8 +162,16 @@ export class RoutingCoverageService {
       this.supabase.admin.from('location_teams').select('domain').eq('tenant_id', tenantId),
       this.supabase.admin.from('request_types').select('domain').eq('tenant_id', tenantId),
     ]);
-    if (lt.error) throw lt.error;
-    if (rt.error) throw rt.error;
+    if (lt.error) {
+      throw wrapPgError(lt.error, 'routing.coverage_domains_load_failed', {
+        detail: 'location_teams domain list failed',
+      });
+    }
+    if (rt.error) {
+      throw wrapPgError(rt.error, 'routing.coverage_domains_load_failed', {
+        detail: 'request_types domain list failed',
+      });
+    }
     const set = new Set<string>();
     for (const row of lt.data ?? []) if (row.domain) set.add(row.domain as string);
     for (const row of rt.data ?? []) if (row.domain) set.add(row.domain as string);
@@ -172,7 +184,11 @@ export class RoutingCoverageService {
       .select('id, name, parent_id')
       .eq('tenant_id', tenantId)
       .order('name');
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'routing.coverage_spaces_load_failed', {
+        detail: 'spaces list for coverage failed',
+      });
+    }
     const rows = (data ?? []) as Array<{ id: string; name: string; parent_id: string | null }>;
     const byId = new Map(rows.map((r) => [r.id, r]));
 

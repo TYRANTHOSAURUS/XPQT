@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { PortalAppearanceService } from '../portal-appearance/portal-appearance.service';
 import { PortalAnnouncementsService } from '../portal-announcements/portal-announcements.service';
 
@@ -354,7 +354,11 @@ export class PortalService {
       'request_type_onboardable_space_ids',
       { p_tenant_id: tenant.id, p_actor_person_id: actorPersonId },
     );
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'portal.onboardable_locations_failed', {
+        detail: 'request_type_onboardable_space_ids RPC failed',
+      });
+    }
 
     const ids =
       ((rows ?? []) as Array<Record<string, string> | string>).map((r) =>
@@ -430,7 +434,11 @@ export class PortalService {
       .update({ default_location_id: spaceId })
       .eq('id', personId)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'portal.claim_default_location_failed', {
+        detail: `persons default_location_id update for person ${personId} failed`,
+      });
+    }
 
     return this.getMe(authUid);
   }
@@ -471,7 +479,11 @@ export class PortalService {
         .update(update)
         .eq('id', personId)
         .eq('tenant_id', tenant.id);
-      if (error) throw error;
+      if (error) {
+        throw wrapPgError(error, 'portal.update_profile_failed', {
+          detail: `persons profile update for person ${personId} failed`,
+        });
+      }
     }
 
     return this.getMe(authUid);
@@ -505,7 +517,11 @@ export class PortalService {
     const { error: uploadErr } = await this.supabase.admin.storage
       .from('portal-assets')
       .upload(path, file.buffer, { contentType: file.mimetype, upsert: true, cacheControl: '3600' });
-    if (uploadErr) throw uploadErr;
+    if (uploadErr) {
+      throw wrapPgError(uploadErr, 'portal.avatar_upload_failed', {
+        detail: `portal-assets storage upload for person ${personId} failed`,
+      });
+    }
 
     const { data: pub } = this.supabase.admin.storage.from('portal-assets').getPublicUrl(path);
     const url = `${pub.publicUrl}?v=${Date.now()}`;
@@ -515,7 +531,11 @@ export class PortalService {
       .update({ avatar_url: url })
       .eq('id', personId)
       .eq('tenant_id', tenant.id);
-    if (updErr) throw updErr;
+    if (updErr) {
+      throw wrapPgError(updErr, 'portal.avatar_update_failed', {
+        detail: `persons avatar_url update for person ${personId} failed`,
+      });
+    }
 
     return this.getMe(authUid);
   }
@@ -535,7 +555,11 @@ export class PortalService {
       .update({ avatar_url: null })
       .eq('id', personId)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'portal.remove_avatar_failed', {
+        detail: `persons avatar_url clear for person ${personId} failed`,
+      });
+    }
 
     return this.getMe(authUid);
   }
@@ -582,7 +606,11 @@ export class PortalService {
         p_tenant_id: tenant.id,
       },
     );
-    if (visibleErr) throw visibleErr;
+    if (visibleErr) {
+      throw wrapPgError(visibleErr, 'portal.catalog_visible_ids_failed', {
+        detail: `request_type_visible_ids RPC for location ${locationId} failed`,
+      });
+    }
 
     const visibleIds = ((visibleRows ?? []) as Array<Record<string, string> | string>).map((r) =>
       typeof r === 'string' ? r : (Object.values(r)[0] as string),
@@ -657,7 +685,11 @@ export class PortalService {
             p_tenant_id: tenant.id,
           })
           .then(({ data, error }) => {
-            if (error) throw error;
+            if (error) {
+              throw wrapPgError(error, 'portal.catalog_criteria_match_failed', {
+                detail: `criteria_matches RPC for set ${csId} failed`,
+              });
+            }
             return [csId, Boolean(data)] as const;
           }),
       ),
@@ -840,7 +872,11 @@ export class PortalService {
       p_person_id: personId,
       p_tenant_id: tenant.id,
     });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'portal.authorized_root_matches_failed', {
+        detail: `portal_authorized_root_matches RPC for person ${personId} failed`,
+      });
+    }
 
     const rows = ((data ?? []) as unknown as Array<{
       root_id: string;
@@ -903,7 +939,11 @@ export class PortalService {
       p_person_id: personId,
       p_tenant_id: tenant.id,
     });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'portal.authorized_space_ids_failed', {
+        detail: `portal_authorized_space_ids RPC for person ${personId} failed`,
+      });
+    }
     const rows = (data as unknown as Array<Record<string, string> | string>) ?? [];
     return rows.map((r) => (typeof r === 'string' ? r : (Object.values(r)[0] as string)));
   }

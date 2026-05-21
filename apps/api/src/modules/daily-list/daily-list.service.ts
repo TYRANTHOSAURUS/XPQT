@@ -793,8 +793,13 @@ export class DailyListService {
 
         return updated.rows[0] ?? dl;
       });
-    } catch (err) {
-      if (err instanceof LeaseRevokedAfterDispatchError) {
+    } catch (caught) {
+      // Class-C rethrow boundary: `caught` may be `LeaseRevokedAfterDispatchError`
+      // (handled below) OR an AppError from inner helpers OR a raw pg error
+      // from the tx. Wrapping blindly would corrupt non-pg AppError wire
+      // shape; preserve as-is. Variable name kept off the `err`/`error`
+      // gate regex per F1-A precedent (orders/order.service.ts compensation).
+      if (caught instanceof LeaseRevokedAfterDispatchError) {
         // Emit the SendingReclaimed audit OUTSIDE the rolled-back tx so
         // it actually persists. Use non-tx emit() — the row state was
         // never written, so there's nothing to atomically pair this with.
@@ -805,13 +810,13 @@ export class DailyListService {
           entityId: dailyListId,
           details: {
             outcome: 'lease_revoked_after_mail_dispatch',
-            provider_message_id: err.providerMessageId,
+            provider_message_id: caught.providerMessageId,
             recipient: dl.recipient_email,
           },
         });
-        return { status: 'lease_revoked', row: dl, providerMessageId: err.providerMessageId };
+        return { status: 'lease_revoked', row: dl, providerMessageId: caught.providerMessageId };
       }
-      throw err;
+      throw caught;
     }
 
     return { status: 'sent', row: finalRow };

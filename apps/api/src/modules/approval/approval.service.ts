@@ -1,5 +1,5 @@
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
 import { randomUUID } from 'node:crypto';
 import { buildApprovalGrantIdempotencyKey } from '@prequest/shared';
@@ -259,7 +259,11 @@ export class ApprovalService {
       .eq('status', 'pending')
       .or(orClauses.join(','))
       .order('requested_at', { ascending: false });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'approval.pending_for_actor_failed', {
+        detail: `approvals pending list for actor ${actor.userId} failed`,
+      });
+    }
     return data;
   }
 
@@ -340,7 +344,11 @@ export class ApprovalService {
       .eq('tenant_id', tenant.id)
       .eq('status', 'pending')
       .or(orExpr);
-    if (countError) throw countError;
+    if (countError) {
+      throw wrapPgError(countError, 'approval.pending_count_failed', {
+        detail: `approvals pending count for actor ${actor.userId} failed`,
+      });
+    }
 
     // Urgency probe — fetch up to 1 row older than cutoff. Existence is enough.
     const { data: stale, error: staleError } = await this.supabase.admin
@@ -351,7 +359,11 @@ export class ApprovalService {
       .or(orExpr)
       .lte('requested_at', cutoffIso)
       .limit(1);
-    if (staleError) throw staleError;
+    if (staleError) {
+      throw wrapPgError(staleError, 'approval.pending_stale_probe_failed', {
+        detail: `approvals pending stale probe for actor ${actor.userId} failed`,
+      });
+    }
 
     return {
       count: count ?? 0,
@@ -372,7 +384,11 @@ export class ApprovalService {
       .eq('target_entity_id', entityId)
       .order('step_number', { ascending: true });
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'approval.for_entity_failed', {
+        detail: `approvals list for ${entityType} ${entityId} failed`,
+      });
+    }
     return data;
   }
 
@@ -395,7 +411,11 @@ export class ApprovalService {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'approval.create_single_step_failed', {
+        detail: `approvals insert (single step) for ${dto.target_entity_type} ${dto.target_entity_id} failed`,
+      });
+    }
 
     await this.logDomainEvent(dto.target_entity_id, 'approval_requested', {
       approval_id: data.id,
@@ -438,7 +458,11 @@ export class ApprovalService {
       .insert(approvals)
       .select();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'approval.create_sequential_chain_failed', {
+        detail: `approvals insert (sequential chain) for ${targetEntityType} ${targetEntityId} failed`,
+      });
+    }
     return { chain_id: chainId, steps: data };
   }
 
@@ -469,7 +493,11 @@ export class ApprovalService {
       .insert(approvals)
       .select();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'approval.create_parallel_group_failed', {
+        detail: `approvals insert (parallel group "${groupName}") for ${targetEntityType} ${targetEntityId} failed`,
+      });
+    }
     return { parallel_group: groupName, approvals: data };
   }
 
@@ -591,7 +619,11 @@ export class ApprovalService {
       .select()
       .maybeSingle();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'approval.respond_update_failed', {
+        detail: `approvals respond CAS update for ${approvalId} failed`,
+      });
+    }
     if (!data) throw AppErrors.conflict('approval.already_responded', { detail: 'Approval already responded to' });
 
     await this.logDomainEvent(approval.target_entity_id, `approval_${dto.status}`, {

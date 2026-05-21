@@ -109,27 +109,8 @@ covers PGRST* prefixes + pg-native `severity`, which is the common case.
 
 | Module | Raw-throw sites | Reason for deferral |
 |---|---:|---|
-| work-orders | 10 | Out of R2 scope — sweep + ratchet to be done in a focused follow-up PR |
-| workflow | 10 | Same |
-| webhook | 9 | Same |
-| service-catalog | 8 | Same |
-| visitors | 8 | Same |
-| booking-bundles | 7 | Same |
-| org-node | 7 | Same |
-| portal | 7 | Same |
-| calendar-sync | 7 | Same |
-| approval | 6 | Same |
-| routing | 6 | Same |
-| sla | 5 | Same |
-| space | 5 | Same |
-| cost-centers | 5 | Same |
-| bundle-templates | 5 | Same |
-| service-routing | 5 | Same |
-| search | 1 | Same |
-| outbox | 1 | Same |
-| tenant | 1 | Same |
-| daily-list | 1 | Same |
-| **Total** | **114** | |
+| _(empty — all 20 deferred modules migrated in F1 Sub-PR B, see below)_ | — | — |
+| **Total** | **0** | |
 
 Enumeration command:
 
@@ -167,6 +148,75 @@ covers 17 swept modules (was 10). Codes registered in
 
 The deferred table above reflects post-Sub-PR-A residuals: 114 sites
 across 20 modules.
+
+## Sub-PR B migration (2026-05-21)
+
+The remaining 20 modules from the post-Sub-PR-A backlog were migrated
+to `wrapPgError` in F1 Sub-PR B. The deferred table is now empty.
+
+| Module | Sites migrated (incl. named-var rethrows) |
+|---|---:|
+| search | 1 |
+| outbox | 1 |
+| tenant | 1 |
+| daily-list | 1 (class-C rename `err`→`caught` on the `LeaseRevokedAfterDispatchError` boundary) |
+| sla | 5 |
+| space | 5 |
+| cost-centers | 5 |
+| bundle-templates | 5 |
+| service-routing | 5 |
+| approval | 8 (6 simple + 2 named — `countError` / `staleError` in `getPendingCountForActor`) |
+| routing | 9 (6 simple + 3 named — `lt.error` / `rt.error` in `listActiveDomains`, all in `coverage.service.ts` + `simulator.service.ts` + `scope-override-resolver.service.ts` + `audit.service.ts`) |
+| booking-bundles | 8 (7 simple + 1 named — `orderErr` in `bundle-cascade.service.ts:loadLine`) |
+| org-node | 11 (7 simple + 4 named — `members.error` / `grants.error` / `teams.error` in `list()` and `demoteErr` in `addMember`) |
+| portal | 9 (5 simple + 4 named — `visibleErr` / `uploadErr` / `updErr` / inner `error` in `criteria_matches` per-CS chain) |
+| calendar-sync | 9 (7 simple + 2 named — `spacesError` in `health` + `uErr` in `resolveConflict`) |
+| service-catalog | 9 (8 simple + 1 named — `tplLookup.error` in `createFromTemplate`) |
+| visitors | 8 |
+| webhook | 9 simple (+ 1 class-C rename `err`→`caught` in `webhook-ingest.service.ts:153` — caught may be AppError from `tickets.create()`, mapping error, OR pg error) |
+| work-orders | 10 (9 simple + 1 class-C rename `err`→`caught` in `work-order.service.ts:canPlan` — caught is AppError from `assertCanPlan`) |
+| workflow | 10 |
+
+Total: ~124 wrapPgError sites added across the 20 modules (113 simple
+sites that match the gate regex `if (error) throw error;` + 11 named-
+variable sites captured for module-cleanliness even though the regex
+only enforces the bare `error|err` form). All 20 modules added to
+`RAW_RETHROW_SWEPT_MODULES` in the same PR — gate now covers 37 swept
+modules (was 17). 121 new codes registered in
+`packages/shared/src/error-codes.ts` + EN/NL parity in
+`apps/api/src/common/errors/messages.{en,nl}.ts`.
+
+### Class-C sites flagged for review (renamed, NOT wrapped)
+
+Three rethrow boundaries where `caught` may be an AppError already
+(propagating from inner helpers) — wrapping with `wrapPgError` would
+corrupt the 4xx wire shape for non-pg errors. Variable renamed from
+`err` to `caught` to escape the regex while keeping rethrow semantics
+verbatim, same approach as F1-A used at `orders/order.service.ts:1126`:
+
+- `apps/api/src/modules/daily-list/daily-list.service.ts:814` — the
+  `LeaseRevokedAfterDispatchError` boundary. Catch handles the
+  known-error case (lease-revoked audit emit) and rethrows anything
+  else as-is. `caught` may be the typed error, an AppError from a
+  helper, or a raw pg error from the tx.
+- `apps/api/src/modules/webhook/webhook-ingest.service.ts:153` — the
+  request-mapping + ticket-create catch. `caught` may be an AppError
+  from `tickets.create()` / mapping, OR a 23505 idempotency-race pg
+  error that the code already handles separately.
+- `apps/api/src/modules/work-orders/work-order.service.ts:857` —
+  `canPlan` catches `assertCanPlan`'s 403 AppError to convert to a
+  `{ canPlan: false }` shape, rethrows anything else (DB errors,
+  unexpected AppErrors) verbatim.
+
+### Naming-allowlist addition (1 entry)
+
+`apps/api/src/modules/booking-bundles/bundle.service.ts:945` references
+`args.bundle_id` in the `addLinesToBundle` wrapPgError detail string.
+The arg name is the legacy method-arg form retained for wire compat
+(00278:27 canonicalisation: bundle_id IS the booking id). Same
+classification as the surrounding entries on `bundle.service.ts` and
+`order.service.ts` — `KEEP_BACKWARDS_COMPAT_FIELD`. Mirrors F1-A's
+2 additions in commit `99b08767`.
 
 ## Codes introduced this PR
 
@@ -224,9 +274,14 @@ R2 seeded the list with 10 modules: `asset`, `business-hours`,
 `floor-plan`, `inbox`, `notifications`. F1 Sub-PR A added 7 more:
 `person`, `maintenance`, `orders`, `ticket`, `user-management`,
 `room-booking-rules`, `config-engine` — bringing the total to 17.
+F1 Sub-PR B added the final 20: `search`, `outbox`, `tenant`,
+`daily-list`, `sla`, `space`, `cost-centers`, `bundle-templates`,
+`service-routing`, `approval`, `routing`, `booking-bundles`,
+`org-node`, `portal`, `calendar-sync`, `service-catalog`, `visitors`,
+`webhook`, `work-orders`, `workflow` — bringing the total to 37.
 
-Modules NOT in this list are intentionally excluded — see the Deferred
-section's 114-site backlog (post-Sub-PR-A; 235 pre-Sub-PR-A).
+The deferred list is now empty — every module with a NestJS-mounted
+controller AND raw rethrows is covered by the second ratchet.
 
 ### EN/NL message parity
 
@@ -254,8 +309,11 @@ unit-test gate for this today).
 
 ```
 Phase 7.A.3 ratchet: 0 raw throws across 45 migrated module(s).
-R2 raw-rethrow ratchet: 0 raw rethrows across 17 swept module(s).
+R2 raw-rethrow ratchet: 0 raw rethrows across 37 swept module(s).
 ```
 
-(Post-Sub-PR-A. Pre-Sub-PR-A the count was `0 raw rethrows across 10
-swept module(s)`.)
+(Post-Sub-PR-B. Counts over the bug-class sweep:
+ - Pre-R2:        none (the second ratchet didn't exist).
+ - Post-R2:       `0 raw rethrows across 10 swept module(s)`.
+ - Post-Sub-PR-A: `0 raw rethrows across 17 swept module(s)`.
+ - Post-Sub-PR-B: `0 raw rethrows across 37 swept module(s)` — final.)

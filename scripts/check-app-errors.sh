@@ -104,6 +104,28 @@ RAW_RETHROW_SWEPT_MODULES=(
   "apps/api/src/modules/user-management"
   "apps/api/src/modules/room-booking-rules"
   "apps/api/src/modules/config-engine"
+  # F1 Sub-PR B — remaining 20 modules wrapPgError sweep (2026-05-21).
+  # Triage: docs/follow-ups/r2-apperror-sweep-triage-2026-05-20.md §Sub-PR B.
+  "apps/api/src/modules/search"
+  "apps/api/src/modules/outbox"
+  "apps/api/src/modules/tenant"
+  "apps/api/src/modules/daily-list"
+  "apps/api/src/modules/sla"
+  "apps/api/src/modules/space"
+  "apps/api/src/modules/cost-centers"
+  "apps/api/src/modules/bundle-templates"
+  "apps/api/src/modules/service-routing"
+  "apps/api/src/modules/approval"
+  "apps/api/src/modules/routing"
+  "apps/api/src/modules/booking-bundles"
+  "apps/api/src/modules/org-node"
+  "apps/api/src/modules/portal"
+  "apps/api/src/modules/calendar-sync"
+  "apps/api/src/modules/service-catalog"
+  "apps/api/src/modules/visitors"
+  "apps/api/src/modules/webhook"
+  "apps/api/src/modules/work-orders"
+  "apps/api/src/modules/workflow"
 )
 
 # Forbidden patterns. The filter handles legacy throws via `generic.*` codes,

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { OutlookSyncAdapter } from './outlook-sync.adapter';
 import { TokenEncryptionService } from './token-encryption.service';
 import type {
@@ -56,7 +56,11 @@ export class CalendarSyncService {
       .eq('user_id', userId)
       .eq('provider', 'outlook')
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'calendar_sync.my_link_lookup_failed', {
+        detail: `calendar_sync_links lookup for user ${userId} failed`,
+      });
+    }
     return (data as CalendarSyncLinkView | null) ?? null;
   }
 
@@ -105,7 +109,11 @@ export class CalendarSyncService {
         'id, user_id, provider, external_calendar_id, sync_status, last_synced_at, last_error, expires_at, webhook_subscription_id, webhook_expires_at',
       )
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'calendar_sync.connect_upsert_failed', {
+        detail: `calendar_sync_links upsert for user ${userId} failed`,
+      });
+    }
 
     // Subscribe to webhook so we don't have to poll for changes. Best-effort —
     // a failure here shouldn't break the connection itself; the renew cron
@@ -180,7 +188,11 @@ export class CalendarSyncService {
       .eq('user_id', userId)
       .eq('provider', 'outlook')
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'calendar_sync.force_resync_link_lookup_failed', {
+        detail: `calendar_sync_links lookup for resync (user ${userId}) failed`,
+      });
+    }
     if (!link) throw AppErrors.notFoundWithCode('calendar_sync.no_link', 'No outlook calendar linked');
 
     const accessToken = await this.refreshAccessToken(link.refresh_token_encrypted as string);
@@ -217,7 +229,11 @@ export class CalendarSyncService {
       )
       .eq('tenant_id', tenant.id)
       .eq('reservable', true);
-    if (spacesError) throw spacesError;
+    if (spacesError) {
+      throw wrapPgError(spacesError, 'calendar_sync.health_spaces_failed', {
+        detail: 'spaces list for calendar_sync health failed',
+      });
+    }
 
     const { data: openConflicts } = await this.supabase.admin
       .from('room_calendar_conflicts')
@@ -301,7 +317,11 @@ export class CalendarSyncService {
       .limit(Math.min(filter.limit ?? 100, 500));
     if (filter.status) query = query.eq('resolution_status', filter.status);
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'calendar_sync.conflicts_list_failed', {
+        detail: 'room_calendar_conflicts list query failed',
+      });
+    }
     return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
       id: row.id as string,
       space_id: row.space_id as string,
@@ -393,7 +413,12 @@ export class CalendarSyncService {
          space:spaces(name)`,
       )
       .single();
-    if (uErr) throw uErr;
+    if (uErr) {
+      throw wrapPgError(uErr, 'calendar_sync.resolve_conflict_update_failed', {
+        detail: `room_calendar_conflicts resolution update for ${conflictId} failed`,
+        notFoundCode: 'calendar_sync.conflict_not_found',
+      });
+    }
 
     await this.audit('calendar_sync.conflict_resolved', {
       conflict_id: conflictId,
@@ -505,7 +530,11 @@ export class CalendarSyncService {
       .eq('tenant_id', tenant.id)
       .eq('auth_uid', authUid)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'calendar_sync.actor_resolve_failed', {
+        detail: 'users actor resolution for calendar_sync failed',
+      });
+    }
     if (!data) throw AppErrors.forbidden('calendar_sync.no_user_in_tenant', 'No user in this tenant');
     return { userId: data.id as string };
   }

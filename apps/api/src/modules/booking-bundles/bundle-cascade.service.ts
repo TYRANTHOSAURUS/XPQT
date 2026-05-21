@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { buildCancelOrderLinesIdempotencyKey } from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { mapRpcErrorToAppError } from '../../common/errors/map-rpc-error';
 import { TenantContext } from '../../common/tenant-context';
 import { BundleVisibilityService, type BundleVisibilityContext } from './bundle-visibility.service';
@@ -343,7 +343,12 @@ export class BundleCascadeService {
       .eq('id', id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'bundle.cascade_line_lookup_failed', {
+        detail: `order_line_items lookup for cascade (${id}) failed`,
+        notFoundCode: 'bundle.line_not_in_bundle',
+      });
+    }
     if (!data) return null;
     const row = data as {
       id: string;
@@ -361,7 +366,11 @@ export class BundleCascadeService {
       .eq('id', row.order_id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
-    if (orderErr) throw orderErr;
+    if (orderErr) {
+      throw wrapPgError(orderErr, 'bundle.cascade_order_lookup_failed', {
+        detail: `orders lookup for cascade (line ${id}, order ${row.order_id}) failed`,
+      });
+    }
     return {
       ...row,
       bundle_id: (order as { booking_id: string | null } | null)?.booking_id ?? null,
@@ -387,7 +396,12 @@ export class BundleCascadeService {
       .eq('id', id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'bundle.cascade_booking_lookup_failed', {
+        detail: `bookings lookup for cascade (${id}) failed`,
+        notFoundCode: 'bundle.not_found',
+      });
+    }
     return (data as {
       id: string;
       requester_person_id: string;

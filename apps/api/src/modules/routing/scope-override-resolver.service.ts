@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { wrapPgError } from '../../common/errors';
 
 /**
  * Effective request_type_scope_override for a (tenant, request_type, intake)
@@ -97,7 +98,11 @@ export class ScopeOverrideResolverService {
         p_selected_space_id: selectedSpaceId,
       },
     );
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'routing.scope_override_resolve_failed', {
+        detail: `request_type_effective_scope_override RPC failed (request_type=${requestTypeId})`,
+      });
+    }
     if (!data) return null;
     return data as EffectiveScopeOverride;
   }

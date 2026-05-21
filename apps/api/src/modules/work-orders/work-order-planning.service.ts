@@ -8,7 +8,7 @@ import {
 } from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import {
   TicketVisibilityService,
   canPlanRow,
@@ -251,7 +251,11 @@ export class WorkOrderPlanningService {
       .select('id, email, person:persons!users_person_id_fkey(first_name, last_name)')
       .eq('tenant_id', tenantId)
       .in('id', ids);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'work_order.planning_user_labels_failed', {
+        detail: 'users label load for planning board failed',
+      });
+    }
     const map = new Map<string, string>();
     for (const row of (data ?? []) as Array<{
       id: string;
@@ -278,7 +282,11 @@ export class WorkOrderPlanningService {
       .select('id, name')
       .eq('tenant_id', tenantId)
       .in('id', ids);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'work_order.planning_team_labels_failed', {
+        detail: 'teams label load for planning board failed',
+      });
+    }
     const map = new Map<string, string>();
     for (const row of (data ?? []) as Array<{ id: string; name: string }>) {
       map.set(row.id, row.name);
@@ -297,7 +305,11 @@ export class WorkOrderPlanningService {
       .select('id, name')
       .eq('tenant_id', tenantId)
       .in('id', ids);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'work_order.planning_vendor_labels_failed', {
+        detail: 'vendors label load for planning board failed',
+      });
+    }
     const map = new Map<string, string>();
     for (const row of (data ?? []) as Array<{ id: string; name: string }>) {
       map.set(row.id, row.name);
@@ -316,7 +328,11 @@ export class WorkOrderPlanningService {
       .select('id, name, domain')
       .eq('tenant_id', tenantId)
       .in('id', ids);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'work_order.planning_request_types_failed', {
+        detail: 'request_types label load for planning board failed',
+      });
+    }
     const map = new Map<string, { id: string; name: string; domain: string }>();
     for (const row of (data ?? []) as Array<{ id: string; name: string; domain: string }>) {
       map.set(row.id, { id: row.id, name: row.name, domain: row.domain });
@@ -346,7 +362,11 @@ export class WorkOrderPlanningService {
       .select('id, assigned_team_id')
       .eq('tenant_id', tenantId)
       .in('id', parentIds);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'work_order.planning_parent_case_teams_failed', {
+        detail: 'tickets parent-case team load for planning board failed',
+      });
+    }
     const map = new Map<string, string | null>();
     for (const row of (data ?? []) as Array<{ id: string; assigned_team_id: string | null }>) {
       map.set(row.id, row.assigned_team_id);
@@ -535,7 +555,11 @@ export class WorkOrderPlanningService {
       )
       .eq('tenant_id', tenantId)
       .eq('team_id', teamId);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'work_order.planning_team_roster_failed', {
+        detail: `team_members roster load for team ${teamId} failed`,
+      });
+    }
     const rows = (data ?? []) as Array<{
       user_id: string;
       user:
@@ -591,7 +615,11 @@ export class WorkOrderPlanningService {
       .eq('active', true)
       .eq('vendor_service_areas.tenant_id', tenantId)
       .eq('vendor_service_areas.active', true);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'work_order.planning_active_vendors_failed', {
+        detail: 'vendors active list for planning lanes failed',
+      });
+    }
     const seen = new Set<string>();
     const out: Array<{ id: string; name: string }> = [];
     for (const row of (data ?? []) as Array<{ id: string; name: string }>) {

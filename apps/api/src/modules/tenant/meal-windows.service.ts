@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
+import { wrapPgError } from '../../common/errors';
 
 export interface MealWindowRow {
   id: string;
@@ -33,7 +34,11 @@ export class MealWindowsService {
       .eq('tenant_id', tenant.id)
       .eq('active', true)
       .order('start_time', { ascending: true });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'tenant.meal_windows_list_failed', {
+        detail: 'tenant_meal_windows list query failed',
+      });
+    }
     return (data ?? []) as MealWindowRow[];
   }
 }

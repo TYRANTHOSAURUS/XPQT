@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { wrapPgError } from '../../common/errors';
 import type { OutboxEventInput } from './outbox.types';
 
 /**
@@ -82,7 +83,11 @@ export class OutboxService {
         p_reason: input.reason,
       },
     );
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'outbox.mark_consumed_failed', {
+        detail: `outbox_mark_consumed_via_rpc failed for key ${input.idempotencyKey}`,
+      });
+    }
     return Boolean(data);
   }
 }

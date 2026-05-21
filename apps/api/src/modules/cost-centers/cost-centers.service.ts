@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 
 export interface CostCenterUpsertDto {
   code: string;
@@ -48,7 +48,11 @@ export class CostCentersService {
       .order('code', { ascending: true });
     if (filters?.active != null) query = query.eq('active', filters.active);
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'cost_center.list_failed', {
+        detail: 'cost_centers list query failed',
+      });
+    }
     return (data ?? []) as CostCenterRow[];
   }
 
@@ -60,7 +64,12 @@ export class CostCentersService {
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'cost_center.lookup_failed', {
+        detail: `cost_centers lookup for ${id} failed`,
+        notFoundCode: 'cost_center_not_found',
+      });
+    }
     if (!data) {
       throw AppErrors.notFoundWithCode('cost_center_not_found', `Cost center ${id} not found.`);
     }
@@ -88,7 +97,9 @@ export class CostCentersService {
           detail: `Cost center with code "${dto.code}" already exists.`,
         });
       }
-      throw error;
+      throw wrapPgError(error, 'cost_center.create_failed', {
+        detail: `cost_centers insert for code "${dto.code}" failed`,
+      });
     }
     return data as CostCenterRow;
   }
@@ -121,7 +132,10 @@ export class CostCentersService {
           detail: `Cost center with code "${dto.code}" already exists.`,
         });
       }
-      throw error;
+      throw wrapPgError(error, 'cost_center.update_failed', {
+        detail: `cost_centers update for ${id} failed`,
+        notFoundCode: 'cost_center_not_found',
+      });
     }
     if (!data) {
       throw AppErrors.notFoundWithCode('cost_center_not_found', `Cost center ${id} not found.`);
@@ -139,7 +153,11 @@ export class CostCentersService {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'cost_center.delete_failed', {
+        detail: `cost_centers delete for ${id} failed`,
+      });
+    }
     return { id };
   }
 

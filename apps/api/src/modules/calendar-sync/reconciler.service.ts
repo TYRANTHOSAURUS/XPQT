@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
+import { wrapPgError } from '../../common/errors';
 import { OutlookSyncAdapter, type GraphEvent } from './outlook-sync.adapter';
 
 interface SpaceForRecon {
@@ -176,7 +177,11 @@ export class ReconcilerService {
       .select('id, tenant_id, name, external_calendar_id, external_calendar_subscription_id')
       .eq('calendar_sync_mode', 'pattern_a')
       .not('external_calendar_id', 'is', null);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'calendar_sync.reconciler_spaces_load_failed', {
+        detail: 'spaces pattern_a list for reconciler failed',
+      });
+    }
     return (data ?? []) as SpaceForRecon[];
   }
 
@@ -200,7 +205,11 @@ export class ReconcilerService {
       .gte('start_at', fromIso)
       .lte('start_at', toIso)
       .in('status', ['confirmed', 'checked_in', 'pending_approval']);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'calendar_sync.reconciler_reservations_load_failed', {
+        detail: `booking_slots reconciler load for space ${spaceId} failed`,
+      });
+    }
     type Row = {
       id: string;
       start_at: string;

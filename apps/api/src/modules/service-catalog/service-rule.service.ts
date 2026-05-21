@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { PredicateEngineService } from '../room-booking-rules/predicate-engine.service';
 import type {
   ApprovalConfig,
@@ -248,7 +248,11 @@ export class ServiceRuleService {
       .order('created_at', { ascending: false });
     if (filters?.active != null) query = query.eq('active', filters.active);
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'service_rule.list_failed', {
+        detail: 'service_rules list query failed',
+      });
+    }
     return (data ?? []) as ServiceRuleRow[];
   }
 
@@ -260,7 +264,12 @@ export class ServiceRuleService {
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'service_rule.lookup_failed', {
+        detail: `service_rules lookup for ${id} failed`,
+        notFoundCode: 'service_rule_not_found',
+      });
+    }
     if (!data) {
       throw AppErrors.notFoundWithCode('service_rule_not_found', `Service rule ${id} not found.`);
     }
@@ -290,7 +299,11 @@ export class ServiceRuleService {
       })
       .select('*')
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'service_rule.create_failed', {
+        detail: `service_rules insert for "${dto.name}" failed`,
+      });
+    }
     return data as ServiceRuleRow;
   }
 
@@ -354,7 +367,12 @@ export class ServiceRuleService {
       .eq('tenant_id', tenant.id)
       .select('*')
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'service_rule.update_failed', {
+        detail: `service_rules update for ${id} failed`,
+        notFoundCode: 'service_rule_not_found',
+      });
+    }
     if (!data) {
       throw AppErrors.notFoundWithCode('service_rule_not_found', `Service rule ${id} not found.`);
     }
@@ -368,7 +386,11 @@ export class ServiceRuleService {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'service_rule.delete_failed', {
+        detail: `service_rules delete for ${id} failed`,
+      });
+    }
     return { id };
   }
 
@@ -384,7 +406,11 @@ export class ServiceRuleService {
       .eq('active', true)
       .order('category', { ascending: true })
       .order('name', { ascending: true });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'service_rule.templates_list_failed', {
+        detail: 'service_rule_templates list query failed',
+      });
+    }
     return (data ?? []) as ServiceRuleTemplate[];
   }
 
@@ -428,7 +454,12 @@ export class ServiceRuleService {
       .eq('template_key', templateKey)
       .eq('active', true)
       .maybeSingle();
-    if (tplLookup.error) throw tplLookup.error;
+    if (tplLookup.error) {
+      throw wrapPgError(tplLookup.error, 'service_rule.template_lookup_failed', {
+        detail: `service_rule_templates lookup for "${templateKey}" failed`,
+        notFoundCode: 'template_not_found',
+      });
+    }
     const tpl = tplLookup.data as ServiceRuleTemplate | null;
     if (!tpl) {
       throw AppErrors.notFoundWithCode('template_not_found', `Template ${templateKey} not found.`);
@@ -501,7 +532,11 @@ export class ServiceRuleService {
       })
       .select('*')
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'service_rule.create_from_template_failed', {
+        detail: `service_rules insert from template "${templateKey}" failed`,
+      });
+    }
     return data as ServiceRuleRow;
   }
 

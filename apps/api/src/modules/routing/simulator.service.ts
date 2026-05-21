@@ -1,5 +1,5 @@
 import { Injectable, Logger} from '@nestjs/common';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
 import { ResolverService } from './resolver.service';
@@ -329,7 +329,11 @@ export class RoutingSimulatorService {
       .eq('tenant_id', tenantId)
       .maybeSingle();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'routing.simulator_request_type_lookup_failed', {
+        detail: `request_types lookup for simulator (${requestTypeId}) failed`,
+      });
+    }
     if (!data) return null;
 
     const raw = data as Record<string, unknown>;

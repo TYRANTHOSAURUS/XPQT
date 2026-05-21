@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 import type { WebhookRow } from './webhook-types';
 
 interface Bucket {
@@ -33,7 +33,11 @@ export class WebhookAuthService {
       .eq('api_key_hash', hash)
       .maybeSingle();
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'webhook.auth_lookup_failed', {
+        detail: 'workflow_webhooks api_key_hash lookup failed',
+      });
+    }
     if (!data) throw AppErrors.unauthorized('Invalid API key');
 
     const webhook = data as WebhookRow;

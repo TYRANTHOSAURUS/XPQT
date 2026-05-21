@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 
 export interface BundleTemplatePayload {
   /** Display name shown to admins. Distinct from BundleTemplateRow.name. */
@@ -69,7 +69,11 @@ export class BundleTemplatesService {
       .order('name', { ascending: true });
     if (filters?.active != null) query = query.eq('active', filters.active);
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'bundle_template.list_failed', {
+        detail: 'bundle_templates list query failed',
+      });
+    }
     return (data ?? []) as BundleTemplateRow[];
   }
 
@@ -81,7 +85,12 @@ export class BundleTemplatesService {
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'bundle_template.lookup_failed', {
+        detail: `bundle_templates lookup for ${id} failed`,
+        notFoundCode: 'bundle_template_not_found',
+      });
+    }
     if (!data) {
       throw AppErrors.notFoundWithCode('bundle_template_not_found', `Bundle template ${id} not found.`);
     }
@@ -103,7 +112,11 @@ export class BundleTemplatesService {
       })
       .select('*')
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'bundle_template.create_failed', {
+        detail: `bundle_templates insert for "${dto.name}" failed`,
+      });
+    }
     return data as BundleTemplateRow;
   }
 
@@ -130,7 +143,12 @@ export class BundleTemplatesService {
       .eq('tenant_id', tenant.id)
       .select('*')
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'bundle_template.update_failed', {
+        detail: `bundle_templates update for ${id} failed`,
+        notFoundCode: 'bundle_template_not_found',
+      });
+    }
     if (!data) {
       throw AppErrors.notFoundWithCode('bundle_template_not_found', `Bundle template ${id} not found.`);
     }
@@ -144,7 +162,11 @@ export class BundleTemplatesService {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'bundle_template.delete_failed', {
+        detail: `bundle_templates delete for ${id} failed`,
+      });
+    }
     return { id };
   }
 

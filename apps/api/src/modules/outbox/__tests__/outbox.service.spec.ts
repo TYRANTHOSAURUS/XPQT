@@ -171,6 +171,9 @@ describe('OutboxService', () => {
     });
 
     it('THROWS on RPC error so callers do not silently leave a lease open', async () => {
+      // F1 Sub-PR B (2026-05-21): wrapPgError replaces the raw `throw error;`
+      // rethrow. The wire body carries the registered code instead of the
+      // raw pg message — assertion changed to match the AppError shape.
       const supabase = makeSupabase([
         { data: null, error: { message: 'rpc failed' } },
       ]);
@@ -182,7 +185,10 @@ describe('OutboxService', () => {
           idempotencyKey: 'booking.create_attempted:abc',
           reason: 'attached',
         }),
-      ).rejects.toMatchObject({ message: 'rpc failed' });
+      ).rejects.toMatchObject({
+        code: 'outbox.mark_consumed_failed',
+        status: 500,
+      });
     });
   });
 });

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { TenantContext } from '../../common/tenant-context';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, wrapPgError } from '../../common/errors';
 
 export const SERVICE_CATEGORIES = [
   'catering',
@@ -70,7 +70,11 @@ export class ServiceRoutingService {
       // Tenant-default rows (location_id NULL) sort first, then per-location rows.
       .order('location_id', { ascending: true, nullsFirst: true })
       .order('service_category', { ascending: true });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'service_routing.list_failed', {
+        detail: 'location_service_routing list query failed',
+      });
+    }
     return (data ?? []) as ServiceRoutingRow[];
   }
 
@@ -82,7 +86,12 @@ export class ServiceRoutingService {
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .maybeSingle();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'service_routing.lookup_failed', {
+        detail: `location_service_routing lookup for ${id} failed`,
+        notFoundCode: 'service_routing_not_found',
+      });
+    }
     if (!data) {
       throw AppErrors.notFoundWithCode('service_routing_not_found', `Service routing ${id} not found.`);
     }
@@ -118,7 +127,9 @@ export class ServiceRoutingService {
             : `A tenant-default rule already exists for "${dto.service_category}". Edit it instead.`,
         });
       }
-      throw error;
+      throw wrapPgError(error, 'service_routing.create_failed', {
+        detail: `location_service_routing insert for "${dto.service_category}" failed`,
+      });
     }
     return data as ServiceRoutingRow;
   }
@@ -157,7 +168,12 @@ export class ServiceRoutingService {
       .eq('tenant_id', tenant.id)
       .select('*')
       .single();
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'service_routing.update_failed', {
+        detail: `location_service_routing update for ${id} failed`,
+        notFoundCode: 'service_routing_not_found',
+      });
+    }
     if (!data) {
       throw AppErrors.notFoundWithCode('service_routing_not_found', `Service routing ${id} not found.`);
     }
@@ -171,7 +187,11 @@ export class ServiceRoutingService {
       .delete()
       .eq('id', id)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'service_routing.delete_failed', {
+        detail: `location_service_routing delete for ${id} failed`,
+      });
+    }
     return { id };
   }
 
