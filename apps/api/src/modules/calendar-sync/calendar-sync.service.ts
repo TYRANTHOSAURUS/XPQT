@@ -416,6 +416,7 @@ export class CalendarSyncService {
     if (uErr) {
       throw wrapPgError(uErr, 'calendar_sync.resolve_conflict_update_failed', {
         detail: `room_calendar_conflicts resolution update for ${conflictId} failed`,
+        notFoundCode: 'calendar_sync.conflict_not_found',
       });
     }
 
