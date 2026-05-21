@@ -17,6 +17,8 @@ import { probeCommandOperationSuccess } from '../../common/command-operations-pr
 
 @Injectable()
 export class SlaService {
+  private checkBreachesInFlight = false;
+
   constructor(
     private readonly supabase: SupabaseService,
     private readonly businessHours: BusinessHoursService,
@@ -472,8 +474,19 @@ export class SlaService {
    */
   @Cron(CronExpression.EVERY_MINUTE)
   async checkBreaches() {
-    const now = new Date();
+    if (this.checkBreachesInFlight) {
+      return;
+    }
 
+    this.checkBreachesInFlight = true;
+    try {
+      await this.runBreachCheck(new Date());
+    } finally {
+      this.checkBreachesInFlight = false;
+    }
+  }
+
+  private async runBreachCheck(now: Date) {
     // Find timers that are past due and not yet breached
     const { data: breachedTimers } = await this.supabase.admin
       .from('sla_timers')

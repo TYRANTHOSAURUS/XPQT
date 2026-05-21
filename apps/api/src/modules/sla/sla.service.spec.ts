@@ -153,6 +153,86 @@ describe('SlaService.applyReassignment — audit-02 D-A02-4 success-probe', () =
   });
 });
 
+describe('SlaService.checkBreaches — cron reentrancy guard', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  function makeCheckBreachesDeps(firstRead: Promise<{ data: unknown[]; error: null }>) {
+    const limitCalls: number[] = [];
+    const fromCalls: string[] = [];
+
+    const supabase = {
+      admin: {
+        from: (table: string) => {
+          fromCalls.push(table);
+          if (table !== 'sla_timers') {
+            throw new Error(`unexpected table in checkBreaches mock: ${table}`);
+          }
+
+          const chain: Record<string, unknown> = {
+            select: () => chain,
+            eq: () => chain,
+            is: () => chain,
+            lt: () => chain,
+            gt: () => chain,
+            limit: (n: number) => {
+              limitCalls.push(n);
+              return limitCalls.length === 1
+                ? firstRead
+                : Promise.resolve({ data: [], error: null });
+            },
+          };
+          return chain;
+        },
+      },
+    };
+
+    return { supabase, limitCalls, fromCalls };
+  }
+
+  it('skips an overlapping cron tick while the current check is still running', async () => {
+    const firstRead = deferred<{ data: unknown[]; error: null }>();
+    const { supabase, limitCalls, fromCalls } = makeCheckBreachesDeps(firstRead.promise);
+    const svc = new SlaService(supabase as any, {} as any, {} as any);
+    jest.spyOn(svc as any, 'processThresholds').mockResolvedValue(undefined);
+
+    const firstTick = svc.checkBreaches();
+    expect(limitCalls).toEqual([100]);
+
+    await svc.checkBreaches();
+    expect(limitCalls).toEqual([100]);
+    expect(fromCalls).toEqual(['sla_timers']);
+
+    firstRead.resolve({ data: [], error: null });
+    await firstTick;
+    expect(limitCalls).toEqual([100, 200]);
+
+    await svc.checkBreaches();
+    expect(limitCalls).toEqual([100, 200, 100, 200]);
+  });
+
+  it('releases the in-flight guard when a tick throws', async () => {
+    const firstRead = deferred<{ data: unknown[]; error: null }>();
+    const { supabase, limitCalls } = makeCheckBreachesDeps(firstRead.promise);
+    const svc = new SlaService(supabase as any, {} as any, {} as any);
+    jest.spyOn(svc as any, 'processThresholds').mockResolvedValue(undefined);
+
+    const firstTick = svc.checkBreaches();
+    firstRead.reject(new Error('read failed'));
+    await expect(firstTick).rejects.toThrow('read failed');
+
+    await svc.checkBreaches();
+    expect(limitCalls).toEqual([100, 100, 200]);
+  });
+});
+
 // Hand-rolled supabase chain mock for the sla_policies lookup used by
 // applyWaitingStateTransition. Captures the .eq() filters so tests can assert
 // the tenant scope (codex C1 lock-in: same UUID across tenants must not
