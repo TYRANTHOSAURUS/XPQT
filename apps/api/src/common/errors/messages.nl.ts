@@ -1839,6 +1839,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon de reservering niet opslaan — niet gevonden',
     detail: 'Een asset-reservering in deze bewerking hoort niet meer bij deze reservering. Vernieuw de pagina en probeer het opnieuw.',
   },
+  'edit_booking.linked_rows_require_booking_scope': {
+    title: 'Kon de ruimtewijziging niet opslaan',
+    detail: 'Deze multi-room reservering heeft services, assets of werkbonnen op reserveringsniveau. Bewerk de hele reservering of verwijder die gekoppelde items eerst.',
+  },
   // B.4.A.4 step 2D-C self-review remediation (PLAN-C1 + CODE-I2).
   // Voice mirrors the rest of the edit_booking family — "reservering" not
   // "boeking" per the project NL convention.

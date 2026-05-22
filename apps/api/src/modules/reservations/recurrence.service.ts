@@ -1,7 +1,7 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { AppErrors } from '../../common/errors';
+import { AppErrors, isAppError } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import { TenantService } from '../tenant/tenant.service';
 import { ConflictGuardService } from './conflict-guard.service';
@@ -561,13 +561,10 @@ export class RecurrenceService {
         //          AppErrors.server('booking.partial_failure',
         //          {cause:originalErr}) (boundary.ts:130-147).
         //
-        // The catch below is UNCHANGED — every reproduced throw lands on
-        // the same branch it did with the boundary (AppError has no
-        // `.response`, so booking.compensation_failed / .partial_failure
-        // fall to the catch-all `sawUnexpectedFailure=true` →
-        // materialized_through is NOT advanced; an original 23P01 on the
-        // rolled_back path matches `conflict.isExclusionViolation` →
-        // skip + advance, exactly as before).
+        // The catch below reads AppError.code directly, so compensation
+        // failures reach their dedicated ops-triage logs instead of the
+        // generic unexpected branch. The "do not advance
+        // materialized_through" invariant is unchanged.
         if (this.orders && this.supabase) {
           const cloneArgs = {
             masterReservationId: master.id,             // = master booking id
@@ -646,8 +643,8 @@ export class RecurrenceService {
         }
         // EXPECTED: rule_deny / reservation_slot_conflict → rule outcome
         // at create-time, user-correctable. Skip + advance.
-        const e = err as { response?: { code?: string }; message?: string };
-        const code = e.response?.code;
+        const e = err as { code?: string; message?: string };
+        const code = isAppError(err) ? err.code : e.code;
         if (code === 'rule_deny' || code === 'reservation_slot_conflict') {
           skipped += 1;
           continue;

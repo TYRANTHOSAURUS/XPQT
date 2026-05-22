@@ -170,6 +170,7 @@ function callHelper(
     newEnd: string;
     oldSpace?: string;
     newSpace?: string;
+    mode?: 'single_slot' | 'uniform_booking';
   },
 ) {
   return (
@@ -183,6 +184,7 @@ function callHelper(
         newEnd: string,
         oldSpaceId: string,
         newSpaceId: string,
+        mode?: 'single_slot' | 'uniform_booking',
       ) => Promise<{
         asset_reservation_patches: Array<{
           id: string;
@@ -202,7 +204,6 @@ function callHelper(
           sla_policy_id?: string | null;
           sla_due_at?: string | null;
         }>;
-        skippedMultiSlot: boolean;
       }>;
     }
   ).buildLinkedRowPatches(
@@ -214,6 +215,7 @@ function callHelper(
     args.newEnd,
     args.oldSpace ?? SPACE_OLD,
     args.newSpace ?? SPACE_OLD,
+    args.mode,
   );
 }
 
@@ -244,7 +246,6 @@ describe('AssembleEditPlanService.buildLinkedRowPatches (P0-2)', () => {
       newStart: NEW_START,
       newEnd: NEW_END,
     });
-    expect(out.skippedMultiSlot).toBe(false);
     expect(out.asset_reservation_patches).toEqual([
       { id: 'ar-bnd', start_at: NEW_START, end_at: NEW_END },
     ]);
@@ -389,7 +390,7 @@ describe('AssembleEditPlanService.buildLinkedRowPatches (P0-2)', () => {
     expect('requested_for_end_at' in p).toBe(false);
   });
 
-  it('multi-slot booking → returns empty arrays + skippedMultiSlot=true (no slot/space attribution column)', async () => {
+  it('multi-slot booking-level move → propagates booking-keyed linked rows uniformly', async () => {
     const { supabase } = makeSupabase({
       slotCount: 2,
       assetReservations: [
@@ -412,10 +413,20 @@ describe('AssembleEditPlanService.buildLinkedRowPatches (P0-2)', () => {
       newStart: NEW_START,
       newEnd: NEW_END,
     });
-    expect(out.skippedMultiSlot).toBe(true);
-    expect(out.asset_reservation_patches).toEqual([]);
-    expect(out.order_patches).toEqual([]);
-    expect(out.work_order_sla_patches).toEqual([]);
+    expect(out.asset_reservation_patches).toEqual([
+      { id: 'ar', start_at: NEW_START, end_at: NEW_END },
+    ]);
+    expect(out.order_patches).toEqual([
+      { id: 'o', requested_for_start_at: NEW_START, requested_for_end_at: NEW_END },
+    ]);
+    expect(out.work_order_sla_patches).toEqual([
+      {
+        id: 'wo',
+        planned_start_at: new Date(Date.parse(OLD_START) + TWO_H).toISOString(),
+        needs_repoint: true,
+        sla_policy_id: 's',
+      },
+    ]);
   });
 
   it('queries exclude terminal statuses (asset cancelled|released, order cancelled|fulfilled, WO resolved|closed)', async () => {
@@ -739,34 +750,42 @@ describe('AssembleEditPlanService.buildLinkedRowPatches (P0-2)', () => {
       });
     });
 
-    it('LEGIT multi-slot path unchanged: count read OK + count>1 → empty arrays + warn, NO throw', async () => {
+    it('rejects a single-slot edit on a multi-slot booking when live booking-keyed linked rows exist', async () => {
       const { supabase } = makeSupabase({
-        slotCount: 2, // successful read, >1 slot — NOT an error
+        slotCount: 2,
         assetReservations: seeded.assetReservations,
         orders: seeded.orders,
         workOrders: seeded.workOrders,
-        // errorOn intentionally absent — every read succeeds.
       });
       const svc = makeService(supabase);
-      const warnSpy = jest
-        .spyOn(
-          (svc as unknown as { log: { warn: (m: string) => void } }).log,
-          'warn',
-        )
-        .mockImplementation(() => undefined);
-      const out = await callHelper(svc, {
+      await expect(
+        callHelper(svc, {
+          newStart: NEW_START,
+          newEnd: NEW_END,
+          mode: 'single_slot',
+        }),
+      ).rejects.toMatchObject({
+        name: 'AppError',
+        code: 'edit_booking.linked_rows_require_booking_scope',
+        status: 409,
+      });
+    });
+
+    it('allows a single-slot edit on a multi-slot booking when no live linked rows exist', async () => {
+      const { supabase } = makeSupabase({
+        slotCount: 2,
+        assetReservations: [],
+        orders: [],
+        workOrders: [],
+      });
+      const out = await callHelper(makeService(supabase), {
         newStart: NEW_START,
         newEnd: NEW_END,
+        mode: 'single_slot',
       });
-      // No throw; deliberate documented skip.
-      expect(out.skippedMultiSlot).toBe(true);
       expect(out.asset_reservation_patches).toEqual([]);
       expect(out.order_patches).toEqual([]);
       expect(out.work_order_sla_patches).toEqual([]);
-      // The skip is loud (I-1 observability), not silent.
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(warnSpy.mock.calls[0][0]).toContain('[I-1]');
-      warnSpy.mockRestore();
     });
   });
 });

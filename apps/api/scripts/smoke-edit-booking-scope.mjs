@@ -1135,73 +1135,47 @@ async function runScopeProbes(headers, probe, fixture) {
 
     // (iii) RETRY the exact same editScope (same crid, same body).
     //
-    // PRE-EXISTING edit_booking_scope NON-DETERMINISM (NOT a Slice 4
-    // regression — documented honestly, not silently passed):
-    // `edit_booking_scope` (00395 v3 / 00399, OUT of Slice 4 scope)
-    // hashes its `p_plans` argument, and the assembler stamps a fresh
-    // wall-clock `_resolution_at` into every plan on each call. So a
-    // same-body editScope retry re-assembles plans that hash
-    // DIFFERENTLY → the edit RPC raises
-    // `command_operations.payload_mismatch` (409). This is a real
-    // pre-existing edit-pipeline bug; the smoke never surfaced it
-    // before because the harness died earlier on the
-    // `command_operations.id` column bug (fixed in this slice). It is
-    // tracked in docs/follow-ups/slice4-split-recurrence-decision.md
-    // §Newly-surfaced pre-existing failures (owner: booking-audit
-    // workstream — edit_booking_scope payload-hash determinism).
-    //
-    // CRUCIAL: this does NOT undermine the Slice 4 fix. `splitSeries`
-    // runs BEFORE the assembler, so on retry the split RPC IS invoked
-    // with the SAME (pivot, crid) → its OWN command_operations gate
-    // cache-hits → it returns the same new_series_id and mints NO
-    // second series. The editScope envelope being a 409 (the
-    // pre-existing edit bug) is irrelevant to the split's idempotency,
-    // which is observable directly at the DB level. We therefore
-    // EXPECT the editScope retry to 409 (the pre-existing behavior)
-    // and assert the split-level invariants — those are what P1-2
-    // actually requires and what Slice 4 actually fixed.
-    //
-    // FIXME(D-5 / audit-03 R-e / orchestrator task #14): this expect:409
-    // encodes a KNOWN pre-existing bug, not desired behavior. Root cause
-    // (live-DB verified 2026-05-17): edit_booking_scope ALREADY hashes via
-    // booking_edit_idempotency_payload_hash (00407:1256); the strip helper
-    // only removes `_`-prefixed keys, but the SCOPE producer
-    // (assemble-edit-plan.service.ts p_plans build) emits ≥1 NON-`_`
-    // value that varies across re-assembly. When that producer-determinism
-    // fix lands, FLIP this probe to expect cached success (no 409).
+    // Audit 03 producer-determinism closure (2026-05-20): edit-scope now
+    // claims a stable resolution basis before plan assembly, so the retry
+    // rebuilds byte-identical plans and the edit RPC cache-hits instead of
+    // raising the old command_operations.payload_mismatch 409.
     const tafRetryResult = await probe(
-      'Slice4 split: RETRY same editScope → 409 (pre-existing edit_booking_scope payload-hash non-determinism, NOT a split regression)',
+      'Slice4 split: RETRY same editScope → cached 201 (producer-deterministic)',
       {
         url: dryRunSeriesUrl,
         body: { scope: 'this_and_following', space_id: ROOM_BOARD },
         clientRequestId: tafCommitCrid,
-        expect: 'conflict',
       },
     );
     if (tafRetryResult.ok) {
       try {
         const retryParsed = JSON.parse(tafRetryResult.body);
-        if (retryParsed.code === 'command_operations.payload_mismatch') {
+        const commitParsed = JSON.parse(tafCommitResult.body);
+        if (
+          retryParsed.new_series_id === commitParsed.new_series_id &&
+          retryParsed.committed === commitParsed.committed &&
+          tafRetryResult.body === tafCommitResult.body
+        ) {
           results.pass += 1;
           console.log(
-            `  ✓ Slice4 split retry: editScope 409 payload_mismatch (pre-existing edit bug, documented)`,
+            `  ✓ Slice4 split retry: cached response is byte-identical`,
           );
         } else {
           results.fail += 1;
-          results.failed.push('Slice4 split retry: unexpected 409 code');
+          results.failed.push('Slice4 split retry: cached response drift');
           console.log(
-            `  ✗ Slice4 split retry: 409 code=${retryParsed.code} (expected command_operations.payload_mismatch)`,
+            `  ✗ Slice4 split retry: cached response drift (new_series_id=${retryParsed.new_series_id}, committed=${retryParsed.committed})`,
           );
         }
       } catch {
         results.fail += 1;
-        results.failed.push('Slice4 split retry: 409 body parse');
+        results.failed.push('Slice4 split retry: cached body parse');
       }
     }
 
     // ── Split-level idempotency invariants (the actual P1-2 fix) ──
-    // These hold REGARDLESS of the editScope envelope above, because
-    // the split RPC fired (before the assembler) and is idempotent.
+    // These also prove that the split RPC cache-hit does not mint a second
+    // series when the outer editScope command is retried.
 
     // No SECOND series minted: total fixture series footprint
     // unchanged across the retry (the core P1-2 regression — the
@@ -1243,8 +1217,7 @@ async function runScopeProbes(headers, probe, fixture) {
 
     // (iv) split command_operations row count still exactly 1 with
     //      outcome=success (the split RPC's OWN gate cache-hit, not a
-    //      re-execute — proves the split is idempotent end-to-end even
-    //      though the surrounding editScope 409'd).
+    //      re-execute).
     const splitOpsAfterRetry = await countCommandOpsForSplitKey(
       pivot.bookingId,
       tafCommitCrid,

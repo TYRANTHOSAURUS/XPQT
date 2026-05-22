@@ -53,7 +53,7 @@
  * editing.
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { AppError, AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { ConflictGuardService } from './conflict-guard.service';
@@ -93,6 +93,8 @@ import type { ApprovalConfig } from '../room-booking-rules/dto';
 export interface AssembleEditPlanArgs {
   bookingId: string;
   tenantId: string;
+  /** Stable "now" claimed for this command idempotency key. */
+  resolutionBasisAt?: string;
   /** Identity of the slot being edited. For multi-slot bookings the
    * caller picks one; Step 2F will fan out to all slots in scope. */
   slotId: string;
@@ -221,8 +223,6 @@ interface TargetState {
 
 @Injectable()
 export class AssembleEditPlanService {
-  private readonly log = new Logger(AssembleEditPlanService.name);
-
   constructor(
     private readonly supabase: SupabaseService,
     private readonly bookingFlow: BookingFlowService,
@@ -312,6 +312,7 @@ export class AssembleEditPlanService {
       // the booking-level override flag (mirrors editOne legacy
       // behavior at reservation.service.ts:817-819).
       auto_set_recurrence_overridden: false,
+      linked_row_mode: 'single_slot',
     });
   }
 
@@ -340,6 +341,7 @@ export class AssembleEditPlanService {
       attendee_person_ids: patch.attendee_person_ids,
       host_person_id: patch.host_person_id,
       auto_set_recurrence_overridden: true,
+      linked_row_mode: 'uniform_booking',
     });
   }
 
@@ -387,6 +389,8 @@ export class AssembleEditPlanService {
     bookingId: string; // pivot booking (tenant context + series verification)
     tenantId: string;
     effectiveSeriesId: string;
+    /** Stable "now" claimed for the scope command idempotency key. */
+    resolutionBasisAt?: string;
     patch: AssembleEditPlanScopePatch;
     /**
      * B.4 Step 2F.3 — forward-only scope-rows filter.
@@ -560,6 +564,7 @@ export class AssembleEditPlanService {
         {
           bookingId,
           tenantId: args.tenantId,
+          resolutionBasisAt: args.resolutionBasisAt,
           slotId: primary.id,
           // The dispatcher discriminator isn't read by the core; this
           // narrowing is structurally compatible. The core treats
@@ -582,6 +587,7 @@ export class AssembleEditPlanService {
           // Must be false here — series edits never flip the override
           // flag (the flag is a per-occurrence concept).
           auto_set_recurrence_overridden: false,
+          linked_row_mode: 'single_slot',
         },
       );
       // ── F. (historical position) B.4.A.5 controller-vs-notification gate ──
@@ -637,6 +643,14 @@ export class AssembleEditPlanService {
       /** When true and the booking is part of a series and any field is
        * patched, sets `booking_patch.recurrence_overridden = true`. */
       auto_set_recurrence_overridden: boolean;
+      /**
+       * `uniform_booking` means the caller is moving the booking-level
+       * window, so booking-keyed linked rows can shift even when the booking
+       * has multiple slots. `single_slot` keeps the old skip for a one-slot
+       * drag inside a multi-slot booking because child rows do not carry
+       * slot attribution.
+       */
+      linked_row_mode: 'single_slot' | 'uniform_booking';
     },
   ): Promise<EditPlan> {
     // N-CODE-4: snapshot the resolution timestamp ONCE, BEFORE any rule
@@ -646,7 +660,7 @@ export class AssembleEditPlanService {
     // read the booking row keeps the window honest — any rule change
     // between this line and the RPC call is detectable. Capturing it AFTER
     // would hide rule churn that happened during the read.
-    const resolutionAt = new Date().toISOString();
+    const resolutionAt = args.resolutionBasisAt ?? new Date().toISOString();
 
     // ── 1. Load current booking + the target slot ────────────────────
     const { booking, slot } = await this.loadBookingAndSlot(args.bookingId, args.slotId, args.tenantId);
@@ -684,6 +698,7 @@ export class AssembleEditPlanService {
         end_at: target.endAt,
         attendee_count: target.attendeeCount,
         criteria: {},
+        resolution_basis_at: resolutionAt,
       },
       args.tenantId,
     );
@@ -899,6 +914,7 @@ export class AssembleEditPlanService {
       target.endAt,
       slot.space_id,
       target.spaceId,
+      patch.linked_row_mode,
     );
 
     const plan: EditPlan = {
@@ -919,8 +935,7 @@ export class AssembleEditPlanService {
    * arrays the `edit_booking` v5 RPC consumes so editOne / editSlot
    * time/room moves cascade to the booking's orders, asset_reservations
    * and setup work_orders. Returns empty arrays (no-op) when the
-   * booking has no live linked rows OR when multi-slot attribution is
-   * ambiguous (see "Multi-slot safety" below).
+   * booking has no live linked rows.
    *
    * Window classification (LOCKED by the booking-audit codex plan
    * review — implement exactly):
@@ -947,14 +962,12 @@ export class AssembleEditPlanService {
    * Multi-slot safety: orders / asset_reservations / work_orders key
    * ONLY off booking_id (00278_retarget_sibling_tables.sql:108-144) —
    * none carries a slot or space attribution column. So for a >1-slot
-   * booking we cannot attribute a booking-level child to a single
-   * slot. An editSlot that moves one slot of a multi-slot booking
-   * therefore returns empty arrays and records `skippedMultiSlot` so
-   * the caller can flag residual risk. Single-slot bookings (and
-   * editOne, which moves the whole booking uniformly when the booking
-   * has exactly one slot) propagate normally. (editOne on a multi-slot
-   * booking only patches the primary slot via this path, so the same
-   * single-slot guard applies — see the slot-count read below.)
+   * booking we cannot attribute a booking-level child to one slot. A
+   * single-slot edit on a multi-slot booking is allowed only when there
+   * are no live linked rows; otherwise we reject with an explicit conflict
+   * and require a whole-booking edit. A booking-level editOne uses
+   * `uniform_booking`, so the booking-keyed linked rows shift with the
+   * booking even when there are multiple slots.
    */
   private async buildLinkedRowPatches(
     bookingId: string,
@@ -965,19 +978,12 @@ export class AssembleEditPlanService {
     newEnd: string,
     oldSpaceId: string,
     newSpaceId: string,
+    mode: 'single_slot' | 'uniform_booking' = 'uniform_booking',
   ): Promise<{
     asset_reservation_patches: EditPlanAssetReservationPatch[];
     order_patches: EditPlanOrderPatch[];
     work_order_sla_patches: EditPlanWorkOrderSlaPatch[];
-    skippedMultiSlot: boolean;
   }> {
-    const empty = {
-      asset_reservation_patches: [] as EditPlanAssetReservationPatch[],
-      order_patches: [] as EditPlanOrderPatch[],
-      work_order_sla_patches: [] as EditPlanWorkOrderSlaPatch[],
-      skippedMultiSlot: false,
-    };
-
     // Multi-slot safety gate. Children key only off booking_id with no
     // slot/space attribution column — if the booking has >1 slot we
     // cannot safely attribute a booking-level child to one slot move.
@@ -1004,26 +1010,6 @@ export class AssembleEditPlanService {
       });
     }
     const slotCount = slotCountRes.count ?? 0;
-    if (slotCount > 1) {
-      const skipped = { ...empty, skippedMultiSlot: true };
-      // I-1 (booking-audit remediation): the multi-slot skip used to be
-      // SILENT — `skippedMultiSlot` was discarded at the call site (no
-      // log / audit), a quiet re-introduction of the P0-2 "linked rows
-      // left at old time" bug for multi-room-with-services bookings.
-      // Make it observable. We deliberately do NOT propagate here:
-      // uniform-multi-slot propagation is a separate pending decision
-      // (children key only off booking_id with no slot/space attribution
-      // column — 00278:108-144). This warn is the residual-gap signal.
-      this.log.warn(
-        `[I-1] linked-row time propagation SKIPPED for multi-slot booking ` +
-          `bookingId=${bookingId} tenantId=${tenantId} slotCount=${slotCount} — ` +
-          `known residual gap (audit 03 P0-2); linked orders / ` +
-          `asset_reservations / work_orders may remain at the OLD time for ` +
-          `this multi-room booking. skippedMultiSlot=${skipped.skippedMultiSlot}`,
-      );
-      return skipped;
-    }
-
     const oldStartMs = Date.parse(oldStart);
     const oldEndMs = Date.parse(oldEnd);
     const newStartMs = Date.parse(newStart);
@@ -1087,16 +1073,6 @@ export class AssembleEditPlanService {
       end_at: string;
       status: string;
     }>;
-    const asset_reservation_patches: EditPlanAssetReservationPatch[] = arRows
-      .map((r) => {
-        const w = shiftWindow(r.start_at, r.end_at);
-        return { id: r.id, start_at: w.start_at, end_at: w.end_at };
-      })
-      // booking-audit codex idempotency review: supabase-js does not
-      // guarantee row order without an explicit .order(); sort by `id`
-      // so the same logical edit retried under the same idempotency key
-      // serialises byte-identically (no spurious payload_mismatch).
-      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
     // ── orders ──────────────────────────────────────────────────────
     // Exclude terminal status ('cancelled' | 'fulfilled') (00013:55).
@@ -1131,6 +1107,61 @@ export class AssembleEditPlanService {
       delivery_location_id: string | null;
       status: string;
     }>;
+
+    // ── work_orders ─────────────────────────────────────────────────
+    // Exclude terminal status_category ('resolved' | 'closed')
+    // (00213:53). work_orders carry only `planned_start_at` (a point,
+    // not a window) → new planned_start_at = planned_start_at +
+    // startDelta (a point follows the move's start delta; there is no
+    // end to classify, so the boundary/custom split doesn't apply).
+    // Set needs_repoint=true + sla_policy_id (from the WO's sla_id
+    // column) so the RPC fires sla.timer_repointed_required
+    // (00394:1011-1031). Do NOT emit a raw sla_due_at — the SLA timer
+    // repoint handler recomputes the due time from the policy; emitting
+    // a hand-shifted sla_due_at here would double-apply.
+    const woRes = await this.supabase.admin
+      .from('work_orders')
+      .select('id, planned_start_at, sla_id, status_category')
+      .eq('tenant_id', tenantId)
+      .eq('booking_id', bookingId)
+      .not('status_category', 'in', '("resolved","closed")');
+    // I-3 (booking-audit codex REJECT): fail CLOSED — a failed
+    // work_orders read silently fell back to `[]`, letting the RPC
+    // commit while setup work_orders / SLA timers stayed at the OLD
+    // time (no sla.timer_repointed_required emit fired).
+    if (woRes.error) {
+      throw AppErrors.server('edit_booking.not_found', {
+        detail: `work_orders read failed: ${woRes.error.message}`,
+        cause: woRes.error,
+      });
+    }
+    const woRows = (woRes.data ?? []) as Array<{
+      id: string;
+      planned_start_at: string | null;
+      sla_id: string | null;
+      status_category: string;
+    }>;
+
+    const isAmbiguousMultiSlotMove = slotCount > 1 && mode !== 'uniform_booking';
+    if (isAmbiguousMultiSlotMove && (arRows.length > 0 || orderRows.length > 0 || woRows.length > 0)) {
+      throw AppErrors.conflict('edit_booking.linked_rows_require_booking_scope', {
+        detail:
+          `single-slot edit refused for multi-slot booking ${bookingId}: ` +
+          `asset_reservations=${arRows.length}, orders=${orderRows.length}, work_orders=${woRows.length}`,
+      });
+    }
+
+    const asset_reservation_patches: EditPlanAssetReservationPatch[] = arRows
+      .map((r) => {
+        const w = shiftWindow(r.start_at, r.end_at);
+        return { id: r.id, start_at: w.start_at, end_at: w.end_at };
+      })
+      // booking-audit codex idempotency review: supabase-js does not
+      // guarantee row order without an explicit .order(); sort by `id`
+      // so the same logical edit retried under the same idempotency key
+      // serialises byte-identically (no spurious payload_mismatch).
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
     const order_patches: EditPlanOrderPatch[] = orderRows.map((r) => {
       const patch: EditPlanOrderPatch = { id: r.id };
       // Shift the order window. Three cases:
@@ -1184,39 +1215,6 @@ export class AssembleEditPlanService {
       // retries — sort by `id` (supabase-js has no implicit row order).
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
-    // ── work_orders ─────────────────────────────────────────────────
-    // Exclude terminal status_category ('resolved' | 'closed')
-    // (00213:53). work_orders carry only `planned_start_at` (a point,
-    // not a window) → new planned_start_at = planned_start_at +
-    // startDelta (a point follows the move's start delta; there is no
-    // end to classify, so the boundary/custom split doesn't apply).
-    // Set needs_repoint=true + sla_policy_id (from the WO's sla_id
-    // column) so the RPC fires sla.timer_repointed_required
-    // (00394:1011-1031). Do NOT emit a raw sla_due_at — the SLA timer
-    // repoint handler recomputes the due time from the policy; emitting
-    // a hand-shifted sla_due_at here would double-apply.
-    const woRes = await this.supabase.admin
-      .from('work_orders')
-      .select('id, planned_start_at, sla_id, status_category')
-      .eq('tenant_id', tenantId)
-      .eq('booking_id', bookingId)
-      .not('status_category', 'in', '("resolved","closed")');
-    // I-3 (booking-audit codex REJECT): fail CLOSED — a failed
-    // work_orders read silently fell back to `[]`, letting the RPC
-    // commit while setup work_orders / SLA timers stayed at the OLD
-    // time (no sla.timer_repointed_required emit fired).
-    if (woRes.error) {
-      throw AppErrors.server('edit_booking.not_found', {
-        detail: `work_orders read failed: ${woRes.error.message}`,
-        cause: woRes.error,
-      });
-    }
-    const woRows = (woRes.data ?? []) as Array<{
-      id: string;
-      planned_start_at: string | null;
-      sla_id: string | null;
-      status_category: string;
-    }>;
     const work_order_sla_patches: EditPlanWorkOrderSlaPatch[] = woRows
       // planned_start_at is the only field the RPC requires for a WO
       // patch (00394:858 — no `?` guard). A WO with a null
@@ -1245,7 +1243,6 @@ export class AssembleEditPlanService {
       asset_reservation_patches,
       order_patches,
       work_order_sla_patches,
-      skippedMultiSlot: false,
     };
   }
 

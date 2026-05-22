@@ -873,6 +873,10 @@ export type KnownErrorCode =
   | 'edit_booking.work_order_not_in_booking'
   | 'edit_booking.order_not_in_booking'
   | 'edit_booking.asset_reservation_not_in_booking'
+  // TS-side guard at AssembleEditPlanService: a single-slot edit on a
+  // multi-slot booking with booking-keyed linked rows is ambiguous until
+  // child rows gain booking_slot_id/scope attribution.
+  | 'edit_booking.linked_rows_require_booking_scope'
   // B.4.A.4 step 2D-C self-review remediation (PLAN-C1).
   // TS-side fail-fast at AssembleEditPlanService when the rule resolver's
   // new outcome is `require_approval` but `approvalConfig` is null OR
@@ -1718,6 +1722,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'edit_booking.work_order_not_in_booking',
   'edit_booking.order_not_in_booking',
   'edit_booking.asset_reservation_not_in_booking',
+  'edit_booking.linked_rows_require_booking_scope',
   // B.4.A.4 step 2D-C self-review remediation (PLAN-C1 + CODE-I2).
   // rule_missing_approvers: TS-side fail-fast for require_approval-with-no-
   //   approvers (rule-resolver.service.ts:514 admits null approvalConfig).

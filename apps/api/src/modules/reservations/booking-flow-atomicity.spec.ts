@@ -15,9 +15,8 @@ import type { ActorContext, CreateReservationInput } from './dto/types';
 // mapping.
 //
 // What stays:
-//   - Empty / undefined services arrays still bypass the combined RPC
-//     and use the existing `create_booking` path. Tests at the bottom
-//     verify those don't accidentally pull in the new collaborators.
+//   - Empty / undefined services arrays use the same combined RPC with an
+//     empty AttachPlan, so there is one create family.
 //
 // What's new:
 //   - With-services + RPC error paths exercise `mapAttachPlanRpcError`
@@ -85,10 +84,24 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     const admin = {
       rpc: (fn: string, args: unknown) => {
         calls.rpc.push({ fn, args });
-        if (rpcStub) return rpcStub(fn, args);
-        if (fn === 'create_booking') {
+        if (fn === 'claim_producer_resolution_basis') {
           return Promise.resolve({
-            data: { booking_id: BOOKING_ID_NO_SVC, slot_ids: [SLOT_ID_NO_SVC] },
+            data: '2026-05-01T08:00:00.000Z',
+            error: null,
+          });
+        }
+        if (rpcStub) return rpcStub(fn, args);
+        if (fn === 'create_booking_with_attach_plan') {
+          return Promise.resolve({
+            data: {
+              booking_id: bookingId,
+              slot_ids: [SLOT_ID_NO_SVC],
+              order_ids: [],
+              order_line_item_ids: [],
+              asset_reservation_ids: [],
+              approval_ids: [],
+              any_pending_approval: false,
+            },
             error: null,
           });
         }
@@ -232,19 +245,14 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     } as CreateReservationInput;
   }
 
-  // ─── No-services path: existing create_booking RPC ───────────────────
+  // ─── No-services path: combined RPC with empty AttachPlan ─────────────
 
-  it('uses create_booking RPC when services array is empty', async () => {
+  it('uses create_booking_with_attach_plan RPC when services array is empty', async () => {
     const supabase = makeSupabase();
     const conflict = makeConflict();
     const rules = makeRules();
     const bundle = makeBundle();
 
-    // Booking-audit Slice 7 (audit 03 P2-1): the BookingTransactionBoundary
-    // + BookingCompensationService positional args (old ctor positions 8/9)
-    // were removed — both classes are retired. The no-services path never
-    // used them anyway (it goes straight to the atomic `create_booking`
-    // RPC); this test still asserts that.
     const svc = new BookingFlowService(
       supabase as never,
       conflict as never,
@@ -257,13 +265,13 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     const result = await TenantContext.run(TENANT, () => svc.create(baseInput(), makeActor()));
 
     expect(result.id).toBe(BOOKING_ID_NO_SVC);
-    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking')).toBe(true);
-    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking_with_attach_plan')).toBe(false);
+    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking_with_attach_plan')).toBe(true);
+    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking')).toBe(false);
     expect(bundle.attachServicesToBooking).not.toHaveBeenCalled();
     expect(bundle.buildAttachPlan).not.toHaveBeenCalled();
   });
 
-  it('uses create_booking RPC when services is undefined', async () => {
+  it('uses create_booking_with_attach_plan RPC when services is undefined', async () => {
     const supabase = makeSupabase();
     const conflict = makeConflict();
     const rules = makeRules();
@@ -284,8 +292,8 @@ describe('BookingFlowService.create atomicity (B.0.D.2)', () => {
     delete (input as Partial<CreateReservationInput>).services;
     await TenantContext.run(TENANT, () => svc.create(input, makeActor()));
 
-    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking')).toBe(true);
-    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking_with_attach_plan')).toBe(false);
+    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking_with_attach_plan')).toBe(true);
+    expect(supabase.calls.rpc.some((c) => c.fn === 'create_booking')).toBe(false);
   });
 
   // ─── With-services path: combined RPC ───────────────────────────────

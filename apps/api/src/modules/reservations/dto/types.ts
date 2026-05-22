@@ -382,6 +382,13 @@ export interface ActorContext {
    * the controller. The middleware always sets it on real HTTP requests.
    */
   client_request_id?: string;
+  /**
+   * Canonical timestamp used by idempotency-hashed producers while
+   * resolving time-sensitive room/service rules. Entry points claim it
+   * once per idempotency key in Postgres; pure plan-builder tests may
+   * pass it directly.
+   */
+  resolution_basis_at?: string;
 }
 
 export type RecurrenceScope = 'this' | 'this_and_following' | 'series';

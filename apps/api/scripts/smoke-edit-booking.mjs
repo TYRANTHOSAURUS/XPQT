@@ -90,7 +90,9 @@
  *      §10.c-§10.d cleanup branches are no-ops on these bookings. The
  *      cascade pipeline is exercised by the assembler unit tests + the
  *      scope smoke; this probe focuses on the editOne / editSlot wire
- *      paths.
+ *      paths. Fixture E adds a multi-slot booking with a booking-level
+ *      order to prove single-slot edits now fail closed instead of
+ *      silently leaving linked rows behind.
  *   7. **Deliberately NOT covered:**
  *      - Malformed-UUID path id ("not-a-uuid" on `/reservations/:id`) —
  *        the Nest path-pipe rejects it before the controller runs; the
@@ -182,6 +184,7 @@ const FIXTURE_A_DAYS_FROM_NOW = 130;
 const FIXTURE_B_DAYS_FROM_NOW = 131;
 const FIXTURE_C_DAYS_FROM_NOW = 132;
 const FIXTURE_D_DAYS_FROM_NOW = 133;
+const FIXTURE_E_DAYS_FROM_NOW = 134;
 
 // ─────────────────────────────────────────────────────────────────────
 // Idempotency-key shape — replicated from
@@ -369,6 +372,62 @@ function seedFixtureB() {
   `;
   runPsql(sql);
   return { bookingId, primarySlotId, nonPrimarySlotId, startAt, endAt };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Fixture E — multi-slot booking with one live booking-level order.
+// Used to prove the Option-1 guardrail: a single-slot edit on a
+// multi-slot booking with booking-keyed linked rows returns an explicit
+// conflict instead of silently skipping linked-row propagation.
+// ─────────────────────────────────────────────────────────────────────
+
+function seedFixtureE() {
+  const bookingId = crypto.randomUUID();
+  const primarySlotId = crypto.randomUUID();
+  const nonPrimarySlotId = crypto.randomUUID();
+  const orderId = crypto.randomUUID();
+  const anchor = new Date(Date.now() + FIXTURE_E_DAYS_FROM_NOW * 86400_000);
+  anchor.setUTCMinutes(0, 0, 0);
+  anchor.setUTCHours(12);
+  const startAt = anchor.toISOString();
+  const endAt = new Date(anchor.getTime() + 60 * 60_000).toISOString();
+
+  const sql = `
+    set session_replication_role = 'replica';
+    insert into public.bookings
+      (id, tenant_id, title, requester_person_id, location_id,
+       start_at, end_at, timezone, status, source, calendar_etag,
+       cost_amount_snapshot, policy_snapshot, applied_rule_ids)
+    values
+      ('${bookingId}'::uuid, '${TENANT_ID}'::uuid, 'Smoke linked-row fixture E',
+       '${THOMAS_PERSON}'::uuid, '${ROOM_HUDDLE}'::uuid,
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz, 'UTC',
+       'confirmed', 'desk', 'smoke-etag-e-${bookingId.slice(0, 8)}',
+       200.00, '{}'::jsonb, '{}'::uuid[]);
+    insert into public.booking_slots
+      (id, tenant_id, booking_id, slot_type, space_id,
+       start_at, end_at, status, display_order)
+    values
+      ('${primarySlotId}'::uuid, '${TENANT_ID}'::uuid, '${bookingId}'::uuid,
+       'room', '${ROOM_HUDDLE}'::uuid,
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz,
+       'confirmed', 0),
+      ('${nonPrimarySlotId}'::uuid, '${TENANT_ID}'::uuid, '${bookingId}'::uuid,
+       'room', '${ROOM_BOARD}'::uuid,
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz,
+       'confirmed', 1);
+    insert into public.orders
+      (id, tenant_id, requester_person_id, booking_id, status,
+       requested_for_start_at, requested_for_end_at, delivery_location_id)
+    values
+      ('${orderId}'::uuid, '${TENANT_ID}'::uuid, '${THOMAS_PERSON}'::uuid,
+       '${bookingId}'::uuid, 'confirmed',
+       '${startAt}'::timestamptz, '${endAt}'::timestamptz,
+       '${ROOM_HUDDLE}'::uuid);
+    set session_replication_role = 'origin';
+  `;
+  runPsql(sql);
+  return { bookingId, primarySlotId, nonPrimarySlotId, orderId, startAt, endAt };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1827,6 +1886,48 @@ async function runFixtureDProbe(probe, fixtureD) {
   );
 }
 
+async function runFixtureEGuardProbe(probe, fixtureE) {
+  console.log('\n=== Fixture E multi-slot linked-row guard ===');
+
+  const slotsBefore = await readSlotsForBooking(fixtureE.bookingId);
+  const orderBefore = await readOrderById(fixtureE.orderId);
+  passAssertion(
+    'Fixture E setup: 2 slots + 1 live booking-level order',
+    slotsBefore.length === 2 && orderBefore?.id === fixtureE.orderId,
+    `slots=${slotsBefore.length} order=${orderBefore?.id}`,
+  );
+
+  const auditBefore = await settledAuditCount(fixtureE.bookingId);
+  const crid = crypto.randomUUID();
+  const result = await probe('Fixture E: single-slot edit with linked rows → 409', {
+    url: `${API_BASE}/api/reservations/${fixtureE.bookingId}/slots/${fixtureE.nonPrimarySlotId}`,
+    body: { space_id: ROOM_TEAM },
+    clientRequestId: crid,
+    expect: 'conflict',
+  });
+  if (!result.ok) return;
+
+  const parsed = parseJsonSafe(result.body);
+  passAssertion(
+    'Fixture E: code=edit_booking.linked_rows_require_booking_scope',
+    parsed?.code === 'edit_booking.linked_rows_require_booking_scope',
+    `code=${parsed?.code}`,
+  );
+  const slotsAfter = await readSlotsForBooking(fixtureE.bookingId);
+  const editedSlot = slotsAfter.find((slot) => slot.id === fixtureE.nonPrimarySlotId);
+  passAssertion(
+    'Fixture E: rejected edit left non-primary slot unchanged',
+    editedSlot?.space_id === ROOM_BOARD && sameInstant(editedSlot.start_at, fixtureE.startAt),
+    `space=${editedSlot?.space_id} start=${editedSlot?.start_at}`,
+  );
+  const auditAfter = await countAuditEventsForBooking(fixtureE.bookingId);
+  passAssertion(
+    'Fixture E: rejected edit wrote no booking audit event',
+    auditAfter === auditBefore,
+    `delta=${auditAfter - auditBefore}`,
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Op-discrimination probe — Step 2F.3 contract.
 // Fire editOne(crid=X) on Fixture A's booking AND editSlot(crid=X) on
@@ -1926,6 +2027,7 @@ async function main() {
   let fixtureB = null;
   let fixtureC = null;
   let fixtureD = null;
+  let fixtureE = null;
   try {
     console.log('Seeding fixture A (single booking + 1 slot, +130d)…');
     fixtureA = seedFixtureA();
@@ -1947,6 +2049,12 @@ async function main() {
       `  booking ${fixtureD.bookingId.slice(0, 8)}… / order ${fixtureD.orderId.slice(0, 8)}… / ar ${fixtureD.arBoundaryId.slice(0, 8)}…+${fixtureD.arCustomId.slice(0, 8)}… / wo ${fixtureD.workOrderId.slice(0, 8)}…`,
     );
 
+    console.log('Seeding fixture E (multi-slot + booking-level order, +134d)…');
+    fixtureE = seedFixtureE();
+    console.log(
+      `  booking ${fixtureE.bookingId.slice(0, 8)}… / non-primary ${fixtureE.nonPrimarySlotId.slice(0, 8)}… / order ${fixtureE.orderId.slice(0, 8)}…`,
+    );
+
     const accessToken = await mintAdminToken();
     const headers = {
       Authorization: `Bearer ${accessToken}`,
@@ -1960,6 +2068,7 @@ async function main() {
     await runOpDiscriminationProbe(probe, fixtureA, fixtureB);
     await runApprovalFlipProbe(probe, fixtureC);
     await runFixtureDProbe(probe, fixtureD);
+    await runFixtureEGuardProbe(probe, fixtureE);
   } finally {
     console.log('\nCleaning up fixtures…');
     const idsToDelete = [
@@ -1967,6 +2076,7 @@ async function main() {
       fixtureB?.bookingId,
       fixtureC?.bookingId,
       fixtureD?.bookingId,
+      fixtureE?.bookingId,
     ].filter(Boolean);
     if (idsToDelete.length > 0) {
       await deleteFixtures(idsToDelete);

@@ -1875,6 +1875,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't save the booking — not found",
     detail: 'An asset reservation in the edit no longer belongs to this booking. Refresh the page and try again.',
   },
+  'edit_booking.linked_rows_require_booking_scope': {
+    title: "Couldn't save the room change",
+    detail: 'This multi-room booking has booking-level services, assets, or work orders attached. Edit the whole booking, or remove those linked items first.',
+  },
   // B.4.A.4 step 2D-C self-review remediation (PLAN-C1).
   // rule_missing_approvers: thrown by AssembleEditPlanService when the
   // rule resolver's outcome is require_approval but approvalConfig is null

@@ -722,6 +722,7 @@ async function runAtomicAttachProbe(probe, fx, bk) {
   const ordersBefore = countOrders(bk.bookingId);
   const olisBefore = countOlis(bk.bookingId);
   const arsBefore = countAssetReservations(bk.bookingId);
+  const approvalsBefore = countApprovals(bk.bookingId);
   passAssertion(
     '(1) baseline: no orders/OLIs/AR on the fresh booking',
     ordersBefore === 0 && olisBefore === 0 && arsBefore === 0,
@@ -760,14 +761,14 @@ async function runAtomicAttachProbe(probe, fx, bk) {
     countAttachOps(idemKey) === 1 && attachOpOutcome(idemKey) === 'success',
     `count=${countAttachOps(idemKey)} outcome=${attachOpOutcome(idemKey)}`,
   );
-  // No service rule on the plain catering/AV items → no approval → the
-  // booking is not put into approval and the setup-WO emit is NOT
-  // suppressed by any_pending_approval (asserted positively in probe 7;
-  // here we just confirm the no-approval baseline).
+  // No service rule on the plain catering/AV items → this attach adds no
+  // service approval rows. The fixture booking may already have room-rule
+  // approvals from create-time fan-out now that no-services create uses the
+  // canonical create_booking_with_attach_plan path, so assert the delta.
   passAssertion(
-    '(1) no approval rows (plain items, no require_approval rule)',
-    countApprovals(bk.bookingId) === 0,
-    `approvals=${countApprovals(bk.bookingId)}`,
+    '(1) no new approval rows from plain attach (no require_approval service rule)',
+    countApprovals(bk.bookingId) === approvalsBefore,
+    `before=${approvalsBefore} after=${countApprovals(bk.bookingId)}`,
   );
 
   return { crid, idemKey };

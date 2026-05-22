@@ -347,11 +347,13 @@ export class RuleResolverService {
     const { requester, permissions, space, scenario } = args;
     const startMs = Date.parse(scenario.start_at);
     const endMs = Date.parse(scenario.end_at);
+    const basisMs = parseBasisMs(scenario.resolution_basis_at);
     const duration = Number.isFinite(startMs) && Number.isFinite(endMs)
       ? Math.round((endMs - startMs) / 60_000) : 0;
     const lead = Number.isFinite(startMs)
-      ? Math.round((startMs - Date.now()) / 60_000) : 0;
+      ? Math.round((startMs - basisMs) / 60_000) : 0;
     return {
+      resolution_basis_at: scenario.resolution_basis_at,
       requester: {
         id: requester.id,
         role_ids: requester.role_ids,
@@ -396,7 +398,7 @@ export class RuleResolverService {
     // Sort within each bucket by priority desc; flatten (most-specific first).
     const orderedRules: Array<RuleRow & { specificity: number }> = [];
     for (const [specificity, bucket] of candidateBuckets) {
-      bucket.sort((a, b) => b.priority - a.priority);
+      bucket.sort(compareRulesWithinSpecificity);
       for (const r of bucket) orderedRules.push({ ...r, specificity });
     }
 
@@ -437,6 +439,20 @@ export class RuleResolverService {
       final: 'allow',
     };
   }
+}
+
+function parseBasisMs(value: string | undefined): number {
+  if (value !== undefined) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
+function compareRulesWithinSpecificity(a: RuleRow, b: RuleRow): number {
+  const priority = b.priority - a.priority;
+  if (priority !== 0) return priority;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
 // ── Helpers (exported for testing) ─────────────────────────────────────

@@ -14,9 +14,9 @@
  */
 
 /**
- * BookingInput — the booking + slot rows. Mirrors `create_booking` RPC at
- * 00277:236-292 plus the booking-id pre-generation discipline introduced
- * in v6 (§7.4).
+ * BookingInput — the booking + slot rows passed to
+ * `create_booking_with_attach_plan`, with the booking-id pre-generation
+ * discipline introduced in v6 (§7.4).
  */
 export interface BookingInput {
   /** = planUuid(key, 'booking', '0'). Inserted verbatim by the RPC. */

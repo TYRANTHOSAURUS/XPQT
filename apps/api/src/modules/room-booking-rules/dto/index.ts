@@ -61,6 +61,8 @@ export interface BookingScenario {
   end_at: string; // ISO
   attendee_count?: number | null;
   criteria?: Record<string, unknown>;
+  /** Stable "now" for idempotency-hashed producers; defaults to process time. */
+  resolution_basis_at?: string;
 }
 
 export interface SimulateDto {

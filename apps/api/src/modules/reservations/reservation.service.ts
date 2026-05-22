@@ -12,6 +12,7 @@ import { BookingNotificationsService } from './booking-notifications.service';
 import { AssembleEditPlanService } from './assemble-edit-plan.service';
 import { BundleCascadeService } from '../booking-bundles/bundle-cascade.service';
 import { BundleEventBus } from '../booking-bundles/bundle-event-bus';
+import { claimProducerResolutionBasis } from './producer-resolution-basis';
 import {
   SLOT_WITH_BOOKING_SELECT,
   slotWithBookingToReservation,
@@ -996,9 +997,25 @@ export class ReservationService {
     // if anything moved between findByIdOrThrow and the RPC).
     const targetSlotPre = await this.findByIdOrThrowAtSlot(primarySlotId, tenantId);
 
+    // B.4 Step 2F.3 — op discriminator. The 3rd arg ('one') namespaces
+    // the idempotency key so a frontend that buggily reuses a
+    // clientRequestId across editOne + editSlot + editScope mints distinct
+    // command_operations rows instead of collapsing onto the first call's
+    // cached result. The producer-resolution basis is claimed BEFORE plan
+    // assembly so lead-time rule predicates are stable across retries.
+    const idempotencyKey = buildEditBookingIdempotencyKey(id, clientRequestId, 'one');
+    const resolutionBasisAt = await claimProducerResolutionBasis({
+      supabase: this.supabase,
+      tenantId,
+      idempotencyKey,
+      producer: 'booking.edit.one',
+      log: this.log,
+    });
+
     const plan = await this.assembleEditPlan.assembleEditPlan({
       bookingId: id,
       tenantId,
+      resolutionBasisAt,
       slotId: primarySlotId,
       patch: {
         kind: 'one',
@@ -1019,14 +1036,6 @@ export class ReservationService {
     // retained in the registry for defense-in-depth — any future regression
     // that re-introduces the gate must reuse it. Sibling lifts: editSlot
     // below + editScope in assemble-edit-plan.service.ts.
-
-    // B.4 Step 2F.3 — op discriminator. The 3rd arg ('one') namespaces
-    // the idempotency key so a frontend that buggily reuses a
-    // clientRequestId across editOne + editSlot + editScope mints distinct
-    // command_operations rows instead of collapsing onto the first call's
-    // cached result. See idempotency.ts:333-358 for the key shape; closes
-    // the cross-op-collision followup in docs/follow-ups/b4-followups.md.
-    const idempotencyKey = buildEditBookingIdempotencyKey(id, clientRequestId, 'one');
 
     const { error: rpcErr } = await this.supabase.admin.rpc('edit_booking', {
       p_booking_id: id,
@@ -1327,9 +1336,22 @@ export class ReservationService {
       });
     }
 
+    // B.4 Step 2F.3 — op discriminator (see editOne above; same rationale).
+    // Claim the producer basis before assembly so time-sensitive rule
+    // outcomes are stable for the command_operations idempotency key.
+    const idempotencyKey = buildEditBookingIdempotencyKey(bookingId, clientRequestId, 'slot');
+    const resolutionBasisAt = await claimProducerResolutionBasis({
+      supabase: this.supabase,
+      tenantId,
+      idempotencyKey,
+      producer: 'booking.edit.slot',
+      log: this.log,
+    });
+
     const plan = await this.assembleEditPlan.assembleEditPlan({
       bookingId,
       tenantId,
+      resolutionBasisAt,
       slotId,
       patch: {
         kind: 'slot',
@@ -1345,9 +1367,6 @@ export class ReservationService {
     // shipped, so approval-flipping edits flow through to the RPC. The
     // error code `booking.edit_requires_notification_dispatch` stays
     // registered for defense-in-depth.
-
-    // B.4 Step 2F.3 — op discriminator (see editOne above; same rationale).
-    const idempotencyKey = buildEditBookingIdempotencyKey(bookingId, clientRequestId, 'slot');
 
     const { error: rpcErr } = await this.supabase.admin.rpc('edit_booking', {
       p_booking_id: bookingId,
@@ -1675,6 +1694,13 @@ export class ReservationService {
       clientRequestId,
       'scope',
     );
+    const resolutionBasisAt = await claimProducerResolutionBasis({
+      supabase: this.supabase,
+      tenantId,
+      idempotencyKey,
+      producer: 'booking.edit.scope',
+      log: this.log,
+    });
 
     // Booking-audit remediation Slice 4 (audit 03 P1-2): the codex
     // C1+C2 `skipSplitSeries` command_operations pre-check (a brittle
@@ -1769,6 +1795,7 @@ export class ReservationService {
       bookingId,
       tenantId,
       effectiveSeriesId,
+      resolutionBasisAt,
       patch: {
         kind: 'scope',
         space_id: body.space_id,

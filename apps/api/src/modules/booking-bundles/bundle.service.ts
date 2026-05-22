@@ -26,6 +26,7 @@ import {
   comparePlanOrderLineItems,
   comparePlanOrders,
 } from './plan-sort';
+import { claimProducerResolutionBasis } from '../reservations/producer-resolution-basis';
 
 /**
  * BundleService — orchestration parent for booking + N services.
@@ -45,13 +46,11 @@ import {
  *     bus expects them (event names retain `bundle.*` for now — bus subscribers
  *     are out-of-scope slices).
  *
- * Atomicity (v1):
- *   Booking creation itself is now atomic via the `create_booking` RPC
- *   (00277:236) — the booking + slot rows go in inside one transaction.
- *   Service attachment (this service) still uses a sequence of Supabase
- *   calls with explicit cleanup-on-error. Asset GiST exclusion still fires
- *   at insert time so dual-bookings are impossible. A future refactor will
- *   pull the whole pipeline into a single Postgres function.
+ * Atomicity:
+ *   Booking creation with optional services runs through
+ *   `create_booking_with_attach_plan`; post-create service attachment runs
+ *   through `attach_services_to_existing_booking`. Both are single
+ *   PL/pgSQL transactions with idempotency guards.
  *
  * Method rename:
  *   - `attachServicesToReservation` → `attachServicesToBooking`. The legacy
@@ -151,6 +150,8 @@ export interface BuildAttachPlanArgs {
     host_person_id: string | null;
     start_at: string;
     end_at: string;
+    /** Stable fallback basis for direct plan-builder callers. */
+    created_at?: string;
     /**
      * Pulled from the primary slot at create-time (= the slot at lowest
      * display_order). Drives per_attendee pricing in the rule resolver.
@@ -184,6 +185,8 @@ export interface BuildAttachPlanArgs {
    * retries with the same key produce byte-identical jsonb. Spec §7.4.
    */
   idempotency_key: string;
+  /** Stable "now" for lead-time predicates. Claimed once per idempotency key. */
+  resolution_basis_at?: string;
 }
 
 export interface AttachServicesResult {
@@ -239,9 +242,8 @@ export class BundleService {
 
   /**
    * The canonical "attach N services to an existing booking" path. Called
-   * from `BookingFlowService.create` after the `create_booking` RPC lands
-   * the booking + slot rows, and from the standalone-order pipeline
-   * (with a pre-existing booking, if any).
+   * only when a booking already exists; create-time services are folded
+   * into `create_booking_with_attach_plan`.
    */
   async attachServicesToBooking(args: AttachServicesArgs): Promise<AttachServicesResult> {
     if (args.services.length === 0) {
@@ -281,6 +283,13 @@ export class BundleService {
       args.booking_id,
       clientRequestId,
     );
+    const resolutionBasisAt = await claimProducerResolutionBasis({
+      supabase: this.supabase,
+      tenantId,
+      idempotencyKey,
+      producer: 'bundle.attach_services',
+      log: this.log,
+    });
 
     // Reuse the EXISTING pure/deterministic plan-builder (every UUID via
     // planUuid(idempotencyKey) — bundle.service.ts buildAttachPlan). Same
@@ -305,6 +314,7 @@ export class BundleService {
       bundle: args.bundle,
       services: args.services,
       idempotency_key: idempotencyKey,
+      resolution_basis_at: resolutionBasisAt,
     });
 
     // ── Atomic RPC ─────────────────────────────────────────────────────
@@ -468,8 +478,10 @@ export class BundleService {
    *     before any insert); the plan still ships with the deny_messages
    *     populated for the surfaced error.
    *
-   * Dormant in B.0.C — `BookingFlowService.create` keeps using
-   * `attachServicesToBooking` until B.0.D rewires the call site.
+   * Used by `BookingFlowService.create` / `MultiRoomBookingService.createGroup`
+   * to fold service rows into `create_booking_with_attach_plan`, and by the
+   * standalone attach RPC wrapper before calling
+   * `attach_services_to_existing_booking`.
    */
   async buildAttachPlan(args: BuildAttachPlanArgs): Promise<AttachPlan> {
     if (!args.idempotency_key || args.idempotency_key.length === 0) {
@@ -530,6 +542,11 @@ export class BundleService {
     }
 
     // ── 2. Synthesize a BookingRow for the existing helpers ────────────────
+    const resolutionBasisAt =
+      args.resolution_basis_at ??
+      args.booking.created_at ??
+      new Date().toISOString();
+
     const booking: BookingRow = {
       id: args.booking_id,
       tenant_id: args.tenant_id,
@@ -541,10 +558,11 @@ export class BundleService {
       attendee_count: args.booking.attendee_count,
       booking_bundle_id: args.booking_id,         // booking IS the bundle
       source: args.booking.source,
+      created_at: resolutionBasisAt,
     };
 
     // ── 3. Hydrate lines (catalog lookup + menu offer + lead-time guard) ──
-    const lines = await this.hydrateLines(args.services, booking);
+    const lines = await this.hydrateLines(args.services, booking, resolutionBasisAt);
     // Re-verify per-service-type uniqueness now that we know each line's
     // service_type (the per-order scope mandated by §7.4 v8).
     const lineIdByServiceType = new Map<string, Set<string>>();
@@ -733,6 +751,7 @@ export class BundleService {
             line_count: lines.length,
           },
           permissions,
+          resolution_basis_at: resolutionBasisAt,
         });
       },
     });
@@ -1427,7 +1446,7 @@ export class BundleService {
     const tenantId = TenantContext.current().id;
     const { data, error } = await this.supabase.admin
       .from('bookings')
-      .select('id, tenant_id, location_id, requester_person_id, host_person_id, start_at, end_at, source')
+      .select('id, tenant_id, location_id, requester_person_id, host_person_id, start_at, end_at, source, created_at')
       .eq('id', id)
       .eq('tenant_id', tenantId)
       .maybeSingle();
@@ -1444,6 +1463,7 @@ export class BundleService {
       start_at: string;
       end_at: string;
       source: string | null;
+      created_at: string;
     };
 
     // Pull attendee_count from the booking's primary slot (lowest
@@ -1469,12 +1489,17 @@ export class BundleService {
       attendee_count: (slot as { attendee_count: number | null } | null)?.attendee_count ?? null,
       booking_bundle_id: row.id,                  // booking IS the bundle now
       source: row.source,
+      created_at: row.created_at,
     };
   }
 
-  private async hydrateLines(inputs: ServiceLineInput[], booking: BookingRow): Promise<HydratedLine[]> {
+  private async hydrateLines(
+    inputs: ServiceLineInput[],
+    booking: BookingRow,
+    resolutionBasisAt: string,
+  ): Promise<HydratedLine[]> {
     const out: HydratedLine[] = [];
-    const now = Date.now();
+    const now = parseBasisMs(resolutionBasisAt);
     const tenantId = booking.tenant_id;
     for (const input of inputs) {
       // Look up the catalog item — gives us category + price/unit defaults
@@ -1958,6 +1983,7 @@ interface BookingRow {
   attendee_count: number | null;            // pulled from primary slot
   booking_bundle_id: string | null;         // = id (legacy alias for in-service code)
   source: string | null;
+  created_at: string;
 }
 
 interface HydratedLine {
@@ -1986,4 +2012,9 @@ function isExclusionViolation(err: unknown): boolean {
     'code' in err &&
     (err as { code: string }).code === '23P01'
   );
+}
+
+function parseBasisMs(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Date.now();
 }

@@ -101,6 +101,8 @@ Script: `apps/api/scripts/smoke-edit-booking.mjs`. Run via `pnpm --filter @prequ
 
 **Fixture D is mandatory (P0-2/P0-3 closure, 2026-05-16):** this gate MUST include the linked-row Fixture D — a single booking + 1 catering order + 1 OLI + a boundary-aligned `asset_reservation` + a custom-window `asset_reservation` + 1 setup `work_order`, asserting that the post-edit instants propagate to all linked rows (see `docs/follow-ups/audits/03-booking-reservation.md` P0-2 / P0-3). A fixture with NO linked rows is insufficient: the empty-patch-array bug (Agent 3 P0-2) was invisible precisely because the prior fixtures (A/B) intentionally seeded no services/orders/work_orders. The §10.c–§10.d RPC cascade branches must be exercised against real linked rows, not no-ops.
 
+**Fixture E is mandatory (multi-slot guardrail, 2026-05-22):** this gate MUST include a multi-slot booking with at least one live booking-level linked row and assert that a single-slot edit returns `409 edit_booking.linked_rows_require_booking_scope` with no slot mutation or booking audit write. This protects the current data model until linked rows gain explicit `booking_slot_id` attribution.
+
 ---
 
 ## `pnpm smoke:cancel-booking`
