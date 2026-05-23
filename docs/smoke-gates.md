@@ -324,6 +324,26 @@ The same binary green/red outcome holds; the label tells the on-call which layer
 
 **JWT mint** mirrors `smoke-cross-tenant.mjs`: Supabase admin magiclink → verify-redirect access_token, for `ADMIN_AUTH_UID=93d41232-35b5-424c-b215-bb5d55a2dfd9` (default; override via `PROD_E2E_AUTH_UID=<uuid>` if the canonical user is rotated or deactivated — replacement MUST be an active admin in the canonical tenant). Requires `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_PUBLISHABLE_KEY` in `.env` (or the process env, for CI). No `JWT_SECRET` required — the Supabase admin client mints session tokens server-side. The minted token is NEVER logged (not even a prefix) — log surfaces only `admin browser JWT minted (token redacted)`. Verify-redirect parse failures surface only the redirect origin, never the full URL.
 
+**Running the gate in CI (F4, 2026-05-20).** A `prod-e2e-smoke` job in `.github/workflows/deploy.yml` runs this script after the Render `live` confirmation. The job depends on the `render` job; when secrets are present a red probe fails the workflow (strict failure semantics). For the job to mint a JWT and call the deployed API it needs three GitHub Actions secrets on the repo:
+
+| Secret name | Role | Source |
+|---|---|---|
+| `SUPABASE_URL` | Project URL the SDK + verify-redirect host derive from. | `.env` local mirror — value is public-by-design but still required as a secret. |
+| `SUPABASE_SECRET_KEY` | Service-role key. Used by `supabase.auth.admin.generateLink('magiclink')` to mint a session token server-side for the canonical admin user. NEVER exposed to the client. | `.env` local mirror — sensitive. |
+| `SUPABASE_PUBLISHABLE_KEY` | Anon/publishable key. Passed into `createClient(...)`'s second arg so the verify-redirect uses the correct site URL. NEVER substituted with the service-role key in CI. | `.env` local mirror — public-by-design but still required. |
+
+**Warning-only until the three secrets land.** The job opens with a `prod_e2e_secrets` preflight that reads each secret into the step env and emits `present=true|false` to `$GITHUB_OUTPUT`. Every subsequent step (`actions/checkout`, pnpm/Node setup, install, build, smoke) is gated by `if: steps.prod_e2e_secrets.outputs.present == 'true'`. When any secret is missing the preflight emits a yellow workflow annotation (`::warning title=prod-e2e smoke skipped::…`) and a `### prod-e2e smoke skipped` block in the workflow run summary — the deploy itself stays green. The gap is visible on every deploy until secrets are added; it never silently disappears, and it never reds the deploy. Once the secrets are present, the next deploy picks the smoke up automatically — no code change required to flip it on.
+
+User-side wire-up (one-time, run from a workstation with the values from `.env`):
+
+```bash
+gh secret set SUPABASE_URL              # paste the SUPABASE_URL value from .env
+gh secret set SUPABASE_SECRET_KEY       # paste the SUPABASE_SECRET_KEY value from .env
+gh secret set SUPABASE_PUBLISHABLE_KEY  # paste the SUPABASE_PUBLISHABLE_KEY value from .env
+```
+
+Locally (outside CI) the smoke continues to read the same three values from `.env`, so a developer can run `pnpm smoke:prod-e2e` against prod at any time without GH Actions wiring.
+
 **Not covered (by design):**
 - Writes. This is a read-only gate. Write-path coverage stays in the dev-API smoke gates.
 - Realtime channel. The Realtime regression class is covered by `smoke:cross-tenant`'s browser-path RLS probe.

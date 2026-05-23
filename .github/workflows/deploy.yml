@@ -117,3 +117,99 @@ jobs:
             esac
           done
           echo "Timed out waiting for Render deploy"; exit 1
+
+  prod-e2e-smoke:
+    # F4 (2026-05-20) — post-deploy gate against live Render. Hits four
+    # authenticated browser surfaces (/api/health, /api/me/inbox,
+    # /api/me/inbox/count, /api/persons/me) and fails the workflow if
+    # any of the three named failure classes fire (transport /
+    # http-status / body-shape). The same gate runs locally via
+    # `pnpm smoke:prod-e2e` for manual post-deploy verification.
+    #
+    # WARNING-ONLY UNTIL SECRETS ARE WIRED.
+    # A preflight step checks whether SUPABASE_URL / SUPABASE_SECRET_KEY /
+    # SUPABASE_PUBLISHABLE_KEY exist in GH Actions secrets. If any is
+    # missing, the smoke is skipped with a yellow workflow annotation +
+    # step-summary line; the deploy itself stays green. The day all three
+    # are set via `gh secret set …`, the smoke activates automatically on
+    # the next deploy — no code change required to flip it on.
+    name: Smoke (prod e2e — authenticated browser surfaces)
+    needs: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - id: prod_e2e_secrets
+        # Preflight gate. We DO NOT read secret values into outputs
+        # (anything written to GITHUB_OUTPUT is treated as untrusted) —
+        # only a boolean `present` derived from whether each is non-empty.
+        # The mapping into the local env is scoped to this single step;
+        # subsequent steps re-read the secrets context directly when (and
+        # only when) `present == 'true'`.
+        name: Check prod-e2e smoke secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_SECRET_KEY" ] && [ -n "$SUPABASE_PUBLISHABLE_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "prod-e2e smoke secrets present — running smoke."
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=prod-e2e smoke skipped::Missing one or more of SUPABASE_URL / SUPABASE_SECRET_KEY / SUPABASE_PUBLISHABLE_KEY in GH Actions secrets. Authenticated prod smoke did not run."
+            {
+              echo "### prod-e2e smoke skipped"
+              echo ""
+              echo "Missing one or more of \`SUPABASE_URL\` / \`SUPABASE_SECRET_KEY\` / \`SUPABASE_PUBLISHABLE_KEY\` in GH Actions secrets. The authenticated post-deploy smoke (\`pnpm smoke:prod-e2e\`) did not run for this deploy."
+              echo ""
+              echo "To enable, run on a workstation with the values from \`.env\`:"
+              echo ""
+              echo '```bash'
+              echo "gh secret set SUPABASE_URL              # https://iwbqnyrvycqgnatratrk.supabase.co"
+              echo "gh secret set SUPABASE_SECRET_KEY       # service-role key"
+              echo "gh secret set SUPABASE_PUBLISHABLE_KEY  # anon / publishable key"
+              echo '```'
+              echo ""
+              echo "The next deploy after the secrets land will pick the smoke up automatically — no code change required."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - if: steps.prod_e2e_secrets.outputs.present == 'true'
+        uses: actions/checkout@v4
+
+      - if: steps.prod_e2e_secrets.outputs.present == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - if: steps.prod_e2e_secrets.outputs.present == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - if: steps.prod_e2e_secrets.outputs.present == 'true'
+        name: Install
+        # Only @supabase/supabase-js + the apps/api script are needed to
+        # run the smoke; the broader monorepo install is fast (~30s) and
+        # avoids divergence vs. the validate job. No frozen lockfile to
+        # tolerate pnpm hot-fix updates.
+        run: pnpm install --no-frozen-lockfile
+
+      - if: steps.prod_e2e_secrets.outputs.present == 'true'
+        name: Build shared
+        # Required by apps/api scripts that import @prequest/shared.
+        run: pnpm --filter @prequest/shared build
+
+      - if: steps.prod_e2e_secrets.outputs.present == 'true'
+        name: Smoke prod-e2e (live Render)
+        # R1_LANDED=1 — every prod-deploy after PR #36 has the
+        # /api/persons/me fix; the gate's R1 probe is permanently on.
+        # On red exit, the workflow fails — Render rollback / fix-forward
+        # are operator decisions, not auto-rolled here.
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          R1_LANDED: '1'
+        run: pnpm smoke:prod-e2e
