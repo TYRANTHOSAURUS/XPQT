@@ -319,39 +319,62 @@ function browserGrantPosture() {
   return { writesLeft, selectMissing };
 }
 
-// 00417 guard: NO postgres-owned (i.e. app/migration-authored) public
-// routine may be browser-role-EXECUTE-able except the audit-documented
-// bearer-token trio. Scoped to `proowner = postgres` deliberately: the
-// ~219 still-executable routines are pg_trgm/btree_gist extension math
-// owned by `supabase_admin` — they carry NO tenant data and CANNOT be
-// revoked from the non-owner migration role, so asserting "zero of ALL
-// routines" would be an unachievable paper-tiger gate. The
-// security-meaningful, achievable invariant is "zero app routines"
-// (every SECURITY DEFINER tenant-data fn — incl. the proven leak
-// tickets_distinct_tags — is postgres-owned). Must be 0.
+// 00420/00422 guard: browser roles MUST retain EXECUTE on RLS helper
+// functions, but MUST NOT retain EXECUTE on app-owned SECURITY DEFINER
+// business routines. Blanket schema-wide EXECUTE revokes break Supabase
+// RLS because policies call helpers such as current_tenant_id() as the
+// querying role. The security-meaningful invariant is narrower:
+//   - authenticated can execute the audited bearer-token trio
+//   - authenticated can execute gdpr_caller_has(), which RLS policies use
+//   - authenticated cannot execute any other postgres-owned SECURITY
+//     DEFINER routine, because those bypass RLS/table grants
+//   - service_role can still execute them for the NestJS API path
 const BEARER_TRIO = [
   'validate_invitation_token',
   'peek_invitation_token',
   'validate_kiosk_token',
 ];
+const RLS_DEFINER_HELPERS = ['gdpr_caller_has'];
 function browserExecuteGrantPosture() {
   const { dbPass, dbUrl } = proofDbArgs();
-  const trio = BEARER_TRIO.map((n) => `'${n}'`).join(',');
+  const allowedNames = [...BEARER_TRIO, ...RLS_DEFINER_HELPERS].map((n) => `'${n}'`).join(',');
   const sql = `select count(*)
     from pg_proc p
     where p.pronamespace = 'public'::regnamespace
       and pg_get_userbyid(p.proowner) = 'postgres'
+      and p.prosecdef
       and has_function_privilege('authenticated', p.oid, 'EXECUTE')
-      and p.proname not in (${trio});`;
-  return Number(
-    execFileSync(
-      'psql',
-      [dbUrl, '-tA', '-v', 'ON_ERROR_STOP=1', '-c', sql],
-      { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
-    )
-      .toString()
-      .trim(),
-  );
+      and p.proname not in (${allowedNames});
+
+    select count(*)
+    from (values
+      ('public.validate_invitation_token(text,text)'::regprocedure),
+      ('public.peek_invitation_token(text,text)'::regprocedure),
+      ('public.validate_kiosk_token(text)'::regprocedure),
+      ('public.gdpr_caller_has(text)'::regprocedure)
+    ) allowed(oid)
+    where not has_function_privilege('authenticated', allowed.oid, 'EXECUTE');
+
+    select count(*)
+    from pg_proc p
+    where p.pronamespace = 'public'::regnamespace
+      and pg_get_userbyid(p.proowner) = 'postgres'
+      and p.prosecdef
+      and not has_function_privilege('service_role', p.oid, 'EXECUTE');`;
+  const out = execFileSync(
+    'psql',
+    [dbUrl, '-tA', '-v', 'ON_ERROR_STOP=1', '-c', sql],
+    { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
+  )
+    .toString()
+    .trim()
+    .split('\n')
+    .map((n) => Number(n));
+  return {
+    riskyLeft: out[0] ?? Number.NaN,
+    allowedMissing: out[1] ?? Number.NaN,
+    serviceMissing: out[2] ?? Number.NaN,
+  };
 }
 
 function cleanupIdorNotificationFixture() {
@@ -967,27 +990,77 @@ async function probe(name, options) {
       }
     }
 
-    // ── 00417: browser-role EXECUTE revoked on public functions ──
-    // (codex done-check 2026-05-18 found a LIVE cross-tenant leak via
-    // SECURITY DEFINER tickets_distinct_tags(tenant) granted to
-    // authenticated — it trusts the caller-supplied tenant arg.)
-    const execLeft = browserExecuteGrantPosture();
-    if (execLeft === 0) {
+    // Normal browser/PostgREST read on an RLS-protected table. This is
+    // the regression 00417 missed: helper EXECUTE over-revocation turns
+    // harmless RLS reads into 42501 "permission denied for function
+    // current_tenant_id". With the safe 00420/00422 posture this returns
+    // 200 (usually [] because this project does not mint tenant_id claims).
+    const rlsRead = await fetch(
+      `${env.SUPABASE_URL}/rest/v1/bookings?select=id&limit=1`,
+      {
+        headers: {
+          apikey: env.SUPABASE_PUBLISHABLE_KEY,
+          Authorization: `Bearer ${browserTok}`,
+        },
+      },
+    );
+    const rlsReadBody = await rlsRead.text();
+    if (rlsRead.status === 200) {
       results.pass += 1;
       console.log(
-        '  ✓ anon/authenticated EXECUTE on ZERO postgres-owned app routines except the bearer-token trio (00417)',
+        '  ✓ browser-direct RLS read still works (bookings select did not hit helper EXECUTE denial)',
       );
     } else {
       results.fail += 1;
-      results.failed.push('Browser EXECUTE grants NOT revoked (00417 not applied / regressed)');
+      results.failed.push('Browser RLS read failed after routine EXECUTE changes');
       console.log(
-        `  ✗ ${execLeft} postgres-owned app routines still anon/authenticated-EXECUTABLE beyond the trio — apply migration 00417`,
+        `  ✗ browser-direct bookings read → HTTP ${rlsRead.status}; body=${rlsReadBody.slice(0, 180)}`,
+      );
+    }
+
+    // ── 00420/00422: RLS helpers preserved, risky SECURITY DEFINER routines revoked ──
+    // Codex done-check 2026-05-18 found a LIVE cross-tenant leak via
+    // SECURITY DEFINER tickets_distinct_tags(tenant). 00420 corrected the
+    // unsafe blanket 00417 revoke; 00422 revokes browser EXECUTE from the
+    // remaining app-owned SECURITY DEFINER business routines while keeping
+    // RLS helpers executable.
+    const { riskyLeft, allowedMissing, serviceMissing } = browserExecuteGrantPosture();
+    if (riskyLeft === 0) {
+      results.pass += 1;
+      console.log(
+        '  ✓ anon/authenticated cannot EXECUTE app-owned SECURITY DEFINER routines except RLS/bearer allowlist',
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Risky SECURITY DEFINER routines still browser-executable');
+      console.log(
+        `  ✗ ${riskyLeft} app-owned SECURITY DEFINER routines still anon/authenticated-EXECUTABLE beyond allowlist — apply 00422`,
+      );
+    }
+    if (allowedMissing === 0) {
+      results.pass += 1;
+      console.log('  ✓ RLS/bearer routine EXECUTE allowlist is preserved');
+    } else {
+      results.fail += 1;
+      results.failed.push('Required RLS/bearer routine EXECUTE missing');
+      console.log(
+        `  ✗ ${allowedMissing} required RLS/bearer routines lost authenticated EXECUTE — over-broad revoke`,
+      );
+    }
+    if (serviceMissing === 0) {
+      results.pass += 1;
+      console.log('  ✓ service_role retains EXECUTE on app-owned SECURITY DEFINER routines');
+    } else {
+      results.fail += 1;
+      results.failed.push('service_role EXECUTE missing on SECURITY DEFINER routines');
+      console.log(
+        `  ✗ ${serviceMissing} app-owned SECURITY DEFINER routines missing service_role EXECUTE`,
       );
     }
     // Decisive live red→green: the proven leak. Authenticated TENANT_A
     // browser token calls the SECURITY DEFINER fn with a FOREIGN tenant.
-    // Pre-00417: HTTP 200 + that tenant's tags. Post-00417: grant-denied
-    // (PostgREST 404 PGRST202 / 401 / 403). Status ∉ 2xx ⇒ denied.
+    // Pre-fix: HTTP 200 + that tenant's tags. Post-fix: grant-denied
+    // (PostgREST 404 PGRST202 / 401 / 403). Status outside 2xx = denied.
     const lr = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/tickets_distinct_tags`, {
       method: 'POST',
       headers: {

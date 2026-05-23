@@ -242,19 +242,23 @@ All fabricated test data is cleaned up on exit.
 
 ## `pnpm smoke:cross-tenant`
 
-**Required before claiming complete:** any work touching `AuthGuard`, `AdminGuard`, `PermissionGuard`, the global tenant binding bridge, or any admin/config controller that previously read `TenantContext.current()` without bridging `auth_uid → users`.
+**Required before claiming complete:** any work touching `AuthGuard`, `AdminGuard`, `PermissionGuard`, the global tenant binding bridge, any admin/config controller that previously read `TenantContext.current()` without bridging `auth_uid → users`, browser-role grants, RLS helper functions, or SECURITY DEFINER RPC EXECUTE posture.
 
 Script: `apps/api/scripts/smoke-cross-tenant.mjs`.
 
-**The gate this protects.** Pre-Slice-1 the `X-Tenant-Id` header was trusted with no JWT cross-check, so any authenticated user could read/write 9 admin-controller surfaces (workflow, routing-rules, sla-policies, etc.) in any tenant by flipping the header (`docs/follow-ups/audits/04-rls-security.md` P0 §`X-Tenant-Id` header trusted). Slice 1 (`auth.guard.ts`) bridges `auth_uid → public.users(id) WHERE tenant_id AND status='active'` and 403s mismatch with `auth.user_not_in_tenant`. Slice 2 layers `@UseGuards(AdminGuard)` on the 10 named admin controllers as belt+suspenders.
+**The gate this protects.** Pre-Slice-1 the `X-Tenant-Id` header was trusted with no JWT cross-check, so any authenticated user could read/write admin-controller surfaces (workflow, routing-rules, sla-policies, etc.) in any tenant by flipping the header (`docs/follow-ups/audits/04-rls-security.md` P0 §`X-Tenant-Id` header trusted). Later slices added same-tenant non-admin escalation probes, browser-direct table-write grant checks (`00415`), and browser-direct RPC EXECUTE checks (`00420`/`00422`). The gate now protects both the NestJS API perimeter and direct Supabase/PostgREST posture.
 
 **Fixture:** TENANT_B (`00000000-0000-0000-0000-0000000000b1`) seeded directly via psql with `session_replication_role = 'replica'` to skip the drifted `trg_tenants_seed_retention` trigger. Idempotent — re-runs are no-ops.
 
-**12 probes:**
+**Probe classes:**
 
 - **Regression — own-tenant** (2): Tenant-A admin JWT + Tenant-A header → `GET /workflows` and `GET /routing-rules` return 200. Confirms the bridge didn't break the happy path.
 - **Regression — bare auth** (1): no Bearer token → 401. Confirms AuthGuard still rejects unauthenticated requests.
 - **P0 attack — cross-tenant GETs** (6): Tenant-A admin JWT + `X-Tenant-Id: TENANT_B` against the 6 admin GET endpoints from the audit (`workflows`, `routing-rules`, `sla-policies`, `space-groups`, `location-teams`, `domain-parents`) → all 403. Verified red-before-green: against pre-Slice-1 main these all returned 200 with target-tenant data.
 - **Slice 1 + Slice 2 belt+suspenders — cross-tenant POSTs** (3): same JWT + cross-tenant header, with a write body → 403 on `workflows`, `routing-rules`, `sla-policies`. Safe to run continuously because AuthGuard rejects before the controller / RPC sees any body (no attacker rows land in Tenant B).
-
-**Known gap deferred to Slice 3.b:** no same-tenant non-admin probe. Requires a second auth fixture (non-admin user in TENANT_A) we don't seed yet. Once added, will assert that AdminGuard (Slice 2) rejects non-admin same-tenant POSTs even when the bridge (Slice 1) passes.
+- **Same-tenant non-admin escalation:** non-admin TENANT_A JWT can use bootstrap/operational reads, but cannot self-grant Admin, add itself to privileged teams, create privileged delegations, or reach admin/config mutation surfaces without the exact `@RequirePermission` key.
+- **Permission re-gate proof:** a non-admin role with a precise permission key can pass the new `@RequirePermission` path where blanket `AdminGuard` would have incorrectly denied.
+- **Notification read-state IDOR:** legacy `/notifications/:id/read` and person-scoped notification routes are gone; seeded victim notification stays unread after attacker probes.
+- **Browser-direct table DML:** `anon`/`authenticated` hold no INSERT/UPDATE/DELETE on any public base table; SELECT is retained on Realtime-published tables.
+- **Browser-direct normal RLS read:** authenticated PostgREST read on an RLS-protected table returns normally, proving RLS helper EXECUTE was not over-revoked.
+- **Browser-direct RPC EXECUTE:** `anon`/`authenticated` cannot execute app-owned SECURITY DEFINER routines except the audited bearer-token trio and RLS helper allowlist; `tickets_distinct_tags(uuid)` is explicitly denied; service_role retains EXECUTE for the API path.
