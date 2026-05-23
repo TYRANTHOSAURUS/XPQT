@@ -560,6 +560,56 @@ Completion bar:
 - Smoke gates prove the fixed paths against the live API.
 ```
 
+## Codex Re-Review Verdict — 2026-05-19
+
+Reviewer: Codex, static code review against current `feature/booking-audit-remediation` plus the audit ledger. No new smoke run in this pass; prior Slice F smoke evidence is accepted as recorded.
+
+### Validated Checkmarks
+
+| Finding / claim | Codex validation | Evidence |
+|---|---:|---|
+| P0-1 bulk update back door closed | ✅ validated | Bulk update still routes through `TicketService.update()` per id with CRID guard and no raw ticket update back door. |
+| P0-2 SLA escalation assignment no longer raw-updates assignment | ✅ validated | `SlaService.applyReassignment()` now builds `buildSlaEscalationIdempotencyKey(...)`, probes `command_operations`, and calls `set_entity_assignment` with assignment + watcher + reason payload. The remaining `updateTicketOrWorkOrder()` calls are SLA-internal timer/status columns, not assignment-changing writes. |
+| P1-1 case reassign no longer TS choreography | ✅ validated | `TicketService.reassign()` uses `buildReassignIdempotencyKey('case', ...)`, evaluates resolver before writing, probes committed command operation, and calls `set_entity_assignment`. No raw assignment clear/write + separate `routing_decisions` + activity path remains. |
+| P1-1 work_order reassign no longer TS choreography | ✅ validated | `WorkOrderService.reassign()` uses `buildReassignIdempotencyKey('work_order', ...)`, probes committed command operation, and calls `set_entity_assignment`; swallowed routing/activity writes are gone. |
+| P1-2 routing-evaluation handler status clear is atomic | ✅ validated | `RoutingEvaluationHandler` passes `clear_routing_status:'true'` and `decision` into `set_entity_assignment`; standalone success-path `tickets.routing_status` update and standalone `routing_decisions.insert` are gone. |
+| P1-5 child work_order visibility leak closed | ✅ validated | `TicketService.getChildTasks()` calls `TicketVisibilityService.getVisibleWorkOrderIds(ctx)` and filters child rows through `work_order_visibility_ids`. |
+| Live smoke coverage exists for the audit-02 block | ✅ validated from ledger | Slice F records `smoke:work-orders` 138 pass / 0 fail / 1 deferred with a STEP-0 provenance gate. The single deferred item is SLA cron execution on the shared server, not the assignment primitive. |
+
+### Verdict
+
+Audit 02 is **best-in-class for the original ticket/work-order audit findings**. The original P0/P1 architectural risks are now closed in code: assignment-changing paths go through the canonical atomic/idempotent `set_entity_assignment` family, routing status/audit writes are folded into the same transaction, and child work-order visibility is independently enforced.
+
+This is not a zero-maintenance state. The following should remain tracked, but they do **not** block closing Audit 02:
+- **FOLLOW-UP-A02-1:** add an SLA cron reentrancy guard around `processThresholds()` so overlapping cron ticks cannot race. Current CR2 analysis says the worst reachable race self-heals in <=1 tick; still worth fixing because the guard is cheap and removes the class.
+- **Batch atomicity:** `PATCH /tickets/bulk/update` is per-id atomic/idempotent, not one all-or-nothing cross-id transaction. Acceptable interim; batch RPC remains an integrator follow-up.
+- **SLA live smoke:** cron could not be exercised on the shared server. Keep the existing deferred smoke reason honest until there is a controllable cron/test hook.
+
+### Updated Claude Agent Prompt — 2026-05-19
+
+```text
+You are the final hardening agent for Audit 02:
+docs/follow-ups/audits/02-tickets-work-orders.md
+
+Codex re-reviewed the current tree on 2026-05-19. The original P0/P1 audit findings are closed and should not be reworked without a concrete regression. Your job is only final hardening and proof, not redesign.
+
+Remaining work:
+1. Implement FOLLOW-UP-A02-1: add a class-level in-flight guard around `SlaService.processThresholds()` / the cron entrypoint so overlapping ticks skip instead of racing. Keep the existing crossing UNIQUE and command-operation protections; this is an extra reentrancy belt.
+2. Add or expose a deterministic test hook for SLA threshold processing so the SLA-escalation live smoke can exercise the real cron path without restarting the shared dev server. If a hook is unsafe, document why and keep the smoke's deferred status explicit.
+3. Optional: design the future `bulk_update_entity_combined` RPC for all-or-nothing cross-id bulk updates. Do not block Audit 02 closure on it unless the product requires batch atomicity.
+
+Process requirements:
+- Work autonomously through implementation, docs, and tests.
+- Run `/full-review` or equivalent adversarial self-review on the step, fix findings yourself, then ask Codex for final review on the big step. Repeat until no critical/important findings remain.
+- Update this audit append-only with exact files, tests, smokes, and residual risk.
+- Do not loosen the existing STEP-0 provenance gate in `smoke:work-orders`.
+
+Completion bar:
+- SLA cron cannot overlap itself.
+- SLA escalation is either live-smoked through a deterministic hook or remains explicitly deferred with a stronger technical reason.
+- No original Audit 02 P0/P1 finding reopens.
+```
+
 ---
 
 ## Codex Deep Review status — 2026-05-18 (CR2 GO / Slice F)
