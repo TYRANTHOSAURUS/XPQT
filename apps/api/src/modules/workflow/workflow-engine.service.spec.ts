@@ -1202,9 +1202,25 @@ function captureEmits(engine: WorkflowEngineService) {
     events.push({ instanceId, event_type, payload: fields?.payload });
   }) as never);
   // Implicit wire-up for the harness's rpc-emit simulation. The supabase
-  // ref lives on engine.supabase (private but reachable via cast).
+  // ref lives on engine.supabase (private constructor field, reachable
+  // via cast). This poke is brittle: if the WorkflowEngineService
+  // constructor renames/drops the `supabase` field, the wire-up would
+  // silently no-op and every cancel-audit assertion downstream would
+  // pass for the WRONG reason (rpc-emit never routed through the spy).
+  // Defensive: fail loudly here with a pointer to the root cause rather
+  // than letting a green suite mask a wiring break.
   const supabaseRef = (engine as unknown as { supabase?: { admin?: Record<string, unknown> } }).supabase;
-  if (supabaseRef?.admin) {
+  if (!supabaseRef) {
+    throw new Error(
+      'captureEmits: engine.supabase is undefined — the WorkflowEngineService ' +
+        'constructor field was renamed/removed. Update this harness poke (and ' +
+        'the _engineForRpcEmit wire-up) before trusting cancel-audit assertions.',
+    );
+  }
+  // `admin` may legitimately be absent for tests that pass a non-harness
+  // supabase (real client wrapper) — those don't simulate rpc-emit, so a
+  // no-op wire-up is correct there.
+  if (supabaseRef.admin) {
     (supabaseRef.admin as Record<string, unknown>)._engineForRpcEmit = engine;
   }
   return events;
