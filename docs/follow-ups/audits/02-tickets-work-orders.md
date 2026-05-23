@@ -735,6 +735,108 @@ Completion bar:
 - Final response lists closed findings, verification, and any explicit deferrals.
 ```
 
+> **⚠️ SUPERSEDED — read the Closure Ledger above first.** The static Codex pass below predates Slices B/C/D/E and the CR1 cumulative-gate fixes (commits `72df4f0c`…`2491ca88` + CR1). Its "❌ not done" rows — specifically **P0-2 still open**, P1-1 case/WO reassign, P1-2 routing-evaluation, P1-5 child visibility — are **SUPERSEDED by the 2026-05-18 CLOSED rows in the Closure Ledger above** (P0-2 closed Slice B + R-A02-2 closed CR1; P1-1 Slice C; P1-2 Slice D + D-A02-2; P1-5 Slice E). The historical section is retained verbatim for audit provenance — do **not** treat its verdict as the current state, and do **not** delete it.
+
+## Codex Deep Review — 2026-05-18
+
+Reviewer: Codex, static code review against the current working tree. No live smoke gates were run in this pass.
+
+### Validated Checkmarks
+
+| Finding / claim | Codex validation | Evidence |
+|---|---:|---|
+| P0-1 / P2-5 bulk update no longer raw-writes tickets | ✅ validated | `ticket.controller.ts` has `@UseGuards(RequireClientRequestIdGuard)` on `PATCH /tickets/bulk/update`, validates non-empty UUID ids, and status-maps 200/207/422. `ticket.service.ts::bulkUpdate` de-dupes, caps at 200, fingerprints the patch into the effective CRID, and loops through `update()` per id instead of `.from('tickets').update(...)`. |
+| Bulk per-row path inherits the single-update guarantees | ✅ validated | `bulkUpdate()` calls `this.update(id, dto, actorAuthUid, effectiveClientRequestId)`, so the single update path owns assignment/permission validation, tenant checks, `update_entity_combined`, command operations, and domain-event behavior. |
+| Bulk batch all-or-nothing remains deferred | ✅ validated as still deferred | Current implementation is a TS loop over per-id atomic updates. There is still no `bulk_update_entity_combined` RPC. This is honest in the ledger, but it is not "best-in-class" batch atomicity. |
+| P0-2 SLA escalation assignment routed through canonical assignment RPC | ❌ not done | `sla.service.ts::applyEscalation` still builds assignment updates and calls `updateTicketOrWorkOrder()`, which raw-updates `tickets` / `work_orders`. No `set_entity_assignment`, no command operation, no routing decision row. |
+| P1-1 case reassign path atomic/idempotent | ❌ not done | `ticket.service.ts::reassign` still clear-writes assignment before resolver rerun, then separately writes `tickets`, inserts `routing_decisions`, and adds activity. `_clientRequestId` is threaded but unused. |
+| P1-1 work_order reassign path atomic/idempotent | ❌ not done | `work-order.service.ts::reassign` still raw-updates `work_orders`, then best-effort inserts `routing_decisions` and activity in swallowed `try/catch` blocks. `_clientRequestId` is threaded but unused. |
+| P1-2 routing-evaluation status clear folded into atomic assignment path | ❌ not done | `routing-evaluation.handler.ts` still hardcodes `p_entity_kind: 'case'`, then separately clears `tickets.routing_status='idle'` after the assignment RPC and audit insert. |
+| P1-5 child work_order visibility filtered independently | ❌ not done | `TicketService.getChildTasks()` still asserts parent case visibility only and returns all children from `work_orders` for that parent. The inline comment still says tighter child scoping is future work. |
+
+### Verdict
+
+Audit 02 is **not done** and is **not best-in-class**. One important back door, `PATCH /tickets/bulk/update`, was fixed in a credible way, but the audit's other high-risk mutation paths remain exactly in the failure class the audit identified: raw multi-step writes, unused CRIDs, swallowed audit/activity failures, and read-side child visibility inheritance.
+
+The current honest state is: **P0-1 closed; P0-2 still open; multiple P1s still open.** Do not claim the ticket/work-order architecture is complete until the assignment-changing paths and child visibility are remediated and smoked.
+
+### Updated Claude Agent Prompt — 2026-05-18
+
+```text
+You are the ticket/work-order remediation agent for Audit 02:
+docs/follow-ups/audits/02-tickets-work-orders.md
+
+Codex reviewed the current tree on 2026-05-18. Do NOT redo the bulk-update slice unless you find a regression: P0-1/P2-5 is validated as closed in code. Focus on the remaining open findings below.
+
+Open findings to close:
+1. P0-2 SLA escalation reassignment still raw-updates tickets/work_orders through `SlaService.updateTicketOrWorkOrder()`. Route assignment changes through the canonical atomic/idempotent assignment path (`set_entity_assignment` or a purpose-built RPC) with deterministic idempotency from the threshold/crossing event. Preserve watcher behavior deliberately, either inside the same transaction or with a documented split.
+2. P1-1 case and work_order `reassign()` still do raw update + separate routing_decisions + separate activity, with unused CRIDs. Move the assignment write, routing_decisions row, and activity/audit row into one atomic path. Stop clear-then-rerun on case resolver; evaluate first, write once.
+3. P1-2 routing-evaluation handler still hardcodes `case` and clears `routing_status` in a second raw write. Fold status clearing into the atomic assignment path and either support work_order events or document/enforce case-only input.
+4. P1-5 `getChildTasks()` still inherits parent visibility and returns all child work_orders. Filter children through the work_order visibility predicate before returning.
+5. Add or update live smoke coverage for SLA escalation reassignment, case/WO reassign command-operation/audit behavior, routing-status handling, child visibility, vendor assignment, and dispatch replay/payload-mismatch.
+
+Execution rules:
+- Update `docs/assignments-routing-fulfillment.md`, `docs/visibility.md`, and `docs/smoke-gates.md` in the same change whenever behavior changes.
+- Treat assignment changes as multi-table invariant writes: no TS choreography if a partial write corrupts audit, visibility, routing, or replay semantics.
+- Every route that requires `X-Client-Request-Id` must actually use it in the idempotency key or document why it is only threaded for future work.
+- Update this Codex Deep Review section and the Closure Ledger with exact files, migrations, tests, smokes, and residual risks.
+
+Completion bar:
+- No P0/P1 ticket/work_order assignment path raw-writes entity assignment outside the canonical atomic path.
+- `getChildTasks()` cannot leak child work_orders solely because the parent case is visible.
+- Smoke gates prove the fixed paths against the live API.
+```
+
+## Codex Re-Review Verdict — 2026-05-19
+
+Reviewer: Codex, static code review against current `feature/booking-audit-remediation` plus the audit ledger. No new smoke run in this pass; prior Slice F smoke evidence is accepted as recorded.
+
+### Validated Checkmarks
+
+| Finding / claim | Codex validation | Evidence |
+|---|---:|---|
+| P0-1 bulk update back door closed | ✅ validated | Bulk update still routes through `TicketService.update()` per id with CRID guard and no raw ticket update back door. |
+| P0-2 SLA escalation assignment no longer raw-updates assignment | ✅ validated | `SlaService.applyReassignment()` now builds `buildSlaEscalationIdempotencyKey(...)`, probes `command_operations`, and calls `set_entity_assignment` with assignment + watcher + reason payload. The remaining `updateTicketOrWorkOrder()` calls are SLA-internal timer/status columns, not assignment-changing writes. |
+| P1-1 case reassign no longer TS choreography | ✅ validated | `TicketService.reassign()` uses `buildReassignIdempotencyKey('case', ...)`, evaluates resolver before writing, probes committed command operation, and calls `set_entity_assignment`. No raw assignment clear/write + separate `routing_decisions` + activity path remains. |
+| P1-1 work_order reassign no longer TS choreography | ✅ validated | `WorkOrderService.reassign()` uses `buildReassignIdempotencyKey('work_order', ...)`, probes committed command operation, and calls `set_entity_assignment`; swallowed routing/activity writes are gone. |
+| P1-2 routing-evaluation handler status clear is atomic | ✅ validated | `RoutingEvaluationHandler` passes `clear_routing_status:'true'` and `decision` into `set_entity_assignment`; standalone success-path `tickets.routing_status` update and standalone `routing_decisions.insert` are gone. |
+| P1-5 child work_order visibility leak closed | ✅ validated | `TicketService.getChildTasks()` calls `TicketVisibilityService.getVisibleWorkOrderIds(ctx)` and filters child rows through `work_order_visibility_ids`. |
+| Live smoke coverage exists for the audit-02 block | ✅ validated from ledger | Slice F records `smoke:work-orders` 138 pass / 0 fail / 1 deferred with a STEP-0 provenance gate. The single deferred item is SLA cron execution on the shared server, not the assignment primitive. |
+
+### Verdict
+
+Audit 02 is **best-in-class for the original ticket/work-order audit findings**. The original P0/P1 architectural risks are now closed in code: assignment-changing paths go through the canonical atomic/idempotent `set_entity_assignment` family, routing status/audit writes are folded into the same transaction, and child work-order visibility is independently enforced.
+
+This is not a zero-maintenance state. The following should remain tracked, but they do **not** block closing Audit 02:
+- **FOLLOW-UP-A02-1:** add an SLA cron reentrancy guard around `processThresholds()` so overlapping cron ticks cannot race. Current CR2 analysis says the worst reachable race self-heals in <=1 tick; still worth fixing because the guard is cheap and removes the class.
+- **Batch atomicity:** `PATCH /tickets/bulk/update` is per-id atomic/idempotent, not one all-or-nothing cross-id transaction. Acceptable interim; batch RPC remains an integrator follow-up.
+- **SLA live smoke:** cron could not be exercised on the shared server. Keep the existing deferred smoke reason honest until there is a controllable cron/test hook.
+
+### Updated Claude Agent Prompt — 2026-05-19
+
+```text
+You are the final hardening agent for Audit 02:
+docs/follow-ups/audits/02-tickets-work-orders.md
+
+Codex re-reviewed the current tree on 2026-05-19. The original P0/P1 audit findings are closed and should not be reworked without a concrete regression. Your job is only final hardening and proof, not redesign.
+
+Remaining work:
+1. Implement FOLLOW-UP-A02-1: add a class-level in-flight guard around `SlaService.processThresholds()` / the cron entrypoint so overlapping ticks skip instead of racing. Keep the existing crossing UNIQUE and command-operation protections; this is an extra reentrancy belt.
+2. Add or expose a deterministic test hook for SLA threshold processing so the SLA-escalation live smoke can exercise the real cron path without restarting the shared dev server. If a hook is unsafe, document why and keep the smoke's deferred status explicit.
+3. Optional: design the future `bulk_update_entity_combined` RPC for all-or-nothing cross-id bulk updates. Do not block Audit 02 closure on it unless the product requires batch atomicity.
+
+Process requirements:
+- Work autonomously through implementation, docs, and tests.
+- Run `/full-review` or equivalent adversarial self-review on the step, fix findings yourself, then ask Codex for final review on the big step. Repeat until no critical/important findings remain.
+- Update this audit append-only with exact files, tests, smokes, and residual risk.
+- Do not loosen the existing STEP-0 provenance gate in `smoke:work-orders`.
+
+Completion bar:
+- SLA cron cannot overlap itself.
+- SLA escalation is either live-smoked through a deterministic hook or remains explicitly deferred with a stronger technical reason.
+- No original Audit 02 P0/P1 finding reopens.
+```
+
 ---
 
 ## 2026-05-17 — Best-in-class continuation pass
