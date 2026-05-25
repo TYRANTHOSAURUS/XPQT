@@ -229,6 +229,12 @@ describe('ReservationService.editSlot', () => {
 
     const admin = {
       rpc: (fn: string, args: unknown) => {
+        if (fn === 'claim_producer_resolution_basis') {
+          return Promise.resolve({
+            data: '2026-05-01T08:00:00.000Z',
+            error: null,
+          });
+        }
         calls.rpc.push({ fn, args });
         return Promise.resolve(rpcResponse);
       },
@@ -972,6 +978,12 @@ describe('ReservationService.editOne — patch flows through edit_booking RPC (C
 
     const admin = {
       rpc: (fn: string, args: unknown) => {
+        if (fn === 'claim_producer_resolution_basis') {
+          return Promise.resolve({
+            data: '2026-05-01T08:00:00.000Z',
+            error: null,
+          });
+        }
         calls.rpc.push({ fn, args });
         // B.4 step 2D-D — RPC name is now `edit_booking`. Same swap-on-
         // success pattern.

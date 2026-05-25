@@ -191,6 +191,12 @@ function makeSupabase(opts?: {
   };
   const admin = {
     rpc: (fn: string, args: unknown) => {
+      if (fn === 'claim_producer_resolution_basis') {
+        return Promise.resolve({
+          data: '2026-05-01T08:00:00.000Z',
+          error: null,
+        });
+      }
       calls.rpc.push({ fn, args });
       return Promise.resolve(rpcResponse);
     },
