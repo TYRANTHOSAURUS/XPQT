@@ -26,6 +26,7 @@ import {
   comparePlanOrderLineItems,
   comparePlanOrders,
 } from './plan-sort';
+import { claimProducerResolutionBasis } from '../reservations/producer-resolution-basis';
 
 /**
  * BundleService — orchestration parent for booking + N services.
@@ -45,13 +46,11 @@ import {
  *     bus expects them (event names retain `bundle.*` for now — bus subscribers
  *     are out-of-scope slices).
  *
- * Atomicity (v1):
- *   Booking creation itself is now atomic via the `create_booking` RPC
- *   (00277:236) — the booking + slot rows go in inside one transaction.
- *   Service attachment (this service) still uses a sequence of Supabase
- *   calls with explicit cleanup-on-error. Asset GiST exclusion still fires
- *   at insert time so dual-bookings are impossible. A future refactor will
- *   pull the whole pipeline into a single Postgres function.
+ * Atomicity:
+ *   Booking creation with optional services runs through
+ *   `create_booking_with_attach_plan`; post-create service attachment runs
+ *   through `attach_services_to_existing_booking`. Both are single
+ *   PL/pgSQL transactions with idempotency guards.
  *
  * Method rename:
  *   - `attachServicesToReservation` → `attachServicesToBooking`. The legacy
@@ -167,7 +166,7 @@ export interface BuildAttachPlanArgs {
      * ALL anchor on this single instant so a same-intent retry hashes
      * identically.
      */
-    created_at: string;
+    created_at?: string;
   };
   /**
    * Required when services is non-empty (so the line-key dedup index can
@@ -195,6 +194,8 @@ export interface BuildAttachPlanArgs {
    * retries with the same key produce byte-identical jsonb. Spec §7.4.
    */
   idempotency_key: string;
+  /** Stable "now" for lead-time predicates. Claimed once per idempotency key. */
+  resolution_basis_at?: string;
 }
 
 export interface AttachServicesResult {
@@ -250,9 +251,8 @@ export class BundleService {
 
   /**
    * The canonical "attach N services to an existing booking" path. Called
-   * from `BookingFlowService.create` after the `create_booking` RPC lands
-   * the booking + slot rows, and from the standalone-order pipeline
-   * (with a pre-existing booking, if any).
+   * only when a booking already exists; create-time services are folded
+   * into `create_booking_with_attach_plan`.
    */
   async attachServicesToBooking(args: AttachServicesArgs): Promise<AttachServicesResult> {
     if (args.services.length === 0) {
@@ -292,6 +292,13 @@ export class BundleService {
       args.booking_id,
       clientRequestId,
     );
+    const resolutionBasisAt = await claimProducerResolutionBasis({
+      supabase: this.supabase,
+      tenantId,
+      idempotencyKey,
+      producer: 'bundle.attach_services',
+      log: this.log,
+    });
 
     // Reuse the EXISTING pure/deterministic plan-builder (every UUID via
     // planUuid(idempotencyKey) — bundle.service.ts buildAttachPlan). Same
@@ -311,16 +318,12 @@ export class BundleService {
         attendee_count: booking.attendee_count,
         source: (booking.source ??
           'desk') as BuildAttachPlanArgs['booking']['source'],
-        // audit-03 D-6 STEP-1: server-only resolution basis. The booking
-        // already exists for attach; its server-assigned, immutable
-        // `created_at` is the lead-time anchor — a same-intent attach
-        // retry recomputes a byte-identical plan with NO FE coupling.
-        created_at: booking.created_at,
       },
       requester_person_id: args.requester_person_id,
       bundle: args.bundle,
       services: args.services,
       idempotency_key: idempotencyKey,
+      resolution_basis_at: resolutionBasisAt,
     });
 
     // ── Atomic RPC ─────────────────────────────────────────────────────
@@ -484,8 +487,10 @@ export class BundleService {
    *     before any insert); the plan still ships with the deny_messages
    *     populated for the surfaced error.
    *
-   * Dormant in B.0.C — `BookingFlowService.create` keeps using
-   * `attachServicesToBooking` until B.0.D rewires the call site.
+   * Used by `BookingFlowService.create` / `MultiRoomBookingService.createGroup`
+   * to fold service rows into `create_booking_with_attach_plan`, and by the
+   * standalone attach RPC wrapper before calling
+   * `attach_services_to_existing_booking`.
    */
   async buildAttachPlan(args: BuildAttachPlanArgs): Promise<AttachPlan> {
     if (!args.idempotency_key || args.idempotency_key.length === 0) {
@@ -546,6 +551,11 @@ export class BundleService {
     }
 
     // ── 2. Synthesize a BookingRow for the existing helpers ────────────────
+    const resolutionBasisAt =
+      args.resolution_basis_at ??
+      args.booking.created_at ??
+      new Date().toISOString();
+
     const booking: BookingRow = {
       id: args.booking_id,
       tenant_id: args.tenant_id,
@@ -557,11 +567,7 @@ export class BundleService {
       attendee_count: args.booking.attendee_count,
       booking_bundle_id: args.booking_id,         // booking IS the bundle
       source: args.booking.source,
-      // audit-03 D-6: the request-canonical resolution basis. ATTACH path
-      // = real `bookings.created_at` (server-immutable). CREATE path =
-      // `actor.resolution_basis_at` (no row exists yet; the caller in
-      // booking-flow.service.ts threads it through args.booking.created_at).
-      created_at: args.booking.created_at,
+      created_at: resolutionBasisAt,
     };
 
     // audit-03 D-6 — the SINGLE wall-clock anchor for every lead-time-
@@ -570,10 +576,8 @@ export class BundleService {
     // predicate engine `lead_minutes_*` operators) now reads THIS instant,
     // so two same-intent retries straddling a tenant lead-time-rule
     // boundary recompute a byte-identical hashed payload.
-    const resolutionBasisMs = Date.parse(args.booking.created_at);
-
     // ── 3. Hydrate lines (catalog lookup + menu offer + lead-time guard) ──
-    const lines = await this.hydrateLines(args.services, booking, resolutionBasisMs);
+    const lines = await this.hydrateLines(args.services, booking, resolutionBasisAt);
     // Re-verify per-service-type uniqueness now that we know each line's
     // service_type (the per-order scope mandated by §7.4 v8).
     const lineIdByServiceType = new Map<string, Set<string>>();
@@ -762,11 +766,7 @@ export class BundleService {
             line_count: lines.length,
           },
           permissions,
-          // audit-03 D-6 (V3-time) — feed the SAME request-canonical basis
-          // to the predicate engine so a `lead_minutes_*` service-rule
-          // predicate yields a wall-clock-independent boolean across a
-          // same-intent retry (matched-rule set → hashed outcome stable).
-          resolution_basis_ms: resolutionBasisMs,
+          resolution_basis_at: resolutionBasisAt,
         });
       },
     });
@@ -1536,17 +1536,10 @@ export class BundleService {
   private async hydrateLines(
     inputs: ServiceLineInput[],
     booking: BookingRow,
-    // audit-03 D-6 (V1 fix) — the request-canonical resolution basis in
-    // epoch-ms. REPLACES the old `const now = Date.now()`: that wall-clock
-    // read made `lead_time_remaining_hours` (and therefore every rule
-    // OUTCOME it feeds) recompute differently on a same-intent retry that
-    // straddled a tenant lead-time `service_rules` boundary → a different
-    // md5 → spurious `attach_operations.payload_mismatch` 409, op lost.
-    // ATTACH path: `bookings.created_at`. CREATE path: the request basis.
-    resolutionBasisMs: number,
+    resolutionBasisAt: string,
   ): Promise<HydratedLine[]> {
     const out: HydratedLine[] = [];
-    const now = resolutionBasisMs;
+    const now = parseBasisMs(resolutionBasisAt);
     const tenantId = booking.tenant_id;
     for (const input of inputs) {
       // Look up the catalog item — gives us category + price/unit defaults
@@ -2030,17 +2023,6 @@ interface BookingRow {
   attendee_count: number | null;            // pulled from primary slot
   booking_bundle_id: string | null;         // = id (legacy alias for in-service code)
   source: string | null;
-  /**
-   * audit-03 D-6: the server-canonical creation instant. On the ATTACH
-   * path this is the request-canonical lead-time RESOLUTION BASIS — it is
-   * server-assigned (00372:~385-392 anchors hash-determinism on the same
-   * column) and immutable across retries, so a same-intent attach replay
-   * straddling a tenant lead-time-rule boundary recomputes a byte-identical
-   * hashed `p_attach_plan` with ZERO client cooperation. On the synthesised
-   * CREATE-path `BookingRow` (booking not yet inserted) this carries the
-   * request-canonical `actor.resolution_basis_at` instead (the create path
-   * passes it explicitly — see `buildAttachPlan` STEP-2 wiring).
-   */
   created_at: string;
 }
 
@@ -2070,4 +2052,9 @@ function isExclusionViolation(err: unknown): boolean {
     'code' in err &&
     (err as { code: string }).code === '23P01'
   );
+}
+
+function parseBasisMs(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : Date.now();
 }

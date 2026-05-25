@@ -1135,58 +1135,47 @@ async function runScopeProbes(headers, probe, fixture) {
 
     // (iii) RETRY the exact same editScope (same crid, same body).
     //
-    // D-5 LIVE COMPLETENESS GATE (audit-03 Slice 2 — AUTHORITATIVE).
-    // This probe is the authoritative live-DB completeness check for the
-    // D-5 fix (migration 00428 + producer canonical-approver-sort): it
-    // exercises a REAL same-intent `edit_booking_scope` COMMIT→RETRY
-    // against the running server. The COMMIT's §3.6.5 reconciliation
-    // mutates `approvals`; before the fix, the RETRY's producer re-read
-    // the mutated live chain and flipped `approval.old_outcome` +
-    // `approval.chain_config_changed`, so the re-assembled `p_plans`
-    // hashed DIFFERENTLY → `command_operations.payload_mismatch` 409 and
-    // the op was permanently lost. 00428 excludes those two pre-state
-    // fields (plus `_resolution_at`) from the idempotency hash, so the
-    // RETRY now hashes identically → the RPC's command_operations gate
-    // CACHE-HITS and returns the original success body (the RPC still
-    // reads the two fields from the UNSTRIPPED plan so §3.6.5
-    // reconciliation is unaffected). This live gate is authoritative
-    // OVER the modeled jest GUARD-3 (assemble-edit-plan.idempotency
-    // .spec.ts) — the jest guard models the producer; this talks to the
-    // real DB. Validated in the audit-03 batch push pass once 00428 is
-    // on remote.
-    //
-    // `splitSeries` runs BEFORE the assembler, so on retry the split RPC
-    // is invoked with the SAME (pivot, crid) → its OWN
-    // command_operations gate cache-hits (the core P1-2 invariant,
-    // asserted directly at the DB level below regardless of the
-    // envelope outcome).
+    // Audit 03 producer-determinism closure (2026-05-20): edit-scope now
+    // claims a stable resolution basis before plan assembly, so the retry
+    // rebuilds byte-identical plans and the edit RPC cache-hits instead of
+    // raising the old command_operations.payload_mismatch 409.
     const tafRetryResult = await probe(
-      'Slice4 split: RETRY same editScope → cached success (D-5 fixed: idempotent replay, no payload_mismatch)',
+      'Slice4 split: RETRY same editScope → cached 201 (producer-deterministic)',
       {
         url: dryRunSeriesUrl,
         body: { scope: 'this_and_following', space_id: ROOM_BOARD },
         clientRequestId: tafCommitCrid,
-        expect: 'success',
       },
     );
     if (tafRetryResult.ok) {
-      if (tafRetryResult.body === tafCommitResult.body) {
-        results.pass += 1;
-        console.log(
-          `  ✓ Slice4 split retry: editScope cached success — body byte-identical (D-5 fixed; idempotent replay)`,
-        );
-      } else {
+      try {
+        const retryParsed = JSON.parse(tafRetryResult.body);
+        const commitParsed = JSON.parse(tafCommitResult.body);
+        if (
+          retryParsed.new_series_id === commitParsed.new_series_id &&
+          retryParsed.committed === commitParsed.committed &&
+          tafRetryResult.body === tafCommitResult.body
+        ) {
+          results.pass += 1;
+          console.log(
+            `  ✓ Slice4 split retry: cached response is byte-identical`,
+          );
+        } else {
+          results.fail += 1;
+          results.failed.push('Slice4 split retry: cached response drift');
+          console.log(
+            `  ✗ Slice4 split retry: cached response drift (new_series_id=${retryParsed.new_series_id}, committed=${retryParsed.committed})`,
+          );
+        }
+      } catch {
         results.fail += 1;
-        results.failed.push('Slice4 split retry: D-5 cached-body mismatch');
-        console.log(
-          `  ✗ Slice4 split retry: editScope 200 but body differs from first commit — RPC re-executed (D-5 NOT idempotent)`,
-        );
+        results.failed.push('Slice4 split retry: cached body parse');
       }
     }
 
     // ── Split-level idempotency invariants (the actual P1-2 fix) ──
-    // These hold REGARDLESS of the editScope envelope above, because
-    // the split RPC fired (before the assembler) and is idempotent.
+    // These also prove that the split RPC cache-hit does not mint a second
+    // series when the outer editScope command is retried.
 
     // No SECOND series minted: total fixture series footprint
     // unchanged across the retry (the core P1-2 regression — the
@@ -1228,8 +1217,7 @@ async function runScopeProbes(headers, probe, fixture) {
 
     // (iv) split command_operations row count still exactly 1 with
     //      outcome=success (the split RPC's OWN gate cache-hit, not a
-    //      re-execute — proves the split is idempotent end-to-end even
-    //      though the surrounding editScope 409'd).
+    //      re-execute).
     const splitOpsAfterRetry = await countCommandOpsForSplitKey(
       pivot.bookingId,
       tafCommitCrid,

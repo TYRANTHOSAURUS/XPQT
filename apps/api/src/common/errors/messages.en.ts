@@ -1676,10 +1676,17 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
     title: "Couldn't update",
     detail: "Server can't rerun routing — this is an internal-only signal that an orchestration step was skipped.",
   },
-  // audit-02 Q1 (codex NIT): 00406 v3 — clear_routing_status on a work order.
+  'set_entity_assignment.invalid_watcher': {
+    title: "Couldn't update",
+    detail: 'One or more watchers are not part of this tenant.',
+  },
+  'set_entity_assignment.invalid_decision': {
+    title: "Couldn't update",
+    detail: 'The routing decision is missing a valid strategy or provenance.',
+  },
   'set_entity_assignment.routing_status_unsupported_for_work_order': {
     title: "Couldn't update",
-    detail: 'Routing status applies to cases, not work orders.',
+    detail: 'That routing status update is only valid for cases.',
   },
   // B.2.A §3.3 update_entity_sla RPC (00328)
   'update_entity_sla.unknown_kind': { title: "Couldn't update SLA", detail: 'Unknown entity kind.' },
@@ -1888,6 +1895,10 @@ export const ERROR_MESSAGES_EN: Record<KnownErrorCode, ErrorMessage> = {
   'edit_booking.asset_reservation_not_in_booking': {
     title: "Couldn't save the booking — not found",
     detail: 'An asset reservation in the edit no longer belongs to this booking. Refresh the page and try again.',
+  },
+  'edit_booking.linked_rows_require_booking_scope': {
+    title: "Couldn't save the room change",
+    detail: 'This multi-room booking has booking-level services, assets, or work orders attached. Edit the whole booking, or remove those linked items first.',
   },
   // B.4.A.4 step 2D-C self-review remediation (PLAN-C1).
   // rule_missing_approvers: thrown by AssembleEditPlanService when the

@@ -66,6 +66,8 @@ export interface BaseEvaluationContext {
 }
 
 export interface EvaluationContext extends BaseEvaluationContext {
+  /** Stable "now" for lead-time predicates. */
+  resolution_basis_at?: string;
   requester: {
     id: string; // person id
     role_ids: string[];
@@ -245,22 +247,12 @@ export class PredicateEngineService {
       }
       case 'lead_minutes_lt': {
         const [start, mins] = args as [string, number];
-        // audit-03 D-6 (V3-time): anchor on the request-canonical basis,
-        // NOT a fresh wall-clock read, so the lead-band boolean is stable
-        // across a same-intent retry. Falls back to Date.now() only on the
-        // non-hashed paths (picker / ad-hoc sim) that never set the basis.
-        const basis = typeof ctx.resolution_basis_ms === 'number'
-          ? ctx.resolution_basis_ms
-          : Date.now();
-        const d = (Date.parse(start) - basis) / 60_000;
+        const d = (Date.parse(start) - basisNowMs(ctx)) / 60_000;
         return Number.isFinite(d) && d < Number(mins);
       }
       case 'lead_minutes_gt': {
         const [start, mins] = args as [string, number];
-        const basis = typeof ctx.resolution_basis_ms === 'number'
-          ? ctx.resolution_basis_ms
-          : Date.now();
-        const d = (Date.parse(start) - basis) / 60_000;
+        const d = (Date.parse(start) - basisNowMs(ctx)) / 60_000;
         return Number.isFinite(d) && d > Number(mins);
       }
       case 'has_permission': {
@@ -422,4 +414,13 @@ function cmp(a: unknown, b: unknown): number {
   const sa = String(a ?? '');
   const sb = String(b ?? '');
   return sa < sb ? -1 : sa > sb ? 1 : 0;
+}
+
+function basisNowMs(ctx: BaseEvaluationContext): number {
+  const raw = (ctx as { resolution_basis_at?: unknown }).resolution_basis_at;
+  if (typeof raw === 'string') {
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
 }

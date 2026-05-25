@@ -382,46 +382,6 @@ export function buildEditBookingIdempotencyKey(
 }
 
 /**
- * Prefix for the `set_entity_assignment` outer idempotency key on the
- * audited `POST /tickets/:id/reassign` + `POST /work-orders/:id/reassign`
- * paths. Audit-02 P1-1 reassign cutover (2026-05-16). Namespaced
- * separately from `patch` / `dispatch` / `workflow:assignment` so a
- * controller reassign retry can never collide with a single PATCH, a
- * dispatch, or a workflow-engine assign-node call against the same
- * entity (all of which also drive `set_entity_assignment` /
- * `update_entity_combined`).
- *
- * Citations:
- *   - 00327_set_entity_assignment_v2.sql (RPC accepts arbitrary text key)
- *   - docs/follow-ups/audits/02-tickets-work-orders.md P1-1 / P2-2 / P2-4
- *   - apps/api/src/modules/ticket/ticket.service.ts (TicketService.reassign)
- *   - apps/api/src/modules/work-orders/work-order.service.ts (WorkOrderService.reassign)
- */
-export const REASSIGN_IDEMPOTENCY_KEY_PREFIX = 'reassign';
-
-/**
- * Build the outer idempotency key for `set_entity_assignment` on the
- * reassign paths. Shape:
- *   `reassign:<kind>:<entityId>:<clientRequestId>`
- *
- * Same entity + same clientRequestId + same kind ⇒ same key ⇒
- * `command_operations` short-circuits the second call (the RPC's own
- * gate). `kind` is part of the key so a (coincidentally shared)
- * clientRequestId reused across a case reassign and a work_order
- * reassign mints distinct keys — they are independent retry chains.
- * **No actor in the key** per F-CRIT-2 / plan-C1 (dispatch RPC): the
- * clientRequestId is the deduplication boundary; tying it to actor
- * identity defeats deduplication across a delegation switch.
- */
-export function buildReassignIdempotencyKey(
-  kind: PatchEntityKind,
-  entityId: string,
-  clientRequestId: string,
-): string {
-  return `${REASSIGN_IDEMPOTENCY_KEY_PREFIX}:${kind}:${entityId}:${clientRequestId}`;
-}
-
-/**
  * Prefix for the `cancel_booking_with_cascade` outer idempotency key.
  * Booking-audit remediation Slice 2 (audit 03 P0-1 / P1-5). Paired with
  * the `cancel_booking_with_cascade(...)` RPC (migration 00408).
@@ -597,4 +557,105 @@ export function buildCancelOrderLinesIdempotencyKey(
   clientRequestId: string,
 ): string {
   return `${CANCEL_ORDER_LINES_IDEMPOTENCY_KEY_PREFIX}:${bookingId}:${clientRequestId}`;
+}
+
+/**
+ * Prefix for the `set_entity_assignment` outer idempotency key when the
+ * caller is a manual / API-driven reassign (the desk reassign UI, the
+ * TicketService/WorkOrderService reassign() paths). Audit 02
+ * (tickets/work-orders) Slice A. Paired with `set_entity_assignment` v3
+ * (migration 00416), which gates on `command_operations` keyed on
+ * (tenant_id, idempotency_key). Namespaced separately from the
+ * workflow-engine `workflow:assignment` prefix
+ * (WORKFLOW_ASSIGNMENT_IDEMPOTENCY_KEY_PREFIX) so a workflow-engine
+ * assign-node retry can never collide with a controller-driven reassign
+ * on the same entity.
+ *
+ * Citations:
+ *   - supabase/migrations/00416_set_entity_assignment_v3.sql
+ *     (RPC accepts `p_idempotency_key text`, gates on command_operations)
+ *   - supabase/migrations/00327_set_entity_assignment_v2.sql:132-156
+ *     (the command_operations idempotency gate this key feeds)
+ *   - docs/follow-ups/audits/02-tickets-work-orders.md (Slice B/C
+ *     consume this — both reassign() paths route through v3)
+ */
+export const REASSIGN_IDEMPOTENCY_KEY_PREFIX = 'reassign';
+
+/**
+ * The two entity kinds `set_entity_assignment` dispatches on. Mirrored
+ * from the RPC's `p_entity_kind` parameter
+ * (00327_set_entity_assignment_v2.sql:116). Kept structurally identical
+ * to `PatchEntityKind` but redeclared so the reassign builder reads
+ * self-documenting at the call site.
+ */
+export type ReassignEntityKind = 'case' | 'work_order';
+
+/**
+ * Build the outer idempotency key for a manual/API reassign through
+ * `set_entity_assignment`. Shape:
+ *   `reassign:<kind>:<entityId>:<clientRequestId>`
+ *
+ * Same kind + same entity + same clientRequestId ⇒ same key ⇒
+ * `command_operations` short-circuits the second call and returns the
+ * cached result (no duplicate activity/audit/event rows). `kind`
+ * discriminates so a case-reassign retry can never collide with a
+ * work_order-reassign retry that happens to share an id + crid. **No
+ * actor in the key** per F-CRIT-2 / plan-C1 (dispatch RPC):
+ * clientRequestId is the deduplication boundary; tying it to actor
+ * identity defeats the deduplication contract across delegation switches.
+ */
+export function buildReassignIdempotencyKey(
+  kind: ReassignEntityKind,
+  entityId: string,
+  clientRequestId: string,
+): string {
+  return `${REASSIGN_IDEMPOTENCY_KEY_PREFIX}:${kind}:${entityId}:${clientRequestId}`;
+}
+
+/**
+ * Prefix for the `set_entity_assignment` outer idempotency key when the
+ * caller is the SLA escalation path (SLA timer crosses an escalation
+ * threshold and reassigns the entity). Audit 02 (tickets/work-orders)
+ * Slice A. Namespaced separately from `reassign` and
+ * `workflow:assignment` so an SLA-escalation retry can never collide
+ * with a manual reassign or a workflow assign-node retry on the same
+ * entity — they are distinct retry chains with distinct trigger sources.
+ *
+ * The key is built from the SLA timer + the escalation threshold (the
+ * percent-of-target the timer crossed) + the timer type, NOT a
+ * client-supplied request id: the escalation is system-driven (a cron /
+ * timer evaluator), so the natural deduplication boundary is "this
+ * timer crossed this threshold once". A retry of the same evaluation
+ * pass re-derives the same key ⇒ command_operations short-circuits ⇒ no
+ * double escalation.
+ *
+ * Citations:
+ *   - supabase/migrations/00416_set_entity_assignment_v3.sql
+ *     (RPC accepts `p_idempotency_key text`, gates on command_operations)
+ *   - docs/follow-ups/audits/02-tickets-work-orders.md (Slice D
+ *     consumes this — SLA escalation routes assignment through v3)
+ */
+export const SLA_ESCALATION_IDEMPOTENCY_KEY_PREFIX = 'sla:escalation';
+
+/**
+ * Build the outer idempotency key for an SLA-escalation reassign through
+ * `set_entity_assignment`. Shape:
+ *   `sla:escalation:<slaTimerId>:<atPercent>:<timerType>`
+ *
+ * Same timer + same threshold + same timer type ⇒ same key ⇒
+ * `command_operations` short-circuits a re-evaluation of the same
+ * escalation. `atPercent` discriminates the escalation step (a timer
+ * with escalations at 50% and 80% mints two distinct keys — both must
+ * be allowed to fire exactly once). `timerType` discriminates
+ * response/resolution timers on the same entity. **No actor / no
+ * clientRequestId in the key** — the escalation is system-driven; the
+ * (timer, threshold, type) tuple IS the deduplication boundary, mirroring
+ * the no-actor rationale in F-CRIT-2 / plan-C1.
+ */
+export function buildSlaEscalationIdempotencyKey(
+  slaTimerId: string,
+  atPercent: number,
+  timerType: string,
+): string {
+  return `${SLA_ESCALATION_IDEMPOTENCY_KEY_PREFIX}:${slaTimerId}:${atPercent}:${timerType}`;
 }

@@ -14,6 +14,7 @@ import { crossingKey } from './sla-threshold.types';
 import { percentElapsed, selectApplicableThresholds } from './sla-threshold.helpers';
 import { AppErrors, mapRpcErrorToAppError, wrapPgError } from '../../common/errors';
 import { probeCommandOperationSuccess } from '../../common/command-operations-probe';
+import { buildSlaEscalationIdempotencyKey } from '@prequest/shared';
 
 @Injectable()
 export class SlaService {
@@ -698,7 +699,10 @@ export class SlaService {
           requester_person_id: string | null;
           watchers: string[] | null;
         }),
-        entity_kind: 'case' as const,
+        // audit02 Slice B: the resolved entity kind drives v3's
+        // p_entity_kind (case ⇒ public.tickets, work_order ⇒
+        // public.work_orders — 00416:229-241).
+        kind: 'case' as const,
       };
     }
     const woRes = await this.supabase.admin
@@ -723,7 +727,7 @@ export class SlaService {
         requester_person_id: string | null;
         watchers: string[] | null;
       }),
-      entity_kind: 'work_order' as const,
+      kind: 'work_order' as const,
     };
   }
 
@@ -788,33 +792,52 @@ export class SlaService {
   }
 
   /**
+   * Resolve a `users.id` (the value stored in tickets/work_orders
+   * `assigned_user_id`) back to its `persons.id` (the value stored in the
+   * `watchers` uuid[]). D-A02-1: tickets.watchers / work_orders.watchers
+   * are uuid[] whose elements are persons.id (00011_tickets.sql:26 — "person
+   * IDs"). The outgoing assignee that "now watches" after an SLA escalation
+   * is `assigned_user_id`, a users.id. set_entity_assignment v3's watcher
+   * validator is persons-scoped (00416:310-322 — public.persons predicate)
+   * and rejects a users.id. Pre-fix `applyReassignment` appended the raw
+   * users.id into the watcher array — a type-wrong write that silently
+   * corrupted the watcher set and would now be rejected by v3.
+   *
+   * tenantId required: supabase.admin bypasses RLS. The reverse of the
+   * existing person_id→users.id lookup below (line 779-784) and the
+   * auth_uid→person map at 00416:553-557 — symmetric, tenant-scoped (F18).
+   */
+  private async resolvePersonIdForUser(
+    userId: string,
+    tenantId: string,
+  ): Promise<string | null> {
+    const { data } = await this.supabase.admin
+      .from('users')
+      .select('person_id')
+      .eq('id', userId)
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    return (data?.person_id as string | null) ?? null;
+  }
+
+  /**
    * Reassign ticket based on resolved target. Returns true if an assignment
    * actually changed.
-   *
    * For user/manager target: set assigned_user_id, keep assigned_team_id;
-   * move previous assignee into watchers.
+   *   move previous user to watchers.
    * For team target: set assigned_team_id, null assigned_user_id; move
-   * previous assignee into watchers.
+   *   previous user to watchers.
    *
-   * ── audit-02 P0-2 (2026-05-16) ──────────────────────────────────────
-   * This path NO LONGER raw-UPDATEs via `updateTicketOrWorkOrder`. The
-   * assignment write goes through the canonical `set_entity_assignment`
-   * RPC (00327 v2) and the watchers (metadata) write through
-   * `update_entity_combined` (00384 v6). Each RPC is independently
-   * idempotent via `command_operations` keyed on a deterministic
-   * per-crossing key — a re-fired cron tick for the SAME crossing
-   * replays the cached result instead of re-applying. The RPCs emit the
-   * `routing_decisions` audit row + `reassigned` ticket_activities row +
-   * `ticket_assigned` domain event (assignment) and a `metadata_changed`
-   * activity (watchers) — all the audit/event guarantees the raw write
-   * silently skipped.
-   *
-   * `crossingIdemKey` is the stable per-crossing anchor built by the
-   * caller as `sla:escalation:<timer_id>:<at_percent>:<timer_type>` — the
-   * same identity as `crossingKey` (sla-threshold.types.ts:33). A single
-   * timer can cross 80% then 100% (at_percent), and a `both`-scope
-   * threshold crosses for the response AND resolution timers at the same
-   * at_percent (timer_type) — each is its own canonical idempotent event.
+   * audit02 Slice B (P0-2): the assignment + watchers write goes through the
+   * canonical `set_entity_assignment` v3 RPC (00416), NOT a raw
+   * tickets/work_orders UPDATE. v3 commits the row UPDATE +
+   * command_operations idempotency (keyed on the deterministic
+   * `sla:escalation:<timer>:<pct>:<type>` key) + a routing_decisions audit
+   * row (fires because `reason` is non-null) + ticket_activities + a
+   * `ticket_assigned` domain event, all in one transaction. The
+   * `command_operations` gate also makes a re-fired cron tick a safe no-op
+   * replay for the assignment (the crossing unique constraint still governs
+   * crossing/notification dedup — see fireThreshold docstring + R-A02-2).
    */
   private async applyReassignment(
     ticket: {
@@ -823,27 +846,26 @@ export class SlaService {
       assigned_user_id: string | null;
       assigned_team_id: string | null;
       watchers: string[] | null;
-      entity_kind: 'case' | 'work_order';
     },
     resolved: { personId?: string; teamId?: string },
-    crossingIdemKey: string,
-    reason: string,
+    kind: 'case' | 'work_order',
+    timer: { id: string; timer_type: TimerType },
+    threshold: EscalationThreshold,
+    policyName: string,
   ): Promise<boolean> {
-    // audit-02 D-A02-4: caller-side command_operations success-probe
+    // audit02 CR2 / D-A02-4: caller-side command_operations success-probe
     // BEFORE recomputing the mutable payload. The SLA escalation reuses
-    // the STABLE crossing key `sla:escalation:<timer>:<pct>:<type>` but
-    // builds `assignmentPayload` from MUTABLE state — the resolved
-    // assignee (a users.id looked up live from `resolved.personId`, or a
-    // team id), and `reason`, can drift from an intervening manual
-    // reassign between two ticks. The poison path: tick-1's RPC commits a
-    // command_operations success row, then the best-effort watcher block
-    // (or any step after the RPC, before `fireThreshold` writes the
-    // crossing anchor) crashes hard enough to abort fireThreshold → NO
-    // crossing row written. A later tick re-enters here, recomputes a
-    // DRIFTED payload → same key + different hash →
-    // `command_operations.payload_mismatch` (00425:159-162) → throw
-    // BEFORE the crossing anchor → the escalation is permanently poisoned
-    // (the no-permanent-suppression invariant is broken).
+    // the STABLE key `sla:escalation:<timer>:<pct>:<type>` but builds
+    // p_payload from MUTABLE state (watchers — v3 internally dedups/orders
+    // so a fresh client-side `Array.from(new Set(...))` differs from the
+    // stored set; assignment/reason can drift from an intervening manual
+    // reassign). The poison path: tick-1's RPC commits a
+    // command_operations success row, then writeCrossing (or any step
+    // after the RPC, before the crossing) crashes → NO crossing row. A
+    // later tick re-enters here, recomputes a DRIFTED payload → same key +
+    // different hash → `command_operations.payload_mismatch` (00419:200) →
+    // throw BEFORE writeCrossing → the escalation is permanently poisoned
+    // and R-A02-2's no-permanent-suppression is broken.
     //
     // If a `success` row already exists under the stable key, the
     // canonical assignment write ALREADY committed (idempotently, by a
@@ -851,27 +873,42 @@ export class SlaService {
     // recomputing the mutable payload or re-calling the RPC — return
     // `true` ("assignment already done", which is equivalent to a fresh
     // successful applyReassignment for the purpose of the downstream
-    // crossing-anchor gate in fireThreshold). The stuck escalation
-    // finally records its crossing + fires side-effects exactly once.
-    // `in_progress` is NOT a short-circuit signal (another tick
-    // mid-flight holds the key — the RPC's own advisory-lock + gate is
-    // the authoritative WRITE-side guard; this is purely the READ side).
+    // crossing gate in fireThreshold). This restores R-A02-2: the stuck
+    // escalation finally records its crossing + fires side-effects exactly
+    // once.
+    //
+    // M-1 (CR2 code-review): this method's boolean return is now
+    // TRI-SOURCE — `true` means "an assignment delta was applied this
+    // tick" OR "an idempotent no-op replay" OR (here) "a prior tick's
+    // RPC already committed under this key". All three are correct
+    // "assignment is durable, proceed to the crossing gate" signals for
+    // fireThreshold; do NOT 'simplify' this back to a pure changed flag.
+    //
+    // M-2 (CR2 code-review): `in_progress` is deliberately NOT a
+    // short-circuit signal — another tick mid-flight holds the key. The
+    // RPC's advisory-lock + payload-hash gate is the authoritative
+    // WRITE-side guard; this probe is purely the READ side. Convergence
+    // is across TICKS, not within the racing tick: a tick that races a
+    // concurrent in_progress op and recomputes a drifted payload may
+    // still throw `payload_mismatch` ONCE — the next cron tick then
+    // probes the now-committed `success` row and completes. Bounded,
+    // self-healing in ≤1 tick; never permanent (pre-CR2 it was permanent
+    // because no tick ever short-circuited).
+    const stableKey = buildSlaEscalationIdempotencyKey(
+      timer.id,
+      threshold.at_percent,
+      timer.timer_type,
+    );
     const committed = await probeCommandOperationSuccess(
       this.supabase,
       ticket.tenant_id,
-      crossingIdemKey,
+      stableKey,
     );
     if (committed) {
       return true;
     }
 
-    const assignmentPayload: Record<string, unknown> = {
-      reason,
-      // System/cron actor — no person attribution. set_entity_assignment
-      // (00327:291-299) falls back cleanly when both actor_person_id and
-      // p_actor_user_id are null.
-      actor_person_id: null,
-    };
+    const assignment: Record<string, unknown> = {};
     let changed = false;
 
     // `watchers` is a persons.id[] column ("person IDs following this
@@ -884,25 +921,28 @@ export class SlaService {
     // assignee's users.id → persons.id before adding it to watchers.
     let outgoingAssigneePersonId: string | null = null;
 
+    // D-A02-1: the outgoing assignee (a users.id) must be resolved to its
+    // persons.id before being added to the watcher set — watchers are
+    // persons-scoped and v3 rejects a users.id.
+    const addOutgoingAssigneeAsWatcher = async () => {
+      if (!ticket.assigned_user_id) return;
+      const outgoingPersonId = await this.resolvePersonIdForUser(
+        ticket.assigned_user_id,
+        ticket.tenant_id,
+      );
+          if (outgoingPersonId) outgoingAssigneePersonId = outgoingPersonId;
+    };
+
     if (resolved.teamId) {
       if (ticket.assigned_team_id !== resolved.teamId) {
-        assignmentPayload.assigned_team_id = resolved.teamId;
-        // set_entity_assignment treats an absent key as "no change"; pass
-        // an explicit empty string so the RPC clears assigned_user_id
-        // (00327:189 nullif('','')::uuid → NULL), matching the legacy
-        // "team target nulls the user" behaviour.
-        assignmentPayload.assigned_user_id = '';
-        if (ticket.assigned_user_id) {
-          outgoingAssigneePersonId = await this.resolveUserPersonId(
-            ticket.assigned_user_id,
-            ticket.tenant_id,
-          );
-        }
+        assignment.assigned_team_id = resolved.teamId;
+        assignment.assigned_user_id = null;
+        await addOutgoingAssigneeAsWatcher();
         changed = true;
       }
     } else if (resolved.personId) {
-      // tickets.assigned_user_id references users(id). resolved.personId
-      // is a persons id; look up the user row.
+      // tickets.assigned_user_id references users(id). resolved.personId is a
+      // persons id; look up the user row.
       //
       // HIGH severity tenant-scope: this user lookup feeds a WRITE
       // (assigned_user_id on the case/work_order). Without the tenant
@@ -922,43 +962,39 @@ export class SlaService {
       if (userErr) throw userErr;
       const newAssigneeUserId = (user?.id as string) ?? null;
       if (newAssigneeUserId && ticket.assigned_user_id !== newAssigneeUserId) {
-        assignmentPayload.assigned_user_id = newAssigneeUserId;
-        if (ticket.assigned_user_id) {
-          outgoingAssigneePersonId = await this.resolveUserPersonId(
-            ticket.assigned_user_id,
-            ticket.tenant_id,
-          );
-        }
+        assignment.assigned_user_id = newAssigneeUserId;
+        await addOutgoingAssigneeAsWatcher();
         changed = true;
       }
     }
 
-    if (!changed) return false;
-
-    // ── 1. Assignment via the canonical RPC (idempotent per crossing) ──
-    const { error: assignErr } = await this.supabase.admin.rpc(
-      'set_entity_assignment',
-      {
+    if (changed) {
+      const idempotencyKey = stableKey;
+      const { error } = await this.supabase.admin.rpc('set_entity_assignment', {
         p_entity_id: ticket.id,
-        p_entity_kind: ticket.entity_kind,
+        p_entity_kind: kind,
         p_tenant_id: ticket.tenant_id,
+        // System-driven: the SLA cron is the actor. Null lets v3's
+        // actor_person resolve fall through cleanly (00416:550-558).
         p_actor_user_id: null,
-        p_idempotency_key: crossingIdemKey,
-        p_payload: assignmentPayload,
-      },
-    );
-    if (assignErr) throw mapRpcErrorToAppError(assignErr);
-
-    // Observability: the previous assignee is dropped as a watcher when
-    // their users.id has no resolvable persons.id (no person link, or a
-    // cross-tenant collision filtered by resolveUserPersonId). The
-    // reassignment + its routing_decisions audit still committed above;
-    // only the courtesy watcher-copy is skipped — log it so it isn't
-    // silent (review I, ba1a4322).
-    if (ticket.assigned_user_id && !outgoingAssigneePersonId) {
-      console.warn(
-        `[sla] escalation reassign ${ticket.id}: previous assignee ${ticket.assigned_user_id} not added as watcher (no resolvable persons.id)`,
-      );
+        p_idempotency_key: idempotencyKey,
+        p_payload: {
+          ...assignment,
+          actor_person_id: null,
+          reason: `SLA escalation: ${policyName} at ${threshold.at_percent}% of ${timer.timer_type}`,
+          ...(outgoingAssigneePersonId
+            ? {
+                watchers: Array.from(
+                  new Set<string>([
+                    ...((ticket.watchers as string[] | null) ?? []),
+                    outgoingAssigneePersonId,
+                  ]),
+                ),
+              }
+            : {}),
+        },
+      });
+      if (error) throw mapRpcErrorToAppError(error);
     }
 
     // ── 2. Watchers via update_entity_combined metadata — BEST-EFFORT ──
@@ -1001,11 +1037,11 @@ export class SlaService {
         const { error: watchErr } = await this.supabase.admin.rpc(
           'update_entity_combined',
           {
-            p_entity_kind: ticket.entity_kind,
+            p_entity_kind: kind,
             p_entity_id: ticket.id,
             p_tenant_id: ticket.tenant_id,
             p_actor_user_id: null,
-            p_idempotency_key: `${crossingIdemKey}:watchers`,
+            p_idempotency_key: `${stableKey}:watchers`,
             p_patches: { metadata: { watchers: newWatchers } },
           },
         );
@@ -1023,7 +1059,7 @@ export class SlaService {
           ticket.tenant_id,
           ticket.id,
           'sla_escalation_watcher_skipped',
-          { reason_code: watchFailCode, idempotency_key: `${crossingIdemKey}:watchers` },
+          { reason_code: watchFailCode, idempotency_key: `${stableKey}:watchers` },
         );
         // intentionally NOT thrown — see block comment above. Every await
         // in this block (the RPC itself + the best-effort telemetry) is
@@ -1036,30 +1072,19 @@ export class SlaService {
   }
 
   /**
-   * Resolve a users.id → its persons.id for this tenant. Used by the SLA
-   * escalation path to translate the outgoing assignee (users.id) into a
-   * watcher entry (persons.id — see applyReassignment). Tenant-scoped:
-   * supabase.admin bypasses RLS, so a colliding users.id from another
-   * tenant must not leak a foreign person into this tenant's watchers.
+   * Insert the crossing row and report whether THIS call won the insert.
+   *
+   * R-A02-2 (audit02 CR1): the `sla_threshold_crossings` UNIQUE
+   * (sla_timer_id, at_percent, timer_type) constraint (00043:16) is the
+   * idempotency gate for the non-idempotent escalation side-effects
+   * (writeActivity / notification / emitEvent). The caller only fires
+   * those side-effects when this returns `true` (the row was inserted by
+   * this tick). A `23505` is swallowed — another overlapping cron tick
+   * already recorded this crossing — and reported as `false` (lost the
+   * race; the winner already fired the side-effects). Still NEVER throws
+   * on 23505 (a lost race is the expected outcome, not an error). Any
+   * other DB error still throws.
    */
-  private async resolveUserPersonId(
-    userId: string,
-    tenantId: string,
-  ): Promise<string | null> {
-    const { data, error } = await this.supabase.admin
-      .from('users')
-      .select('person_id')
-      .eq('id', userId)
-      .eq('tenant_id', tenantId)
-      .maybeSingle();
-    if (error) {
-      throw wrapPgError(error, 'sla.user_person_lookup_failed', {
-        detail: `users.person_id lookup for user ${userId} failed`,
-      });
-    }
-    return (data?.person_id as string | null) ?? null;
-  }
-
   private async writeCrossing(row: {
     tenant_id: string;
     sla_timer_id: string;
@@ -1070,16 +1095,15 @@ export class SlaService {
     target_type: ThresholdTargetType;
     target_id: string | null;
     notification_id: string | null;
-  }) {
+  }): Promise<boolean> {
     const { error } = await this.supabase.admin
       .from('sla_threshold_crossings')
       .insert(row);
-    // Ignore unique_violation (23505) — another cron tick beat us to it.
-    if (error && (error as { code?: string }).code !== '23505') {
-      throw wrapPgError(error, 'sla.crossing_write_failed', {
-        detail: `sla_threshold_crossings insert for timer ${row.sla_timer_id} failed`,
-      });
-    }
+    if (!error) return true;
+    // Lost the race — another cron tick beat us to the crossing insert.
+    // 23505 is the expected outcome under overlapping ticks, not an error.
+    if ((error as { code?: string }).code === '23505') return false;
+    throw error;
   }
 
   // audit-02 P0-2 (2026-05-16): `writeActivity` was DELETED here. It
@@ -1108,19 +1132,6 @@ export class SlaService {
     });
   }
 
-  /**
-   * Telemetry emit that NEVER throws (audit-02 P0-2, codex BLOCK fix).
-   *
-   * Used from the best-effort `catch` blocks in `applyReassignment`
-   * (watcher) and `fireThreshold` (notification). Those catches sit
-   * BETWEEN the committed `set_entity_assignment` and the crossing-row
-   * anchor. A bare `await this.emitEvent(...)` there is itself a
-   * `domain_events` INSERT that can reject — and if it threw, it would
-   * abort before the anchor and reopen the permanent-recurrence class
-   * (committed assignment, no crossing, re-fire every tick). So the
-   * telemetry insert is itself best-effort: a failed observability write
-   * must never be load-bearing.
-   */
   private async emitTelemetryBestEffort(
     tenantId: string,
     ticketId: string,
@@ -1139,27 +1150,58 @@ export class SlaService {
   }
 
   /**
-   * Fire a single threshold for a single timer. Writes a crossing row (idempotency
-   * anchor), sends notifications, and — for `escalate` — reassigns the ticket.
-   * Swallows `23505` (unique_violation) so racing cron ticks are safe.
+   * Fire a single threshold for a single timer. Reassigns the ticket via
+   * the canonical `set_entity_assignment` v3 RPC (00416) for `escalate`,
+   * then claims the `sla_threshold_crossings` row and — only if it won the
+   * claim — writes the SLA activity breadcrumb, sends the escalation
+   * notification, backfills the crossing's `notification_id`, and emits the
+   * domain event.
    *
-   * Not atomic, but recurrence-safe BY ORDERING (audit-02 P0-2). Write
-   * order: reassign (`set_entity_assignment` — atomic + idempotent per
-   * crossing; its watcher copy is best-effort) → **crossing (the
-   * idempotency anchor) FIRST** → notify (best-effort) → event. The
-   * crossing is written immediately after the load-bearing assignment
-   * commits and BEFORE every fallible side-effect, so once it exists
-   * nothing afterwards — a thrown notifier, a thrown telemetry insert,
-   * any future post-anchor await — can make the cron re-fire this
-   * escalation (`selectApplicableThresholds` filters the recorded
-   * crossing out next tick). This is a structural invariant, not a
-   * "remembered to catch every throw" property. The SOLE remaining
-   * bounded retry window is `writeCrossing` itself failing — rare, and
-   * the RPCs replay idempotently. Failed side-effects surface as
-   * `sla_escalation_notify_failed` / `sla_escalation_watcher_skipped`
-   * telemetry (itself best-effort via `emitTelemetryBestEffort`), not
-   * silent. Trade-off: `crossing.notification_id` is null (we anchor
-   * before sending) — soft trace-linkage given up for the invariant.
+   * Write order: reassign (v3 RPC) → writeCrossing (claim) →
+   * [if won] writeActivity → notify → UPDATE crossing.notification_id →
+   * emitEvent.
+   *
+   * Idempotency boundary (audit02 CR1 — R-A02-2 CLOSED):
+   *
+   *   - **Assignment + watchers + audit write** (routing_decisions /
+   *     ticket_activities / ticket_assigned event inside v3) is idempotent
+   *     in Postgres via v3's `command_operations` gate, keyed on the
+   *     deterministic `sla:escalation:<timer>:<pct>:<type>` key. EVERY
+   *     overlapping tick may call the RPC; a re-fired tick replays the
+   *     cached result — no double assignment, no duplicate audit/event
+   *     rows. NOTE: the RPC return CANNOT be used to detect a replay — the
+   *     cached `command_operations.cached_result` is returned verbatim
+   *     (00418:217-218) and carries `noop:false` on BOTH a fresh write
+   *     (00418:789) and a cached replay; only the F17 no-op early-return
+   *     path (00418:511-524) returns `noop:true`. So `applyReassignment`'s
+   *     `changed` (computed pre-RPC from a stale ticket read) is NOT a
+   *     replay signal and is NOT used to gate the side-effects.
+   *
+   *   - **Non-idempotent human-facing side-effects** (`writeActivity`,
+   *     `notifications.send`, `emitEvent`) are gated on winning the
+   *     `sla_threshold_crossings` UNIQUE (sla_timer_id, at_percent,
+   *     timer_type) insert (00043:16). `writeCrossing` runs AFTER the RPC
+   *     succeeds and returns `won`; only the tick that inserted the
+   *     crossing fires the side-effects. A losing tick: assignment already
+   *     idempotently applied, crossing already recorded by the winner,
+   *     side-effects already fired by the winner → it correctly does
+   *     nothing further. No double notification, no duplicate activity.
+   *
+   *   - **No-permanent-suppression invariant.** `writeCrossing` is called
+   *     STRICTLY AFTER `applyReassignment` succeeds. If the RPC throws,
+   *     `fireThreshold` throws BEFORE any crossing is written → a later
+   *     tick retries cleanly (no crossing ⇒ not suppressed). The crossing
+   *     is never written before the assignment is durable.
+   *
+   *   - **Best-effort post-crossing side-effects.** Once the crossing is
+   *     won, the durable state (assignment + crossing) is committed. The
+   *     activity / notification / event side-effects are best-effort: a
+   *     failure there is caught + logged and does NOT throw out of
+   *     `fireThreshold` — a thrown notify failure would trigger a retry
+   *     that the now-recorded crossing would (correctly) suppress, leaking
+   *     a "no notification ever sent, no retry possible" hole. Logging only,
+   *     no rollback (nothing to roll back; the durable writes already
+   *     committed). Matches the project's `console.error('[sla] …')` idiom.
    */
   private async fireThreshold(
     timer: SlaTimerRow,
@@ -1169,9 +1211,11 @@ export class SlaService {
     const policyName = await this.loadPolicyName(timer.sla_policy_id, timer.tenant_id);
     const resolved = await this.resolveTarget(threshold, ticket.id, timer.tenant_id);
 
-    // Skip path — record a crossing so we don't retry forever.
+    // Skip path — claim a crossing so we don't retry forever. The
+    // crossing-winner gates the (best-effort) skip event so two
+    // overlapping ticks don't double-emit it.
     if (!resolved) {
-      await this.writeCrossing({
+      const wonSkip = await this.writeCrossing({
         tenant_id: ticket.tenant_id,
         sla_timer_id: timer.id,
         ticket_id: ticket.id,
@@ -1182,12 +1226,16 @@ export class SlaService {
         target_id: null,
         notification_id: null,
       });
-      await this.emitEvent(ticket.tenant_id, ticket.id, 'sla_threshold_crossed', {
-        timer_type: timer.timer_type,
-        at_percent: threshold.at_percent,
-        action: 'skipped_no_manager',
-        target_type: threshold.target_type,
-      });
+      if (wonSkip) {
+        await this.bestEffortSideEffect('skip-emitEvent', timer, () =>
+          this.emitEvent(ticket.tenant_id, ticket.id, 'sla_threshold_crossed', {
+            timer_type: timer.timer_type,
+            at_percent: threshold.at_percent,
+            action: 'skipped_no_manager',
+            target_type: threshold.target_type,
+          }),
+        );
+      }
       return;
     }
 
@@ -1203,65 +1251,31 @@ export class SlaService {
       dueAt: timer.due_at,
     });
 
+    // 1. Assignment write (idempotent via v3 command_operations). EVERY
+    //    overlapping tick may call this; a replay is a safe no-op. The
+    //    `reassigned` flag (computed pre-RPC inside applyReassignment from
+    //    a stale ticket read) is NOT a replay signal — it only decides
+    //    whether an actual assignment delta happened, which gates the SLA
+    //    breadcrumb's semantics (escalate-that-changed-assignee). If the
+    //    RPC throws, this throws BEFORE any crossing is written → a later
+    //    tick retries cleanly (no-permanent-suppression invariant).
     let reassigned = false;
     if (threshold.action === 'escalate') {
-      // audit-02 P0-2: deterministic per-crossing idempotency anchor.
-      // Components MUST match the established crossing identity
-      // `crossingKey` = sla_timer_id | at_percent | timer_type
-      // (sla-threshold.types.ts:33). Dropping timer_type (review I2,
-      // ba1a4322) would collide a `both`-scope threshold's legitimately
-      // distinct response- and resolution-timer crossings at the same
-      // at_percent onto one command_operations key — the second real
-      // escalation would be swallowed as a replay (or hard-error on
-      // payload_mismatch). `timer.timer_type` is the concrete resolved
-      // TimerType used for this crossing (same value writeCrossing /
-      // emitEvent record at lines below). A re-fired tick for the SAME
-      // crossing still replays the cached result.
-      const crossingIdemKey = `sla:escalation:${timer.id}:${threshold.at_percent}:${timer.timer_type}`;
-      // Non-null reason → set_entity_assignment writes the
-      // routing_decisions audit row + `reassigned` ticket_activities row
-      // + `ticket_assigned` domain event (00327:258-410). No prose leak:
-      // this is an internal routing-audit string, not a user-facing
-      // error message.
-      const reason = `SLA escalation — ${threshold.at_percent}% threshold breached`;
       reassigned = await this.applyReassignment(
         ticket,
         resolved,
-        crossingIdemKey,
-        reason,
+        ticket.kind,
+        { id: timer.id, timer_type: timer.timer_type },
+        threshold,
+        policyName,
       );
-      // NOTE: no `writeActivity` call here anymore. Pre-P0-2 this wrote a
-      // second `system_event` "SLA escalated …" ticket_activities row.
-      // `set_entity_assignment` now writes the canonical `reassigned`
-      // activity row for the SAME logical event (with the SLA-escalation
-      // reason as its content) — keeping the old call would produce a
-      // duplicate timeline entry for one reassignment. The `writeActivity`
-      // method was DELETED (it had no other caller; structured at_percent/
-      // timer_type detail still lives on `sla_threshold_crossings`).
     }
 
-    // ── Crossing anchor FIRST (audit-02 P0-2 — codex BLOCK, structural) ─
-    // The load-bearing write has committed: for `escalate`,
-    // `set_entity_assignment` ran atomically in `applyReassignment` above
-    // (its own tx, idempotent on replay); notify-only has no mutation.
-    // Write the crossing row NOW. It is the idempotency anchor
-    // `selectApplicableThresholds` uses to suppress re-fire. Anchoring
-    // BEFORE the best-effort notification makes recurrence-safety a
-    // STRUCTURAL invariant rather than a property of "we remembered to
-    // make every post-commit await non-throwing": once the crossing
-    // exists, nothing after it — a thrown notifier, a thrown telemetry
-    // insert, any future post-anchor await — can make the cron re-fire
-    // this escalation. The earlier whack-a-mole (catch the notifier,
-    // then the watcher, then the in-catch telemetry…) is why this is now
-    // an ordering invariant. `writeCrossing` is the SOLE remaining
-    // bounded retry window (rare; RPCs replay idempotently; a racing
-    // tick's duplicate insert is swallowed as 23505). `notification_id`
-    // is null: we deliberately anchor before sending — a soft
-    // trace-linkage traded for bulletproof recurrence-safety; the
-    // structured at_percent / timer_type / target detail still lives on
-    // the crossing row, and the notification is observable via its own
-    // `sla_escalation_notify_failed` telemetry on failure.
-    await this.writeCrossing({
+    // 2. Claim the crossing. STRICTLY AFTER the durable assignment write.
+    //    The UNIQUE (sla_timer_id, at_percent, timer_type) constraint
+    //    (00043:16) makes this the single idempotency gate for the
+    //    non-idempotent human-facing side-effects below.
+    const won = await this.writeCrossing({
       tenant_id: ticket.tenant_id,
       sla_timer_id: timer.id,
       ticket_id: ticket.id,
@@ -1270,15 +1284,19 @@ export class SlaService {
       action: threshold.action,
       target_type: threshold.target_type,
       target_id: resolved.personId ?? resolved.teamId ?? null,
+      // Backfilled by the winner after the notification is sent (below).
       notification_id: null,
     });
 
-    // ── Notification — BEST-EFFORT, POST-anchor (cannot cause re-fire) ──
-    // The crossing is already written, so a thrown notifier (or a thrown
-    // telemetry insert in the catch) is harmless to recurrence. Still
-    // caught so a notifier outage doesn't abort the trailing event or
-    // noise the cron's batch catch; the in-catch telemetry is itself
-    // best-effort (emitTelemetryBestEffort).
+    // 3. Only the crossing-winner fires the non-idempotent side-effects.
+    //    A losing tick: assignment already idempotently applied, crossing
+    //    already recorded by the winner, side-effects already fired by the
+    //    winner → nothing further to do. All side-effects are best-effort:
+    //    the durable state (assignment + crossing) is committed, so a
+    //    failure here must NOT throw (a thrown failure → retry → now
+    //    suppressed by the crossing → permanent side-effect hole).
+    if (!won) return;
+
     const notifyArgs = {
       notification_type: 'sla_threshold_crossed',
       related_entity_type: 'ticket',
@@ -1286,40 +1304,85 @@ export class SlaService {
       subject,
       body,
     };
-    try {
-      if (resolved.teamId) {
-        await this.notifications.sendToTeam(resolved.teamId, notifyArgs);
-      } else if (resolved.personId) {
-        await this.notifications.send({ ...notifyArgs, recipient_person_id: resolved.personId });
-      }
-    } catch (notifyErr) {
-      const mapped = mapRpcErrorToAppError(
-        notifyErr instanceof Error ? notifyErr : new Error(String(notifyErr)),
-      );
-      console.warn(
-        `[sla] threshold ${ticket.id} @${threshold.at_percent}%/${timer.timer_type}: notification failed (${mapped.code}) — crossing already anchored; not re-fired`,
-      );
-      await this.emitTelemetryBestEffort(
-        ticket.tenant_id,
-        ticket.id,
-        'sla_escalation_notify_failed',
-        {
-          reason_code: mapped.code,
-          at_percent: threshold.at_percent,
-          timer_type: timer.timer_type,
-          action: threshold.action,
-        },
-      );
+    const firstNotificationId = await this.bestEffortSideEffect(
+      'notify',
+      timer,
+      async () => {
+        if (resolved.teamId) {
+          const sent = await this.notifications.sendToTeam(resolved.teamId, notifyArgs);
+          return ((sent?.[0] as { id?: string } | undefined)?.id) ?? null;
+        }
+        if (resolved.personId) {
+          const sent = await this.notifications.send({
+            ...notifyArgs,
+            recipient_person_id: resolved.personId,
+          });
+          return ((sent?.[0] as { id?: string } | undefined)?.id) ?? null;
+        }
+        return null;
+      },
+    );
+
+    // Backfill the winner's notification_id onto the crossing row it
+    // claimed. notification_id is informational only (read by
+    // listCrossingsForTicket for the ticket-detail escalations panel —
+    // sla.service.ts:1315; no FK-driven logic), so a best-effort follow-up
+    // UPDATE is sufficient and a miss leaves it null without affecting
+    // dedup correctness.
+    if (firstNotificationId) {
+      await this.bestEffortSideEffect('crossing-notification-id', timer, async () => {
+        await this.supabase.admin
+          .from('sla_threshold_crossings')
+          .update({ notification_id: firstNotificationId })
+          .eq('tenant_id', ticket.tenant_id)
+          .eq('sla_timer_id', timer.id)
+          .eq('at_percent', threshold.at_percent)
+          .eq('timer_type', timer.timer_type);
+      });
     }
 
-    await this.emitEvent(ticket.tenant_id, ticket.id, 'sla_threshold_crossed', {
-      timer_type: timer.timer_type,
-      at_percent: threshold.at_percent,
-      action: threshold.action,
-      target_type: threshold.target_type,
-      target_id: resolved.personId ?? resolved.teamId,
-      reassigned,
-    });
+    await this.bestEffortSideEffect('emitEvent', timer, () =>
+      this.emitEvent(ticket.tenant_id, ticket.id, 'sla_threshold_crossed', {
+        timer_type: timer.timer_type,
+        at_percent: threshold.at_percent,
+        action: threshold.action,
+        target_type: threshold.target_type,
+        target_id: resolved.personId ?? resolved.teamId,
+        reassigned,
+      }),
+    );
+  }
+
+  /**
+   * Run a post-crossing side-effect best-effort: on failure log + swallow,
+   * never rethrow. R-A02-2: once the crossing is won the durable state
+   * (assignment + crossing) is already committed; a thrown side-effect
+   * failure would trigger a cron retry that the recorded crossing would
+   * (correctly) suppress — leaking a permanent "side-effect never ran, no
+   * retry possible" hole. Logging-only is the right failure mode. Matches
+   * the project's `console.error('[sla] …')` idiom (sla.service.ts:499);
+   * the sla module is gated by `errors:check-app-errors` so no raw
+   * `throw new Error` is introduced here.
+   */
+  private async bestEffortSideEffect<T>(
+    label: string,
+    timer: { id: string; tenant_id: string; ticket_id: string },
+    fn: () => Promise<T>,
+  ): Promise<T | null> {
+    try {
+      return await fn();
+    } catch (err) {
+      console.error(
+        `[sla] post-crossing side-effect '${label}' failed (best-effort; durable state stands)`,
+        {
+          timer_id: timer.id,
+          tenant_id: timer.tenant_id,
+          ticket_id: timer.ticket_id,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+      return null;
+    }
   }
 
   /**

@@ -589,10 +589,11 @@ export type KnownErrorCode =
   | 'set_entity_assignment.unknown_kind'
   | 'set_entity_assignment.not_found'
   | 'set_entity_assignment.resolver_rerun_not_supported_at_rpc'
-  // audit-02 Q1 (codex NIT): 00406 v3 raises this when a caller passes
-  // clear_routing_status with p_entity_kind='work_order' (WO has no
-  // routing_status column). Unreachable by current callers; registered so a
-  // future non-HTTP caller renders a real message, not unknown.server_error.
+  // Audit 02 Slice A — set_entity_assignment v3 (00416). Optional
+  // p_payload->'watchers' / p_payload->'decision' keys; validation
+  // raises mirror update_entity_combined.invalid_watcher's shape.
+  | 'set_entity_assignment.invalid_watcher'
+  | 'set_entity_assignment.invalid_decision'
   | 'set_entity_assignment.routing_status_unsupported_for_work_order'
 
   // ─── B.2.A §3.3 update_entity_sla RPC (00328) ────────────────────────────
@@ -886,6 +887,10 @@ export type KnownErrorCode =
   | 'edit_booking.work_order_not_in_booking'
   | 'edit_booking.order_not_in_booking'
   | 'edit_booking.asset_reservation_not_in_booking'
+  // TS-side guard at AssembleEditPlanService: a single-slot edit on a
+  // multi-slot booking with booking-keyed linked rows is ambiguous until
+  // child rows gain booking_slot_id/scope attribution.
+  | 'edit_booking.linked_rows_require_booking_scope'
   // B.4.A.4 step 2D-C self-review remediation (PLAN-C1).
   // TS-side fail-fast at AssembleEditPlanService when the rule resolver's
   // new outcome is `require_approval` but `approvalConfig` is null OR
@@ -2062,6 +2067,8 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'set_entity_assignment.unknown_kind',
   'set_entity_assignment.not_found',
   'set_entity_assignment.resolver_rerun_not_supported_at_rpc',
+  'set_entity_assignment.invalid_watcher',
+  'set_entity_assignment.invalid_decision',
   'set_entity_assignment.routing_status_unsupported_for_work_order',
   'update_entity_sla.unknown_kind',
   'update_entity_sla.not_found',
@@ -2116,6 +2123,7 @@ export const KNOWN_ERROR_CODES: ReadonlySet<KnownErrorCode> = new Set<KnownError
   'edit_booking.work_order_not_in_booking',
   'edit_booking.order_not_in_booking',
   'edit_booking.asset_reservation_not_in_booking',
+  'edit_booking.linked_rows_require_booking_scope',
   // B.4.A.4 step 2D-C self-review remediation (PLAN-C1 + CODE-I2).
   // rule_missing_approvers: TS-side fail-fast for require_approval-with-no-
   //   approvers (rule-resolver.service.ts:514 admits null approvalConfig).

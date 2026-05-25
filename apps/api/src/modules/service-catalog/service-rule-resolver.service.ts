@@ -135,7 +135,7 @@ export class ServiceRuleResolverService {
     );
     const orderedRules: MatchedServiceRule[] = [];
     for (const [specificity, bucket] of sortedBuckets) {
-      bucket.sort((a, b) => b.priority - a.priority);
+      bucket.sort(compareServiceRulesWithinSpecificity);
       for (const r of bucket) orderedRules.push({ ...r, specificity });
     }
     if (orderedRules.length === 0) return [];
@@ -165,6 +165,15 @@ export class ServiceRuleResolverService {
   private aggregate(matched: MatchedServiceRule[]): ServiceRuleOutcome {
     return aggregateMatchedRules(matched);
   }
+}
+
+function compareServiceRulesWithinSpecificity(
+  a: ServiceRuleRow,
+  b: ServiceRuleRow,
+): number {
+  const priority = b.priority - a.priority;
+  if (priority !== 0) return priority;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
 // ── Pure aggregator (exported for unit-testability) ───────────────────────

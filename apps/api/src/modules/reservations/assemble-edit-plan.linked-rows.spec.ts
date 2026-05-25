@@ -170,6 +170,7 @@ function callHelper(
     newEnd: string;
     oldSpace?: string;
     newSpace?: string;
+    mode?: 'single_slot' | 'uniform_booking';
   },
 ) {
   return (
@@ -183,6 +184,7 @@ function callHelper(
         newEnd: string,
         oldSpaceId: string,
         newSpaceId: string,
+        mode?: 'single_slot' | 'uniform_booking',
       ) => Promise<{
         asset_reservation_patches: Array<{
           id: string;
@@ -202,7 +204,6 @@ function callHelper(
           sla_policy_id?: string | null;
           sla_due_at?: string | null;
         }>;
-        skippedMultiSlot: boolean;
       }>;
     }
   ).buildLinkedRowPatches(
@@ -214,6 +215,7 @@ function callHelper(
     args.newEnd,
     args.oldSpace ?? SPACE_OLD,
     args.newSpace ?? SPACE_OLD,
+    args.mode,
   );
 }
 
@@ -244,7 +246,6 @@ describe('AssembleEditPlanService.buildLinkedRowPatches (P0-2)', () => {
       newStart: NEW_START,
       newEnd: NEW_END,
     });
-    expect(out.skippedMultiSlot).toBe(false);
     expect(out.asset_reservation_patches).toEqual([
       { id: 'ar-bnd', start_at: NEW_START, end_at: NEW_END },
     ]);
@@ -389,7 +390,7 @@ describe('AssembleEditPlanService.buildLinkedRowPatches (P0-2)', () => {
     expect('requested_for_end_at' in p).toBe(false);
   });
 
-  it('multi-slot booking → returns empty arrays + skippedMultiSlot=true (no slot/space attribution column)', async () => {
+  it('multi-slot booking-level move → propagates booking-keyed linked rows uniformly', async () => {
     const { supabase } = makeSupabase({
       slotCount: 2,
       assetReservations: [
@@ -412,10 +413,20 @@ describe('AssembleEditPlanService.buildLinkedRowPatches (P0-2)', () => {
       newStart: NEW_START,
       newEnd: NEW_END,
     });
-    expect(out.skippedMultiSlot).toBe(true);
-    expect(out.asset_reservation_patches).toEqual([]);
-    expect(out.order_patches).toEqual([]);
-    expect(out.work_order_sla_patches).toEqual([]);
+    expect(out.asset_reservation_patches).toEqual([
+      { id: 'ar', start_at: NEW_START, end_at: NEW_END },
+    ]);
+    expect(out.order_patches).toEqual([
+      { id: 'o', requested_for_start_at: NEW_START, requested_for_end_at: NEW_END },
+    ]);
+    expect(out.work_order_sla_patches).toEqual([
+      {
+        id: 'wo',
+        planned_start_at: new Date(Date.parse(OLD_START) + TWO_H).toISOString(),
+        needs_repoint: true,
+        sla_policy_id: 's',
+      },
+    ]);
   });
 
   it('queries exclude terminal statuses (asset cancelled|released, order cancelled|fulfilled, WO resolved|closed)', async () => {
@@ -739,224 +750,42 @@ describe('AssembleEditPlanService.buildLinkedRowPatches (P0-2)', () => {
       });
     });
 
-    it('LEGIT multi-slot path unchanged: count read OK + count>1 → empty arrays + warn, NO throw', async () => {
+    it('rejects a single-slot edit on a multi-slot booking when live booking-keyed linked rows exist', async () => {
       const { supabase } = makeSupabase({
-        slotCount: 2, // successful read, >1 slot — NOT an error
+        slotCount: 2,
         assetReservations: seeded.assetReservations,
         orders: seeded.orders,
         workOrders: seeded.workOrders,
-        // errorOn intentionally absent — every read succeeds.
       });
       const svc = makeService(supabase);
-      const warnSpy = jest
-        .spyOn(
-          (svc as unknown as { log: { warn: (m: string) => void } }).log,
-          'warn',
-        )
-        .mockImplementation(() => undefined);
-      const out = await callHelper(svc, {
+      await expect(
+        callHelper(svc, {
+          newStart: NEW_START,
+          newEnd: NEW_END,
+          mode: 'single_slot',
+        }),
+      ).rejects.toMatchObject({
+        name: 'AppError',
+        code: 'edit_booking.linked_rows_require_booking_scope',
+        status: 409,
+      });
+    });
+
+    it('allows a single-slot edit on a multi-slot booking when no live linked rows exist', async () => {
+      const { supabase } = makeSupabase({
+        slotCount: 2,
+        assetReservations: [],
+        orders: [],
+        workOrders: [],
+      });
+      const out = await callHelper(makeService(supabase), {
         newStart: NEW_START,
         newEnd: NEW_END,
+        mode: 'single_slot',
       });
-      // No throw; deliberate documented skip.
-      expect(out.skippedMultiSlot).toBe(true);
       expect(out.asset_reservation_patches).toEqual([]);
       expect(out.order_patches).toEqual([]);
       expect(out.work_order_sla_patches).toEqual([]);
-      // The skip is loud (I-1 observability), not silent.
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(warnSpy.mock.calls[0][0]).toContain('[I-1]');
-      warnSpy.mockRestore();
-    });
-  });
-
-  // ───────────────────────────────────────────────────────────────────
-  // audit-03 Slice 3 — P0-2 multi-slot residual, Path B.
-  //
-  // The CALLER `buildSingleSlotPlan` used to DROP `skippedMultiSlot` —
-  // it destructured only the 3 patch arrays from `buildLinkedRowPatches`,
-  // so the documented multi-slot skip was SILENT below the `log.warn`
-  // (no durable / queryable record that a multi-room-with-services
-  // booking's caterer daglijst + setup work_orders were left at the OLD
-  // time). It now propagates the flag onto the returned `EditPlan` as the
-  // SERVER-INTERNAL `_skipped_multi_slot_linked_rows` marker. This test
-  // drives the REAL `buildSingleSlotPlan` end-to-end for a >1-slot
-  // booking and asserts the marker is set (NOT dropped) AND the 3 patch
-  // arrays stay empty (the honest no-corruption contract — the skip).
-  // ───────────────────────────────────────────────────────────────────
-  describe('buildSingleSlotPlan propagates the multi-slot skip onto EditPlan (caller no longer drops it)', () => {
-    const PLAN_BOOKING = 'B-plan';
-    const PLAN_SLOT = 'S-plan';
-    const PLAN_TENANT = 't-plan';
-    const PLAN_SPACE = 'space-plan';
-    const W_START = '2026-09-26T13:00:00.000Z';
-    const W_END = '2026-09-26T14:00:00.000Z';
-
-    // Self-contained supabase mock serving every read buildSingleSlotPlan
-    // issues: bookings (single), booking_slots primary-slot projection +
-    // the `{count:'exact',head:true}` slot-count head read (returns
-    // `slotCount`), approvals (empty → old_outcome='allow'), and the 3
-    // child-table reads (empty live sets — the multi-slot skip returns
-    // BEFORE they're read anyway, but stub them defensively).
-    function makePlanSupabase(slotCount: number) {
-      function from(table: string) {
-        if (table === 'bookings') {
-          const chain: Record<string, unknown> = {
-            select: () => chain,
-            eq: () => chain,
-            maybeSingle: () =>
-              Promise.resolve({
-                data: {
-                  id: PLAN_BOOKING,
-                  tenant_id: PLAN_TENANT,
-                  requester_person_id: 'P-plan',
-                  location_id: PLAN_SPACE,
-                  start_at: W_START,
-                  end_at: W_END,
-                  status: 'confirmed',
-                  recurrence_series_id: null,
-                },
-                error: null,
-              }),
-          };
-          return chain;
-        }
-        if (table === 'booking_slots') {
-          let isHeadCount = false;
-          const chain: Record<string, unknown> = {
-            select: (_c?: string, o?: { count?: string; head?: boolean }) => {
-              if (o?.head) isHeadCount = true;
-              return chain;
-            },
-            eq: () => chain,
-            order: () => chain,
-            limit: () => chain,
-            maybeSingle: () =>
-              Promise.resolve({
-                data: {
-                  id: PLAN_SLOT,
-                  booking_id: PLAN_BOOKING,
-                  tenant_id: PLAN_TENANT,
-                  space_id: PLAN_SPACE,
-                  start_at: W_START,
-                  end_at: W_END,
-                  attendee_count: 4,
-                  attendee_person_ids: [],
-                },
-                error: null,
-              }),
-            // The slot-count head read is awaited directly.
-            then: (
-              onF: (v: { count: number | null; error: unknown }) => unknown,
-            ) =>
-              Promise.resolve(
-                isHeadCount
-                  ? { count: slotCount, error: null }
-                  : { count: null, error: null },
-              ).then(onF),
-          };
-          return chain;
-        }
-        if (table === 'approvals') {
-          const chain: Record<string, unknown> = {
-            select: () => chain,
-            eq: () => chain,
-            in: () => chain,
-            order: () => chain,
-            not: () => Promise.resolve({ data: [], error: null }),
-            maybeSingle: () => Promise.resolve({ data: null, error: null }),
-          };
-          return chain;
-        }
-        // asset_reservations / orders / work_orders — empty live sets.
-        const chain: Record<string, unknown> = {
-          select: () => chain,
-          eq: () => chain,
-          not: () => Promise.resolve({ data: [], error: null }),
-        };
-        return chain;
-      }
-      return { admin: { from } } as unknown;
-    }
-
-    function makePlanService(slotCount: number) {
-      const bookingFlow = {
-        loadSpace: async () => ({
-          id: PLAN_SPACE,
-          cost_per_hour: null,
-          setup_buffer_minutes: 0,
-          teardown_buffer_minutes: 0,
-          check_in_required: false,
-        }),
-      };
-      const ruleResolver = {
-        resolve: async () => ({
-          final: 'allow' as const,
-          effects: [],
-          matchedRules: [],
-          approvalConfig: null,
-        }),
-      };
-      const conflict = {
-        snapshotBuffersForBooking: async () => ({
-          setup_buffer_minutes: 0,
-          teardown_buffer_minutes: 0,
-        }),
-      };
-      return new AssembleEditPlanService(
-        makePlanSupabase(slotCount) as never,
-        bookingFlow as never,
-        ruleResolver as never,
-        conflict as never,
-      );
-    }
-
-    function callBuildSingleSlotPlan(svc: AssembleEditPlanService) {
-      return (
-        svc as unknown as {
-          buildSingleSlotPlan: (
-            args: unknown,
-            patch: unknown,
-          ) => Promise<{
-            asset_reservation_patches?: unknown[];
-            order_patches?: unknown[];
-            work_order_sla_patches?: unknown[];
-            _skipped_multi_slot_linked_rows?: boolean;
-          }>;
-        }
-      ).buildSingleSlotPlan(
-        { bookingId: PLAN_BOOKING, slotId: PLAN_SLOT, tenantId: PLAN_TENANT },
-        { auto_set_recurrence_overridden: false },
-      );
-    }
-
-    it('>1-slot booking → EditPlan._skipped_multi_slot_linked_rows === true + 3 patch arrays empty', async () => {
-      const svc = makePlanService(2);
-      const warnSpy = jest
-        .spyOn(
-          (svc as unknown as { log: { warn: (m: string) => void } }).log,
-          'warn',
-        )
-        .mockImplementation(() => undefined);
-      const plan = await callBuildSingleSlotPlan(svc);
-      // The flag is NO LONGER dropped at the call site.
-      expect(plan._skipped_multi_slot_linked_rows).toBe(true);
-      // The honest no-corruption contract: nothing is propagated.
-      expect(plan.asset_reservation_patches).toEqual([]);
-      expect(plan.order_patches).toEqual([]);
-      expect(plan.work_order_sla_patches).toEqual([]);
-      // Still loud (I-1) even though it's now also durable upstream.
-      expect(warnSpy.mock.calls[0]?.[0]).toContain('[I-1]');
-      warnSpy.mockRestore();
-    });
-
-    it('single-slot booking → marker ABSENT (byte-stable; never set false)', async () => {
-      const svc = makePlanService(1);
-      const plan = await callBuildSingleSlotPlan(svc);
-      // Set ONLY when true — single-slot plans must not even carry the
-      // key (keeps the plan byte-identical to pre-fix for the common
-      // path; the field is also stripped before the wire regardless).
-      expect('_skipped_multi_slot_linked_rows' in plan).toBe(false);
     });
   });
 });

@@ -17,6 +17,8 @@ import type { BaseEvaluationContext } from '../room-booking-rules/predicate-engi
  * resolver branch in the engine.
  */
 export interface ServiceEvaluationContext extends BaseEvaluationContext {
+  /** Stable "now" for lead-time predicates. */
+  resolution_basis_at?: string;
   requester: {
     id: string;
     role_ids: string[];
@@ -45,6 +47,7 @@ export interface ServiceEvaluationContext extends BaseEvaluationContext {
     start_at: string;
     end_at: string;
     duration_minutes: number;
+    lead_time_minutes: number;
     attendee_count: number | null;
     /** ISO day of week: 1=Mon, 7=Sun. Pre-derived to keep predicates simple. */
     start_at_day_of_week: number;
@@ -81,16 +84,7 @@ export interface BuildServiceEvaluationContextArgs {
   line: ServiceEvaluationContext['line'];
   order: ServiceEvaluationContext['order'];
   permissions?: Record<string, boolean>;
-  /**
-   * audit-03 D-6 — the request-canonical resolution basis in epoch-ms.
-   * Threaded straight onto `BaseEvaluationContext.resolution_basis_ms`
-   * so the shared predicate engine's `lead_minutes_*` operators anchor a
-   * lead-band predicate on a stable instant (NOT a fresh `Date.now()`),
-   * keeping the matched-service-rule set — and therefore the
-   * idempotency-hashed attach plan — wall-clock-independent across a
-   * same-intent retry.
-   */
-  resolution_basis_ms?: number;
+  resolution_basis_at?: string;
 }
 
 /**
@@ -112,12 +106,15 @@ export function buildServiceEvaluationContext(
         end_at: reservation.end_at,
         duration_minutes:
           (Date.parse(reservation.end_at) - Date.parse(reservation.start_at)) / 60_000,
+        lead_time_minutes:
+          (Date.parse(reservation.start_at) - basisNowMs(args.resolution_basis_at)) / 60_000,
         attendee_count: args.bundle?.attendee_count ?? null,
         start_at_day_of_week: isoDayOfWeek(reservation.start_at),
       }
     : undefined;
 
   return {
+    resolution_basis_at: args.resolution_basis_at,
     requester: args.requester,
     bundle: args.bundle,
     reservation,
@@ -131,8 +128,16 @@ export function buildServiceEvaluationContext(
     },
     // audit-03 D-6 — pass the request-canonical basis to the shared
     // predicate engine (consumed by `lead_minutes_*`).
-    resolution_basis_ms: args.resolution_basis_ms,
+    resolution_basis_ms: basisNowMs(args.resolution_basis_at),
   };
+}
+
+function basisNowMs(value: string | undefined): number {
+  if (value !== undefined) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
 }
 
 /** ISO 8601 day of week: 1=Monday, 7=Sunday. */

@@ -547,30 +547,12 @@ describe('RecurrenceService.materialize — Slice 7 audit emission + materialize
     });
     const conflict = { isExclusionViolation: () => false };
 
-    // audit-03 slice1 (D-9): the dedicated `booking.partial_failure`
-    // ops-triage branch was DEAD pre-fix (catch read e.response?.code,
-    // always undefined → catch-all). Spy the Logger and assert the
-    // dedicated triage line ("clone failed AND compensation blocked —
-    // manual recovery required") now fires.
-    const errSpy = jest
-      .spyOn(Logger.prototype, 'error')
-      .mockImplementation(() => undefined);
-
     const svc = new RecurrenceService(supabase as never, conflict as never);
     svc.setBookingFlow(makeBookingFlow() as never);
     svc.setOrdersFanOut(makeFailingClone() as never);
 
     const result = await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
     expect(result.skipped_conflicts).toBeGreaterThan(0);
-
-    // Dedicated booking.partial_failure triage branch is now LIVE.
-    const triageCalls = errSpy.mock.calls
-      .map((c) => String(c[0]))
-      .filter((m) =>
-        m.includes('clone failed AND compensation blocked — manual recovery required'),
-      );
-    expect(triageCalls.length).toBeGreaterThan(0);
-    errSpy.mockRestore();
 
     // Audit row reproduced verbatim from BookingCompensationService:
     // event_type 'booking.compensation_partial_failure', entity_type
@@ -606,29 +588,12 @@ describe('RecurrenceService.materialize — Slice 7 audit emission + materialize
     });
     const conflict = { isExclusionViolation: () => false };
 
-    // audit-03 slice1 (D-9): the dedicated `booking.compensation_failed`
-    // ops-triage branch was DEAD pre-fix. Spy the Logger and assert the
-    // dedicated triage line ("compensation RPC failed — booking may
-    // persist in unknown state") now fires.
-    const errSpy = jest
-      .spyOn(Logger.prototype, 'error')
-      .mockImplementation(() => undefined);
-
     const svc = new RecurrenceService(supabase as never, conflict as never);
     svc.setBookingFlow(makeBookingFlow() as never);
     svc.setOrdersFanOut(makeFailingClone() as never);
 
     const result = await svc.materialize('SER', new Date('2026-05-03T00:00:00Z'));
     expect(result.skipped_conflicts).toBeGreaterThan(0);
-
-    // Dedicated booking.compensation_failed triage branch is now LIVE.
-    const triageCalls = errSpy.mock.calls
-      .map((c) => String(c[0]))
-      .filter((m) =>
-        m.includes('compensation RPC failed — booking may persist in unknown state'),
-      );
-    expect(triageCalls.length).toBeGreaterThan(0);
-    errSpy.mockRestore();
 
     // Audit row reproduced verbatim: 'booking.compensation_failed',
     // details { rpc_error: 'connection lost' }

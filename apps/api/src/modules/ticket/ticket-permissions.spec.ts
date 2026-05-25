@@ -107,11 +107,14 @@ function makeDeps(
         ) {
           // validateAssigneesInTenant + assertTenantOwned probe path:
           //   `.select('id').eq('id', X).eq('tenant_id', Y).maybeSingle()` —
-          // returns a found-shape row so validation clears. `users` is also
-          // hit by `resolveAuthorPersonId` via .eq('auth_uid'), which can't
-          // be distinguished from the assignee probe by chained-.eq column
-          // name; returning null there is fine (resolveAuthorPersonId tolerates
-          // null with a system-attribution fallback).
+          // returns a found-shape row so validation clears. The reassign
+          // path no longer touches `addActivity`/`resolveAuthorPersonId`
+          // (audit02 Slice C: v3 `set_entity_assignment` owns the
+          // routing_decisions + ticket_activities rows atomically), so the
+          // only `users` access here is the assignee-validation probe;
+          // returning null for `users` is fine — these gate tests reject
+          // before validation matters, and the v3-committing tests stub
+          // getById/the RPC so the probe row is never required.
           return {
             select: () => ({
               eq: () => ({
@@ -150,11 +153,10 @@ function makeDeps(
           return chain as unknown;
         }
         if (table === 'command_operations') {
-          // audit-02 D-A02-4: reassign() now success-probes
-          // command_operations BEFORE the RPC. These permission-gate
-          // tests exercise the NORMAL (no prior commit) path → return no
-          // row so the probe falls through to the RPC exactly as before
-          // (zero behaviour change for the existing assertions).
+          // audit02 CR2 / D-A02-4: reassign() success-probes
+          // command_operations before re-evaluating/re-calling the RPC.
+          // These permission-gate tests exercise the NORMAL (no prior
+          // commit) path → return no row so the probe falls through.
           const chain: Record<string, unknown> = {};
           chain.select = () => chain;
           chain.eq = () => chain;
@@ -185,6 +187,25 @@ function makeDeps(
               permission: args.p_permission as string,
             });
             return { data: !!options.hasPermission, error: null };
+          }
+          if (fn === 'set_entity_assignment') {
+            // audit02 Slice C: reassign commits via v3. Apply the
+            // assignment keys onto `row` so the post-RPC getById refetch
+            // reflects the write.
+            const payload = (args as { p_payload?: Record<string, unknown> })
+              .p_payload;
+            if (payload) {
+              row = {
+                ...row,
+                assigned_team_id:
+                  (payload.assigned_team_id as string | null) ?? null,
+                assigned_user_id:
+                  (payload.assigned_user_id as string | null) ?? null,
+                assigned_vendor_id:
+                  (payload.assigned_vendor_id as string | null) ?? null,
+              } as Row;
+            }
+            return { data: { noop: false }, error: null };
           }
           if (fn === 'update_entity_combined') {
             // Simulate the orchestrator applying the patch to `row` so
@@ -595,14 +616,15 @@ describe('TicketService — per-action permission gates', () => {
             reason: 'team handover',
           },
           'auth-uid-non-admin',
-          'crid-1',
+          'cri-reassign',
         ),
       ).rejects.toThrow(/tickets\.assign permission required/);
 
       expect(deps.permissionChecks).toEqual([
         { user_id: 'u1', permission: 'tickets.assign' },
       ]);
-      // No assignment RPC was issued — the gate threw first.
+      // audit02 Slice C: no set_entity_assignment RPC was issued — the
+      // gate rejected before the v3 write.
       expect(
         deps.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
       ).toHaveLength(0);
@@ -622,14 +644,17 @@ describe('TicketService — per-action permission gates', () => {
           reason: 'team handover',
         },
         'auth-uid-admin',
-        'crid-2',
+        'cri-reassign',
       );
 
       expect(deps.permissionChecks).toHaveLength(0);
-      // The write-proof: reassign now commits via the atomic
-      // `set_entity_assignment` RPC (Audit-02 P1-1). The mock applies the
-      // payload's assignees onto `row`, so the row state IS the proof the
-      // mutation ran (loadContext alone proves nothing about the outcome).
+      // audit02 Slice C: reassign commits via the set_entity_assignment
+      // v3 RPC (not `.from('tickets').update`). The rpc mock applies the
+      // payload onto `row`, so the post-RPC getById refetch — and thus
+      // `deps.row()` — IS the write proof.
+      expect(
+        deps.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
+      ).toHaveLength(1);
       expect(deps.row().assigned_team_id).toBe(
         '33333333-3333-3333-3333-333333333333',
       );
@@ -649,17 +674,22 @@ describe('TicketService — per-action permission gates', () => {
           reason: 'workflow auto-route',
         },
         SYSTEM_ACTOR,
-        'crid-3',
+        'cri-reassign',
       );
 
       expect(deps.visibility.loadContext).not.toHaveBeenCalled();
       expect(deps.visibility.assertCanPlan).not.toHaveBeenCalled();
       expect(deps.visibility.assertVisible).not.toHaveBeenCalled();
       expect(deps.permissionChecks).toHaveLength(0);
-      // Also assert the write LANDED — gate-bypass tests must prove more
-      // than "permission path skipped". reassign commits via the atomic
-      // `set_entity_assignment` RPC (Audit-02 P1-1); the mock applies the
-      // payload onto `row`, so the row state IS the write proof.
+      // audit02 Slice C: also assert the write LANDED via the v3 RPC.
+      // SYSTEM_ACTOR collapses p_actor_user_id to null. The rpc mock
+      // applies the payload onto `row`, so the row state IS the write
+      // proof.
+      const sysAssign = deps.rpcCalls.filter(
+        (c) => c.fn === 'set_entity_assignment',
+      );
+      expect(sysAssign).toHaveLength(1);
+      expect(sysAssign[0].args.p_actor_user_id).toBeNull();
       expect(deps.row().assigned_team_id).toBe(
         '33333333-3333-3333-3333-333333333333',
       );
@@ -679,16 +709,18 @@ describe('TicketService — per-action permission gates', () => {
           reason: 'team handover',
         },
         'auth-uid-agent',
-        'crid-4',
+        'cri-reassign',
       );
 
       expect(deps.permissionChecks).toEqual([
         { user_id: 'u1', permission: 'tickets.assign' },
       ]);
-      // Assert the write actually landed (via the atomic
-      // `set_entity_assignment` RPC, Audit-02 P1-1), not just that the
-      // gate was traversed. See the sibling `skips the permission RPC`
-      // test for the same pattern.
+      // audit02 Slice C: assert the v3 write landed (gate cleared +
+      // mutation ran). See the sibling `skips the permission RPC` test
+      // for the same pattern.
+      expect(
+        deps.rpcCalls.filter((c) => c.fn === 'set_entity_assignment'),
+      ).toHaveLength(1);
       expect(deps.row().assigned_team_id).toBe(
         '33333333-3333-3333-3333-333333333333',
       );

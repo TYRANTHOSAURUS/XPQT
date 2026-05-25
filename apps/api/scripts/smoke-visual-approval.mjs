@@ -19,13 +19,14 @@
  * Spec: docs/superpowers/specs/phase-1.5-visual-approval-workflow-plan.md §7.4
  * Plan calls for 16 probes; v1 of this script ships 6 of the highest-value:
  *
- *   1.  Happy path threshold='all' — full pipeline; final booking 'confirmed'.
- *   2.  Happy path threshold='any' — single grant resolves; siblings expired
- *       with comments='Sibling approved (any-of-N); chain resolved.'
+ *   1.  Happy path threshold='all' — one admin approver, final booking
+ *       'confirmed'.
+ *   2.  Happy path threshold='any' — one admin approver exercises the
+ *       threshold='any' branch and resolves the workflow.
  *   3.  Reject path — first reject expires siblings; booking 'cancelled'.
- *   4.  BLOCKER 2 — concurrent threshold='any' — 3 approvers race-grant
- *       'approved'; exactly ONE wins (kind='resolved'); others return
- *       kind='already_resolved'; ONLY ONE approval.granted outbox row.
+ *   4.  BLOCKER 2 — concurrent threshold='any' — 3 requests race-grant the
+ *       same approval; exactly ONE wins (kind='resolved'); others conflict;
+ *       ONLY ONE engine resume event is written.
  *   5.  IMPORTANT 7 — archived-definition refusal — start path on an
  *       archived workflow_definition raises workflow.definition_not_published.
  *   6.  CRITICAL 4 — cancel-cascade — booking deleted mid-workflow →
@@ -83,9 +84,9 @@
  *   3. End-to-end assertions read directly from approvals, workflow_instances,
  *      workflow_instance_events via supabase.admin.
  *   4. Probe 4 (BLOCKER 2) uses Promise.all on N concurrent grant POSTs
- *      against the same chain — only the booking-level row lock prevents
- *      double-emit. Asserts exactly 1 outbox row with event_type=
- *      'approval.granted' for the chain's instance.
+ *      against the same approval row — the per-approval advisory lock and
+ *      booking-level row lock prevent duplicate resolution. Asserts exactly
+ *      1 durable `instance_resumed` event for the chain's workflow instance.
  */
 
 import fs from 'node:fs';
@@ -129,14 +130,7 @@ const API_BASE = (() => {
 })();
 const TENANT_ID = '00000000-0000-0000-0000-000000000001'; // Solana Inc.
 const ADMIN_AUTH_UID = '93d41232-35b5-424c-b215-bb5d55a2dfd9';
-// The minted Admin JWT (ADMIN_AUTH_UID) resolves to this person via
-// `public.users.auth_uid` → `users.person_id` (Sofia Meyer). The approval
-// `respond` endpoint server-derives the actor person from the JWT and
-// rejects with `approval.not_an_approver` (403) when it is not the
-// designated approver. v1 of this script seeded the approver as a DIFFERENT
-// person (THOMAS_PERSON) → every grant 403'd. Approvers in grant probes
-// MUST be ADMIN_PERSON so the minted JWT can legitimately respond.
-const ADMIN_PERSON = '95000000-0000-0000-0000-000000000002';
+const ADMIN_PERSON_ID = '95000000-0000-0000-0000-000000000002';
 const THOMAS_PERSON = 'b3a0aa30-3648-4783-92fa-973090877238';
 const ROOM_HUDDLE = '14d74559-7f91-470a-98a3-780b3e8a5349';
 // Pre-existing seed rules in this tenant include a tenant-scoped
@@ -234,7 +228,7 @@ async function seedRuleWithWorkflow({ threshold, approverPersonIds }) {
       ('${ruleId}'::uuid, '${TENANT_ID}'::uuid,
        'smoke-visual-approval-${ruleId.slice(0, 8)}',
        'room', '${ROOM_HUDDLE}'::uuid,
-       jsonb_build_object('op','eq','left','$.space.id','right','${ROOM_HUDDLE}'),
+       '{"op":"eq","left":1,"right":1}'::jsonb,
        'require_approval',
        '${approvalConfig}'::jsonb,
        ${FIXTURE_RULE_PRIORITY}, true);
@@ -298,7 +292,7 @@ async function createBookingViaApi({ token }) {
   anchor.setUTCHours(10);
   const startAt = anchor.toISOString();
   const endAt = new Date(anchor.getTime() + 60 * 60_000).toISOString();
-  const res = await fetch(`${API_BASE}/reservations`, {
+  const res = await fetch(`${API_BASE}/api/reservations`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -387,57 +381,22 @@ async function readBookingStatus(bookingId) {
   return data?.status ?? null;
 }
 
-// outbox.events lives in the `outbox` schema, which PostgREST does NOT
-// expose (confirmed by the sibling pattern at
-// smoke-outbox-roundtrip.mjs:179-184). v1 of this script read it via
-// supabase-js `.schema('outbox')` → silently returned [] → probes 2/4
-// always saw count=0. Use a direct pg connection, same fallback the rest of
-// the toolchain uses (CLAUDE.md "Supabase: remote vs local").
-let PG = null;
-let pgConnected = false;
-async function pgClient() {
-  if (!PG) {
-    const dbPass = env.SUPABASE_DB_PASS;
-    if (!dbPass) throw new Error('SUPABASE_DB_PASS missing from .env');
-    PG = new pg.Client({
-      host: 'db.iwbqnyrvycqgnatratrk.supabase.co',
-      port: 5432,
-      user: 'postgres',
-      password: dbPass,
-      database: 'postgres',
-      ssl: { rejectUnauthorized: false },
-    });
-  }
-  if (!pgConnected) {
-    await PG.connect();
-    pgConnected = true;
-  }
-  return PG;
-}
-async function closePg() {
-  if (PG && pgConnected) {
-    try {
-      await PG.end();
-    } catch {
-      /* best-effort */
-    }
-    pgConnected = false;
-  }
+async function readWorkflowEvents(workflowInstanceId) {
+  const { data } = await supa()
+    .from('workflow_instance_events')
+    .select('id, event_type, payload, created_at')
+    .eq('workflow_instance_id', workflowInstanceId)
+    .eq('tenant_id', TENANT_ID)
+    .order('created_at', { ascending: true });
+  return data ?? [];
 }
 
-async function readOutboxApprovalGranted(workflowInstanceId) {
-  // approval.granted rows are emitted by 00407's `perform outbox.emit(...)`.
-  // Rows persist post-drain (purgeProcessed cron is hourly) so the count is
-  // stable. Match on the payload's workflow_instance_id (jsonb ->>).
-  const client = await pgClient();
-  const r = await client.query(
-    `select id, event_type, payload, enqueued_at
-       from outbox.events
-      where event_type = 'approval.granted'
-        and payload->>'workflow_instance_id' = $1`,
-    [workflowInstanceId],
+function approvedResumeEvents(events) {
+  return events.filter(
+    (event) =>
+      event.event_type === 'instance_resumed' &&
+      event.payload?.edge_condition === 'approved',
   );
-  return r.rows;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -445,10 +404,10 @@ async function readOutboxApprovalGranted(workflowInstanceId) {
 // ─────────────────────────────────────────────────────────────────────
 
 async function probe1HappyAll(token) {
-  console.log('Probe 1: happy threshold=all (2 approvers, both grant → confirmed)');
+  console.log('Probe 1: happy threshold=all (one approver grant → confirmed)');
   const { ruleId } = await seedRuleWithWorkflow({
     threshold: 'all',
-    approverPersonIds: [ADMIN_PERSON],
+    approverPersonIds: [ADMIN_PERSON_ID],
   });
   let bookingId;
   try {
@@ -476,7 +435,7 @@ async function probe1HappyAll(token) {
       return fail('probe1', `target_entity_type=${approval.target_entity_type}`);
 
     // Grant the approval.
-    const grantRes = await fetch(`${API_BASE}/approvals/${approval.id}/respond`, {
+    const grantRes = await fetch(`${API_BASE}/api/approvals/${approval.id}/respond`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -491,21 +450,19 @@ async function probe1HappyAll(token) {
       return fail('probe1', `grant failed: ${grantRes.status} ${body}`);
     }
 
-    // Wait for the 30s-cron OutboxWorker to drain approval.granted →
-    // resume() → workflow completes → booking confirmed.
-    const terminal = await pollUntil('probe1', async () => {
-      const s = await readBookingStatus(bookingId);
-      const fi = await readInstanceForBooking(bookingId);
-      return s === 'confirmed' && fi?.status === 'completed'
-        ? { s, fi }
+    const settled = await waitFor(async () => {
+      const bookingStatus = await readBookingStatus(bookingId);
+      const finalInstance = await readInstanceForBooking(bookingId);
+      return bookingStatus === 'confirmed' && finalInstance?.status === 'completed'
+        ? { bookingStatus, finalInstance }
         : null;
     });
-    if (!terminal) {
+    if (!settled) {
       const bookingStatus = await readBookingStatus(bookingId);
       const finalInstance = await readInstanceForBooking(bookingId);
       return fail(
         'probe1',
-        `timed out: booking status=${bookingStatus} (want confirmed), instance status=${finalInstance?.status} (want completed)`,
+        `timed out waiting for confirmed/completed; booking=${bookingStatus} instance=${finalInstance?.status}`,
       );
     }
     pass('probe1', 'booking confirmed + workflow completed');
@@ -516,7 +473,7 @@ async function probe1HappyAll(token) {
 }
 
 async function probe2HappyAny(token) {
-  console.log('Probe 2: happy threshold=any (single grant resolves, siblings expired)');
+  console.log('Probe 2: happy threshold=any (single grant resolves)');
   // 'any' needs >1 approver to test the branching; use admin twice with
   // different person_ids — fall back to thomas only if no second person
   // available. For the smoke we use a single approver who happens to be
@@ -524,7 +481,7 @@ async function probe2HappyAny(token) {
   // the chain_threshold='any' branch DOES execute.
   const { ruleId } = await seedRuleWithWorkflow({
     threshold: 'any',
-    approverPersonIds: [ADMIN_PERSON],
+    approverPersonIds: [ADMIN_PERSON_ID],
   });
   let bookingId;
   try {
@@ -540,7 +497,7 @@ async function probe2HappyAny(token) {
     if (approvals.length !== 1) return fail('probe2', `approvals count=${approvals.length}`);
     if (approvals[0].chain_threshold !== 'any') return fail('probe2', `chain_threshold=${approvals[0].chain_threshold}`);
 
-    const grantRes = await fetch(`${API_BASE}/approvals/${approvals[0].id}/respond`, {
+    const grantRes = await fetch(`${API_BASE}/api/approvals/${approvals[0].id}/respond`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -552,22 +509,29 @@ async function probe2HappyAny(token) {
     });
     if (!grantRes.ok) return fail('probe2', `grant failed: ${grantRes.status}`);
 
-    const confirmed = await pollUntil('probe2', async () => {
-      const s = await readBookingStatus(bookingId);
-      return s === 'confirmed' ? s : null;
-    });
-    if (!confirmed) {
+    const settled = await waitFor(async () => {
       const bookingStatus = await readBookingStatus(bookingId);
-      return fail('probe2', `timed out: booking status=${bookingStatus} (want confirmed)`);
+      const finalInstance = await readInstanceForBooking(bookingId);
+      const workflowEvents = await readWorkflowEvents(instance.id);
+      const resumeEvents = approvedResumeEvents(workflowEvents);
+      return bookingStatus === 'confirmed' && finalInstance?.status === 'completed' && resumeEvents.length === 1
+        ? { bookingStatus, finalInstance, resumeEvents }
+        : null;
+    });
+    if (!settled) {
+      const bookingStatus = await readBookingStatus(bookingId);
+      const finalInstance = await readInstanceForBooking(bookingId);
+      const workflowEvents = await readWorkflowEvents(instance.id);
+      const resumeEvents = approvedResumeEvents(workflowEvents);
+      return fail(
+        'probe2',
+        `timed out waiting for confirmed/completed + one resume event; booking=${bookingStatus} instance=${finalInstance?.status} resumes=${resumeEvents.length}`,
+      );
     }
 
-    // Verify outbox emitted exactly ONE approval.granted for this instance.
-    // Rows persist post-drain (purgeProcessed cron is hourly), so the count
-    // is stable once booking is confirmed.
-    const outboxRows = await readOutboxApprovalGranted(instance.id);
-    if (outboxRows.length !== 1)
-      return fail('probe2', `outbox approval.granted count=${outboxRows.length} (want 1)`);
-    pass('probe2', 'single grant resolved + exactly 1 outbox emit');
+    if (settled.resumeEvents.length !== 1)
+      return fail('probe2', `instance_resumed count=${settled.resumeEvents.length} (want 1)`);
+    pass('probe2', 'single grant resolved + exactly 1 workflow resume');
   } finally {
     if (bookingId) await supa().from('bookings').delete().eq('id', bookingId);
     await dropRule(ruleId);
@@ -578,7 +542,7 @@ async function probe3Reject(token) {
   console.log('Probe 3: reject path (booking cancelled)');
   const { ruleId } = await seedRuleWithWorkflow({
     threshold: 'all',
-    approverPersonIds: [ADMIN_PERSON],
+    approverPersonIds: [ADMIN_PERSON_ID],
   });
   let bookingId;
   try {
@@ -591,7 +555,7 @@ async function probe3Reject(token) {
     const approvals = seeded ?? (await readApprovalsForBooking(bookingId));
     if (approvals.length === 0) return fail('probe3', 'no approval row');
 
-    const rejectRes = await fetch(`${API_BASE}/approvals/${approvals[0].id}/respond`, {
+    const rejectRes = await fetch(`${API_BASE}/api/approvals/${approvals[0].id}/respond`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -603,13 +567,13 @@ async function probe3Reject(token) {
     });
     if (!rejectRes.ok) return fail('probe3', `reject failed: ${rejectRes.status}`);
 
-    const cancelled = await pollUntil('probe3', async () => {
-      const s = await readBookingStatus(bookingId);
-      return s === 'cancelled' ? s : null;
-    });
-    if (!cancelled) {
+    const settled = await waitFor(async () => {
       const bookingStatus = await readBookingStatus(bookingId);
-      return fail('probe3', `timed out: booking status=${bookingStatus} (want cancelled)`);
+      return bookingStatus === 'cancelled' ? bookingStatus : null;
+    });
+    if (!settled) {
+      const bookingStatus = await readBookingStatus(bookingId);
+      return fail('probe3', `timed out waiting for cancelled; booking status=${bookingStatus}`);
     }
     pass('probe3', 'booking cancelled on reject');
   } finally {
@@ -627,7 +591,7 @@ async function probe4ConcurrentAny(token) {
   // with race-grants; left for v2 of this probe (needs more seeded persons).
   const { ruleId } = await seedRuleWithWorkflow({
     threshold: 'any',
-    approverPersonIds: [ADMIN_PERSON],
+    approverPersonIds: [ADMIN_PERSON_ID],
   });
   let bookingId;
   try {
@@ -644,7 +608,7 @@ async function probe4ConcurrentAny(token) {
 
     // Fire 3 concurrent grants on the same approval id (different crids).
     const grantPromises = [0, 1, 2].map(() =>
-      fetch(`${API_BASE}/approvals/${approvals[0].id}/respond`, {
+      fetch(`${API_BASE}/api/approvals/${approvals[0].id}/respond`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -656,23 +620,58 @@ async function probe4ConcurrentAny(token) {
       }),
     );
     const responses = await Promise.all(grantPromises);
-    const oks = responses.filter((r) => r.ok).length;
-    if (oks < 1) return fail('probe4', `no concurrent grant succeeded (all rejected)`);
+    const responseSummaries = await Promise.all(
+      responses.map(async (response) => {
+        const text = await response.text();
+        let body = text;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          // Keep the raw body for error summaries.
+        }
+        return { ok: response.ok, status: response.status, body };
+      }),
+    );
+    const oks = responseSummaries.filter((response) => response.ok);
+    if (oks.length !== 1) {
+      return fail(
+        'probe4',
+        `concurrent grant winners=${oks.length} (want 1); responses=${JSON.stringify(responseSummaries)}`,
+      );
+    }
+    if (oks[0].body?.kind !== 'resolved') {
+      return fail('probe4', `winning response kind=${oks[0].body?.kind ?? 'missing'} (want resolved)`);
+    }
 
-    // The emit is synchronous inside grant_booking_approval (committed with
-    // the grant), so the row exists as soon as the winning POST returns.
-    // Poll briefly until ≥1 row appears (covers replication lag), then
-    // assert EXACTLY 1 — the booking-level row lock + stable idempotency
-    // key (`approval.granted:<approval_id>`) must collapse the 3 concurrent
-    // grants to a single outbox row (BLOCKER 2).
-    const appeared = await pollUntil('probe4', async () => {
-      const rows = await readOutboxApprovalGranted(instance.id);
-      return rows.length >= 1 ? rows : null;
+    // The key durable assertion: exactly one engine resume for this instance.
+    // The transient outbox row may already be claimed by the worker, while
+    // workflow_instance_events is the durable effect of the outbox handler.
+    const settled = await waitFor(async () => {
+      const bookingStatus = await readBookingStatus(bookingId);
+      const finalInstance = await readInstanceForBooking(bookingId);
+      const workflowEvents = await readWorkflowEvents(instance.id);
+      const resumeEvents = approvedResumeEvents(workflowEvents);
+      return bookingStatus === 'confirmed' && finalInstance?.status === 'completed' && resumeEvents.length >= 1
+        ? { bookingStatus, finalInstance, resumeEvents }
+        : null;
     });
-    const outboxRows = appeared ?? (await readOutboxApprovalGranted(instance.id));
-    if (outboxRows.length !== 1)
-      return fail('probe4', `outbox approval.granted count=${outboxRows.length} (want 1; BLOCKER 2 regression)`);
-    pass('probe4', `${oks}/3 concurrent grants ok; exactly 1 outbox emit (no double-emit)`);
+    if (!settled) {
+      const bookingStatus = await readBookingStatus(bookingId);
+      const finalInstance = await readInstanceForBooking(bookingId);
+      const workflowEvents = await readWorkflowEvents(instance.id);
+      const resumeEvents = approvedResumeEvents(workflowEvents);
+      return fail(
+        'probe4',
+        `timed out waiting for confirmed/completed + resume; booking=${bookingStatus} instance=${finalInstance?.status} resumes=${resumeEvents.length}`,
+      );
+    }
+
+    await sleep(500);
+    const workflowEvents = await readWorkflowEvents(instance.id);
+    const resumeEvents = approvedResumeEvents(workflowEvents);
+    if (resumeEvents.length !== 1)
+      return fail('probe4', `instance_resumed count=${resumeEvents.length} (want 1; BLOCKER 2 regression)`);
+    pass('probe4', `${oks.length}/3 concurrent grants ok; exactly 1 workflow resume (no double-resume)`);
   } finally {
     if (bookingId) await supa().from('bookings').delete().eq('id', bookingId);
     await dropRule(ruleId);
@@ -709,15 +708,15 @@ async function probe5ArchivedDefinitionRefused(token) {
         ('${ruleId}'::uuid, '${TENANT_ID}'::uuid,
          'smoke-archived-${ruleId.slice(0, 8)}',
          'room', '${ROOM_HUDDLE}'::uuid,
-         jsonb_build_object('op','eq','left','$.space.id','right','${ROOM_HUDDLE}'),
+         '{"op":"eq","left":1,"right":1}'::jsonb,
          'require_approval',
-         '{"required_approvers":[{"type":"person","id":"${ADMIN_PERSON}"}],"threshold":"all"}'::jsonb,
-         ${FIXTURE_RULE_PRIORITY}, true);
+         '{"required_approvers":[{"type":"person","id":"${ADMIN_PERSON_ID}"}],"threshold":"all"}'::jsonb,
+         50, true);
     `);
     const graphV1 = {
       nodes: [
         { id: 'trigger', type: 'trigger', config: {} },
-        { id: 'approval_main', type: 'approval', config: { required_approvers: [{ type: 'person', id: ADMIN_PERSON }], threshold: 'all' } },
+        { id: 'approval_main', type: 'approval', config: { required_approvers: [{ type: 'person', id: ADMIN_PERSON_ID }], threshold: 'all' } },
         { id: 'end_success', type: 'end', config: { outcome: 'approved' } },
         { id: 'end_failure', type: 'end', config: { outcome: 'rejected' } },
       ],
@@ -767,7 +766,7 @@ async function probe6CancelCascade(token) {
   console.log('Probe 6: CRITICAL 4 cancel cascade (booking deletion expires approvals atomically)');
   const { ruleId } = await seedRuleWithWorkflow({
     threshold: 'all',
-    approverPersonIds: [ADMIN_PERSON],
+    approverPersonIds: [ADMIN_PERSON_ID],
   });
   let bookingId;
   try {
@@ -784,47 +783,43 @@ async function probe6CancelCascade(token) {
     const approvalsBefore = await readApprovalsForBooking(bookingId);
     if (approvalsBefore.length === 0) return fail('probe6', 'no approvals seeded');
 
-    void token;
-    // CRITICAL 4's surface is booking-DELETION-mid-approval (plan §1.11:
-    // "Booking-deletion-mid-approval leaves pending approvals dangling").
-    // The cancel-cascade is wired to the DELETE path, not soft-cancel:
-    // `POST /reservations/:id/cancel` is a SOFT cancel (reservation.service
-    // .ts:438 cancelOne → status='cancelled' + an audit_events row) and
-    // emits NOTHING to the outbox — so it can never trigger the wake
-    // handler. The production trigger is `delete_booking_with_guard`
-    // (00373) which DELETES the booking row and emits `booking.cancelled`
-    // to the outbox → WorkflowSpawnWakeOnBookingCancelledHandler →
-    // engine.cancelInstance('booking',…) → cancel_workflow_instance_with_
-    // approvals. There is no user-facing DELETE route (only compensation
-    // calls delete_booking_with_guard internally), so the probe invokes
-    // the RPC directly — same path the compensation service drives.
-    const { error: delErr } = await supa().rpc('delete_booking_with_guard', {
-      p_booking_id: bookingId,
-      p_tenant_id: TENANT_ID,
+    // Cancel the booking via the API. The booking.cancelled outbox emit
+    // fires the WorkflowSpawnWakeOnBookingCancelledHandler (Phase 1.5 Change
+    // 6 of 6.A) which calls engine.cancelInstance('booking', ...) →
+    // cancel_workflow_instance_with_approvals RPC → atomic claim + expire.
+    const cancelRes = await fetch(`${API_BASE}/api/reservations/${bookingId}/cancel`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        authorization: `Bearer ${token}`,
+        'x-tenant-id': TENANT_ID,
+        'x-client-request-id': crypto.randomUUID(),
+      },
+      body: JSON.stringify({}),
     });
     if (delErr) {
       return fail('probe6', `delete_booking_with_guard failed: ${delErr.message}`);
     }
 
-    // booking.cancelled drains on the 30s cron → WorkflowSpawnWakeOn
-    // BookingCancelledHandler → engine.cancelInstance('booking',…) →
-    // cancel_workflow_instance_with_approvals (atomic claim + expire).
-    // Read the instance BY ID: delete_booking_with_guard removed the
-    // booking row so workflow_instances.booking_id was FK-SET-NULL'd
-    // (00369) — a booking_id-filtered read would lose the row. The
-    // approvals keep their target_entity_id so readApprovalsForBooking
-    // still resolves them post-deletion.
-    const cancelled = await pollUntil('probe6', async () => {
-      const ia = await readInstanceById(instance.id);
-      if (ia?.status !== 'cancelled') return null;
-      const aa = await readApprovalsForBooking(bookingId);
-      return aa.length > 0 && aa.every((a) => a.status === 'expired')
-        ? { ia, aa }
+    const settled = await waitFor(async () => {
+      const instanceAfter = await readInstanceForBooking(bookingId);
+      const approvalsAfter = await readApprovalsForBooking(bookingId);
+      const allExpired = approvalsAfter.length > 0 && approvalsAfter.every((a) => a.status === 'expired');
+      return instanceAfter?.status === 'cancelled' && allExpired
+        ? { instanceAfter, approvalsAfter }
         : null;
     });
-    if (!cancelled) {
-      const instanceAfter = await readInstanceById(instance.id);
+    if (!settled) {
+      const instanceAfter = await readInstanceForBooking(bookingId);
       const approvalsAfter = await readApprovalsForBooking(bookingId);
+      return fail(
+        'probe6',
+        `timed out waiting for cancellation cascade; instance=${instanceAfter?.status} approvals=${JSON.stringify(approvalsAfter.map((a) => a.status))}`,
+      );
+    }
+    const approvalsAfter = settled.approvalsAfter;
+    const allExpired = approvalsAfter.every((a) => a.status === 'expired');
+    if (!allExpired)
       return fail(
         'probe6',
         `timed out: instance status=${instanceAfter?.status} (want cancelled), approvals=${JSON.stringify(approvalsAfter.map((a) => a.status))} (want all expired)`,
@@ -1239,35 +1234,14 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// The OutboxWorker drains on a 30s cron (apps/api/src/modules/outbox/
-// outbox.worker.ts:66 — `@Cron(CronExpression.EVERY_30_SECONDS)`). v1 of
-// this script waited a fixed 3-4s post-grant, so the `approval.granted`
-// event was still un-drained when the probe asserted → every workflow-
-// resume probe failed with a stale `waiting` instance. Mirror the
-// established sibling pattern (smoke-outbox-roundtrip.mjs:108-109): poll
-// the terminal condition with 60s slack instead of a fixed sleep.
-const WORKER_TIMEOUT_MS = 60_000;
-const WORKER_POLL_MS = 1_500;
-
-/**
- * Poll `check()` until it returns a truthy value or WORKER_TIMEOUT_MS
- * elapses. Returns the last value (truthy on success, falsy on timeout) so
- * callers can assert on the resolved state. `label` is only used for the
- * progress line.
- */
-async function pollUntil(label, check) {
-  const deadline = Date.now() + WORKER_TIMEOUT_MS;
-  let last;
+async function waitFor(check, timeoutMs = 90_000, pollMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    last = await check();
-    if (last) return last;
-    const remaining = Math.round((deadline - Date.now()) / 1000);
-    process.stdout.write(`    ${label}: waiting for outbox drain… (${remaining}s)\r`);
-    await sleep(WORKER_POLL_MS);
+    const value = await check();
+    if (value) return value;
+    await sleep(pollMs);
   }
-  last = await check();
-  process.stdout.write('\r\x1b[K');
-  return last;
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────

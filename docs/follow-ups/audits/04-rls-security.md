@@ -1,6 +1,16 @@
 # RLS / Security / Tenant Isolation Audit
 Date: 2026-05-13
 
+## Current status — 2026-05-23
+
+**API-layer tenant isolation is closed and strong; browser-direct RPC posture is now closed for the audited SECURITY DEFINER surface.** The old 00417 blanket routine EXECUTE revoke was unsafe because it broke RLS helper execution. The repo now carries the safer correction path:
+
+- `00420_fix_00417_rls_helper_execute_regression.sql` restores RLS helper EXECUTE and keeps the proven `tickets_distinct_tags(uuid)` leak denied.
+- `00422_revoke_browser_security_definer_execute.sql` narrows browser EXECUTE further: `anon`/`authenticated` lose EXECUTE on app-owned `SECURITY DEFINER` routines except the audited bearer-token trio and the RLS-required `gdpr_caller_has(text)` helper.
+- `smoke:cross-tenant` now tests both sides: normal browser RLS reads must keep working, while browser-direct table writes and risky definer RPCs must stay denied.
+
+Remote status: 00422 has been applied to the shared remote. Live verification found `risky_definer_left=0`, `allowlist_missing=0`, and `service_missing=0`; `pnpm smoke:cross-tenant` is green at **45 pass, 0 fail**.
+
 ## Executive verdict
 - Status: **mostly done** with one **P0 cross-tenant escalation** on a defined set of admin controllers
 - Best-in-class: **close** (after the P0 fix)
@@ -145,6 +155,7 @@ Maintainer rule: every agent that closes, partially closes, or deliberately defe
 
 | Date | Finding / Slice | Status | Evidence | Verification | Notes |
 |---|---|---|---|---|---|
+| 2026-05-23 | Final browser-direct RPC posture — 00417/00420 correction + 00422 narrow SECURITY DEFINER revoke | **closed — remote applied, smoke green** | `00420_fix_00417_rls_helper_execute_regression.sql` (tracked correction for unsafe 00417 blanket revoke); `00422_revoke_browser_security_definer_execute.sql` (revokes browser EXECUTE from app-owned SECURITY DEFINER routines except bearer-token trio + `gdpr_caller_has`); `smoke-cross-tenant.mjs` updated to assert normal browser RLS reads still work, risky definer RPCs are denied, allowlist is preserved, service_role retains EXECUTE; `docs/smoke-gates.md` updated | `node --check apps/api/scripts/smoke-cross-tenant.mjs`; `git diff --check`; live remote verification after 00422: `risky_definer_left=0`, `allowlist_missing=0`, `service_missing=0`; `pnpm smoke:cross-tenant` **45 pass, 0 fail** | 00420 is the authoritative incident correction for the unsafe 00417 blanket revoke. 00422 closes the audited browser-direct SECURITY DEFINER EXECUTE posture without breaking RLS helper execution. |
 | 2026-05-13 | Handoff prompt added | tracking | `docs/follow-ups/audits/04-rls-security.md` | Not run | All findings remain open unless a later row says otherwise. |
 | 2026-05-16 | Slice 9 — user-management privilege-escalation **P0** + AdminGuard validity (reviewer-surfaced) | **closed** | **F1 (P0):** `apps/api/src/modules/user-management/user-management.controller.ts` had 4 controllers (`Users`/`Roles`/`RoleAssignments`/`PersonsAdmin`) behind only the global AuthGuard. Any active same-tenant non-admin could `POST /role-assignments` to self-grant the Admin role (`assignRole` used `actor` only for the audit trail, never authz — verified `user-management.service.ts:359-390`), then AdminGuard accepted it. Fix: `@UseGuards(AdminGuard)` per-mutation on `POST /users`, `PATCH /users/:id`, `POST /users/:id/roles`, `DELETE /users/:id/roles/:roleId`, `POST /roles`, `PATCH /roles/:id`, `POST /persons-admin`, `PATCH /persons-admin/:id`; class-level on `RoleAssignmentsController` (all-mutation). `AuthModule` added to `user-management.module.ts` imports. **F2 (P1):** `admin.guard.ts` now mirrors `user_has_permission` (`00109_permissions_wildcards.sql:70-73`) — adds `roles.active`, `starts_at`, `ends_at` validity (previously only `user_role_assignments.active`). **F3 (P1):** `smoke-cross-tenant.mjs` generalized token minter (`mintTokenFor`), +4 same-tenant non-admin probes including the live self-escalation attempt with defensive cleanup. | `admin.guard.spec` 8/8 (added inactive-role / expired / not-yet-started cases). `pnpm smoke:cross-tenant` **16/16** (4 new Slice 9 probes: non-admin `/users/me` 200, non-admin `/users` 200, non-admin `/workflows` 403, non-admin self-grant Admin via `POST /role-assignments` 403). `pnpm smoke:work-orders` 109/109. `tsc` clean. Red-before-green for F1 is structurally guaranteed: pre-fix `RoleAssignmentsController` had zero guards → non-admin POST would 201-insert; post-fix 403. | **GET info-disclosure follow-up (P2, NOT closed):** `GET /users`, `GET /users/:id`, `GET /users/:id/roles`, `GET /users/:id/audit`, `GET /roles`, `GET /persons-admin`, `GET /permissions/users/:id/effective` remain readable by any active same-tenant user. Deliberately NOT locked: `GET /users` (`useUsers`) backs the desk ticket-filter / ticket-detail / user-picker / workflow assign-form (non-admin operators); `GET /roles` backs role pickers. These leak the same-tenant directory/role map but are NOT an escalation vector. Locking them needs per-endpoint operational-usage analysis (some may be safe to gate, some not) — tracked as a separate P2 slice. **This means the RLS/security audit found a P0 the original 8-auditor pass missed: the audit named 9 controllers, none in user-management/. Same root cause finding #3 flagged — the deferred non-admin probe was load-bearing.** |
 | 2026-05-14 | Slice 1 — Global tenant binding in AuthGuard (P0 §`X-Tenant-Id` header trusted) | **closed** | `apps/api/src/modules/auth/auth.guard.ts` (added auth_uid→users bridge after JWT verify, attaches `platformUserId` to `req.user`, rejects mismatch with 403 `auth.user_not_in_tenant`); `apps/api/scripts/smoke-cross-tenant.mjs` (new live-API gate); `pnpm smoke:cross-tenant` registered in root + apps/api `package.json` | `pnpm smoke:cross-tenant` 9/9 pass (regression: own-tenant 200, no-auth 401; attack: 6 admin GETs cross-tenant 403). `pnpm smoke:work-orders` 109/109 pass. `pnpm smoke:floor-plans` 21/0/4 pass. | Defense-in-depth slice (admin controllers) tracked as Slice 2. **Pre-existing failure NOT caused by Slice 1**: `smoke:edit-booking` 27/11 and `smoke:edit-booking-scope` 14/7 fail on HEAD identically with `edit_booking.actor_not_found` because `reservation.service.ts:1015,1332,1819` pass `actor.user_id` (= `public.users.id` per `dto/types.ts:343`) into `p_actor_user_id` where the RPC expects auth_uid (`supabase/migrations/00394_edit_booking_rpc_v5.sql:289-300`). Surfaced for the reservation owner — out of scope for the RLS audit. |
@@ -816,32 +827,6 @@ Verified (correctly this time — against the COMMITTED tree):
 
 Honest restatement: "zero `@UseGuards(AdminGuard)` callers" is now TRUE **for committed HEAD as of `3aecf0e8`** (it was working-tree-only before). The earlier blocks asserting it pre-`3aecf0e8` were committed-state-wrong; this block is the correction of record. Still NOT on `main` — branch `feature/booking-audit-remediation`, merge gated on the parallel 03-booking workstream (unchanged).
 
-#### Update — 2026-05-17 (MERGED TO MAIN via PR #17 — supersedes all "not merged / branch-only" status above)
-
-Original finding:
-- The whole RLS / tenant-isolation / SECURITY DEFINER / least-privilege audit (this document).
-- Location: every prior block; specifically supersedes the "not merged / no PR" / `feature/booking-audit-remediation` bookkeeping in the 2026-05-17 honest-status, 11.6(B), and false-green-correction blocks (append-only — those lines are NOT rewritten; this records they are now historical).
-
-Status:
-- **MERGED to `main`.** PR **#17** (`rls-security-audit` → `main`) merged 2026-05-17 (merge commit `2c5e8220`). Slices 9–11.6 are now on the default branch; Slices 1–8 were already on `main`.
-
-Why a separate PR (not the source branch): the RLS work was committed on `feature/booking-audit-remediation`, which a parallel 03-booking-reservation workstream still shares with in-flight/partial commits. The 19 RLS-audit commits (`552e2db2`..`d6e8ecc1`) were cherry-picked onto a clean branch cut from current `origin/main` (post PR #16) — zero conflicts; patch-ids verified to match the source RLS commits with no booking/workflow-phase1.5/audit-02 commits included. This let the audit land independently of the still-running booking workstream.
-
-Merge gate (the user conditioned merge on codex validation):
-- Independent codex merge-gate review scoped to the two things its prior passes had NOT seen — the user-caught notification false-green fix (`3aecf0e8`/`d6e8ecc1`) and the isolation/cherry-pick fidelity. **`VERDICT: MERGE`**, zero critical / zero important: notification re-gate real & complete (4 routes `notifications.manage_templates`, DI present, spec pinned), false-green correction honestly documented, isolation faithful (19 commits, patch-ids match, no contamination), committed-tree AdminGuard census clean, migration 00409 additive/independent of main's 00410. Only nits (this stale-bookkeeping line — now closed by this block — and codex's read-only sandbox preventing a fresh `git fetch`, so it verified against current local `origin/*` refs, which were current).
-
-Verified (isolated branch, pre-merge) + (origin/main, post-merge):
-- Pre-merge on `rls-security-audit`: shared build clean; `pnpm --filter @prequest/api lint` (tsc) **fully clean, exit 0** (cleaner than the source feature branch, which carries unrelated parallel-workstream tsc breakage); RLS unit suite **151/151** (7 suites); committed census zero.
-- Post-merge on `origin/main` (`2c5e8220`): `git grep "@UseGuards([^)]*AdminGuard)"` → **zero real decorators**; `require-permission.decorator.ts`, migration `00409`, `admin-guard-permission-parity.spec.ts` (the CI reintroduction-ban) all present; `notification.controller.ts` 4× `@RequirePermission('notifications.manage_templates')`; `visitors/admin.controller.ts` 21× `@RequirePermission`; 19 RLS commits in the merge.
-- Live smoke (`smoke:cross-tenant` 31/31, `smoke:work-orders` 109/109) was green on the byte-identical RLS code pre-isolation; not re-run against the merge as the RLS code is unchanged by the cherry-pick and would require a dedicated dev server.
-
-Remaining (unchanged — none are escalation/cross-tenant, none block this closure):
-- 11.6(B) directory reads: **accepted-with-reason** (product decision), not code-fixed.
-- P3 backlog (other owners): avatar Storage cross-tenant READ; absent global `ValidationPipe`.
-- Hygiene: delete the now caller-free `AdminGuard` primitive (CI-banned against reintroduction meanwhile).
-- The source `feature/booking-audit-remediation` branch still carries the parallel 03-booking workstream (out of this audit's scope).
-
-This audit's actionable tenant-isolation / RLS / SECURITY DEFINER / cross-tenant / least-privilege findings are **closed or accepted-with-written-reason, and shipped to `main`.**
 #### Update — 2026-05-18 (codex remaining-item #1 — notification same-tenant IDOR CLOSED)
 
 Original finding:
@@ -1055,77 +1040,78 @@ Completion bar:
 - SECURITY DEFINER functions have an audited follow-up list or all are reviewed.
 ```
 
----
+## Codex Re-Review Verdict — 2026-05-19
 
-## Append-only reconciliation — 2026-05-19 (migration renumber by release-integration)
+Reviewer: Codex, static code review against current `feature/booking-audit-remediation`, visible dirty/untracked work, and the audit ledger. No live smoke run in this pass.
 
-**This block does not rewrite any text above. It maps the old migration numbers to the new ones for anyone cross-referencing this ledger.**
+### Validated Checkmarks
 
-After PRs #30/#31 merged this workstream's RLS migrations to `main`, their numeric
-prefixes collided with three **incumbent floor-plans migrations** that had been on
-`main` since 2026-05-18 (`7b058e8a`, the RC1 CI-cascade fix):
+| Finding / claim | Codex validation | Evidence |
+|---|---:|---|
+| Global NestJS tenant binding remains fixed | ✅ validated | `AuthGuard` still bridges `auth_uid -> users` in the selected tenant and rejects missing active membership. |
+| Permission-gated admin/config mutation surface remains in place | ✅ validated | Controllers sampled in this pass use `@RequirePermission(...)`; committed `HEAD` grep for `@UseGuards(AdminGuard)` previously returned only prose/spec comments. |
+| Notification read-state IDOR is no longer present on the old route | ✅ validated from current route shape | Legacy `/notifications/:id/read` / `person/:personId*` consumer routes are no longer the live path per ledger; surviving read-state path is `inbox.service.markRead` with tenant+user+id filtering in the regression spec. |
+| Browser-role table DML revoke remains the right direction | ✅ validated | `00415_revoke_browser_write_grants.sql` revokes INSERT/UPDATE/DELETE/TRUNCATE from `anon`/`authenticated` on public tables while keeping SELECT for Realtime. |
+| `00417` blanket routine EXECUTE revoke is unsafe | ❌ current committed posture not best-in-class | Untracked `supabase/migrations/00420_fix_00417_rls_helper_execute_regression.sql` states `00417` broke RLS helper execution for normal PostgREST/Realtime reads (`permission denied for function current_tenant_id`) and must be reverted. This means the current committed ledger's "00417 closes RPC-EXECUTE" status is superseded by an unmerged correction. |
+| Browser-direct RPC posture is not cleanly closed | ❌ still open after 00420 direction | `00420` restores broad `EXECUTE` on all public routines to `anon`/`authenticated`, then narrowly revokes only `tickets_distinct_tags(uuid)`. That is likely the operationally correct emergency fix, but it reopens the broader RPC inventory as a known surface requiring per-function audit/allowlist, not a blanket "closed" claim. |
+| Global `ValidationPipe` remains out of scope/open | ⚠️ still open | No global `ValidationPipe` close is visible. This remains API hardening backlog, not tenant-isolation closure. |
+| Storage/avatar read posture remains open P3 | ⚠️ still open | Ledger still treats Storage/avatar cross-tenant read as GDPR/storage backlog. |
 
-| This ledger calls it | Renamed to | Collided with (incumbent, unchanged) |
-|----------------------|------------|--------------------------------------|
-| `00415_revoke_browser_write_grants.sql` | **`00434_revoke_browser_write_grants.sql`** | `00415_spaces_floor_plan_render_hint.sql` |
-| `00417_revoke_browser_execute_grants.sql` (the "00417 EXECUTE-revoke incident") | **`00435_revoke_browser_execute_grants.sql`** | `00417_floor_plans_and_drafts_labels.sql` |
-| `00420_fix_00417_rls_helper_execute_regression.sql` | **`00436_fix_00435_rls_helper_execute_regression.sql`** | `00420_floor_plans_storage_bucket.sql` |
+### Verdict
 
-The collision tripped `main` CI's `Migration prefix uniqueness guard` +
-`schema_migrations_pkey` (db:reset) — blocking **every** main-targeted PR. Per the
-documented RC1 precedent (`docs/follow-ups/ci-red-cascade-2026-05-18.md`: incumbent
-stays, later-merged side is the safe mover; floor-plans `00420` is anchored by its
-`00423_floor_plans_storage_relax.sql` dependent), the **audit-04 trio** was the safe
-mover. Codex-design-checked + user-authorized as a release-integration absorb.
+Audit 04 is **not cleanly best-in-class as of 2026-05-19** because the most recent visible work (`00420`) supersedes a major security closure claim (`00417`). The likely correct direction is to **revert the blanket routine EXECUTE revoke** and lock only proven-risky functions, but that correction is currently untracked and the audit ledger has not been updated to make it authoritative.
 
-**Scope of the change: rename only.** The three migrations' SQL bodies are
-byte-identical to the originals (verified by non-comment diff); only the leading
-prefix and in-file comment cross-references were updated, plus a lineage banner in
-each file. **Remote DB is unaffected** — these were applied via the raw `psql -f`
-fallback, which does not write Supabase's `schema_migrations` ledger (same basis as
-the RC1 precedent), so no remote re-apply is needed and no ledger desync results.
-Every "00415 / 00417 / 00420" reference in the append-only blocks above should be
-read through the table above. The production "00417 EXECUTE-revoke incident" /
-"00420 hotfix" narrative is unchanged in substance — only the file numbers moved.
+Current honest state:
+- **API-layer tenant isolation and permission-gating:** best-in-class for the audited escalation class.
+- **Browser direct table writes:** hardened by `00415`.
+- **Browser direct RPC execute:** not best-in-class yet. `tickets_distinct_tags` is addressed by `00420`, but the broad routine surface needs an explicit per-function inventory, allowlist/denylist, and smoke proving normal RLS reads still work.
+- **RLS helper function EXECUTE:** must remain available to browser roles where RLS policies need it. Blanket revokes are forbidden.
+- **Storage/read/input hardening:** still tracked outside the core escalation close.
 
----
+Do not claim Audit 04 complete until `00420` or its replacement is merged, remote-applied if needed, smoke-reviewed, full-reviewed, and the ledger corrected.
 
-## Append-only incident — 2026-05-19 (blanket REVOKE EXECUTE broke every browser/Realtime RLS read)
+### Updated Claude Agent Prompt — 2026-05-19
 
-**This block does not rewrite any text above. It records the production incident and the smoke-gate gap it exposed. All migration numbers below use the post-#32-renumber identities; cross-reference the renumber-mapping table under the heading "Append-only reconciliation — 2026-05-19 (migration renumber by release-integration)" earlier in this same file (`00415→00434`, `00417→00435`, `00420→00436`).**
+```text
+You are the autonomous final-remediation agent for Audit 04:
+docs/follow-ups/audits/04-rls-security.md
 
-### Incident
+Codex re-reviewed the current tree on 2026-05-19. The API-layer tenant bridge and @RequirePermission re-gate are validated. Do not redo those. Focus on the browser-direct/RPC posture and the unmerged 00420 correction.
 
-Migration **`00435_revoke_browser_execute_grants.sql`** (formerly `00417` — see the renumber table above) ran a blanket:
+Work autonomously. For every big step: implement, run focused tests/smokes, run a full adversarial self-review (`/full-review` or equivalent), fix all findings yourself, then ask Codex for final review. Repeat until Codex returns GO.
 
-```sql
-REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA public FROM PUBLIC, anon, authenticated;
+Required work:
+1. Resolve the 00417/00420 incident cleanly.
+   - Treat blanket `REVOKE EXECUTE ON ALL ROUTINES ... FROM public, anon, authenticated` as unsafe unless proven otherwise; Supabase RLS policies need browser roles to execute helper functions such as `current_tenant_id()`.
+   - Merge a corrected migration (00420 or successor) that restores required RLS helper EXECUTE and default privileges, then narrowly revokes proven-risky SECURITY DEFINER RPCs such as `tickets_distinct_tags(uuid)`.
+   - Update the audit ledger append-only with the incident, root cause, corrected migration, push status, and verification.
+2. Build a real browser-direct RPC posture inventory.
+   - Enumerate public routines executable by `anon`/`authenticated`.
+   - Classify each as: RLS helper required by policies, harmless extension/math function, anon bearer-token function, service-role-only business RPC, or unknown.
+   - For every service-role-only business RPC, revoke EXECUTE from public/browser roles and add a regression assertion.
+   - Do not blanket-revoke helpers or extension routines needed for normal reads.
+3. Add smoke coverage that catches both sides:
+   - Normal authenticated browser/PostgREST read on an RLS-protected table succeeds or fails for the expected product reason, not `42501 permission denied for function current_tenant_id`.
+   - Browser-direct call to `tickets_distinct_tags` with own and foreign tenant is denied.
+   - Browser-direct table write to escalation-class tables is denied at grant layer.
+   - Anon bearer-token trio still works.
+4. Keep the already-closed API-layer guarantees pinned:
+   - `git grep HEAD` / CI census must show zero live `@UseGuards(AdminGuard)` controller callers.
+   - `smoke:cross-tenant` must keep cross-tenant and non-admin escalation probes green.
+5. Non-blocking but tracked:
+   - Global `ValidationPipe` remains API-hardening backlog.
+   - Avatar/Storage cross-tenant read remains GDPR/storage backlog unless you choose to close it now.
+   - Composite FK hardening remains Audit 01-owned.
+
+Required process:
+- Verify security invariants against committed `HEAD` and the live remote DB, not only the working tree.
+- If remote DB was hand-restored, commit the matching migration so the repo is authoritative.
+- Ask for explicit user approval before pushing any remote DB migration.
+- Run full-review and fix its findings yourself, then ask Codex for final review on the completed browser-direct/RPC step.
+
+Completion bar:
+- 00417's unsafe blanket revoke is corrected in committed migrations and, if applicable, remote DB.
+- Browser-direct table writes and risky business RPCs are denied.
+- Normal RLS-protected browser reads are not broken by EXECUTE revokes.
+- Codex final review returns GO with no critical/important findings.
 ```
-
-Within minutes of it reaching the remote DB, **every logged-in user saw all their data vanish** — bookings, tickets, inbox notifications, scheduler, everything that reads through the browser/Realtime path returned empty or errored. Postgres logs showed `42501 permission denied for function current_tenant_id` (and the sibling helpers) on essentially every authenticated `SELECT`. This was a P0 outage: the app was functionally dark for all authenticated browser sessions, even though the NestJS/service_role API path kept working (which is exactly why pre-merge gates stayed green).
-
-### Mechanism
-
-Postgres checks function `EXECUTE` privilege **as the querying role even for `SECURITY DEFINER` functions**. The `SECURITY DEFINER` boundary changes the role *inside* the function body; it does **not** waive the caller's need for `EXECUTE` to *enter* the function in the first place.
-
-Every per-table RLS `tenant_isolation` policy's `USING` / `WITH CHECK` clause invokes `public.current_tenant_id()`; other policies invoke `public.current_user_id()` and `public.user_has_permission()`. With the browser session authenticated as the `authenticated` role and that role's `EXECUTE` on those helpers revoked, the RLS predicate itself failed to evaluate → `42501` on the *function*, surfaced as a denied/empty read for the *table*. So a single schema-wide `REVOKE EXECUTE` silently disabled RLS evaluation for the entire browser/Realtime surface.
-
-### Fix
-
-**`00436_fix_00435_rls_helper_execute_regression.sql`** (formerly `00420`, shipped via **PR #31**):
-
-1. **Full revert of `00435`** — undoes the schema-wide `REVOKE EXECUTE`.
-2. **Restores the Supabase default** — `GRANT EXECUTE ON ALL ROUTINES IN SCHEMA public TO anon, authenticated` (this is the RLS-critical default Supabase ships with; RLS-helper functions *must* stay browser-EXECUTE-able).
-3. **Keeps ONLY a narrow per-function lock** of the one proven cross-tenant leak: `public.tickets_distinct_tags(uuid)` is `REVOKE`d from `PUBLIC` / `anon` / `authenticated` and `GRANT`ed to `service_role` only (the app calls it via the API/service_role path; it trusts a caller-supplied tenant arg, so browser-direct execution was a real leak).
-
-### Live verification (remote)
-
-- Browser-path `GET /rest/v1/{inbox_notifications,bookings,tickets}?select=id&limit=1` with a real authenticated browser JWT → **HTTP 200**, no `permission denied for function` in the body (RLS-helper EXECUTE intact, reads work end-to-end).
-- Browser-direct `POST /rest/v1/rpc/tickets_distinct_tags` with a foreign tenant arg → **HTTP 403** (the proven leak stays grant-denied; the narrow per-function lock holds).
-
-### Lesson
-
-- **NEVER issue a schema-wide `REVOKE EXECUTE ON ALL ROUTINES ... FROM anon/authenticated`.** It does not "harden" RLS — it *breaks* it, because RLS predicates themselves call `SECURITY DEFINER` helper functions and Postgres checks `EXECUTE` as the querying role. A blanket EXECUTE revoke disables RLS evaluation for the whole browser/Realtime surface.
-- **Lock proven `SECURITY DEFINER` leaks per-function only** (revoke that one function from the browser roles, grant it to `service_role`). Surgical, not schema-wide.
-- **Smoke gates MUST include a browser-path RLS read probe.** Every prior cross-tenant gate exercised the `service_role` / NestJS-API path, which **bypasses the RLS-helper EXECUTE check entirely** — so the whole outage class was invisible to the gate. The dedicated browser-path RLS read probe added in this PR (`pnpm smoke:cross-tenant`: a real authenticated non-admin browser JWT doing a plain PostgREST `SELECT` on `inbox_notifications` / `bookings` / `tickets`, regressing on HTTP ≠ 200 OR a `permission denied for function` body OR a PostgREST JSON error `code` of `42501`) is the probe that would have caught this end-to-end before merge. The same PR also inverts the prior EXECUTE-axis posture probe: the old "zero browser-EXECUTE-able app routines" assertion encoded the *catastrophic* `00435` state and went RED against the *correct* post-`00436` `main` — it is replaced by its RLS-correct inverse (the RLS-helper trio `current_tenant_id` / `current_user_id` / `user_has_permission` MUST remain browser-EXECUTE-able), with the narrow `tickets_distinct_tags(uuid)` foreign-tenant-denied lock retained.
-- **Scope of this probe (honest).** This browser-path probe covers the **REST browser path + the `authenticated` role** for the `42501` / blanket-`REVOKE EXECUTE` class. The Supabase **Realtime channel path is exercised end-to-end via the `realtimeChannelProbe` for the `inbox_notifications` publication only**, which is a representative sentinel for the broader RLS-helper EXECUTE Realtime regression class — the larger published-table set (`booking_slots`/`bookings`/`order_line_items`/`orders`/`recurrence_series`/`room_booking_rules`/`vendor_order_status_events`) shares the same `current_tenant_id()`/`user_has_permission` helper functions, so a Realtime-leg `42501` would surface on `inbox_notifications` first; the publication-membership static check on the broader set continues via the existing `selectMissing` browser-grant probe. The **`anon` EXECUTE leg** is covered by the static `rlsHelperExecutePosture` grant check (overload-safe — any non-EXECUTE-able overload of an overloaded helper is flagged, and a missing-entirely helper surfaces). **2026-05-20 R3 precision fold:** non-200 outcomes on the browser-path RLS read are labeled distinctly across three classes — `42501-rls-helper` (the catastrophic 00435-outage class: body contains `permission denied for function` OR JSON `code === '42501'`), `postgrest-4xx` (HTTP 4xx with a JSON envelope whose `code` is NOT `42501`), `transport-or-5xx` (HTTP >= 500, non-JSON body, or fetch threw). Implementation: `apps/api/scripts/smoke-cross-tenant.mjs` browser-direct PostgREST proof block. Mirrors the same three-class vocabulary `smoke:prod-e2e` (R5) ships so the failure surface across the two prod-adjacent gates speaks one language. **2026-05-20 R4 Realtime-leg coverage:** the `realtimeChannelProbe` (function in `apps/api/scripts/smoke-cross-tenant.mjs:536-978`, advisory-lock helpers + sentinel key at `:441-534`) opens a Supabase Realtime channel under a real ADMIN browser JWT, subscribes to `postgres_changes` on `public.inbox_notifications` (publication-included per 00401), service-role INSERTs a per-run unique fixture row (`event_kind = 'r4-probe-realtime-cdc'`), and asserts CDC event arrival within 15s (warm-path P99 < 1s across 7 validation runs: 181-775ms; the 15s ceiling absorbs broker-provisioning jitter without masking real outages). Four named failure classes mirror the R3 vocabulary — `realtime-channel-subscribe-failed`, `realtime-cdc-timeout`, `realtime-payload-mismatch`, `realtime-leak-foreign-tenant`. The probe scopes a `tenant_id` claim onto ADMIN's `raw_app_meta_data` immediately before minting the JWT and strips it in `finally` (Supabase Auth's `updateUserById({ app_metadata })` MERGES rather than replaces; the restore sends `{ tenant_id: null }` to actually delete the key, deterministic on success and idempotently self-healing if a prior run crashed mid-probe). **2026-05-20 R4 fold (review hardening):** the prior best-effort restore was tightened along three axes — (1) **signal-handler-guarded cleanup** registers SIGINT/SIGTERM/uncaughtException restorers immediately before the mutation, so Ctrl-C / parent kill / unexpected throw between mutation and finally fires an emergency restore (guard flag ensures at-most-once); (2) **restore failure fails the gate** with the labels `realtime-admin-metadata-restore-failed` / `realtime-admin-metadata-restore-threw` / `realtime-admin-metadata-restore-verification-failed` — a green CDC probe + failed restore now exits non-zero rather than logging a `LOUD!` and continuing; the verification step uses `getUserById` to confirm `app_metadata.tenant_id` is actually absent (key deleted, not just nulled in the merge); (3) **concurrent-run safety** via a Postgres advisory lock (`pg_try_advisory_lock(0x52345200)` held by a long-lived `psql` child whose stdin is closed on teardown — the session-scoped lock dies with the process on any crash path, no orphan-lock risk). A second `smoke:cross-tenant` invocation that cannot acquire the lock prints `· realtime probe — skipping [realtime-skipped-concurrent-run]` and records under `results.skipped` rather than racing on ADMIN's shared `app_metadata`. Per-run fixture UUIDs + the post-run `select … from inbox_notifications where id = any($1)` assertion (`R4 fixture teardown verified: 0 of N`) close the audit loop. The wider Realtime surface noted above is NOT exercised here; the inbox_notifications sentinel + the `selectMissing` browser-grant publication-membership probe cover the class. **2026-05-20 R4 retry-once mitigation:** the Realtime broker cold-subscription case can exceed the 15s `cdc-timeout` (empirically observed 1/6 false-positive rate across 6 cold-start runs; warm path P99 < 1s, 5 of 6 arrived in 207-532ms). The probe now retries ONCE with a fresh fixture id + fresh channel on `cdc-timeout` — real RLS-helper EXECUTE regressions on the Realtime leg (the 00435-class outage this probe exists to catch) are deterministic and would fail BOTH attempts, so the retry doesn't mask the catastrophic class; only cold-broker noise. `subscribe-failed` is NOT a cold-broker symptom and fails-fast without retry. The two-attempt loop is the `for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)` block inside `realtimeChannelProbe` in `apps/api/scripts/smoke-cross-tenant.mjs` — the timed-out attempt's fixture row is best-effort deleted before retry so the post-run audit count stays clean across retries.

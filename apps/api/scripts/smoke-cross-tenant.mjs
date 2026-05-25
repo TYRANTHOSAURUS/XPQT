@@ -86,34 +86,14 @@ const TEAM_ID = '94000000-0000-0000-0000-000000000001';
 // structurally could NOT: a non-admin role (type='agent', NOT 'admin')
 // holding exactly `spaces.create` can POST /spaces. Under the old
 // AdminGuard (hard role.type==='admin') this same role 403'd; under
-// @RequirePermission('spaces.create') it passes the guard. Assigned to
-// the existing NONADMIN user — the proof section runs LAST (after every
-// Slice-9/10 probe that asserts this user 403s) so it cannot perturb
-// them, and user_has_permission re-evaluates roles.permissions live per
-// request (no token re-mint needed).
-//
-// Per-run UUIDs (F2 parallel-safety, 2026-05-20): the seed fixture is
-// shared-DB state; concurrent gate runs would collide on the row id
-// during `on conflict do update` (interleaved teardown) and during the
-// cleanup `delete from public.spaces where ... name = '<static>'`
-// (cross-process row deletion). The seed-then-teardown window itself is
-// further serialized by the script-level advisory lock acquired in
-// `main` — see `tryAcquireScriptLock` below — because the seed grants
-// `spaces.create` + `visitors.configure` to a SHARED `NONADMIN_USER_ID`,
-// and any Slice-10 negative probe (`POST /spaces` / `POST /admin/visitors/types`
-// expects 403) running while the seed is live would incorrectly 2xx.
-// Per-run UUIDs by themselves don't fix that — they're for crash-safe
-// row hygiene; the lock fixes the user-permission overlap.
-const PROOF_ROLE_ID = randomUUID();
-const PROOF_ASSIGNMENT_ID = randomUUID();
-// Per-run unique proof-space name (F2 parallel-safety): the proof posts
-// a space named `xtenant-11.2b-proof` and the teardown deletes by name
-// (no row id is observable from the API). With two concurrent runs and
-// a static name, Run B's teardown would delete Run A's row mid-run —
-// harmless given the script-level lock above, but the per-run name is
-// belt-and-suspenders so a crash that leaks the lock doesn't cause a
-// cross-process delete.
-const PROOF_SPACE_NAME = `xtenant-11.2b-proof-${randomUUID()}`;
+// @RequirePermission('spaces.create') it passes the guard. Fixed UUIDs
+// so the finally-cleanup is deterministic. Assigned to the existing
+// NONADMIN user — the proof section runs LAST (after every Slice-9/10
+// probe that asserts this user 403s) so it cannot perturb them, and
+// user_has_permission re-evaluates roles.permissions live per request
+// (no token re-mint needed).
+const PROOF_ROLE_ID = '91000000-0000-0000-0000-0000000011b2';
+const PROOF_ASSIGNMENT_ID = '96000000-0000-0000-0000-0000000011b2';
 
 // Notification same-tenant IDOR proof (docs/follow-ups/audits/04-rls-security.md
 // — codex 2026-05-18 remaining item #1). A notification owned by some
@@ -121,17 +101,9 @@ const PROOF_SPACE_NAME = `xtenant-11.2b-proof-${randomUUID()}`;
 // NotificationController consumer routes (POST /notifications/:id/read,
 // /notifications/person/:personId*, .../read-all) updated/read by
 // id/personId with NO recipient binding (supabase.admin bypasses RLS) —
-// any same-tenant authed user could flip anyone's read-state.
-// Per-run UUID (F2 parallel-safety): same fixture-hygiene rationale as
-// PROOF_ROLE_ID — concurrent runs collide on `on conflict (id) do update`.
-const IDOR_NOTIF_ID = randomUUID();
-// Per-run UUID for the browser-direct self-grant attempt (F2): the
-// INSERT is expected to be 401/403-denied — the row id only becomes
-// observable in the regression case. Per-run UUIDs ensure that even a
-// double-regression (parallel runs both hit the bug) does not collide
-// on the unique-id constraint when both INSERTs land before either
-// cleanup runs.
-const SELF_GRANT_INSERT_ID = randomUUID();
+// any same-tenant authed user could flip anyone's read-state. Fixed UUID
+// so the finally-cleanup is deterministic.
+const IDOR_NOTIF_ID = '9a000000-0000-0000-0000-00000000d0e1';
 
 // Mirror smoke-tickets.mjs:86-87 — TENANT_B fixture seed shape.
 const TENANT_B_ID = '00000000-0000-0000-0000-0000000000b1';
@@ -227,11 +199,10 @@ function cleanupProofRoleFixture() {
     const { dbPass, dbUrl } = proofDbArgs();
     // Order: assignment → role (FK), then any space the proof POST
     // actually created (idempotent; harmless if it 400'd on the body).
-    // F2: name filter is per-run unique to avoid cross-process deletion.
     const sql = `
       delete from public.user_role_assignments where id = '${PROOF_ASSIGNMENT_ID}';
       delete from public.roles where id = '${PROOF_ROLE_ID}';
-      delete from public.spaces where tenant_id = '${TENANT_A_ID}' and name = '${PROOF_SPACE_NAME}';
+      delete from public.spaces where tenant_id = '${TENANT_A_ID}' and name = 'xtenant-11.2b-proof';
     `;
     execFileSync('psql', [dbUrl, '-v', 'ON_ERROR_STOP=1', '-c', sql], {
       env: { ...process.env, PGPASSWORD: dbPass },
@@ -298,9 +269,9 @@ function idorNotificationStillUnread() {
 }
 
 // Browser-direct PostgREST hardening proof (04-rls-security.md, codex
-// 2026-05-18 #2 / migration 00434, formerly 00415). Two layers:
+// 2026-05-18 #2 / migration 00415). Two layers:
 //  (1) grant assertion — anon+authenticated must hold NO write DML on
-//      ANY public base table (the guard's scope matches 00434's
+//      ANY public base table (the guard's scope matches 00415's
 //      `REVOKE … ON ALL TABLES`, not just an escalation subset — the
 //      full-review I2 scope-mismatch fix), but MUST retain SELECT on the
 //      Realtime-published set (Supabase Realtime per-subscriber RLS
@@ -309,7 +280,7 @@ function idorNotificationStillUnread() {
 //      pre-push 12 grants → RED; post-push 0 → GREEN).
 //  (2) live end-to-end — a real authenticated browser session token
 //      cannot INSERT into user_role_assignments via PostgREST. Post-
-//      00434 this is GRANT-denied (claim-independent: holds even if a
+//      00415 this is GRANT-denied (claim-independent: holds even if a
 //      future custom-access-token hook starts minting tenant_id).
 const REALTIME_TABLES = [
   'bookings',
@@ -326,7 +297,7 @@ function browserGrantPosture() {
   const { dbPass, dbUrl } = proofDbArgs();
   const rtList = REALTIME_TABLES.map((t) => `('${t}')`).join(',');
   // writes_left = ANY public base table where anon/authenticated still
-  // holds INSERT/UPDATE/DELETE (scope == the 00434 REVOKE). select_missing
+  // holds INSERT/UPDATE/DELETE (scope == the 00415 REVOKE). select_missing
   // = a Realtime-published table that LOST SELECT (over-broad revoke).
   const sql = `select
     (select count(*) from pg_tables tb
@@ -349,64 +320,62 @@ function browserGrantPosture() {
   return { writesLeft, selectMissing };
 }
 
-// Bearer-token trio (anon-callable by audit design — public invitation /
-// kiosk flows). Used by the trio-reachability probe below.
+// 00420/00422 guard: browser roles MUST retain EXECUTE on RLS helper
+// functions, but MUST NOT retain EXECUTE on app-owned SECURITY DEFINER
+// business routines. Blanket schema-wide EXECUTE revokes break Supabase
+// RLS because policies call helpers such as current_tenant_id() as the
+// querying role. The security-meaningful invariant is narrower:
+//   - authenticated can execute the audited bearer-token trio
+//   - authenticated can execute gdpr_caller_has(), which RLS policies use
+//   - authenticated cannot execute any other postgres-owned SECURITY
+//     DEFINER routine, because those bypass RLS/table grants
+//   - service_role can still execute them for the NestJS API path
 const BEARER_TRIO = [
   'validate_invitation_token',
   'peek_invitation_token',
   'validate_kiosk_token',
 ];
-
-// 00435 → 00436 EXECUTE-axis guard (post-00436, the RLS-correct
-// posture). The 2026-05-19 P0 incident proved that the previous
-// "zero browser-EXECUTE-able app routines" invariant
-// (00435_revoke_browser_execute_grants.sql, formerly 00417) is
-// fundamentally incompatible with Supabase RLS: every tenant_isolation
-// policy's USING clause invokes public.current_tenant_id() (others call
-// current_user_id() / user_has_permission()), and Postgres checks
-// EXECUTE on those helper functions AS THE QUERYING ROLE
-// (anon/authenticated) even for SECURITY DEFINER — so revoking their
-// EXECUTE from the browser roles 42501'd every browser/Realtime read.
-// 00436_fix_00435_rls_helper_execute_regression.sql (formerly 00420,
-// PR #31) fully reverts 00435 and restores the Supabase-default grant.
-// The correct, achievable, security-meaningful EXECUTE-axis invariant
-// is therefore the INVERSE of the old one: the RLS-helper functions
-// MUST remain browser-EXECUTE-able. `missing` = count of the supplied
-// RLS helpers for which anon OR authenticated lacks EXECUTE. Must be 0;
-// any non-zero ⇒ the 00435-class outage has regressed.
-function rlsHelperExecutePosture(helpers) {
+const RLS_DEFINER_HELPERS = ['gdpr_caller_has'];
+function browserExecuteGrantPosture() {
   const { dbPass, dbUrl } = proofDbArgs();
-  const list = helpers.map((n) => `('${n}')`).join(',');
-  // Overload-safe: a helper counts as `missing` for role g if it is
-  // absent entirely OR ANY pg_proc row of that name lacks EXECUTE for
-  // g. The old form (`not exists(... and has_function_privilege ...)`)
-  // let one EXECUTE-able overload of an overloaded helper (e.g.
-  // user_has_permission has multiple signatures) mask a revoked
-  // sibling overload. We keep an `exists(... proname = h.n)` arm so a
-  // missing-entirely helper still surfaces (negated: a helper with
-  // zero pg_proc rows is counted), AND add the per-overload
-  // `exists(... and not has_function_privilege ...)` arm so any
-  // single non-EXECUTE-able overload is flagged.
+  const allowedNames = [...BEARER_TRIO, ...RLS_DEFINER_HELPERS].map((n) => `'${n}'`).join(',');
   const sql = `select count(*)
-    from (values ${list}) h(n)
-    cross join (values ('anon'),('authenticated')) r(g)
-    where not exists (
-        select 1 from pg_proc p
-        where p.pronamespace = 'public'::regnamespace and p.proname = h.n)
-      or exists (
-        select 1 from pg_proc p
-        where p.pronamespace = 'public'::regnamespace and p.proname = h.n
-          and not has_function_privilege(r.g, p.oid, 'EXECUTE'));`;
-  const missing = Number(
-    execFileSync(
-      'psql',
-      [dbUrl, '-tA', '-v', 'ON_ERROR_STOP=1', '-c', sql],
-      { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
-    )
-      .toString()
-      .trim(),
-  );
-  return { missing };
+    from pg_proc p
+    where p.pronamespace = 'public'::regnamespace
+      and pg_get_userbyid(p.proowner) = 'postgres'
+      and p.prosecdef
+      and has_function_privilege('authenticated', p.oid, 'EXECUTE')
+      and p.proname not in (${allowedNames});
+
+    select count(*)
+    from (values
+      ('public.validate_invitation_token(text,text)'::regprocedure),
+      ('public.peek_invitation_token(text,text)'::regprocedure),
+      ('public.validate_kiosk_token(text)'::regprocedure),
+      ('public.gdpr_caller_has(text)'::regprocedure)
+    ) allowed(oid)
+    where not has_function_privilege('authenticated', allowed.oid, 'EXECUTE');
+
+    select count(*)
+    from pg_proc p
+    where p.pronamespace = 'public'::regnamespace
+      and pg_get_userbyid(p.proowner) = 'postgres'
+      and p.prosecdef
+      and not has_function_privilege('service_role', p.oid, 'EXECUTE');`;
+  const out = execFileSync(
+    'psql',
+    [dbUrl, '-tA', '-v', 'ON_ERROR_STOP=1', '-c', sql],
+    { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
+  )
+    .toString()
+    .trim()
+    .split('\n')
+    .map((n) => Number(n));
+  return {
+    riskyLeft: out[0] ?? Number.NaN,
+    allowedMissing: out[1] ?? Number.NaN,
+    serviceMissing: out[2] ?? Number.NaN,
+  };
 }
 
 function cleanupIdorNotificationFixture() {
@@ -1500,6 +1469,328 @@ async function probe(name, options) {
   // delivers what blanket AdminGuard structurally could not: a
   // non-admin (type='agent') role that holds exactly spaces.create
   // passes the guard where AdminGuard (role.type==='admin') 403'd it.
+  console.log(
+    '\n─── Slice 11.2b: non-admin WITH permission (proves the re-gate)',
+  );
+  try {
+    seedProofRoleFixture();
+    // Sanity: the SAME role/user with NO spaces.create still 403s on a
+    // different key's route — isolates "the grant did it", not "the
+    // user is now privileged". POST /workflows needs workflows.create,
+    // which this role does not hold.
+    await probe('POST /workflows  (non-admin, role lacks workflows.create → still 403)', {
+      url: `${API_BASE}/api/workflows`,
+      method: 'POST',
+      headers: nonAdminA,
+      body: { name: 'xtenant-11.2b-neg', graph_definition: {} },
+      expect: 'forbidden',
+    });
+    // The proof: same non-admin user, now holding spaces.create, hits
+    // POST /spaces. NOT 403/401 ⇒ the permission guard passed (2xx, or
+    // 400/422 body-validation — either way the gate let it through).
+    await probe('POST /spaces  (non-admin role holds spaces.create → guard PASSES)', {
+      url: `${API_BASE}/api/spaces`,
+      method: 'POST',
+      headers: nonAdminA,
+      body: { name: 'xtenant-11.2b-proof', type: 'site' },
+      expect: 'not_forbidden',
+    });
+    // Slice 11.4 proof: the SAME non-admin role also holds
+    // request_types.use → GET /config-entities/:id (the Requester
+    // portal / desk create-ticket form-render path) must pass the gate.
+    // Pre-11.3 this was class-level AdminGuard (this exact role 403'd);
+    // 11.4 gates it request_types.use. A non-existent id 404s AFTER the
+    // gate — 404 ∉ {401,403} ⇒ the gate passed (which is the proof).
+    // Negative isolation: the role lacks request_types.read, so this
+    // proves request_types.use specifically, not a generic read grant.
+    await probe('GET /config-entities/:id  (non-admin holds request_types.use → guard PASSES, was AdminGuard-403 pre-11.3)', {
+      url: `${API_BASE}/api/config-entities/00000000-0000-0000-0000-0000000011b2`,
+      headers: nonAdminA,
+      expect: 'not_forbidden',
+    });
+    // Slice 11.5 proof: the SAME non-admin role also holds
+    // visitors.configure → POST /admin/visitors/types (the last
+    // AdminGuard caller, now @RequirePermission) must pass the gate.
+    // Pre-11.5 the class-level AdminGuard 403'd this exact agent role.
+    // Empty body ⇒ Zod 400 AFTER the gate (handler reached) — proves
+    // gate-passed with zero side effects (no visitor_type row created),
+    // same side-effect-free pattern as the 404 proof above. The
+    // plain-nonAdmin negative for this route is asserted 403 in the
+    // Slice-10 section above.
+    await probe('POST /admin/visitors/types  (non-admin holds visitors.configure → guard PASSES, was AdminGuard-403 pre-11.5)', {
+      url: `${API_BASE}/api/admin/visitors/types`,
+      method: 'POST',
+      headers: nonAdminA,
+      body: {},
+      expect: 'not_forbidden',
+    });
+  } catch (e) {
+    results.fail += 1;
+    results.failed.push('Slice 11.2b proof (seed/probe threw)');
+    console.log(`  ✗ Slice 11.2b proof threw: ${e.message}`);
+  } finally {
+    cleanupProofRoleFixture();
+  }
+
+  // ── Notification same-tenant IDOR (codex 2026-05-18 remaining #1) ──
+  // The admin is a valid TENANT_A authed user but NOT the seeded
+  // notification's recipient. Pre-fix the legacy NotificationController
+  // consumer routes flip/read read-state by id/personId with no
+  // recipient binding — a same-tenant IDOR. The fix removes the dead
+  // legacy surface entirely (the real inbox is the server-derived
+  // /me/inbox/*); routes must be GONE (404) and the victim row's
+  // read_at must remain NULL even if a route still answered.
+  console.log(
+    '\n─── Notification same-tenant IDOR: a non-recipient cannot touch read-state',
+  );
+  try {
+    seedIdorNotificationFixture();
+    const dummyPerson = '00000000-0000-0000-0000-0000000000a1';
+    await probe('POST /notifications/:id/read  (non-recipient → route removed)', {
+      url: `${API_BASE}/api/notifications/${IDOR_NOTIF_ID}/read`,
+      method: 'POST',
+      headers: tenantA,
+      expect: 'notfound',
+    });
+    await probe('POST /notifications/person/:personId/read-all  (route removed)', {
+      url: `${API_BASE}/api/notifications/person/${dummyPerson}/read-all`,
+      method: 'POST',
+      headers: tenantA,
+      expect: 'notfound',
+    });
+    await probe('GET /notifications/person/:personId  (route removed)', {
+      url: `${API_BASE}/api/notifications/person/${dummyPerson}`,
+      headers: tenantA,
+      expect: 'notfound',
+    });
+    await probe('GET /notifications/person/:personId/unread-count  (route removed)', {
+      url: `${API_BASE}/api/notifications/person/${dummyPerson}/unread-count`,
+      headers: tenantA,
+      expect: 'notfound',
+    });
+    // Decisive behavioral proof — independent of HTTP status semantics:
+    // the victim notification must still be unread after every attack.
+    if (idorNotificationStillUnread()) {
+      results.pass += 1;
+      console.log(
+        '  ✓ victim notification read_at still NULL (IDOR did not mark it)',
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Notification IDOR — victim row was marked read');
+      console.log(
+        '  ✗ victim notification read_at is SET — a non-recipient marked it read (IDOR)',
+      );
+    }
+  } catch (e) {
+    results.fail += 1;
+    results.failed.push('Notification IDOR proof (seed/probe threw)');
+    console.log(`  ✗ Notification IDOR proof threw: ${e.message}`);
+  } finally {
+    cleanupIdorNotificationFixture();
+  }
+
+  // ── Browser-direct PostgREST hardening (codex 2026-05-18 #2 / 00415) ──
+  console.log(
+    '\n─── Browser-direct PostgREST: write grants revoked from anon/authenticated',
+  );
+  try {
+    const { writesLeft, selectMissing } = browserGrantPosture();
+    if (writesLeft === 0) {
+      results.pass += 1;
+      console.log(
+        '  ✓ anon/authenticated hold NO INSERT/UPDATE/DELETE on ANY public table (00415 scope)',
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Browser write grants NOT fully revoked (00415 not applied / regressed)');
+      console.log(
+        `  ✗ ${writesLeft} anon/authenticated write grants still present on public tables — apply/re-apply migration 00415`,
+      );
+    }
+    if (selectMissing === 0) {
+      results.pass += 1;
+      console.log(
+        '  ✓ SELECT retained on Realtime-published tables (inbox/scheduler live updates intact)',
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('SELECT wrongly revoked on a Realtime table');
+      console.log(
+        `  ✗ ${selectMissing} Realtime-table SELECT grants missing — Realtime would break; over-broad revoke`,
+      );
+    }
+
+    // Live end-to-end: a real authenticated browser session token (the
+    // exact thing apps/web holds post-login) cannot write an escalation
+    // row via PostgREST. Goes through env.SUPABASE_URL — the same proxy
+    // the browser uses. {401,403} = denied (grant- or RLS-layer).
+    const browserTok = await mintTokenFor(ADMIN_AUTH_UID);
+    const wr = await fetch(`${env.SUPABASE_URL}/rest/v1/user_role_assignments`, {
+      method: 'POST',
+      headers: {
+        apikey: env.SUPABASE_PUBLISHABLE_KEY,
+        Authorization: `Bearer ${browserTok}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+      },
+      body: JSON.stringify({
+        id: '9b000000-0000-0000-0000-00000000dead',
+        tenant_id: TENANT_A_ID,
+        user_id: ADMIN_AUTH_UID,
+        role_id: ADMIN_ROLE_ID,
+        active: true,
+      }),
+    });
+    if (wr.status === 401 || wr.status === 403) {
+      results.pass += 1;
+      console.log(
+        `  ✓ browser-direct POST /rest/v1/user_role_assignments → HTTP ${wr.status} (self-grant denied)`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Browser-direct self-grant INSERT was NOT denied');
+      console.log(
+        `  ✗ browser-direct self-grant → HTTP ${wr.status} — LIVE escalation; cleaning up`,
+      );
+      try {
+        const { dbPass, dbUrl } = proofDbArgs();
+        execFileSync(
+          'psql',
+          [dbUrl, '-v', 'ON_ERROR_STOP=1', '-c',
+           `delete from public.user_role_assignments where id = '9b000000-0000-0000-0000-00000000dead';`],
+          { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
+        );
+      } catch (e) {
+        console.log(`  ! browser-direct cleanup failed (non-fatal): ${e.message}`);
+      }
+    }
+
+    // Normal browser/PostgREST read on an RLS-protected table. This is
+    // the regression 00417 missed: helper EXECUTE over-revocation turns
+    // harmless RLS reads into 42501 "permission denied for function
+    // current_tenant_id". With the safe 00420/00422 posture this returns
+    // 200 (usually [] because this project does not mint tenant_id claims).
+    const rlsRead = await fetch(
+      `${env.SUPABASE_URL}/rest/v1/bookings?select=id&limit=1`,
+      {
+        headers: {
+          apikey: env.SUPABASE_PUBLISHABLE_KEY,
+          Authorization: `Bearer ${browserTok}`,
+        },
+      },
+    );
+    const rlsReadBody = await rlsRead.text();
+    if (rlsRead.status === 200) {
+      results.pass += 1;
+      console.log(
+        '  ✓ browser-direct RLS read still works (bookings select did not hit helper EXECUTE denial)',
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Browser RLS read failed after routine EXECUTE changes');
+      console.log(
+        `  ✗ browser-direct bookings read → HTTP ${rlsRead.status}; body=${rlsReadBody.slice(0, 180)}`,
+      );
+    }
+
+    // ── 00420/00422: RLS helpers preserved, risky SECURITY DEFINER routines revoked ──
+    // Codex done-check 2026-05-18 found a LIVE cross-tenant leak via
+    // SECURITY DEFINER tickets_distinct_tags(tenant). 00420 corrected the
+    // unsafe blanket 00417 revoke; 00422 revokes browser EXECUTE from the
+    // remaining app-owned SECURITY DEFINER business routines while keeping
+    // RLS helpers executable.
+    const { riskyLeft, allowedMissing, serviceMissing } = browserExecuteGrantPosture();
+    if (riskyLeft === 0) {
+      results.pass += 1;
+      console.log(
+        '  ✓ anon/authenticated cannot EXECUTE app-owned SECURITY DEFINER routines except RLS/bearer allowlist',
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('Risky SECURITY DEFINER routines still browser-executable');
+      console.log(
+        `  ✗ ${riskyLeft} app-owned SECURITY DEFINER routines still anon/authenticated-EXECUTABLE beyond allowlist — apply 00422`,
+      );
+    }
+    if (allowedMissing === 0) {
+      results.pass += 1;
+      console.log('  ✓ RLS/bearer routine EXECUTE allowlist is preserved');
+    } else {
+      results.fail += 1;
+      results.failed.push('Required RLS/bearer routine EXECUTE missing');
+      console.log(
+        `  ✗ ${allowedMissing} required RLS/bearer routines lost authenticated EXECUTE — over-broad revoke`,
+      );
+    }
+    if (serviceMissing === 0) {
+      results.pass += 1;
+      console.log('  ✓ service_role retains EXECUTE on app-owned SECURITY DEFINER routines');
+    } else {
+      results.fail += 1;
+      results.failed.push('service_role EXECUTE missing on SECURITY DEFINER routines');
+      console.log(
+        `  ✗ ${serviceMissing} app-owned SECURITY DEFINER routines missing service_role EXECUTE`,
+      );
+    }
+    // Decisive live red→green: the proven leak. Authenticated TENANT_A
+    // browser token calls the SECURITY DEFINER fn with a FOREIGN tenant.
+    // Pre-fix: HTTP 200 + that tenant's tags. Post-fix: grant-denied
+    // (PostgREST 404 PGRST202 / 401 / 403). Status outside 2xx = denied.
+    const lr = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/tickets_distinct_tags`, {
+      method: 'POST',
+      headers: {
+        apikey: env.SUPABASE_PUBLISHABLE_KEY,
+        Authorization: `Bearer ${browserTok}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ tenant: TENANT_B_ID }),
+    });
+    if (lr.status < 200 || lr.status >= 300) {
+      results.pass += 1;
+      console.log(
+        `  ✓ browser-direct rpc/tickets_distinct_tags(foreign tenant) → HTTP ${lr.status} (cross-tenant RPC leak denied)`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('LIVE cross-tenant RPC leak: tickets_distinct_tags executable browser-direct');
+      console.log(
+        `  ✗ browser-direct rpc/tickets_distinct_tags(foreign tenant) → HTTP ${lr.status} — LIVE cross-tenant leak; apply 00417`,
+      );
+    }
+    // Trio preserved: a bearer-token fn must still be reachable (not
+    // grant-denied) — else 00417 over-revoked and kiosk/invitation
+    // flows break. Bogus token ⇒ the fn runs and returns its own
+    // not-found, NOT PostgREST's PGRST202 "function not found".
+    const tp = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/validate_kiosk_token`, {
+      method: 'POST',
+      headers: {
+        apikey: env.SUPABASE_PUBLISHABLE_KEY,
+        Authorization: `Bearer ${browserTok}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ p_token: 'smoke-bogus-token' }),
+    });
+    const tpBody = (await tp.text()).slice(0, 120);
+    if (tp.status !== 403 && !tpBody.includes('PGRST202')) {
+      results.pass += 1;
+      console.log(
+        `  ✓ bearer-token trio preserved (validate_kiosk_token still reachable → HTTP ${tp.status})`,
+      );
+    } else {
+      results.fail += 1;
+      results.failed.push('00417 over-revoked: bearer-token trio no longer reachable');
+      console.log(
+        `  ✗ validate_kiosk_token → HTTP ${tp.status} ${tpBody} — 00417 broke the kiosk/invitation flow`,
+      );
+    }
+  } catch (e) {
+    results.fail += 1;
+    results.failed.push('Browser-direct PostgREST proof threw');
+    console.log(`  ✗ Browser-direct PostgREST proof threw: ${e.message}`);
+  }
+
+  console.log('');
   console.log(
     '\n─── Slice 11.2b: non-admin WITH permission (proves the re-gate)',
   );

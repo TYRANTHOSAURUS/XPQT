@@ -219,6 +219,29 @@ export class TicketVisibilityService {
   }
 
   /**
+   * Returns the set of work_order ids visible to this actor, mirroring
+   * getVisibleIds but calling `work_order_visibility_ids` (00374).
+   *
+   * Work-orders intentionally share the `tickets.read_all` bypass by design
+   * (00374 ~108-114) — there is NO separate WO read-all permission. So
+   * `has_read_all` returning null here is correct behaviour, not a gap.
+   *
+   * null  = no filter (has_read_all — see all)
+   * []    = no user_id — see nothing
+   * [...] = filtered id set
+   */
+  async getVisibleWorkOrderIds(ctx: VisibilityContext): Promise<string[] | null> {
+    if (ctx.has_read_all) return null; // null = no filter (see all)
+    if (!ctx.user_id) return [];
+    const { data, error } = await this.supabase.admin
+      .rpc('work_order_visibility_ids', { p_user_id: ctx.user_id, p_tenant_id: ctx.tenant_id });
+    if (error) throw error;
+    return (data as Array<string | { id: string }> | null)?.map((row) =>
+      typeof row === 'string' ? row : row.id,
+    ) ?? [];
+  }
+
+  /**
    * Per-ticket gate. Loads the ticket, evaluates paths in TypeScript against ctx.
    * `mode = 'read'`: any path matches or has_read_all.
    * `mode = 'write'`: participant OR non-readonly operator OR has_write_all.

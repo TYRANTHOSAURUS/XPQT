@@ -1,7 +1,7 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { SupabaseService } from '../../common/supabase/supabase.service';
-import { AppErrors, isAppError, type AppError } from '../../common/errors';
+import { AppErrors, isAppError } from '../../common/errors';
 import { TenantContext } from '../../common/tenant-context';
 import { TenantService } from '../tenant/tenant.service';
 import { ConflictGuardService } from './conflict-guard.service';
@@ -561,13 +561,10 @@ export class RecurrenceService {
         //          AppErrors.server('booking.partial_failure',
         //          {cause:originalErr}) (boundary.ts:130-147).
         //
-        // The catch below is UNCHANGED — every reproduced throw lands on
-        // the same branch it did with the boundary (AppError has no
-        // `.response`, so booking.compensation_failed / .partial_failure
-        // fall to the catch-all `sawUnexpectedFailure=true` →
-        // materialized_through is NOT advanced; an original 23P01 on the
-        // rolled_back path matches `conflict.isExclusionViolation` →
-        // skip + advance, exactly as before).
+        // The catch below reads AppError.code directly, so compensation
+        // failures reach their dedicated ops-triage logs instead of the
+        // generic unexpected branch. The "do not advance
+        // materialized_through" invariant is unchanged.
         if (this.orders && this.supabase) {
           const cloneArgs = {
             masterReservationId: master.id,             // = master booking id
@@ -644,38 +641,10 @@ export class RecurrenceService {
           skipped += 1;
           continue;
         }
-        // rule_deny / reservation_slot_conflict → rule outcome at
-        // create-time, user-correctable.
-        //
-        // audit-03 slice1 (D-9): every value thrown into this catch is an
-        // `AppError` (booking.compensation_failed / .partial_failure via
-        // AppErrors.server at :601/:626; rule_deny via AppErrors.forbidden
-        // in booking-flow.service.ts:182/:842; reservation_slot_conflict
-        // via AppErrors.conflict booking-flow.service.ts:311). `AppError`
-        // has `.code: KnownErrorCode` and NO `.response` — the old
-        // `e.response?.code` was ALWAYS undefined, so every dedicated
-        // triage branch below was DEAD and control always fell to the
-        // catch-all (which sets sawUnexpectedFailure=true → no advance).
-        // Read `code` off the real AppError so the dedicated triage log
-        // lines fire; keep the `message` fallback (used in the logs).
-        //
-        // D-9 is observability-ONLY. The catch-all set
-        // sawUnexpectedFailure=true for EVERY thrown AppError (rule_deny
-        // included) → the gate at :725 (`!sawUnexpectedFailure`) did NOT
-        // advance materialized_through. To keep the net series-state
-        // effect byte-identical to pre-fix, this now-live branch ALSO
-        // sets sawUnexpectedFailure=true (preserving no-advance). The
-        // ONLY behavioural delta D-9 introduces is that a dedicated
-        // rule-deny triage log fires instead of the generic catch-all
-        // log. Whether rule_deny SHOULD skip-and-advance (the comment
-        // formerly claimed "Skip + advance" but the dead branch never
-        // did) is a real but separate pre-existing finding — tracked as
-        // D-10, deferred to a future booking-audit recurrence slice with
-        // its own smoke. NOT changed here.
-        const e = err as { message?: string };
-        const code: string | undefined = isAppError(err)
-          ? (err as AppError).code
-          : undefined;
+        // EXPECTED: rule_deny / reservation_slot_conflict → rule outcome
+        // at create-time, user-correctable. Skip + advance.
+        const e = err as { code?: string; message?: string };
+        const code = isAppError(err) ? err.code : e.code;
         if (code === 'rule_deny' || code === 'reservation_slot_conflict') {
           this.log.warn(
             `materialize ${seriesId}: occurrence ${occ.index} create-time rule outcome ${code} (user-correctable; not advancing — see D-10): ${e.message}`,

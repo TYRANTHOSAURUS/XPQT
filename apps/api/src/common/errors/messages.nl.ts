@@ -1666,9 +1666,17 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
     title: 'Kon niet bijwerken',
     detail: 'Server kan routing niet opnieuw draaien — interne fout: een orchestratiestap is overgeslagen.',
   },
+  'set_entity_assignment.invalid_watcher': {
+    title: 'Kon niet bijwerken',
+    detail: 'Een of meer volgers horen niet bij deze tenant.',
+  },
+  'set_entity_assignment.invalid_decision': {
+    title: 'Kon niet bijwerken',
+    detail: 'De routingbeslissing mist een geldige strategie of herkomst.',
+  },
   'set_entity_assignment.routing_status_unsupported_for_work_order': {
     title: 'Kon niet bijwerken',
-    detail: 'Routingstatus geldt voor cases, niet voor werkorders.',
+    detail: 'Die routingstatuswijziging is alleen geldig voor cases.',
   },
   // B.2.A §3.3 update_entity_sla RPC (00328)
   'update_entity_sla.unknown_kind': { title: 'Kon SLA niet bijwerken', detail: 'Onbekend entiteitstype.' },
@@ -1850,6 +1858,10 @@ export const ERROR_MESSAGES_NL: Record<KnownErrorCode, ErrorMessage> = {
   'edit_booking.asset_reservation_not_in_booking': {
     title: 'Kon de reservering niet opslaan — niet gevonden',
     detail: 'Een asset-reservering in deze bewerking hoort niet meer bij deze reservering. Vernieuw de pagina en probeer het opnieuw.',
+  },
+  'edit_booking.linked_rows_require_booking_scope': {
+    title: 'Kon de ruimtewijziging niet opslaan',
+    detail: 'Deze multi-room reservering heeft services, assets of werkbonnen op reserveringsniveau. Bewerk de hele reservering of verwijder die gekoppelde items eerst.',
   },
   // B.4.A.4 step 2D-C self-review remediation (PLAN-C1 + CODE-I2).
   // Voice mirrors the rest of the edit_booking family — "reservering" not

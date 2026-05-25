@@ -107,26 +107,6 @@ begin
       using errcode = 'P0001';
   end if;
 
-  -- FAIL-CLOSED (codex IMPORTANT #1). If approval_config is a non-null JSON
-  -- object/array the rule REQUIRES a workflow_definition — minting the rule
-  -- without one recreates the exact orphan steady-state this RPC exists to
-  -- eliminate (a rule with non-null approval_config but
-  -- workflow_definition_id=NULL silently falling through the cutover gate to
-  -- legacy createApprovalRows). The TS pre-flight
-  -- (room-booking-rules.service.ts:174-177 compileApprovalGraph) ALWAYS
-  -- supplies p_graph_definition for such rules; a null here means the TS
-  -- contract was bypassed (direct RPC call, future caller drift). Raise with
-  -- P0001 — the SAME convention 00400:215-218 + 00403:84-92 use and which the
-  -- TS error mapper (room-booking-rules.service.ts:188-195) already routes to
-  -- AppError.code = 'room_rule.workflow_recompile_failed'. No new client-facing
-  -- code: the failure surface is unchanged.
-  if jsonb_typeof(p_rule_data->'approval_config') in ('object','array')
-     and p_graph_definition is null then
-    raise exception
-      'create_room_booking_rule_with_workflow: approval_config present but no compiled graph supplied — refusing to create an orphan rule'
-      using errcode = 'P0001';
-  end if;
-
   -- 1. INSERT the rule. tenant_id forced = p_tenant_id (#0 invariant) —
   --    NEVER trusted from p_rule_data. Column list mirrors
   --    00121_room_booking_rules.sql:5-24 + the 00400 FK column.
@@ -206,44 +186,26 @@ comment on function public.create_room_booking_rule_with_workflow(uuid, jsonb, j
 -- ── B. update_room_booking_rule_with_workflow ─────────────────────────────
 --    One transaction:
 --      1. UPDATE the rule with the patch columns present in p_patch.
---      2. IFF p_recompile AND the post-update effective approval_config is
---         non-null: call the existing
+--      2. IFF p_recompile (TS decides: approval_config OR name changed —
+--         room-booking-rules.service.ts:313) call the existing
 --         ensure_room_booking_rule_workflow_definition RPC (00400:187-283)
---         INSIDE this same tx with the TS-COMPILED graph (p_graph_definition,
---         NOT a SQL re-derivation). That RPC row-locks the rule, computes the
+--         INSIDE this same tx. That RPC row-locks the rule, computes the
 --         next version under the lock, INSERTs the new published definition,
---         archives prior versions safe to archive, and flips the FK. It
---         consumes p_graph_definition verbatim (00400:234-242 inserts the
---         passed jsonb directly — proven by reading it this session), so
---         passing the compiler output makes update mint a byte-identical
---         graph_definition to create for the same approval_config.
+--         archives prior versions safe to archive, and flips the FK.
 --      3. RETURN the same-shaped jsonb as the create RPC.
 --
 --    p_patch carries ONLY the columns the TS .update() path actually sets
 --    (a sparse object mirroring the `body` map at
---    room-booking-rules.service.ts:233-248). A key absent from p_patch is
+--    room-booking-rules.service.ts:265-284). A key absent from p_patch is
 --    NOT touched (COALESCE-from-existing semantics via the
 --    `p_patch ? 'col'` membership test). updated_at/updated_by are always
---    set.
---
---    p_graph_definition (codex IMPORTANT #2 — create/update validation
---    symmetry): the compiled approval graph from the SAME TS pre-flight
---    create() uses (ApprovalConfigCompilerService.compile via
---    room-booking-rules.service.ts compileApprovalGraph), or NULL when the
---    effective post-patch config has no approval_config. The SQL side NO
---    LONGER re-derives the graph — bad patches ({}, [], invalid approver
---    entries, bad threshold) now throw the 422
---    workflow_definition.compilation_failed in TS BEFORE any DB write,
---    exactly like create. Fail-closed: non-null effective approval_config
---    with p_recompile=true and p_graph_definition=NULL raises P0001 (same
---    convention + same room_rule.workflow_recompile_failed surface as create).
+--    set (matches ibid:266-267).
 
 create or replace function public.update_room_booking_rule_with_workflow(
   p_tenant_id        uuid,
   p_rule_id          uuid,
   p_patch            jsonb,
   p_recompile        boolean,
-  p_graph_definition jsonb,
   p_actor_user_id    uuid
 ) returns jsonb
 language plpgsql
@@ -317,44 +279,45 @@ begin
       using errcode = 'P0002';
   end if;
 
-  -- 2. Recompile iff TS asked for it (approval_config OR name changed) AND
-  --    the post-UPDATE effective approval_config is non-null (the rule
-  --    actually needs a workflow). codex IMPORTANT #2: the graph is NO
-  --    LONGER re-derived in SQL — it is the TS-COMPILED p_graph_definition
-  --    that flowed through the same ApprovalConfigCompilerService.compile()
-  --    create() uses (room-booking-rules.service.ts compileApprovalGraph).
-  --    This eliminates the create/update validation drift: a malformed patch
-  --    ({}, [], invalid approver entry, bad threshold) is rejected by the TS
-  --    compiler with 422 workflow_definition.compilation_failed BEFORE the
-  --    UPDATE commits, identical to create. There is exactly ONE
-  --    graph-shaping code path now.
+  -- 2. Recompile iff TS asked for it (approval_config OR name changed).
+  --    Reuses the canonical ensure_room_booking_rule_workflow_definition
+  --    RPC (00400:187-283) INSIDE this tx — version bump + archive + FK
+  --    flip are race-free under its per-rule FOR UPDATE row lock. When the
+  --    rule has no approval_config the TS side passes p_recompile=false
+  --    OR a null graph; here we mirror the TS guard: only recompile when
+  --    approval_config is non-null (the rule actually needs a workflow).
   if p_recompile and v_rule.approval_config is not null then
-    -- FAIL-CLOSED (mirror of create's guard above): a non-null effective
-    -- approval_config that needs a recompile MUST arrive with a compiled
-    -- graph. A null here means the TS pre-flight contract was bypassed —
-    -- raise rather than persist a bad/orphan steady-state. P0001 + the
-    -- existing room_rule.workflow_recompile_failed TS mapping
-    -- (room-booking-rules.service.ts:268-272). No new client-facing code.
-    if p_graph_definition is null then
-      raise exception
-        'update_room_booking_rule_with_workflow: approval_config present but no compiled graph supplied — refusing to mint an invalid workflow_definition'
-        using errcode = 'P0001';
-    end if;
-
     select definition_id, version
       into v_def
       from public.ensure_room_booking_rule_workflow_definition(
         p_rule_id,
         p_tenant_id,
-        -- The TS-compiled graph (ApprovalConfigCompilerService.compile),
-        -- consumed verbatim by ensure_room_booking_rule_workflow_definition
-        -- (00400:234-242 inserts p_graph_definition directly into
-        -- workflow_definitions.graph_definition — read this session). Same
-        -- compiler + same approval_config input as create() ⇒ byte-identical
-        -- graph_definition across both write paths. ensure_... itself is
-        -- UNCHANGED (also used by the booking-flow auto-recompile path,
-        -- commit 3b2f90a4 — left untouched).
-        p_graph_definition,
+        -- Re-derive the canonical graph from the post-UPDATE approval_config
+        -- exactly like 00400 block F (the per-rule backfill,
+        -- 00400:447-478). Keeping graph assembly in SQL keeps the
+        -- byte-equality contract with ApprovalConfigCompilerService — but
+        -- the TS side ALSO supplies the compiled graph for create(); for
+        -- update we let the existing RPC + this canonical builder own it
+        -- so the two write paths converge on one graph shape.
+        jsonb_build_object(
+          'nodes', jsonb_build_array(
+            jsonb_build_object('id', 'trigger', 'type', 'trigger',
+              'config', jsonb_build_object()),
+            jsonb_build_object('id', 'approval_main', 'type', 'approval',
+              'config', jsonb_build_object(
+                'required_approvers', v_rule.approval_config->'required_approvers',
+                'threshold', coalesce(v_rule.approval_config->>'threshold', 'all'))),
+            jsonb_build_object('id', 'end_success', 'type', 'end',
+              'config', jsonb_build_object('outcome', 'approved')),
+            jsonb_build_object('id', 'end_failure', 'type', 'end',
+              'config', jsonb_build_object('outcome', 'rejected'))
+          ),
+          'edges', jsonb_build_array(
+            jsonb_build_object('from', 'trigger', 'to', 'approval_main'),
+            jsonb_build_object('from', 'approval_main', 'to', 'end_success', 'condition', 'approved'),
+            jsonb_build_object('from', 'approval_main', 'to', 'end_failure', 'condition', 'rejected')
+          )
+        ),
         v_rule.name
       );
     v_def_id  := v_def.definition_id;
@@ -378,21 +341,16 @@ begin
   );
 end $$;
 
-revoke execute on function public.update_room_booking_rule_with_workflow(uuid, uuid, jsonb, boolean, jsonb, uuid) from public;
-grant  execute on function public.update_room_booking_rule_with_workflow(uuid, uuid, jsonb, boolean, jsonb, uuid) to service_role;
+revoke execute on function public.update_room_booking_rule_with_workflow(uuid, uuid, jsonb, boolean, uuid) from public;
+grant  execute on function public.update_room_booking_rule_with_workflow(uuid, uuid, jsonb, boolean, uuid) to service_role;
 
-comment on function public.update_room_booking_rule_with_workflow(uuid, uuid, jsonb, boolean, jsonb, uuid) is
+comment on function public.update_room_booking_rule_with_workflow(uuid, uuid, jsonb, boolean, uuid) is
   'Phase 1.5 — atomic sparse UPDATE room_booking_rules + (iff p_recompile
-   AND effective approval_config non-null) ensure_room_booking_rule_workflow_definition
-   with the TS-COMPILED p_graph_definition, in one tx. Replaces the TS
-   UPDATE-then-recompile path (room-booking-rules.service.ts update()).
-   Symmetric with create: bad approval_config is rejected by the TS compiler
-   (422 workflow_definition.compilation_failed) before the write; the SQL no
-   longer re-derives the graph, so create + update mint a byte-identical
-   graph_definition for the same approval_config. Returns
+   AND approval_config non-null) ensure_room_booking_rule_workflow_definition,
+   in one tx. Replaces the TS UPDATE-then-recompile path
+   (room-booking-rules.service.ts update()). Returns
    {rule, definition_id, version}. tenant_id is the scoping predicate, never
-   mutated. P0001 = bad input (incl. fail-closed: non-null approval_config +
-   null graph), P0002 = not found — TS maps to
+   mutated. P0001 = bad input, P0002 = not found — TS maps to
    room_rule.workflow_recompile_failed.';
 
 -- ── C. PostgREST schema cache reload (matches 00400:602, 00403:405). ──────

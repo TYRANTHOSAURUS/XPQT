@@ -22,6 +22,7 @@ import type {
 } from '../booking-bundles/attach-plan.types';
 import type { ApprovalConfig } from '../room-booking-rules/dto';
 import type { ActorContext, Reservation, PolicySnapshot } from './dto/types';
+import { claimProducerResolutionBasis } from './producer-resolution-basis';
 
 /**
  * Multi-room atomic create — Slice 3 of booking-audit remediation
@@ -151,19 +152,15 @@ export class MultiRoomBookingService {
     // semantics expected there — same rationale as single-room :515-519).
     const clientRequestId = actor.client_request_id ?? randomUUID();
     const idempotencyKey = `booking.create:${actor.user_id}:${clientRequestId}`;
-
-    // audit-03 D-6 (multi-room create path) — the request-canonical
-    // resolution-basis instant. Multi-room create calls the SAME
-    // producer (`bundle.buildAttachPlan`) + room-rule resolver as
-    // single-room, into the SAME idempotency-hashed
-    // create_booking_with_attach_plan. It inherits the identical V1/V2/
-    // V3-time nondeterminism, so it is anchored on the SAME basis: the
-    // controller-defaulted `actor.resolution_basis_at` (one instant per
-    // request), with a single-read fallback for synthetic/legacy callers
-    // that build an ActorContext directly (no retry semantics there).
     const resolutionBasisAt =
-      actor.resolution_basis_at ?? new Date().toISOString();
-    const resolutionBasisMs = Date.parse(resolutionBasisAt);
+      actor.resolution_basis_at ??
+      (await claimProducerResolutionBasis({
+        supabase: this.supabase,
+        tenantId,
+        idempotencyKey,
+        producer: 'booking.create.multi_room',
+        log: this.log,
+      }));
 
     // 1. Per-room rule resolution + space hydration. We resolve rules
     //    per-room because each room can have a distinct rule set (e.g.
@@ -246,10 +243,7 @@ export class MultiRoomBookingService {
           end_at: input.end_at,
           attendee_count: input.attendee_count ?? null,
           criteria: {},
-          // audit-03 D-6 (V2/V3-time) — same request-canonical basis for
-          // every room so a same-intent multi-room retry recomputes the
-          // identical matched-rule set across ALL rooms.
-          resolution_basis_ms: resolutionBasisMs,
+          resolution_basis_at: resolutionBasisAt,
         },
         tenantId,
       );
@@ -411,9 +405,7 @@ export class MultiRoomBookingService {
       cost_center_id: input.bundle?.cost_center_id ?? null,
       cost_amount_snapshot: null,
       policy_snapshot: policySnapshot as unknown as Record<string, unknown>,
-      // audit-03 D-6 (V3-order) — same canonically-sorted source as
-      // policy_snapshot.matched_rule_ids.
-      applied_rule_ids: sortedMatchedRuleIds,
+      applied_rule_ids: Array.from(matchedRuleIds),
       config_release_id: null,
       recurrence_series_id: null,
       recurrence_index: null,
@@ -440,11 +432,6 @@ export class MultiRoomBookingService {
           end_at: input.end_at,
           attendee_count: input.attendee_count ?? null,
           source: bookingSource,
-          // audit-03 D-6 — no booking row yet (multi-room create); the
-          // lead-time basis is the request-canonical instant, threaded
-          // to hydrateLines + the service-rule predicate engine so the
-          // hashed p_attach_plan is wall-clock-independent on retry.
-          created_at: resolutionBasisAt,
         },
         requester_person_id: input.requester_person_id,
         bundle: input.bundle
@@ -457,6 +444,7 @@ export class MultiRoomBookingService {
           : { source: bookingSource },
         services: input.services,
         idempotency_key: idempotencyKey,
+        resolution_basis_at: resolutionBasisAt,
       });
     } else {
       attachPlan = {
@@ -531,12 +519,14 @@ export class MultiRoomBookingService {
     //    (the legacy multi-room bug this slice fixes; honest, not silent).
     if (status === 'pending_approval' && approvalConfig) {
       if (this.workflowService && approvalWorkflowDefinitionId) {
-        await this.workflowService.start({
-          definitionId: approvalWorkflowDefinitionId,
-          entityKind: 'booking',
-          entityId: bookingId,
-          tenantId,
-        });
+        if (!(await this.hasActiveBookingWorkflow(bookingId, tenantId))) {
+          await this.workflowService.start({
+            definitionId: approvalWorkflowDefinitionId,
+            entityKind: 'booking',
+            entityId: bookingId,
+            tenantId,
+          });
+        }
       } else {
         await this.createApprovalRows(bookingId, approvalConfig, tenantId);
       }
@@ -694,6 +684,7 @@ export class MultiRoomBookingService {
   ): Promise<void> {
     const approvers = config.required_approvers ?? [];
     if (approvers.length === 0) return;
+    if (await this.hasRoomApprovalRows(bookingId, tenantId)) return;
     const chainThreshold: 'all' | 'any' = config.threshold ?? 'all';
     const parallelGroup = chainThreshold === 'all' ? `parallel-${bookingId}` : null;
     // One shared approval_chain_id per call — all approvers on a single
@@ -717,10 +708,55 @@ export class MultiRoomBookingService {
 
     const { error } = await this.supabase.admin.from('approvals').insert(rows);
     if (error) {
-      this.log.warn(
-        `multi-room approval rows insert failed for booking=${bookingId}: ${error.message}`,
-      );
+      throw AppErrors.server('booking.unexpected_error', {
+        detail: `multi-room approval rows insert failed for booking=${bookingId}`,
+        cause: error,
+      });
     }
+  }
+
+  private async hasActiveBookingWorkflow(
+    bookingId: string,
+    tenantId: string,
+  ): Promise<boolean> {
+    const { data, error } = await this.supabase.admin
+      .from('workflow_instances')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('booking_id', bookingId)
+      .in('status', ['active', 'waiting'])
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      throw AppErrors.server('booking.unexpected_error', {
+        detail: `workflow instance read failed for booking=${bookingId}`,
+        cause: error,
+      });
+    }
+    return Boolean(data);
+  }
+
+  private async hasRoomApprovalRows(
+    bookingId: string,
+    tenantId: string,
+  ): Promise<boolean> {
+    const { data, error } = await this.supabase.admin
+      .from('approvals')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('target_entity_type', 'booking')
+      .eq('target_entity_id', bookingId)
+      .not('approval_chain_id', 'is', null)
+      .in('status', ['pending', 'approved'])
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      throw AppErrors.server('booking.unexpected_error', {
+        detail: `approval row read failed for booking=${bookingId}`,
+        cause: error,
+      });
+    }
+    return Boolean(data);
   }
 
   private async loadSpaces(

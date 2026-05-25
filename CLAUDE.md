@@ -28,7 +28,7 @@ XPQT/
 - `pnpm db:start` — start local Supabase
 - `pnpm db:reset` — reset database and re-run migrations **(local only!)**
 - `pnpm db:push` — push migrations to the **remote** Supabase project
-- `pnpm smoke:work-orders` / `pnpm smoke:tickets` / `pnpm smoke:edit-booking-scope` / `pnpm smoke:edit-booking` / `pnpm smoke:cancel-booking` / `pnpm smoke:create-multi-room` / `pnpm smoke:attach-services` / `pnpm smoke:cancel-order-line` / `pnpm smoke:recurrence-clone` / `pnpm smoke:floor-plans` / `pnpm smoke:visual-approval` / `pnpm smoke:cross-tenant` / `pnpm smoke:prod-e2e` — live-API smoke probes (see Smoke gates below)
+- `pnpm smoke:work-orders` / `pnpm smoke:edit-booking-scope` / `pnpm smoke:edit-booking` / `pnpm smoke:cancel-booking` / `pnpm smoke:create-multi-room` / `pnpm smoke:attach-services` / `pnpm smoke:cancel-order-line` / `pnpm smoke:recurrence-clone` / `pnpm smoke:floor-plans` / `pnpm smoke:visual-approval` / `pnpm smoke:cross-tenant` — live-API smoke probes (see Smoke gates below)
 
 ## Smoke gates (mandatory before claiming ship)
 

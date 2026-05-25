@@ -374,20 +374,13 @@ export class RuleResolverService {
     const { requester, permissions, space, scenario } = args;
     const startMs = Date.parse(scenario.start_at);
     const endMs = Date.parse(scenario.end_at);
+    const basisMs = parseBasisMs(scenario.resolution_basis_at);
     const duration = Number.isFinite(startMs) && Number.isFinite(endMs)
       ? Math.round((endMs - startMs) / 60_000) : 0;
-    // audit-03 D-6 (V2 fix) — anchor lead-time on the request-canonical
-    // basis when the caller supplied one (the create-with-attach-plan
-    // path), NOT a fresh wall-clock read. A same-intent create retry then
-    // recomputes the SAME lead_time_minutes → SAME matched room-rule set →
-    // byte-identical policy_snapshot / applied_rule_ids / status in the
-    // hashed p_booking_input. Picker / ad-hoc sim leave it unset → Date.now().
-    const basisMs = typeof scenario.resolution_basis_ms === 'number'
-      ? scenario.resolution_basis_ms
-      : Date.now();
     const lead = Number.isFinite(startMs)
       ? Math.round((startMs - basisMs) / 60_000) : 0;
     return {
+      resolution_basis_at: scenario.resolution_basis_at,
       requester: {
         id: requester.id,
         role_ids: requester.role_ids,
@@ -422,10 +415,7 @@ export class RuleResolverService {
       // wall-clock-independent across a same-intent create retry (the
       // matched-rule set drives the hashed policy_snapshot). undefined
       // on the picker / sim paths → engine falls back to Date.now().
-      resolution_basis_ms:
-        typeof scenario.resolution_basis_ms === 'number'
-          ? scenario.resolution_basis_ms
-          : undefined,
+      resolution_basis_ms: basisMs,
     };
   }
 
@@ -441,7 +431,7 @@ export class RuleResolverService {
     // Sort within each bucket by priority desc; flatten (most-specific first).
     const orderedRules: Array<RuleRow & { specificity: number }> = [];
     for (const [specificity, bucket] of candidateBuckets) {
-      bucket.sort((a, b) => b.priority - a.priority);
+      bucket.sort(compareRulesWithinSpecificity);
       for (const r of bucket) orderedRules.push({ ...r, specificity });
     }
 
@@ -482,6 +472,20 @@ export class RuleResolverService {
       final: 'allow',
     };
   }
+}
+
+function parseBasisMs(value: string | undefined): number {
+  if (value !== undefined) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
+function compareRulesWithinSpecificity(a: RuleRow, b: RuleRow): number {
+  const priority = b.priority - a.priority;
+  if (priority !== 0) return priority;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
 // ── Helpers (exported for testing) ─────────────────────────────────────

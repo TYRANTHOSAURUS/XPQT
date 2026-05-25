@@ -32,10 +32,10 @@ import type { ActorContext } from './dto/types';
  * through unchanged, so the only behavioural effect is nulling a
  * synthetic booker that could never have been a valid uuid anyway.
  *
- * Applied at every create-RPC booker bind: the no-services `create_booking`
- * path + the `create_booking_with_attach_plan` input
- * (booking-flow.service.ts) AND the multi-room
- * `create_booking_with_attach_plan` input (multi-room-booking.service.ts).
+ * Applied at every create-RPC booker bind: the single-room
+ * `create_booking_with_attach_plan` input (booking-flow.service.ts) AND the
+ * multi-room `create_booking_with_attach_plan` input
+ * (multi-room-booking.service.ts).
  */
 export function bookedByUserIdForRpc(actor: ActorContext): string | null {
   const uid = actor.user_id;

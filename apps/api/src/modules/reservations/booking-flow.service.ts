@@ -16,13 +16,15 @@ import type {
 } from './dto/types';
 import type {
   AttachPlan,
+  AttachPlanApproval,
   AttachPlanBookingSlot,
   BookingInput,
 } from '../booking-bundles/attach-plan.types';
 import { planUuid } from '../booking-bundles/plan-uuid';
 import { comparePlanSlots } from '../booking-bundles/plan-sort';
+import type { ApprovalConfig } from '../room-booking-rules/dto';
+import { claimProducerResolutionBasis } from './producer-resolution-basis';
 import { canonicalApproverSort } from './edit-plan-helpers';
-import type { AttachPlanApproval } from '../booking-bundles/attach-plan.types';
 
 // Booking-audit Slice 7 — discovered finding D-8 (pre-existing P1, NOT
 // Slice-7-caused). System/Outlook synthetic actors carry a non-uuid
@@ -37,19 +39,18 @@ import { bookedByUserIdForRpc } from './booked-by-user-id.util';
  * The portal, desk scheduler, calendar-sync intercept, and recurrence
  * materialiser all funnel through here.
  *
- * Pipeline (post-canonicalisation 2026-05-02):
+ * Pipeline (post-canonicalisation 2026-05-20):
  *   1. Load + verify the space (active, reservable)
  *   2. Snapshot buffers/check-in/cost from the space
  *   3. Apply same-requester back-to-back buffer collapse
  *   4. Resolve booking rules via RuleResolverService
  *   5. Handle deny / require_approval / override
  *   6. Compute status + policy_snapshot
- *   7. CALL `create_booking` RPC — single Postgres function inserts the
- *      booking row + N slot rows atomically (00277:236-334). The slot
- *      `booking_slots_no_overlap` GiST exclusion (00277:211-217) catches
- *      concurrent races and surfaces as 23P01.
- *   8. Fan out side effects (approval row creation; event emission;
- *      notifications + calendar sync are TODOs wired in Phase J / H)
+ *   7. CALL `create_booking_with_attach_plan` RPC — one Postgres function
+ *      inserts the booking row, slot rows, and optional service rows
+ *      atomically. Empty AttachPlan is the no-services path.
+ *   8. Fan out replay-safe room-rule approval workflow/rows when needed,
+ *      then emit lifecycle notifications.
  *
  * Return shape: `Booking` — the just-inserted bookings row. Slots are
  * accessible via the returned `booking.id` if a downstream caller needs them
@@ -95,34 +96,11 @@ export class BookingFlowService {
   ) {}
 
   /**
-   * Run the full pipeline and atomically create one Booking + N BookingSlot
-   * rows via the combined `create_booking_with_attach_plan` RPC
-   * (00277-shaped booking + slots + any orders/OLIs/asset_reservations/
-   * approvals + outbox emissions, ONE transaction), or throw a structured
-   * error.
+   * Run the full pipeline and atomically create one Booking + one BookingSlot
+   * via `create_booking_with_attach_plan`, or throw a structured error.
    *
-   * audit-03 P2-3 (deferred-closeout) — the legacy 20-arg `create_booking`
-   * RPC (00277:236-334) + `createApprovalRows` were RETIRED. ALL single-room
-   * creates (with OR without services) now route through
-   * `createWithAttachPlan`:
-   *   - The two paths had diverged: with-services was atomic
-   *     (B.0.D.2 cutover) while no-services kept the non-atomic
-   *     create_booking + best-effort `createApprovalRows`. Two RPC
-   *     families, two approval-row code paths, two idempotency stories.
-   *   - The combined RPC's step-10 approvals INSERT was extended 7→11 cols
-   *     (migration 00431) so the no-services FLAT approval case is now
-   *     committed IN-TRANSACTION with chain-aware columns → inbox-notified
-   *     (the 00402 trigger fires; pre-P2-3 a no-services pending-approval
-   *     booking created via the *combined* RPC had approval_chain_id=NULL
-   *     and was silently un-notified — that path is now correct).
-   *   - WORKFLOW-DEF approval rules (rule carries
-   *     `workflow_definition_id`) keep the engine-owned path: the plan
-   *     emits NO approval rows; `createWithAttachPlan` starts the
-   *     workflow_instance POST-RPC (parity with the legacy `create`
-   *     fan-out — equivalent, not improved, deferred-with-owner).
-   *
-   * Single-room only — multi-room batches multiple slot specs into one RPC
-   * call (MultiRoomBookingService, separate path).
+   * Single-room only — multi-room batches multiple slot specs in
+   * MultiRoomBookingService.
    *
    * Returns a transitional `Reservation` shim whose `id` is the BOOKING id
    * (`bookings.id`). Approval rows use `target_entity_type='booking'`.
@@ -140,23 +118,17 @@ export class BookingFlowService {
       `[create] space=${input.space_id} services_len=${input.services?.length ?? 0} bundle_present=${!!input.bundle} source=${input.source ?? 'portal'}`,
     );
 
-    // audit-03 P2-3 cutover — ALL single-room creates (with OR without
-    // services) go through the combined RPC `create_booking_with_attach_
-    // plan` (one transaction commits booking + slots + any orders/
-    // asset_reservations/OLIs/approvals + outbox emissions). The legacy
-    // 20-arg `create_booking` RPC path + `createApprovalRows` are deleted.
-    // `buildAttachPlan` produces an empty service graph for the no-services
-    // case, plus (FLAT approval case) the deterministic chain-aware
-    // approval rows the 00431 RPC commits in-transaction.
-    //
-    // Spec §3.1 + §7.6 of
-    // docs/superpowers/specs/2026-05-04-domain-outbox-design.md +
-    // docs/follow-ups/audit03-deferred-p2-3-decision.md.
+    // Audit 03 create-path consolidation: every single-room create now goes
+    // through the canonical `create_booking_with_attach_plan` RPC. An empty
+    // AttachPlan is the no-services path; room-rule approval fan-out is
+    // preserved after the RPC by `createWithAttachPlan`.
     return this.createWithAttachPlan(input, actor, tenantId);
+
+
   }
 
   /**
-   * B.0.D.2 — combined-RPC path: booking WITH services. Calls
+   * B.0.D.2 — combined-RPC path: booking with optional services. Calls
    * `buildAttachPlan` to produce `{ bookingInput, attachPlan }`, then
    * invokes `create_booking_with_attach_plan` (00309 / spec §7.6) which
    * commits booking + slots + orders + asset_reservations + OLIs +
@@ -191,7 +163,7 @@ export class BookingFlowService {
     actor: ActorContext,
     tenantId: string,
   ): Promise<Reservation> {
-    if (!this.bundle) {
+    if ((input.services?.length ?? 0) > 0 && !this.bundle) {
       throw AppErrors.server('booking.bundle_not_injected', {
         detail: 'BundleService not injected — booking-flow cannot build attach plan.',
       });
@@ -204,12 +176,33 @@ export class BookingFlowService {
     // key per call which is correct: no retry semantics expected there).
     const clientRequestId = actor.client_request_id ?? randomUUID();
     const idempotencyKey = `booking.create:${actor.user_id}:${clientRequestId}`;
+    const resolutionBasisAt =
+      actor.resolution_basis_at ??
+      (await claimProducerResolutionBasis({
+        supabase: this.supabase,
+        tenantId,
+        idempotencyKey,
+        producer: 'booking.create',
+        log: this.log,
+      }));
+    const producerActor: ActorContext = {
+      ...actor,
+      resolution_basis_at: resolutionBasisAt,
+    };
 
     // Build the plan (TS-side: rule resolver, approval routing, deterministic
     // UUIDs). Throws on rule deny, override-reason missing, basic input
-    // validation — same gates as the no-services path's `create` body.
-    const { bookingInput, attachPlan, approvalCutover } =
-      await this.buildAttachPlan(input, actor, idempotencyKey);
+    // validation — same gates as the pre-consolidation no-services body.
+    const {
+      bookingInput,
+      attachPlan,
+      roomApprovalConfig,
+      roomApprovalWorkflowDefinitionId,
+    } = await this.buildAttachPlan(
+      input,
+      producerActor,
+      idempotencyKey,
+    );
 
     this.log.log(
       `[create-with-attach-plan] booking=${bookingInput.booking_id} services=${input.services?.length ?? 0} idem=${idempotencyKey}`,
@@ -227,7 +220,7 @@ export class BookingFlowService {
     );
 
     if (rpcError) {
-      throw await this.mapAttachPlanRpcError(rpcError, input, bookingInput, actor, tenantId);
+      throw await this.mapAttachPlanRpcError(rpcError, input, bookingInput, producerActor, tenantId);
     }
 
     // RPC returns the cached_result jsonb. supabase-js surfaces it directly.
@@ -250,7 +243,7 @@ export class BookingFlowService {
 
     // Re-read the booking row so downstream consumers (notifications,
     // audit, recurrence) see the server-canonical state (defaults filled
-    // in, updated_at, etc.). Same shape as the no-services path's re-read.
+    // in, updated_at, etc.). Same shape as the pre-consolidation re-read.
     const { data: bookingRow, error: readErr } = await this.supabase.admin
       .from('bookings')
       .select('*')
@@ -287,59 +280,23 @@ export class BookingFlowService {
       primarySlot.slot_type,
     );
 
-    // ── audit-03 P2-3 STEP D — WORKFLOW-DEF post-RPC hybrid ─────────────
-    //
-    // When the matched room rule carries a `workflow_definition_id`, the
-    // plan emitted NO approval rows (the workflow engine owns them). Start
-    // the workflow_instance now — POST-RPC, best-effort, mirroring the
-    // legacy `create` fan-out (old :367-373). The booking already committed
-    // atomically; the workflow start is the SAME best-effort post-commit
-    // step it always was on this rule class (equivalent — NOT improved,
-    // NOT regressed; engine-owned approval rows, deferred-with-owner per
-    // docs/follow-ups/audit03-deferred-p2-3-decision.md).
-    //
-    // The FLAT approval case needs NO post-RPC work here: its approval rows
-    // (with the deterministic shared chain_id) were committed
-    // IN-TRANSACTION by the 00431 RPC, and the 00402 AFTER INSERT trigger
-    // already fanned out the inbox notifications. Double-notify is
-    // impossible — the trigger is the ONLY notification path for FLAT rows
-    // now (no TS-side onApprovalRequested call here), and its
-    // ON CONFLICT (tenant_id,user_id,event_kind,chain_id) DO NOTHING makes
-    // even a retried insert idempotent.
-    if (
-      this.workflowService &&
-      approvalCutover.workflowDefinitionId &&
-      approvalCutover.status === 'pending_approval'
-    ) {
-      try {
-        await this.workflowService.start({
-          definitionId: approvalCutover.workflowDefinitionId,
-          entityKind: 'booking',
-          entityId: result.booking_id,
-          tenantId,
-        });
-      } catch (err) {
-        // Best-effort, parity with the legacy fan-out: a workflow-start
-        // failure does NOT roll back the committed booking. Log + continue
-        // (the workflow backstop / ops triage owns recovery).
-        this.log.error(
-          `workflow start failed for booking=${result.booking_id} def=${approvalCutover.workflowDefinitionId}: ${(err as Error).message}`,
-        );
-      }
-    }
+    const roomApprovalFanout = await this.ensureRoomApprovalFanout(
+      bookingInput.booking_id,
+      roomApprovalConfig,
+      roomApprovalWorkflowDefinitionId,
+      tenantId,
+    );
 
     // Post-RPC best-effort fan-out (notifications + audit). All failures
     // are logged but do NOT roll back the booking — the RPC already
     // committed; rollback is impossible from here.
     //
-    // Notification: `onCreated` for the requester-facing "your booking is
-    // in" message. The pending-approval APPROVER notification is NOT sent
-    // from here — for FLAT rows it comes from the 00402 inbox trigger
-    // (chain_id-bearing rows committed in-transaction by the 00431 RPC);
-    // for WORKFLOW-DEF rows the engine's approval node owns it. Sending
-    // `onApprovalRequested` here too would double-notify the approver.
     if (this.notifications) {
-      void this.notifications.onCreated(reservation);
+      if (roomApprovalFanout === 'created' && roomApprovalConfig) {
+        void this.notifications.onApprovalRequested(reservation, roomApprovalConfig);
+      } else {
+        void this.notifications.onCreated(reservation);
+      }
     }
 
     void this.audit(tenantId, 'booking.created', {
@@ -358,7 +315,7 @@ export class BookingFlowService {
       via: 'create_booking_with_attach_plan',
     });
 
-    // Recurrence series — same gate as no-services path. The materialiser
+    // Recurrence series — same gate as the historical no-services path. The materialiser
     // sees the booking with its services attached because the combined
     // RPC committed them all in one transaction.
     if (
@@ -387,8 +344,8 @@ export class BookingFlowService {
    * `attach_plan.internal_refs: …`, `service_rule_deny: …`,
    * `attach_operations.payload_mismatch`).
    *
-   * The 23P01 GiST-exclusion path mirrors the no-services path's
-   * `create_booking` handler (load conflicts + alternatives) so the UX
+   * The 23P01 GiST-exclusion path mirrors the historical `create_booking`
+   * handler (load conflicts + alternatives) so the UX
    * is consistent.
    */
   private async mapAttachPlanRpcError(
@@ -402,7 +359,7 @@ export class BookingFlowService {
     const message = rpcError.message ?? '';
 
     // GiST exclusion — booking_slots_no_overlap. Mirrors the
-    // no-services path's conflict mapping (load conflicts + ask the
+    // historical no-services conflict mapping (load conflicts + ask the
     // picker for 3 alternative rooms at the same time).
     if (this.conflict.isExclusionViolation(rpcError as never)) {
       const conflicts = await this.conflict.preCheck({
@@ -523,19 +480,13 @@ export class BookingFlowService {
    *      `buildAttachPlan` stay in lockstep).
    *   6. Compute status + policy_snapshot + cost_amount_snapshot.
    *   7. Pre-generate booking_id + slot_ids via `planUuid`.
-   *   8. Build BookingInput (mirrors `create_booking` RPC param list at
-   *      00277:236-292).
+   *   8. Build BookingInput (mirrors the 00309 combined RPC shape).
    *   9. Delegate to `BundleService.buildAttachPlan` for service rows
    *      (returns AttachPlan with pre-gen UUIDs, sorted canonically).
    *   10. Compose the result.
    *
-   * Dormant in B.0.C — `BookingFlowService.create` keeps using the
-   * `create_booking` RPC + `attachServicesToBooking` until B.0.D rewires
-   * the call site to `create_booking_with_attach_plan`.
-   *
-   * **Single-room only** for v1 — multi-room batches multiple slot specs
-   * into one call (deferred to MultiRoomBookingService rewrite, separate
-   * slice). Mirrors the same constraint as `create`.
+   * **Single-room only** — multi-room batches multiple slot specs in
+   * MultiRoomBookingService.
    */
   async buildAttachPlan(
     input: CreateReservationInput,
@@ -544,19 +495,8 @@ export class BookingFlowService {
   ): Promise<{
     bookingInput: BookingInput;
     attachPlan: AttachPlan;
-    /**
-     * audit-03 P2-3 STEP D — WORKFLOW-DEF post-RPC cutover info. When the
-     * matched room rule carries a `workflow_definition_id`, the plan emits
-     * NO approval rows (the workflow engine owns them); `createWithAttachPlan`
-     * must start the workflow_instance POST-RPC (parity with the legacy
-     * `create` fan-out at the old :367-373). For the FLAT / confirmed cases
-     * `workflowDefinitionId` is null and the approvals (if any) are already
-     * in the plan + committed in-transaction by the 00431 RPC.
-     */
-    approvalCutover: {
-      status: 'pending_approval' | 'confirmed';
-      workflowDefinitionId: string | null;
-    };
+    roomApprovalConfig: ApprovalConfig | null;
+    roomApprovalWorkflowDefinitionId: string | null;
   }> {
     if (!idempotencyKey || idempotencyKey.length === 0) {
       throw AppErrors.validationFailed('booking.idempotency_key_required', {
@@ -565,7 +505,6 @@ export class BookingFlowService {
     }
     this.assertValid(input);
     const tenantId = TenantContext.current().id;
-
     // audit-03 D-6 (V2 / V1 create-path) — the request-canonical
     // resolution-basis instant. The booking row does NOT exist yet on
     // create, so there is no `bookings.created_at` to anchor on (unlike
@@ -580,7 +519,6 @@ export class BookingFlowService {
     // — so a same-intent create retry straddling a tenant lead-time-rule
     // boundary recomputes a byte-identical p_booking_input + p_attach_plan.
     const resolutionBasisAt = actor.resolution_basis_at ?? new Date().toISOString();
-    const resolutionBasisMs = Date.parse(resolutionBasisAt);
 
     // 1+2. Load space + verify
     const space = await this.loadSpace(input.space_id, tenantId);
@@ -608,7 +546,7 @@ export class BookingFlowService {
         end_at: input.end_at,
         attendee_count: input.attendee_count ?? null,
         criteria: {},
-        resolution_basis_ms: resolutionBasisMs,
+        resolution_basis_at: resolutionBasisAt,
       },
       tenantId,
     );
@@ -679,8 +617,7 @@ export class BookingFlowService {
     const slotDisplayOrder = 0;            // single-room: always slot 0
     const slotId = planUuid(idempotencyKey, 'slot', String(slotDisplayOrder));
 
-    // 8. BookingInput — every field the create_booking RPC param list
-    //    expects (00277:236-292), shaped as the §7.4 BookingInput jsonb.
+    // 8. BookingInput — shaped as the §7.4/00309 BookingInput jsonb.
     const slot: AttachPlanBookingSlot = {
       id: slotId,
       slot_type: slotType,
@@ -767,6 +704,7 @@ export class BookingFlowService {
           : { source: bookingSource },
         services: input.services,
         idempotency_key: idempotencyKey,
+        resolution_basis_at: resolutionBasisAt,
       });
     } else {
       // audit-03 P2-3 STEP C — the no-services approval builder (the
@@ -887,19 +825,9 @@ export class BookingFlowService {
     return {
       bookingInput,
       attachPlan,
-      // audit-03 P2-3 STEP D — surface the WORKFLOW-DEF cutover decision so
-      // `createWithAttachPlan` can start the workflow_instance POST-RPC.
-      // `workflowDefinitionId` is non-null ONLY when the matched rule is a
-      // workflow-def approval rule (in which case the plan emitted NO
-      // approval rows — the engine owns them). FLAT approval rows are
-      // already in `attachPlan.approvals` + committed by the 00431 RPC.
-      approvalCutover: {
-        status,
-        workflowDefinitionId:
-          status === 'pending_approval' && ruleOutcome.approvalConfig
-            ? ruleOutcome.approvalWorkflowDefinitionId
-            : null,
-      },
+      roomApprovalConfig: ruleOutcome.approvalConfig,
+      roomApprovalWorkflowDefinitionId:
+        ruleOutcome.approvalWorkflowDefinitionId ?? null,
     };
   }
 
@@ -1084,6 +1012,129 @@ export class BookingFlowService {
     const minutes = (new Date(input.end_at).getTime() - new Date(input.start_at).getTime()) / 60000;
     const cost = (Number(space.cost_per_hour) * minutes) / 60;
     return cost.toFixed(2);
+  }
+
+  /**
+   * Create approvals rows from rule's approval_config.
+   * Single-step or parallel/sequential are honoured by `threshold`.
+   *
+   * target_entity_type is now 'booking' (was 'reservation'). The CHECK
+   * constraint added in 00278:170-172 enforces this at the DB layer; the
+   * older approval-routing module still types the union as
+   * 'booking_bundle' | 'order' (see approval-routing.service.ts:37) and
+   * needs widening in its own slice. The dispatcher map in
+   * approval.service.ts:329-347 must learn the new 'booking' value.
+   */
+  private async ensureRoomApprovalFanout(
+    bookingId: string,
+    config: ApprovalConfig | null,
+    workflowDefinitionId: string | null,
+    tenantId: string,
+  ): Promise<'none' | 'created' | 'skipped'> {
+    if (!config) return 'none';
+
+    if (this.workflowService && workflowDefinitionId) {
+      if (await this.hasActiveBookingWorkflow(bookingId, tenantId)) {
+        return 'skipped';
+      }
+      await this.workflowService.start({
+        definitionId: workflowDefinitionId,
+        entityKind: 'booking',
+        entityId: bookingId,
+        tenantId,
+      });
+      return 'created';
+    }
+
+    return (await this.createApprovalRows(bookingId, config, tenantId))
+      ? 'created'
+      : 'skipped';
+  }
+
+  private async hasActiveBookingWorkflow(
+    bookingId: string,
+    tenantId: string,
+  ): Promise<boolean> {
+    const { data, error } = await this.supabase.admin
+      .from('workflow_instances')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('booking_id', bookingId)
+      .in('status', ['active', 'waiting'])
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      throw AppErrors.server('booking.unexpected_error', {
+        detail: `workflow instance read failed for booking=${bookingId}`,
+        cause: error,
+      });
+    }
+    return Boolean(data);
+  }
+
+  private async hasRoomApprovalRows(
+    bookingId: string,
+    tenantId: string,
+  ): Promise<boolean> {
+    const { data, error } = await this.supabase.admin
+      .from('approvals')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('target_entity_type', 'booking')
+      .eq('target_entity_id', bookingId)
+      .not('approval_chain_id', 'is', null)
+      .in('status', ['pending', 'approved'])
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      throw AppErrors.server('booking.unexpected_error', {
+        detail: `approval row read failed for booking=${bookingId}`,
+        cause: error,
+      });
+    }
+    return Boolean(data);
+  }
+
+  private async createApprovalRows(
+    bookingId: string,
+    config: { required_approvers?: Array<{ type: 'team' | 'person'; id: string }>; threshold?: 'all' | 'any' },
+    tenantId: string,
+  ): Promise<boolean> {
+    const approvers = config.required_approvers ?? [];
+    if (approvers.length === 0) return false;
+    if (await this.hasRoomApprovalRows(bookingId, tenantId)) return false;
+    const chainThreshold: 'all' | 'any' = config.threshold ?? 'all';
+    const parallelGroup = chainThreshold === 'all' ? `parallel-${bookingId}` : null;
+    // One shared approval_chain_id per call — all approvers on a single
+    // booking share it. Mirrors the engine path at workflow-engine.service.ts.
+    // Without chain_id, the inbox fan-out trigger (00402) gates on
+    // `approval_chain_id IS NOT NULL` and silently no-ops, leaving approvers
+    // un-notified on a freshly-created booking. grant_booking_approval (00403
+    // v2) is chain_id-aware: chain_threshold='all' (the default) keeps the
+    // existing target_entity_id-grouped resolve semantics; chain_threshold
+    // ='any' uses the chain_id-grouped path. Both work with chain_id set.
+    const approvalChainId = randomUUID();
+
+    const rows = approvers.map((a) => ({
+      tenant_id: tenantId,
+      target_entity_type: 'booking',
+      target_entity_id: bookingId,
+      approval_chain_id: approvalChainId,
+      parallel_group: parallelGroup,
+      chain_threshold: chainThreshold,
+      approver_person_id: a.type === 'person' ? a.id : null,
+      approver_team_id: a.type === 'team' ? a.id : null,
+      status: 'pending',
+    }));
+
+    const { error } = await this.supabase.admin.from('approvals').insert(rows);
+    if (error) {
+      throw AppErrors.server('booking.unexpected_error', {
+        detail: `approval rows insert failed for booking=${bookingId}`,
+        cause: error,
+      });
+    }
+    return true;
   }
 
   private addMinutes(iso: string, minutes: number): string {

@@ -3,7 +3,10 @@ import {
   Injectable,
   forwardRef,
 } from '@nestjs/common';
-import { buildPatchIdempotencyKey, buildReassignIdempotencyKey } from '@prequest/shared';
+import {
+  buildPatchIdempotencyKey,
+  buildReassignIdempotencyKey,
+} from '@prequest/shared';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { probeCommandOperationSuccess } from '../../common/command-operations-probe';
 import { TenantContext } from '../../common/tenant-context';
@@ -907,10 +910,10 @@ export class WorkOrderService {
       rerun_resolver?: boolean;
     },
     actorAuthUid: string,
-    // Audit-02 P1-1 cutover (2026-05-16): threaded from
-    // RequireClientRequestIdGuard via the controller for
-    // `POST /work-orders/:id/reassign` and used as the
-    // `set_entity_assignment` idempotency-key seed (spec §3.2 / §3.9.1).
+    // audit02 Slice C (P1-1) — threaded from RequireClientRequestIdGuard
+    // via the controller for `POST /work-orders/:id/reassign`. USED here
+    // as the idempotency-key seed for the canonical `set_entity_assignment`
+    // v3 RPC (00416) via buildReassignIdempotencyKey('work_order', …).
     clientRequestId?: string,
   ): Promise<WorkOrderRow> {
     const tenant = TenantContext.current();
@@ -932,73 +935,27 @@ export class WorkOrderService {
       });
     }
 
+    // audit02 P1-4 (DELIBERATELY OUT OF SCOPE for Slice C): the WO
+    // reassign permission FLOOR is `assertCanPlan` + `tickets.assign`
+    // (assertAssignPermission below), whereas the case-side floor is
+    // `assertVisible('write')` + `tickets.assign`
+    // (ticket.service.ts:1244-1266). This asymmetry is intentional and
+    // UNCHANGED here — unifying the floors is tracked separately by audit
+    // P1-4. See docs/visibility.md (reassign-floor-asymmetry note).
     await this.assertAssignPermission(actorAuthUid, workOrderId, tenant.id);
 
-    if (!clientRequestId) {
-      // Producer route — RequireClientRequestIdGuard enforces presence at
-      // the HTTP boundary; this hard-fail covers internal callers and
-      // keeps the idempotency key non-optional. Same registered code +
-      // factory as update() (work-order.service.ts:439-441).
-      throw AppErrors.badRequest(
-        'command_operations.client_request_id_required',
-        'POST /work-orders/:id/reassign requires X-Client-Request-Id header per I1 (RequireClientRequestIdGuard).',
-      );
-    }
-
-    const reassignKey = buildReassignIdempotencyKey(
-      'work_order',
-      workOrderId,
-      clientRequestId,
-    );
-
-    // Refetch so the response shape carries every v3-side side effect
-    // (status_category inheritance, updated_at). Shared by the normal
-    // post-RPC path and the audit-02 D-A02-4 success-probe short-circuit.
-    const refetchContracted = async (): Promise<WorkOrderRow> => {
-      const { data: refreshed, error: refetchErr } = await this.supabase.admin
-        .from('work_orders')
-        .select('*')
-        .eq('id', workOrderId)
-        .eq('tenant_id', tenant.id)
-        .maybeSingle();
-      if (refetchErr) throw refetchErr;
-      if (!refreshed) {
-        // Audit-02 P2-4: not `forbidden`. The RPC committed under
-        // service_role + tenant_id matches — a null refetch means the row
-        // was deleted concurrently or the PostgREST cache is stale.
-        // `notFound` is the correct shape (mirrors the case-side F-IMP-1
-        // fix already applied to update() at work-order.service.ts:501-507).
-        // Was `forbidden('work_order.no_longer_accessible')`, which
-        // misleadingly suggested a permission failure.
-        throw AppErrors.notFound('work_order', workOrderId);
-      }
-      return refreshed as WorkOrderRow;
-    };
-
-    // audit-02 D-A02-4: caller-side command_operations success-probe
-    // BEFORE re-calling the RPC, and AFTER assertAssignPermission above
-    // (no auth bypass). WO manual reassign is payload-stable (a pure
-    // function of the stable dto+crid; `rerun_resolver` is hard-rejected
-    // above), so it can't poison itself — but the uniform guard is
-    // applied for consistency/defense-in-depth with the case-side + SLA
-    // + routing-handler callers, and it also makes a legitimate replay
-    // return the contracted shape without a redundant RPC round-trip. If
-    // a `success` row already exists under the stable
-    // `reassign:work_order:<id>:<crid>` key, the canonical write
-    // committed atomically — return the SAME externally-visible result
-    // the original call returned (the refetched work_orders row;
-    // `cached_result` 00425:466-479 doesn't carry the full row shape so a
-    // tenant-scoped re-fetch is the correct contract reproduction)
-    // WITHOUT re-calling the RPC. `in_progress` is NOT a short-circuit
-    // signal — that's the RPC's own advisory-lock window; let the RPC
-    // call below handle it exactly as today.
-    const reassignCommitted = await probeCommandOperationSuccess(
-      this.supabase,
-      tenant.id,
-      reassignKey,
-    );
-    if (reassignCommitted) {
-      return refetchContracted();
+    // Early-404 pre-check: preserve the existing contract that a missing
+    // / cross-tenant work order fails BEFORE the RPC. v3 also raises
+    // `set_entity_assignment.not_found` (00416:243-246) — defense-in-depth.
+    const { data: current, error: loadErr } = await this.supabase.admin
+      .from('work_orders')
+      .select('id')
+      .eq('id', workOrderId)
+      .eq('tenant_id', tenant.id)
+      .maybeSingle();
+    if (loadErr) throw loadErr;
+    if (!current) {
+      throw AppErrors.notFound('work_order', workOrderId);
     }
 
     let nextTarget: { kind: 'team' | 'user' | 'vendor'; id: string } | null = null;
@@ -1022,30 +979,101 @@ export class WorkOrderService {
       );
     }
 
-    // Audit-02 P1-1: ONE atomic RPC call replaces the 3 raw writes
-    // (assignment UPDATE + routing_decisions insert + activity insert)
-    // and BOTH try/catch-swallow blocks. The RPC writes routing_decisions
-    // (`manual` / `manual_reassign`, with entity_kind/work_order_id set
-    // explicitly inside the RPC — P2-2 closed for this path) + the
-    // `reassigned` activity + the `ticket_assigned` domain event +
-    // command_operations idempotency in one transaction. Audit failures
-    // now surface as a mapped AppError instead of being console-swallowed.
-    const payload: Record<string, unknown> = {
-      reason: dto.reason,
-      actor_person_id: dto.actor_person_id ?? null,
-    };
-    payload.assigned_team_id = nextTarget?.kind === 'team' ? nextTarget.id : null;
-    payload.assigned_user_id = nextTarget?.kind === 'user' ? nextTarget.id : null;
-    payload.assigned_vendor_id = nextTarget?.kind === 'vendor' ? nextTarget.id : null;
+    // audit02 Slice C (P1-1): commit through the canonical
+    // `set_entity_assignment` v3 RPC (00416) in ONE transaction. The
+    // legacy path did a raw `.from('work_orders').update` + TWO
+    // try/catch-SWALLOWED inserts (routing_decisions @ ex-1000, the
+    // `reassigned` activity @ ex-1027) — a swallowed insert silently lost
+    // the routing audit + the timeline note while the assignment still
+    // committed, the exact silent-audit-loss the audit flagged. v3 owns
+    // the work_orders UPDATE + status_category inherit +
+    // command_operations idempotency + routing_decisions
+    // (strategy='manual'/chosen_by='manual_reassign', reason-gated) +
+    // ticket_activities + ticket_assigned domain event atomically — no
+    // swallow, no partial state. NO `decision` key: WO is manual-only
+    // (rerun_resolver throws above), so v3's hardcoded manual provenance
+    // is exactly right (00416:508-547). `prev` is no longer needed — v3
+    // captures previous_assigned_* in its own audit row + event.
+    if (!clientRequestId) {
+      throw AppErrors.badRequest(
+        'command_operations.client_request_id_required',
+        'POST /work-orders/:id/reassign requires X-Client-Request-Id header per I1 (RequireClientRequestIdGuard).',
+      );
+    }
+    const reassignKey = buildReassignIdempotencyKey(
+      'work_order',
+      workOrderId,
+      clientRequestId,
+    );
 
-    const { error: rpcErr } = await this.supabase.admin.rpc('set_entity_assignment', {
-      p_entity_id: workOrderId,
-      p_entity_kind: 'work_order',
-      p_tenant_id: tenant.id,
-      p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
-      p_idempotency_key: reassignKey,
-      p_payload: payload,
-    });
+    // Refetch so the response shape carries every v3-side side effect
+    // (status_category inheritance, updated_at). Shared by the normal
+    // post-RPC path and the audit02 CR2 success-probe short-circuit.
+    const refetchContracted = async (): Promise<WorkOrderRow> => {
+      const { data: refreshed, error: refetchErr } = await this.supabase.admin
+        .from('work_orders')
+        .select('*')
+        .eq('id', workOrderId)
+        .eq('tenant_id', tenant.id)
+        .maybeSingle();
+      if (refetchErr) throw refetchErr;
+      if (!refreshed) {
+        // Closes audit P2-4: the legacy code threw
+        // `forbidden('work_order.no_longer_accessible')` here, which
+        // misleadingly suggested a permission failure. The v3 RPC
+        // committed under service_role + tenant_id matched — a null
+        // refetch means the row was deleted concurrently or the
+        // PostgREST cache is stale. `notFound` is the correct shape
+        // (mirrors WorkOrderService.update @ work-order.service.ts:507).
+        throw AppErrors.notFound('work_order', workOrderId);
+      }
+      return refreshed as WorkOrderRow;
+    };
+
+    // audit02 CR2 / D-A02-4: caller-side command_operations success-probe
+    // BEFORE re-calling the RPC. WO manual reassign is payload-stable
+    // (pure function of the stable dto+crid), so it can't poison itself —
+    // but the uniform guard is applied for consistency/defense-in-depth
+    // with the case-side + SLA + routing-handler callers. If a `success`
+    // row already exists under the stable `reassign:work_order:<id>:<crid>`
+    // key, the canonical write committed atomically — return the SAME
+    // externally-visible result the original call returned (the refetched
+    // work_orders row; cached_result 00419:803-816 doesn't carry the full
+    // row shape so a tenant-scoped re-fetch is the correct contract
+    // reproduction) WITHOUT re-calling the RPC. `in_progress` is NOT a
+    // short-circuit signal — that's the RPC's own advisory-lock window;
+    // let the RPC call below handle it exactly as today.
+    const reassignCommitted = await probeCommandOperationSuccess(
+      this.supabase,
+      tenant.id,
+      reassignKey,
+    );
+    if (reassignCommitted) {
+      return refetchContracted();
+    }
+
+    const { error: rpcErr } = await this.supabase.admin.rpc(
+      'set_entity_assignment',
+      {
+        p_entity_id: workOrderId,
+        p_entity_kind: 'work_order',
+        p_tenant_id: tenant.id,
+        // 00416:550-558 — p_actor_user_id is the auth UID, not users.id.
+        // SYSTEM_ACTOR collapses to null (the RPC's actor_person resolve
+        // falls through cleanly).
+        p_actor_user_id: actorAuthUid === SYSTEM_ACTOR ? null : actorAuthUid,
+        p_idempotency_key: reassignKey,
+        p_payload: {
+          // Send all three explicitly so v3 performs a clean overwrite
+          // (omitted = "no change"; explicit null = "clear").
+          assigned_team_id: nextTarget?.kind === 'team' ? nextTarget.id : null,
+          assigned_user_id: nextTarget?.kind === 'user' ? nextTarget.id : null,
+          assigned_vendor_id: nextTarget?.kind === 'vendor' ? nextTarget.id : null,
+          reason: dto.reason,
+          actor_person_id: dto.actor_person_id ?? null,
+        },
+      },
+    );
     if (rpcErr) throw mapRpcErrorToAppError(rpcErr);
 
     return refetchContracted();

@@ -61,22 +61,8 @@ export interface BookingScenario {
   end_at: string; // ISO
   attendee_count?: number | null;
   criteria?: Record<string, unknown>;
-  /**
-   * audit-03 D-6 (V2 fix) — the request-canonical resolution-basis instant
-   * in epoch-ms. When set, `assembleContext` anchors
-   * `EvaluationContext.booking.lead_time_minutes` on THIS instead of a
-   * fresh `Date.now()`, AND the predicate engine's `lead_minutes_*`
-   * operators read it via `BaseEvaluationContext.resolution_basis_ms`. So
-   * a same-intent CREATE retry that straddles a tenant
-   * `room_booking_rules` lead-time boundary recomputes the SAME matched-
-   * rule set → byte-identical `policy_snapshot` / `applied_rule_ids` /
-   * `bookingInput.status` → byte-identical hashed `p_booking_input`.
-   *
-   * Optional: the picker / ad-hoc-simulation paths never feed a hashed
-   * payload, so they leave it unset and the resolver falls back to
-   * `Date.now()` (behaviour unchanged for them).
-   */
-  resolution_basis_ms?: number;
+  /** Stable "now" for idempotency-hashed producers; defaults to process time. */
+  resolution_basis_at?: string;
 }
 
 export interface SimulateDto {
