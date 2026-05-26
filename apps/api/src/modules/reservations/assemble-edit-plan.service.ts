@@ -53,7 +53,7 @@
  * editing.
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { AppError, AppErrors } from '../../common/errors';
 import { SupabaseService } from '../../common/supabase/supabase.service';
 import { ConflictGuardService } from './conflict-guard.service';
@@ -224,8 +224,6 @@ interface TargetState {
 
 @Injectable()
 export class AssembleEditPlanService {
-  private readonly log = new Logger(AssembleEditPlanService.name);
-
   constructor(
     private readonly supabase: SupabaseService,
     private readonly bookingFlow: BookingFlowService,
@@ -934,12 +932,10 @@ export class AssembleEditPlanService {
     // multi-slot skip up to the service edit path. Pre-fix this flag was
     // DISCARDED here (only the 3 patch arrays were destructured from
     // `linked`), so the documented multi-slot linked-row skip was SILENT
-    // below `buildLinkedRowPatches`'s `this.log.warn` — no durable,
-    // queryable record that a multi-room-with-services booking's caterer
-    // daglijst / setup work_orders were left at the OLD time. Set ONLY
-    // when true so single-slot plans stay byte-identical (and the field
-    // is `_`-prefixed + stripped before the RPC, so it never reaches the
-    // wire or the idempotency hash regardless — see edit-plan.types.ts).
+    // below `buildLinkedRowPatches`'s guard. Set ONLY when true so
+    // single-slot plans stay byte-identical (and the field is `_`-prefixed
+    // + stripped before the RPC, so it never reaches the wire or the
+    // idempotency hash regardless — see edit-plan.types.ts).
     if (linked.skippedMultiSlot) {
       plan._skipped_multi_slot_linked_rows = true;
     }
@@ -995,7 +991,7 @@ export class AssembleEditPlanService {
     newEnd: string,
     oldSpaceId: string,
     newSpaceId: string,
-    _mode: 'single_slot' | 'uniform_booking' = 'uniform_booking',
+    mode: 'single_slot' | 'uniform_booking' = 'uniform_booking',
   ): Promise<{
     asset_reservation_patches: EditPlanAssetReservationPatch[];
     order_patches: EditPlanOrderPatch[];
@@ -1028,22 +1024,6 @@ export class AssembleEditPlanService {
       });
     }
     const slotCount = slotCountRes.count ?? 0;
-    if (slotCount > 1) {
-      const skipped = {
-        asset_reservation_patches: [] as EditPlanAssetReservationPatch[],
-        order_patches: [] as EditPlanOrderPatch[],
-        work_order_sla_patches: [] as EditPlanWorkOrderSlaPatch[],
-        skippedMultiSlot: true,
-      };
-      this.log.warn(
-        `[I-1] linked-row time propagation SKIPPED for multi-slot booking ` +
-          `bookingId=${bookingId} tenantId=${tenantId} slotCount=${slotCount} — ` +
-          `known residual gap (audit 03 P0-2); linked orders / ` +
-          `asset_reservations / work_orders may remain at the OLD time for ` +
-          `this multi-room booking. skippedMultiSlot=${skipped.skippedMultiSlot}`,
-      );
-      return skipped;
-    }
     const oldStartMs = Date.parse(oldStart);
     const oldEndMs = Date.parse(oldEnd);
     const newStartMs = Date.parse(newStart);
@@ -1175,6 +1155,17 @@ export class AssembleEditPlanService {
       sla_id: string | null;
       status_category: string;
     }>;
+
+    if (slotCount > 1 && mode === 'single_slot') {
+      const liveLinkedRowCount = arRows.length + orderRows.length + woRows.length;
+      if (liveLinkedRowCount > 0) {
+        throw AppErrors.conflict('edit_booking.linked_rows_require_booking_scope', {
+          detail:
+            `single-slot edit refused for multi-slot booking ${bookingId}: ` +
+            `${liveLinkedRowCount} live booking-keyed linked row(s) require a booking-scope edit`,
+        });
+      }
+    }
 
     const asset_reservation_patches: EditPlanAssetReservationPatch[] = arRows
       .map((r) => {
