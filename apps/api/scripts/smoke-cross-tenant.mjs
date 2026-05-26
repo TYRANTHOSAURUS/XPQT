@@ -94,6 +94,7 @@ const TEAM_ID = '94000000-0000-0000-0000-000000000001';
 // (no token re-mint needed).
 const PROOF_ROLE_ID = '91000000-0000-0000-0000-0000000011b2';
 const PROOF_ASSIGNMENT_ID = '96000000-0000-0000-0000-0000000011b2';
+const PROOF_SPACE_NAME = `xtenant-11.2b-proof-${randomUUID()}`;
 
 // Notification same-tenant IDOR proof (docs/follow-ups/audits/04-rls-security.md
 // — codex 2026-05-18 remaining item #1). A notification owned by some
@@ -104,6 +105,7 @@ const PROOF_ASSIGNMENT_ID = '96000000-0000-0000-0000-0000000011b2';
 // any same-tenant authed user could flip anyone's read-state. Fixed UUID
 // so the finally-cleanup is deterministic.
 const IDOR_NOTIF_ID = '9a000000-0000-0000-0000-00000000d0e1';
+const SELF_GRANT_INSERT_ID = randomUUID();
 
 // Mirror smoke-tickets.mjs:86-87 — TENANT_B fixture seed shape.
 const TENANT_B_ID = '00000000-0000-0000-0000-0000000000b1';
@@ -202,7 +204,7 @@ function cleanupProofRoleFixture() {
     const sql = `
       delete from public.user_role_assignments where id = '${PROOF_ASSIGNMENT_ID}';
       delete from public.roles where id = '${PROOF_ROLE_ID}';
-      delete from public.spaces where tenant_id = '${TENANT_A_ID}' and name = 'xtenant-11.2b-proof';
+      delete from public.spaces where tenant_id = '${TENANT_A_ID}' and name = '${PROOF_SPACE_NAME}';
     `;
     execFileSync('psql', [dbUrl, '-v', 'ON_ERROR_STOP=1', '-c', sql], {
       env: { ...process.env, PGPASSWORD: dbPass },
@@ -376,6 +378,31 @@ function browserExecuteGrantPosture() {
     allowedMissing: out[1] ?? Number.NaN,
     serviceMissing: out[2] ?? Number.NaN,
   };
+}
+
+function rlsHelperExecutePosture(helpers) {
+  const { dbPass, dbUrl } = proofDbArgs();
+  const list = helpers.map((n) => `('${n}')`).join(',');
+  const sql = `select count(*)
+    from (values ${list}) h(n)
+    cross join (values ('anon'),('authenticated')) r(g)
+    where not exists (
+        select 1 from pg_proc p
+        where p.pronamespace = 'public'::regnamespace and p.proname = h.n)
+      or exists (
+        select 1 from pg_proc p
+        where p.pronamespace = 'public'::regnamespace and p.proname = h.n
+          and not has_function_privilege(r.g, p.oid, 'EXECUTE'));`;
+  const missing = Number(
+    execFileSync(
+      'psql',
+      [dbUrl, '-tA', '-v', 'ON_ERROR_STOP=1', '-c', sql],
+      { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+      .toString()
+      .trim(),
+  );
+  return { missing };
 }
 
 function cleanupIdorNotificationFixture() {
@@ -1492,7 +1519,7 @@ async function probe(name, options) {
       url: `${API_BASE}/api/spaces`,
       method: 'POST',
       headers: nonAdminA,
-      body: { name: 'xtenant-11.2b-proof', type: 'site' },
+      body: { name: PROOF_SPACE_NAME, type: 'site' },
       expect: 'not_forbidden',
     });
     // Slice 11.4 proof: the SAME non-admin role also holds
@@ -1635,7 +1662,7 @@ async function probe(name, options) {
         Prefer: 'return=representation',
       },
       body: JSON.stringify({
-        id: '9b000000-0000-0000-0000-00000000dead',
+        id: SELF_GRANT_INSERT_ID,
         tenant_id: TENANT_A_ID,
         user_id: ADMIN_AUTH_UID,
         role_id: ADMIN_ROLE_ID,
@@ -1658,7 +1685,7 @@ async function probe(name, options) {
         execFileSync(
           'psql',
           [dbUrl, '-v', 'ON_ERROR_STOP=1', '-c',
-           `delete from public.user_role_assignments where id = '9b000000-0000-0000-0000-00000000dead';`],
+           `delete from public.user_role_assignments where id = '${SELF_GRANT_INSERT_ID}';`],
           { env: { ...process.env, PGPASSWORD: dbPass }, stdio: ['ignore', 'pipe', 'pipe'] },
         );
       } catch (e) {
