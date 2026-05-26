@@ -115,7 +115,9 @@ const OTHER_TENANT_ID = '00000000-0000-0000-0000-000000000002';
 
 // Fixture anchor. +145d future clears the edit-booking (+130→133) and
 // cancel-booking (+140→142) windows so back-to-back smoke runs on the
-// shared remote never collide on the same dedicated rooms.
+// shared remote never collide on the same dedicated rooms. isoAnchor rolls
+// weekend dates forward so the baseline hour-9 create stays inside seeded
+// business hours instead of tripping the off-hours approval rule.
 const FIXTURE_DAYS = 145;
 
 // ─────────────────────────────────────────────────────────────────────
@@ -283,6 +285,9 @@ function isoAnchor(offsetDays, hourUtc) {
   const a = new Date(Date.now() + offsetDays * 86400_000);
   a.setUTCMinutes(0, 0, 0);
   a.setUTCHours(hourUtc);
+  while (a.getUTCDay() === 0 || a.getUTCDay() === 6) {
+    a.setUTCDate(a.getUTCDate() + 1);
+  }
   const start = a.toISOString();
   const end = new Date(a.getTime() + 60 * 60_000).toISOString();
   return { start, end };
