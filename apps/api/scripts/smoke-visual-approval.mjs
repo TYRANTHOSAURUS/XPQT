@@ -120,10 +120,8 @@ const env = Object.fromEntries(
 );
 
 // The NestJS app sets a global `/api` prefix (apps/api/src/main.ts:55).
-// Sibling smoke scripts (smoke-edit-booking.mjs:636) hit `${API_BASE}/api/...`;
 // v1 of this script omitted the prefix → every endpoint 404'd. Normalise the
-// base to always carry exactly one `/api` segment regardless of how the env
-// var is supplied.
+// base to always carry exactly one `/api` segment, then call `${API_BASE}/...`.
 const API_BASE = (() => {
   const raw = (process.env.API_BASE || 'http://localhost:3001').replace(/\/+$/, '');
   return /\/api$/.test(raw) ? raw : `${raw}/api`;
@@ -292,7 +290,7 @@ async function createBookingViaApi({ token }) {
   anchor.setUTCHours(10);
   const startAt = anchor.toISOString();
   const endAt = new Date(anchor.getTime() + 60 * 60_000).toISOString();
-  const res = await fetch(`${API_BASE}/api/reservations`, {
+  const res = await fetch(`${API_BASE}/reservations`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -381,6 +379,53 @@ async function readBookingStatus(bookingId) {
   return data?.status ?? null;
 }
 
+// outbox.events lives in the `outbox` schema, which PostgREST does not
+// expose. Use a direct pg connection for probes that assert emitted events.
+let PG = null;
+let pgConnected = false;
+async function pgClient() {
+  if (!PG) {
+    const dbPass = env.SUPABASE_DB_PASS;
+    if (!dbPass) throw new Error('SUPABASE_DB_PASS missing from .env');
+    PG = new pg.Client({
+      host: 'db.iwbqnyrvycqgnatratrk.supabase.co',
+      port: 5432,
+      user: 'postgres',
+      password: dbPass,
+      database: 'postgres',
+      ssl: { rejectUnauthorized: false },
+    });
+  }
+  if (!pgConnected) {
+    await PG.connect();
+    pgConnected = true;
+  }
+  return PG;
+}
+
+async function closePg() {
+  if (PG && pgConnected) {
+    try {
+      await PG.end();
+    } catch {
+      /* best-effort */
+    }
+    pgConnected = false;
+  }
+}
+
+async function readOutboxApprovalGranted(workflowInstanceId) {
+  const client = await pgClient();
+  const r = await client.query(
+    `select id, event_type, payload, enqueued_at
+       from outbox.events
+      where event_type = 'approval.granted'
+        and payload->>'workflow_instance_id' = $1`,
+    [workflowInstanceId],
+  );
+  return r.rows;
+}
+
 async function readWorkflowEvents(workflowInstanceId) {
   const { data } = await supa()
     .from('workflow_instance_events')
@@ -435,7 +480,7 @@ async function probe1HappyAll(token) {
       return fail('probe1', `target_entity_type=${approval.target_entity_type}`);
 
     // Grant the approval.
-    const grantRes = await fetch(`${API_BASE}/api/approvals/${approval.id}/respond`, {
+    const grantRes = await fetch(`${API_BASE}/approvals/${approval.id}/respond`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -497,7 +542,7 @@ async function probe2HappyAny(token) {
     if (approvals.length !== 1) return fail('probe2', `approvals count=${approvals.length}`);
     if (approvals[0].chain_threshold !== 'any') return fail('probe2', `chain_threshold=${approvals[0].chain_threshold}`);
 
-    const grantRes = await fetch(`${API_BASE}/api/approvals/${approvals[0].id}/respond`, {
+    const grantRes = await fetch(`${API_BASE}/approvals/${approvals[0].id}/respond`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -555,7 +600,7 @@ async function probe3Reject(token) {
     const approvals = seeded ?? (await readApprovalsForBooking(bookingId));
     if (approvals.length === 0) return fail('probe3', 'no approval row');
 
-    const rejectRes = await fetch(`${API_BASE}/api/approvals/${approvals[0].id}/respond`, {
+    const rejectRes = await fetch(`${API_BASE}/approvals/${approvals[0].id}/respond`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -608,7 +653,7 @@ async function probe4ConcurrentAny(token) {
 
     // Fire 3 concurrent grants on the same approval id (different crids).
     const grantPromises = [0, 1, 2].map(() =>
-      fetch(`${API_BASE}/api/approvals/${approvals[0].id}/respond`, {
+      fetch(`${API_BASE}/approvals/${approvals[0].id}/respond`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -783,43 +828,31 @@ async function probe6CancelCascade(token) {
     const approvalsBefore = await readApprovalsForBooking(bookingId);
     if (approvalsBefore.length === 0) return fail('probe6', 'no approvals seeded');
 
-    // Cancel the booking via the API. The booking.cancelled outbox emit
-    // fires the WorkflowSpawnWakeOnBookingCancelledHandler (Phase 1.5 Change
-    // 6 of 6.A) which calls engine.cancelInstance('booking', ...) →
-    // cancel_workflow_instance_with_approvals RPC → atomic claim + expire.
-    const cancelRes = await fetch(`${API_BASE}/api/reservations/${bookingId}/cancel`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        authorization: `Bearer ${token}`,
-        'x-tenant-id': TENANT_ID,
-        'x-client-request-id': crypto.randomUUID(),
-      },
-      body: JSON.stringify({}),
+    void token;
+    // CRITICAL 4's surface is booking-deletion-mid-approval. The production
+    // trigger is delete_booking_with_guard, which deletes the booking row and
+    // emits booking.cancelled for the workflow cancel handler to drain.
+    const { error: delErr } = await supa().rpc('delete_booking_with_guard', {
+      p_booking_id: bookingId,
+      p_tenant_id: TENANT_ID,
     });
     if (delErr) {
       return fail('probe6', `delete_booking_with_guard failed: ${delErr.message}`);
     }
 
-    const settled = await waitFor(async () => {
-      const instanceAfter = await readInstanceForBooking(bookingId);
-      const approvalsAfter = await readApprovalsForBooking(bookingId);
-      const allExpired = approvalsAfter.length > 0 && approvalsAfter.every((a) => a.status === 'expired');
-      return instanceAfter?.status === 'cancelled' && allExpired
-        ? { instanceAfter, approvalsAfter }
+    // Read the instance by id: delete_booking_with_guard removes the booking
+    // row, so workflow_instances.booking_id is FK-SET-NULL'd post-delete.
+    const cancelled = await pollUntil('probe6', async () => {
+      const ia = await readInstanceById(instance.id);
+      if (ia?.status !== 'cancelled') return null;
+      const aa = await readApprovalsForBooking(bookingId);
+      return aa.length > 0 && aa.every((a) => a.status === 'expired')
+        ? { ia, aa }
         : null;
     });
-    if (!settled) {
-      const instanceAfter = await readInstanceForBooking(bookingId);
+    if (!cancelled) {
+      const instanceAfter = await readInstanceById(instance.id);
       const approvalsAfter = await readApprovalsForBooking(bookingId);
-      return fail(
-        'probe6',
-        `timed out waiting for cancellation cascade; instance=${instanceAfter?.status} approvals=${JSON.stringify(approvalsAfter.map((a) => a.status))}`,
-      );
-    }
-    const approvalsAfter = settled.approvalsAfter;
-    const allExpired = approvalsAfter.every((a) => a.status === 'expired');
-    if (!allExpired)
       return fail(
         'probe6',
         `timed out: instance status=${instanceAfter?.status} (want cancelled), approvals=${JSON.stringify(approvalsAfter.map((a) => a.status))} (want all expired)`,
@@ -916,7 +949,7 @@ async function probe9ForeignTenantLink(token) {
   console.log('Probe 9: cross-tenant workflow_instance_id link → SQL trigger refuses (P0001)');
   const { ruleId } = await seedRuleWithWorkflow({
     threshold: 'all',
-    approverPersonIds: [ADMIN_PERSON],
+    approverPersonIds: [ADMIN_PERSON_ID],
   });
   let bookingId;
   const approvalId = crypto.randomUUID();
@@ -943,7 +976,7 @@ async function probe9ForeignTenantLink(token) {
            approver_person_id, status, workflow_instance_id)
         values
           ('${approvalId}'::uuid, '${FOREIGN_TENANT}'::uuid, 'booking',
-           '${bookingId}'::uuid, '${ADMIN_PERSON}'::uuid,
+           '${bookingId}'::uuid, '${ADMIN_PERSON_ID}'::uuid,
            'pending', '${instance.id}'::uuid);
       `);
     } catch (e) {
@@ -973,7 +1006,7 @@ async function probe10CancelDuringGrant(token) {
   console.log('Probe 10: cancel-during-grant race → consistent terminal state');
   const { ruleId } = await seedRuleWithWorkflow({
     threshold: 'all',
-    approverPersonIds: [ADMIN_PERSON],
+    approverPersonIds: [ADMIN_PERSON_ID],
   });
   let bookingId;
   try {
@@ -1033,7 +1066,7 @@ async function probe11DoubleEmitIdempotent(token) {
   console.log('Probe 11: double-emit approval.granted → idempotent (1 row, no double-advance)');
   const { ruleId } = await seedRuleWithWorkflow({
     threshold: 'all',
-    approverPersonIds: [ADMIN_PERSON],
+    approverPersonIds: [ADMIN_PERSON_ID],
   });
   let bookingId;
   try {
@@ -1242,6 +1275,24 @@ async function waitFor(check, timeoutMs = 90_000, pollMs = 1_000) {
     await sleep(pollMs);
   }
   return null;
+}
+
+const WORKER_TIMEOUT_MS = 60_000;
+const WORKER_POLL_MS = 1_500;
+
+async function pollUntil(label, check) {
+  const deadline = Date.now() + WORKER_TIMEOUT_MS;
+  let last;
+  while (Date.now() < deadline) {
+    last = await check();
+    if (last) return last;
+    const remaining = Math.round((deadline - Date.now()) / 1000);
+    process.stdout.write(`    ${label}: waiting for outbox drain... (${remaining}s)\r`);
+    await sleep(WORKER_POLL_MS);
+  }
+  last = await check();
+  process.stdout.write('\r\x1b[K');
+  return last;
 }
 
 // ─────────────────────────────────────────────────────────────────────
