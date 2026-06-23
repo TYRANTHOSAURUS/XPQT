@@ -1103,7 +1103,9 @@ export class SlaService {
     // Lost the race — another cron tick beat us to the crossing insert.
     // 23505 is the expected outcome under overlapping ticks, not an error.
     if ((error as { code?: string }).code === '23505') return false;
-    throw error;
+    throw wrapPgError(error, 'sla.crossing_write_failed', {
+      detail: `insert into sla_threshold_crossings (timer=${row.sla_timer_id}, pct=${row.at_percent}) failed`,
+    });
   }
 
   // audit-02 P0-2 (2026-05-16): `writeActivity` was DELETED here. It

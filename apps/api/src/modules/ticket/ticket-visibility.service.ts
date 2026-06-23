@@ -235,7 +235,11 @@ export class TicketVisibilityService {
     if (!ctx.user_id) return [];
     const { data, error } = await this.supabase.admin
       .rpc('work_order_visibility_ids', { p_user_id: ctx.user_id, p_tenant_id: ctx.tenant_id });
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'ticket.visibility_ids_failed', {
+        detail: `work_order_visibility_ids(user=${ctx.user_id}) failed`,
+      });
+    }
     return (data as Array<string | { id: string }> | null)?.map((row) =>
       typeof row === 'string' ? row : row.id,
     ) ?? [];

@@ -1757,7 +1757,11 @@ export class TicketService {
     }
     const { data, error } = await childQuery.order('created_at');
 
-    if (error) throw error;
+    if (error) {
+      throw wrapPgError(error, 'ticket.child_tasks_list_failed', {
+        detail: `getChildTasks(parent=${parentTicketId}) failed`,
+      });
+    }
 
     const rows = data ?? [];
     // Apply per-child visibility filter (null = see all; [] or id-set = filter).
