@@ -16,6 +16,19 @@ export interface Approval {
   responded_at: string | null;
   comments: string | null;
   created_at: string;
+  /**
+   * Server-enriched origin context — see `approval.service.ts`
+   * `enrichWithOriginContext`. Populated when the origin entity
+   * (booking/ticket) is found; null when the entity has been hard-deleted
+   * or is unknown. UI falls back to the entity-kind label when null.
+   */
+  origin_title: string | null;
+  /** Secondary line — e.g. "Requested by Jane Doe • Apr 5, 9:00 AM–10:00 AM". */
+  origin_subtitle: string | null;
+  /** Relative path into the employee portal for this entity. */
+  portal_url: string | null;
+  /** Relative path into the desk app for this entity. */
+  desk_url: string | null;
 }
 
 export const approvalKeys = {

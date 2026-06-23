@@ -264,7 +264,151 @@ export class ApprovalService {
         detail: `approvals pending list for actor ${actor.userId} failed`,
       });
     }
-    return data;
+    return this.enrichWithOriginContext(data ?? [], tenant.id);
+  }
+
+  /**
+   * Batch-fetch origin entity (booking/ticket) titles + requester names so
+   * the pending-approvals card can render meaningful context ("Conf Room A
+   * — Tomorrow 9 AM" instead of just "Booking") and a working deeplink
+   * for whichever surface (desk vs portal) is rendering.
+   *
+   * Today only `booking` and `ticket` target_entity_type values appear in
+   * the wild (confirmed via `select distinct target_entity_type from
+   * approvals`). Unknown types fall through with the bare row — the UI
+   * falls back to the entity-kind label.
+   */
+  private async enrichWithOriginContext(
+    rows: ApprovalRow[],
+    tenantId: string,
+  ): Promise<Array<ApprovalRow & {
+    origin_title: string | null;
+    origin_subtitle: string | null;
+    portal_url: string | null;
+    desk_url: string | null;
+  }>> {
+    if (rows.length === 0) return [];
+
+    const bookingIds = rows
+      .filter((r) => r.target_entity_type === 'booking' || r.target_entity_type === 'reservation' || r.target_entity_type === 'booking_bundle')
+      .map((r) => r.target_entity_id);
+    const ticketIds = rows
+      .filter((r) => r.target_entity_type === 'ticket')
+      .map((r) => r.target_entity_id);
+
+    const [bookingsRes, ticketsRes] = await Promise.all([
+      bookingIds.length > 0
+        ? this.supabase.admin
+            .from('bookings')
+            .select('id, title, requester_person_id, start_at, end_at')
+            .eq('tenant_id', tenantId)
+            .in('id', bookingIds)
+        : Promise.resolve({ data: [] as Array<{ id: string; title: string | null; requester_person_id: string | null; start_at: string | null; end_at: string | null }>, error: null }),
+      ticketIds.length > 0
+        ? this.supabase.admin
+            .from('tickets')
+            .select('id, title, requester_person_id')
+            .eq('tenant_id', tenantId)
+            .in('id', ticketIds)
+        : Promise.resolve({ data: [] as Array<{ id: string; title: string | null; requester_person_id: string | null }>, error: null }),
+    ]);
+
+    const bookingById = new Map(
+      (bookingsRes.data ?? []).map((b) => [b.id, b]),
+    );
+    const ticketById = new Map((ticketsRes.data ?? []).map((t) => [t.id, t]));
+
+    const requesterIds = new Set<string>();
+    for (const b of bookingsRes.data ?? []) {
+      if (b.requester_person_id) requesterIds.add(b.requester_person_id);
+    }
+    for (const t of ticketsRes.data ?? []) {
+      if (t.requester_person_id) requesterIds.add(t.requester_person_id);
+    }
+
+    let personById = new Map<string, { id: string; first_name: string | null; last_name: string | null }>();
+    if (requesterIds.size > 0) {
+      const { data: persons } = await this.supabase.admin
+        .from('persons')
+        .select('id, first_name, last_name')
+        .eq('tenant_id', tenantId)
+        .in('id', Array.from(requesterIds));
+      personById = new Map(
+        (persons ?? []).map((p) => [p.id as string, p as { id: string; first_name: string | null; last_name: string | null }]),
+      );
+    }
+
+    const formatName = (p: { first_name: string | null; last_name: string | null } | null | undefined): string | null => {
+      if (!p) return null;
+      const name = [p.first_name?.trim(), p.last_name?.trim()]
+        .filter((s): s is string => Boolean(s && s.length > 0))
+        .join(' ');
+      return name.length > 0 ? name : null;
+    };
+
+    const formatBookingTime = (startAt: string | null, endAt: string | null): string | null => {
+      if (!startAt) return null;
+      try {
+        const start = new Date(startAt);
+        const end = endAt ? new Date(endAt) : null;
+        const dateFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
+        const timeFmt = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' });
+        const datePart = dateFmt.format(start);
+        const timePart = end ? `${timeFmt.format(start)}–${timeFmt.format(end)}` : timeFmt.format(start);
+        return `${datePart}, ${timePart}`;
+      } catch {
+        return null;
+      }
+    };
+
+    return rows.map((row) => {
+      let origin_title: string | null = null;
+      let origin_subtitle: string | null = null;
+      let portal_url: string | null = null;
+      let desk_url: string | null = null;
+
+      if (
+        row.target_entity_type === 'booking' ||
+        row.target_entity_type === 'reservation' ||
+        row.target_entity_type === 'booking_bundle'
+      ) {
+        const b = bookingById.get(row.target_entity_id);
+        if (b) {
+          origin_title = b.title?.trim() || 'Booking';
+          const requesterName = formatName(
+            b.requester_person_id ? personById.get(b.requester_person_id) ?? null : null,
+          );
+          const timePart = formatBookingTime(b.start_at, b.end_at);
+          origin_subtitle = [
+            requesterName ? `Requested by ${requesterName}` : null,
+            timePart,
+          ]
+            .filter((s): s is string => Boolean(s))
+            .join(' • ') || null;
+        }
+        portal_url = `/portal/me/bookings/${row.target_entity_id}`;
+        desk_url = `/desk/bookings/${row.target_entity_id}?tab=approval`;
+      } else if (row.target_entity_type === 'ticket') {
+        const t = ticketById.get(row.target_entity_id);
+        if (t) {
+          origin_title = t.title?.trim() || 'Request';
+          const requesterName = formatName(
+            t.requester_person_id ? personById.get(t.requester_person_id) ?? null : null,
+          );
+          origin_subtitle = requesterName ? `Requested by ${requesterName}` : null;
+        }
+        portal_url = `/portal/requests/${row.target_entity_id}`;
+        desk_url = `/desk/tickets/${row.target_entity_id}`;
+      }
+
+      return {
+        ...row,
+        origin_title,
+        origin_subtitle,
+        portal_url,
+        desk_url,
+      };
+    });
   }
 
   /**

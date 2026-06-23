@@ -55,13 +55,18 @@ function entityKind(type: string): EntityKind {
 }
 
 /**
- * For a given approval target, the requester-facing context page where
- * the approver can read more before deciding. Falls back to null for
- * entity types without a portal surface — the row's id chip is enough.
+ * Fallback deeplink builder for older approval rows that were emitted
+ * before the server started enriching with `portal_url`. New rows carry
+ * `portal_url` directly from the server (see approval.service.ts
+ * enrichWithOriginContext). This client-side switch is purely for
+ * back-compat — once all queued/cached payloads carry portal_url, the
+ * fallback never fires.
  */
-function entityContextHref(type: string, id: string): string | null {
+function entityContextHrefFallback(type: string, id: string): string | null {
   switch (type) {
+    case 'booking':
     case 'reservation':
+    case 'booking_bundle':
       return `/portal/me/bookings/${id}`;
     case 'ticket':
       return `/portal/requests/${id}`;
@@ -140,7 +145,14 @@ export function PortalApprovalsLane() {
           const kind = entityKind(a.target_entity_type);
           const Icon = ENTITY_ICON[kind];
           const tile = ENTITY_TILE[kind];
-          const ctxHref = entityContextHref(a.target_entity_type, a.target_entity_id);
+          // Prefer server-enriched portal_url (origin-aware deeplink).
+          // Fall back to the local switch for legacy rows that were cached
+          // before the server enrichment landed.
+          const ctxHref =
+            a.portal_url ??
+            entityContextHrefFallback(a.target_entity_type, a.target_entity_id);
+          const title = a.origin_title ?? ENTITY_LABEL[kind];
+          const kindLabel = a.origin_title ? ENTITY_LABEL[kind] : null;
           const inFlight = responding[a.id] ?? false;
           return (
             <li key={a.id} className="flex flex-col gap-2 px-4 py-3">
@@ -154,9 +166,16 @@ export function PortalApprovalsLane() {
                   <Icon className="size-3.5" aria-hidden />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-medium">
-                    {ENTITY_LABEL[kind]}
+                  <div className="truncate text-sm font-medium">
+                    {title}
                   </div>
+                  {(a.origin_subtitle || kindLabel) && (
+                    <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                      {kindLabel && <span>{kindLabel}</span>}
+                      {kindLabel && a.origin_subtitle && <span> • </span>}
+                      {a.origin_subtitle && <span>{a.origin_subtitle}</span>}
+                    </div>
+                  )}
                   <div className="mt-0.5 text-[11px] text-muted-foreground">
                     Requested{' '}
                     <time

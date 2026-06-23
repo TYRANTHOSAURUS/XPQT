@@ -605,6 +605,7 @@ export class BookingApprovalRequiredHandler
       startAt: b.start_at,
       endAt: b.end_at,
       approvalCtaUrl: this.buildApprovalCtaUrl(args.chainId, b.id),
+      portalUrl: this.buildPortalCtaUrl(b.id),
     };
   }
 
@@ -696,5 +697,33 @@ export class BookingApprovalRequiredHandler
     // logged in docs/follow-ups/b4a5-followups.md.
     void chainId; // keeps the signature stable for the swap
     return `${trimmedBase}/desk/bookings/${encodeURIComponent(bookingId)}?tab=approval`;
+  }
+
+  /**
+   * Portal-surface equivalent of buildApprovalCtaUrl. The portal route
+   * `/portal/me/bookings/<id>` surfaces an approval banner when the viewer
+   * is a pending approver. Emitted alongside the desk CTA so the inbox
+   * surface can pick the right one based on which shell the recipient
+   * has open. Uses the same FRONTEND_BASE_URL / WEB_BASE_URL precedence
+   * as the desk variant.
+   */
+  private buildPortalCtaUrl(bookingId: string): string {
+    const base =
+      this.config.get<string>('FRONTEND_BASE_URL') ??
+      this.config.get<string>('WEB_BASE_URL') ??
+      null;
+    let resolvedBase: string;
+    if (base !== null && typeof base === 'string' && base.length > 0) {
+      resolvedBase = base;
+    } else if (process.env.NODE_ENV === 'test') {
+      resolvedBase = 'http://localhost:5173';
+    } else {
+      throw AppErrors.server('email.dispatch_failed', {
+        detail:
+          'frontend_base_url_unset: neither FRONTEND_BASE_URL nor WEB_BASE_URL is set',
+      });
+    }
+    const trimmedBase = resolvedBase.replace(/\/+$/, '');
+    return `${trimmedBase}/portal/me/bookings/${encodeURIComponent(bookingId)}`;
   }
 }

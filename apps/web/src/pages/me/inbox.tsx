@@ -14,7 +14,7 @@
  */
 
 import { Bell } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import {
   SettingsPageHeader,
@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/settings-page';
 import { cn } from '@/lib/utils';
 import { formatFullTimestamp, formatRelativeTime } from '@/lib/format';
+import { pickInboxCtaUrl } from '@/lib/inbox-cta-url';
 import {
   useInboxCount,
   useInboxInfinite,
@@ -116,7 +117,8 @@ function InboxPageRow({
   onMarkRead: (id: string) => void;
 }) {
   const isUnread = item.readAt === null;
-  const ctaUrl = readApprovalCtaUrl(item.payload);
+  const location = useLocation();
+  const ctaUrl = pickInboxCtaUrl(item.payload, { pathname: location.pathname });
 
   const content = (
     <div className="flex items-start gap-3 px-4 py-3.5">
@@ -171,17 +173,3 @@ function InboxPageRow({
   );
 }
 
-function readApprovalCtaUrl(payload: Record<string, unknown>): string | null {
-  const url = payload.approvalCtaUrl;
-  if (typeof url !== 'string' || url.length === 0) return null;
-  if (url.startsWith('/')) return url;
-  try {
-    const parsed = new URL(url, window.location.origin);
-    if (parsed.origin === window.location.origin) {
-      return parsed.pathname + parsed.search + parsed.hash;
-    }
-  } catch {
-    /* invalid URL — fall through */
-  }
-  return null;
-}

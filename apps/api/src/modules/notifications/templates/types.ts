@@ -82,4 +82,11 @@ export interface BookingApprovalRequiredPayload {
    * approvals page hasn't shipped yet — architect I1).
    */
   approvalCtaUrl: string;
+  /**
+   * Absolute URL of the portal-side equivalent — used when the recipient
+   * is viewing their inbox on the employee portal (no /desk/ access).
+   * Optional for back-compat with older queued payloads; the frontend
+   * falls back to rewriting approvalCtaUrl when absent.
+   */
+  portalUrl?: string;
 }
