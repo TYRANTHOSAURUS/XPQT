@@ -136,14 +136,27 @@ export class InboxService {
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
 
-    const items: InboxItemDto[] = page.map((row) => ({
-      id: row.id,
-      eventKind: row.event_kind,
-      payload: row.payload ?? {},
-      readAt: row.read_at,
-      createdAt: row.created_at,
-      summary: renderSummary(row.event_kind, row.payload ?? {}),
-    }));
+    // Trigger-written inbox rows (00402) carry only {booking_id, chain_id,
+    // approver_*}. Enrich each page with booking title / space name /
+    // requester name / portal+desk URLs so the summary + deeplink are
+    // useful. Best-effort: rows whose origin entity was hard-deleted fall
+    // through with the bare payload.
+    const enrichedPayloads = await this.enrichInboxPayloads(
+      actor.tenantId,
+      page,
+    );
+
+    const items: InboxItemDto[] = page.map((row) => {
+      const merged = { ...(row.payload ?? {}), ...(enrichedPayloads.get(row.id) ?? {}) };
+      return {
+        id: row.id,
+        eventKind: row.event_kind,
+        payload: merged,
+        readAt: row.read_at,
+        createdAt: row.created_at,
+        summary: renderSummary(row.event_kind, merged),
+      };
+    });
 
     const nextCursor = hasMore && page.length > 0
       ? encodeCursor({
@@ -299,6 +312,124 @@ export class InboxService {
     }
     const marked = (res.data ?? []).length;
     return { marked };
+  }
+
+  /**
+   * Resolve origin context for trigger-written inbox rows (00402). The
+   * trigger emits a minimal `{booking_id, chain_id, approver_*}` shape;
+   * to make the summary + deeplink useful we batch-fetch the origin
+   * booking + its space + requester here at list time.
+   *
+   * Returns a map of `inbox_notifications.id → extra payload fields` that
+   * the caller merges over the raw payload. Missing origin rows (hard-
+   * deleted bookings) get an empty extra — the row falls through to the
+   * "Approval needed: a booking" summary, which is the existing safe
+   * fallback in `renderSummary`.
+   *
+   * Today only `booking.approval_required` is enriched; other event
+   * kinds pass through unchanged. URLs are RELATIVE paths because the
+   * inbox is always rendered from the same web origin that hosts the
+   * portal/desk surfaces.
+   */
+  private async enrichInboxPayloads(
+    tenantId: string,
+    rows: Array<{ id: string; event_kind: string; payload: Record<string, unknown> | null }>,
+  ): Promise<Map<string, Record<string, unknown>>> {
+    const extras = new Map<string, Record<string, unknown>>();
+    if (rows.length === 0) return extras;
+
+    const bookingRows = rows.filter(
+      (r) => r.event_kind === 'booking.approval_required',
+    );
+    if (bookingRows.length === 0) return extras;
+
+    const bookingIds = new Set<string>();
+    for (const r of bookingRows) {
+      const bid = (r.payload as { booking_id?: unknown } | null)?.booking_id;
+      if (typeof bid === 'string' && bid.length > 0) bookingIds.add(bid);
+    }
+    if (bookingIds.size === 0) return extras;
+
+    const { data: bookings, error: bErr } = await this.supabase.admin
+      .from('bookings')
+      .select('id, title, location_id, requester_person_id, start_at, end_at')
+      .eq('tenant_id', tenantId)
+      .in('id', Array.from(bookingIds));
+    if (bErr || !bookings) return extras; // best-effort — fall through
+
+    const bookingById = new Map(
+      bookings.map((b) => [
+        b.id as string,
+        b as {
+          id: string;
+          title: string | null;
+          location_id: string | null;
+          requester_person_id: string | null;
+          start_at: string | null;
+          end_at: string | null;
+        },
+      ]),
+    );
+
+    const spaceIds = new Set<string>();
+    const personIds = new Set<string>();
+    for (const b of bookings) {
+      if (b.location_id) spaceIds.add(b.location_id as string);
+      if (b.requester_person_id) personIds.add(b.requester_person_id as string);
+    }
+
+    const [spacesRes, personsRes] = await Promise.all([
+      spaceIds.size > 0
+        ? this.supabase.admin
+            .from('spaces')
+            .select('id, name')
+            .eq('tenant_id', tenantId)
+            .in('id', Array.from(spaceIds))
+        : Promise.resolve({ data: [] as Array<{ id: string; name: string }>, error: null }),
+      personIds.size > 0
+        ? this.supabase.admin
+            .from('persons')
+            .select('id, first_name, last_name')
+            .eq('tenant_id', tenantId)
+            .in('id', Array.from(personIds))
+        : Promise.resolve({ data: [] as Array<{ id: string; first_name: string | null; last_name: string | null }>, error: null }),
+    ]);
+
+    const spaceById = new Map((spacesRes.data ?? []).map((s) => [s.id, s]));
+    const personById = new Map((personsRes.data ?? []).map((p) => [p.id, p]));
+
+    for (const r of bookingRows) {
+      const bid = (r.payload as { booking_id?: unknown } | null)?.booking_id;
+      if (typeof bid !== 'string') continue;
+      const b = bookingById.get(bid);
+      if (!b) continue;
+
+      const space = b.location_id ? spaceById.get(b.location_id) : null;
+      const requester = b.requester_person_id ? personById.get(b.requester_person_id) : null;
+      const requesterName =
+        [requester?.first_name?.trim(), requester?.last_name?.trim()]
+          .filter((s): s is string => Boolean(s && s.length > 0))
+          .join(' ') || 'Someone';
+      const bookingTitle =
+        (b.title && b.title.trim().length > 0 ? b.title.trim() : null) ??
+        space?.name ??
+        'Booking';
+
+      extras.set(r.id, {
+        bookingTitle,
+        spaceName: space?.name ?? null,
+        startAt: b.start_at,
+        endAt: b.end_at,
+        requesterName,
+        // Relative paths — the inbox surface lives on the same origin as
+        // both shells. The frontend's pickInboxCtaUrl prefers portalUrl
+        // when rendering on a /portal/ pathname, else approvalCtaUrl.
+        portalUrl: `/portal/me/bookings/${bid}`,
+        approvalCtaUrl: `/desk/bookings/${bid}?tab=approval`,
+      });
+    }
+
+    return extras;
   }
 }
 
