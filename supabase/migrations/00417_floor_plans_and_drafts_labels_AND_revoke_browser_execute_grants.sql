@@ -1,3 +1,31 @@
+-- 00417_floor_plans_and_drafts_labels_AND_revoke_browser_execute_grants.sql
+-- BUNDLED migration: two files previously both claimed version 00417.
+-- Supabase tracks by version prefix; duplicate breaks schema_migrations
+-- PK on CI db:reset. Remote prod has both contents applied via direct
+-- psql; this bundle is a no-op there. Locally, both sections apply
+-- atomically at 00417.
+--
+-- Section 1: floor_plans_and_drafts_labels (originally 00417_floor_plans_and_drafts_labels.sql)
+-- Section 2: revoke_browser_execute_grants (originally 00417_revoke_browser_execute_grants.sql)
+
+-- ============ SECTION 1: floor_plans_and_drafts_labels ============
+-- 00417_floor_plans_and_drafts_labels.sql
+-- Non-polygon annotations placed on the canvas (e.g. "Lounge", "Reception").
+-- Shape: [{ "text": "Lounge", "x": 690, "y": 250, "size": 11 }]. Spec §5.6.
+
+alter table public.floor_plans
+  add column if not exists labels jsonb not null default '[]'::jsonb,
+  add constraint floor_plans_labels_is_array
+    check (jsonb_typeof(labels) = 'array');
+
+alter table public.floor_plan_drafts
+  add column if not exists labels jsonb not null default '[]'::jsonb,
+  add constraint floor_plan_drafts_labels_is_array
+    check (jsonb_typeof(labels) = 'array');
+
+notify pgrst, 'reload schema';
+
+-- ============ SECTION 2: revoke_browser_execute_grants ============
 -- 00417 — Revoke browser-role EXECUTE on public functions (RLS Audit 04)
 --
 -- docs/follow-ups/audits/04-rls-security.md — codex done-check 2026-05-18

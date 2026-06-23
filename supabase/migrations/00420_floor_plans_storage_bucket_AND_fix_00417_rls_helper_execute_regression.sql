@@ -1,3 +1,66 @@
+-- 00420_floor_plans_storage_bucket_AND_fix_00417_rls_helper_execute_regression.sql
+-- BUNDLED migration: two files previously both claimed version 00420.
+-- Supabase tracks by version prefix; duplicate breaks schema_migrations
+-- PK on CI db:reset. Remote prod has both contents applied via direct
+-- psql; this bundle is a no-op there. Locally, both sections apply
+-- atomically at 00420.
+--
+-- Section 1: floor_plans_storage_bucket (originally 00420_floor_plans_storage_bucket.sql)
+-- Section 2: fix_00417_rls_helper_execute_regression (originally 00420_fix_00417_rls_helper_execute_regression.sql)
+
+-- ============ SECTION 1: floor_plans_storage_bucket ============
+-- 00420_floor_plans_storage_bucket.sql
+-- Private bucket, tenant-prefixed paths, RLS-enforced on every action.
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('floor-plans', 'floor-plans', false, 10485760,
+        array['image/png','image/jpeg','image/webp','image/svg+xml']::text[])
+on conflict (id) do update
+  set public = excluded.public,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "floor_plans_tenant_insert" on storage.objects;
+create policy "floor_plans_tenant_insert"
+  on storage.objects
+  for insert
+  to authenticated
+  with check (
+    bucket_id = 'floor-plans'
+    and (storage.foldername(name))[1] = public.current_tenant_id()::text
+  );
+
+drop policy if exists "floor_plans_tenant_update" on storage.objects;
+create policy "floor_plans_tenant_update"
+  on storage.objects
+  for update
+  to authenticated
+  using (
+    bucket_id = 'floor-plans'
+    and (storage.foldername(name))[1] = public.current_tenant_id()::text
+  );
+
+drop policy if exists "floor_plans_tenant_delete" on storage.objects;
+create policy "floor_plans_tenant_delete"
+  on storage.objects
+  for delete
+  to authenticated
+  using (
+    bucket_id = 'floor-plans'
+    and (storage.foldername(name))[1] = public.current_tenant_id()::text
+  );
+
+drop policy if exists "floor_plans_tenant_select" on storage.objects;
+create policy "floor_plans_tenant_select"
+  on storage.objects
+  for select
+  to authenticated
+  using (
+    bucket_id = 'floor-plans'
+    and (storage.foldername(name))[1] = public.current_tenant_id()::text
+  );
+
+-- ============ SECTION 2: fix_00417_rls_helper_execute_regression ============
 -- 00420 — REVERT 00417's catastrophic blanket EXECUTE revoke; keep only
 --          the narrow, correct tickets_distinct_tags fix.
 --

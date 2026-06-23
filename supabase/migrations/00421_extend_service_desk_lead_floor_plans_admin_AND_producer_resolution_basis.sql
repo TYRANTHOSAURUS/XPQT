@@ -1,3 +1,50 @@
+-- 00421_extend_service_desk_lead_floor_plans_admin_AND_producer_resolution_basis.sql
+-- BUNDLED migration: two files previously both claimed version 00421.
+-- Supabase tracks by version prefix; duplicate breaks schema_migrations
+-- PK on CI db:reset. Remote prod has both contents applied via direct
+-- psql; this bundle is a no-op there. Locally, both sections apply
+-- atomically at 00421.
+--
+-- Section 1: extend_service_desk_lead_floor_plans_admin (originally 00421_extend_service_desk_lead_floor_plans_admin.sql)
+-- Section 2: producer_resolution_basis (originally 00421_producer_resolution_basis.sql)
+
+-- ============ SECTION 1: extend_service_desk_lead_floor_plans_admin ============
+-- 00421_extend_service_desk_lead_floor_plans_admin.sql
+--
+-- Adds `floor_plans.admin` to the seeded "Service Desk Lead" role template
+-- across all existing tenants. Aligns the database with the TypeScript SoT
+-- in packages/shared/src/role-defaults.ts (updated in commit f5d0e857).
+--
+-- Why: A.7 added the new permission key to the TS catalog + role-defaults,
+-- but role-defaults only applies to NEW tenant/role creation. Existing roles
+-- in existing tenants don't pick up the new key automatically. The smoke gate
+-- (P2–P19) was failing 15/20 because user_has_permission returned false
+-- for every existing admin user on every floor-plan endpoint.
+--
+-- Mirror of the 00207 pattern (which added rooms.admin + vendors.admin).
+-- Idempotent: jsonb_array_elements_text + dedup ensures re-runs are safe.
+
+begin;
+
+update public.roles r
+set permissions = coalesce(
+  (
+    select jsonb_agg(distinct p order by p)
+    from (
+      select jsonb_array_elements_text(coalesce(r.permissions, '[]'::jsonb)) as p
+      union
+      select unnest(array['floor_plans.admin'])
+    ) merged
+  ),
+  '[]'::jsonb
+)
+where lower(r.name) = 'service desk lead';
+
+commit;
+
+notify pgrst, 'reload schema';
+
+-- ============ SECTION 2: producer_resolution_basis ============
 -- Audit 03 producer determinism: persist the canonical resolution basis for
 -- idempotency-hashed booking producers. A retry of the same logical command
 -- must reuse the first attempt's "now" when evaluating lead-time predicates;

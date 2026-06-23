@@ -1,107 +1,131 @@
--- Audit 02 (tickets/work-orders) Slice D follow-up — set_entity_assignment
--- v3.1 (D-A02-2).
+-- 00419_floor_plan_publish_history_AND_set_entity_assignment_v3_2_chosen_provenance_guard.sql
+-- BUNDLED migration: two files previously both claimed version 00419.
+-- Supabase tracks by version prefix; duplicate breaks schema_migrations
+-- PK on CI db:reset. Remote prod has both contents applied via direct
+-- psql; this bundle is a no-op there. Locally, both sections apply
+-- atomically at 00419.
 --
--- Supersedes: 00416_set_entity_assignment_v3.sql (same 6-arg signature;
---   CREATE OR REPLACE — in-place replacement, NOT a new overload).
---   00416 is NOT modified; this migration replaces the live function body.
+-- Section 1: floor_plan_publish_history (originally 00419_floor_plan_publish_history.sql)
+-- Section 2: set_entity_assignment_v3_2_chosen_provenance_guard (originally 00419_set_entity_assignment_v3_2_chosen_provenance_guard.sql)
+
+-- ============ SECTION 1: floor_plan_publish_history ============
+-- 00419_floor_plan_publish_history.sql
+-- One snapshot per publish. Enables "Restore previous publish" admin action.
+-- Retention: app-level prunes to last N=5 per floor (UI surfaces all of them).
+
+create table if not exists public.floor_plan_publish_history (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references public.tenants(id),
+  floor_space_id uuid not null references public.spaces(id),
+  image_url text,
+  width_px int,
+  height_px int,
+  labels jsonb not null default '[]'::jsonb,
+  polygons jsonb not null default '[]'::jsonb,
+  published_by uuid references public.users(id),
+  published_at timestamptz not null default now()
+);
+
+alter table public.floor_plan_publish_history enable row level security;
+
+-- READ-ONLY policy for authenticated users. INSERTs come from the security-definer
+-- publish RPC, which bypasses RLS. No tenant role should write directly to history.
+drop policy if exists "tenant_isolation" on public.floor_plan_publish_history;
+create policy "tenant_isolation_read" on public.floor_plan_publish_history
+  for select
+  using (tenant_id = public.current_tenant_id());
+
+create index if not exists idx_floor_plan_publish_history_floor
+  on public.floor_plan_publish_history (floor_space_id, published_at desc);
+
+notify pgrst, 'reload schema';
+
+-- ============ SECTION 2: set_entity_assignment_v3_2_chosen_provenance_guard ============
+-- Audit 02 (tickets/work-orders) CR1 follow-up — set_entity_assignment
+-- v3.2 (I2 — chosen_by/chosen_* provenance biconditional).
 --
--- ── Why v3.1 ────────────────────────────────────────────────────────────
+-- Supersedes: 00418_set_entity_assignment_v3_1_chosen_from_decision.sql
+--   (same 6-arg signature; CREATE OR REPLACE — in-place replacement, NOT a
+--   new overload). 00416 and 00418 are NOT modified; this migration
+--   replaces the live function body. v3.2 is a faithful copy of v3.1
+--   (00418) adding ONE behavioral guard in the §7c decision-validation
+--   block — nothing else changes.
 --
--- 00416 v3's decision-path routing_decisions INSERT sourced
--- chosen_team_id/chosen_user_id/chosen_vendor_id from v_new_* (00416:522-524
--- — the post-write assignment columns). But v_new_* := v_prev_* when the
--- `assigned_*` key is ABSENT from p_payload (00416:255-257). So a resolver
--- *unassigned* outcome (decision.chosen_by='unassigned', NO assigned_* keys
--- — the routing-evaluation handler's assignment-preservation path,
--- routing-evaluation.handler.ts:253-279) against an ALREADY-ASSIGNED ticket
--- wrote the ticket's STALE current assignee into
--- routing_decisions.chosen_* on a row whose chosen_by='unassigned'. The OLD
--- standalone handler insert (4b77af30~1, lines ~248-263) wrote
--- chosen_*=NULL here. routing_decisions.chosen_* semantically = "the target
--- the RESOLVER CHOSE" (NULL on unassigned) — see
--- RoutingService.recordDecision (routing.service.ts:71-73) +
--- idx_routing_decisions_chosen_by (00027:78, provenance index). v3 turned
--- this into a SILENT AUDIT REGRESSION, reachable on every re-evaluation of
--- an assigned case whose resolver outcome is unassigned
--- (resolver.service.ts:114, child-execution-resolver.service.ts:138,
--- case-owner-engine.service.ts:60-76).
+-- ── Why v3.2 ────────────────────────────────────────────────────────────
 --
--- ── The one behavioral change vs 00416 ─────────────────────────────────
+-- v3.1 (00418) decoupled routing_decisions.chosen_* from the post-write
+-- assignment state by sourcing them from the `decision` object
+-- (00418:453-455). chosen_by and chosen_{team,user,vendor}_id are extracted
+-- INDEPENDENTLY from the decision object with NO invariant tying them
+-- together. The existing 00418 comment (00418:446-452) explicitly concedes
+-- the *at-most-one* invariant is unenforced; this migration closes the more
+-- dangerous *biconditional*:
 --
--- v3.1: decision-path chosen_* now sourced from the decision object
--- (audit provenance = resolver decision, decoupled from assignment write);
--- non-decision path byte-identical to 00416; all-keys-absent byte-identical
--- to 00416/v2.
+--   chosen_by = 'unassigned'  ⟺  ALL THREE chosen_* are NULL
 --
--- On the decision path (v_has_decision_key) the routing_decisions INSERT
--- sources chosen_team_id/chosen_user_id/chosen_vendor_id from
--- nullif(v_decision->>'chosen_<x>_id','')::uuid (the resolver's chosen
--- target — NULL on unassigned), NOT from v_new_*. The
--- decision-passing callers (routing-evaluation.handler.ts,
--- ticket.service.ts rerun_resolver) now carry chosen_* in the decision
--- object derived from the resolver target exactly like
--- RoutingService.recordDecision — so every decision caller is
--- correct-by-construction. The NON-decision path (manual reassign:
--- v_reason present, no decision key) is UNCHANGED — it still sources
--- chosen_* from v_new_*, which is correct for a manual assignment (the
--- manually-set assignee IS the chosen target). The all-keys-absent path
--- is unchanged. The SQL diff vs 00416 must show ONLY this chosen_*
--- source change + the new chosen_* extraction/validation + this header.
+-- A row with chosen_by='unassigned' but a non-NULL chosen_team_id (or
+-- chosen_user_id / chosen_vendor_id) is a self-contradictory provenance
+-- audit row: the routing_decisions table claims "the resolver chose
+-- nobody" while simultaneously naming a chosen target. This is exactly the
+-- D-A02-2 failure mode's dual — D-A02-2 fixed v3 writing the STALE
+-- assignee into chosen_* on a chosen_by='unassigned' row; v3.2 fails
+-- CLOSED if any future/direct caller hand-supplies the same lie. Both
+-- CURRENT decision callers (routing-evaluation.handler.ts,
+-- ticket.service.ts rerun_resolver) satisfy this by construction — they
+-- derive chosen_* from a discriminated AssignmentTarget union and set
+-- chosen_by accordingly via the RoutingService.recordDecision idiom
+-- (routing.service.ts:71-73). idx_routing_decisions_chosen_by (00027:78)
+-- indexes chosen_by AS provenance, so a contradictory row corrupts every
+-- provenance query that reads it.
 --
--- ── New chosen_* validation (mirrors 00416 §7c rule_id guard) ──────────
+-- ── The one behavioral change vs 00418 ─────────────────────────────────
 --
--- routing_decisions.chosen_team_id/chosen_user_id/chosen_vendor_id are
--- nullable FKs: `references public.teams(id)` / `public.users(id)` /
--- `public.vendors(id)` (00027:63-65) — GLOBAL, NO tenant scope, exactly
--- like rule_id (00027:67). In 00416 these came from v_new_*, which were
--- already tenant-validated by validate_assignees_in_tenant (00416:260).
--- Now they come from the caller, so v3.1 applies the SAME tenant-scoped
--- existence guard pattern v3 uses for decision.rule_id (00416 §7c) to any
--- non-null caller-supplied chosen_team_id/chosen_user_id/chosen_vendor_id,
--- raising the registered set_entity_assignment.invalid_decision (the same
--- raise shape + sqlstate the strategy/chosen_by/rule_id/invalid_watcher
--- raises use, so extractCode maps it to the registered 400). teams /
--- users / vendors all carry `tenant_id not null`, so the tenant-scoped
--- existence check doubles as the cross-tenant guard. NO cross-tenant FK
--- probe, NO raw 23503/500. Inert when `decision` is absent (the chosen_*
--- locals stay NULL, byte-identical to v3's v_new_* path being unreachable
--- here).
+-- In the §7c decision-validation block (under `if v_has_decision_key`),
+-- AFTER the three chosen_* tenant-existence guards (00418:456-479) and
+-- BEFORE the block's closing `end if;`, v3.2 adds:
 --
--- ── All other branches: cited against 00416 (verbatim) ─────────────────
---   * header                    NEW (this block)
---   * signature                 00416:98-105 (byte-identical 6-arg, F4)
---   * locals                    00416:110-157 (verbatim) + 3 new chosen_*
---                               uuid locals (inert when decision absent)
---   * arg shape checks          00416:159-179 (verbatim)
---   * advisory lock             00416:181-183 (verbatim)
---   * CO idempotency gate       00416:185-216 (verbatim; payload hash
---                               UNCHANGED — chosen_* live inside
---                               p_payload.decision, covered by F16)
---   * key-presence detection    00416:218-226 (verbatim)
---   * FOR UPDATE arms           00416:228-246 (verbatim)
---   * prev-var capture          00416:248-252 (verbatim)
---   * v_new_* compute           00416:254-257 (verbatim)
---   * validate_assignees        00416:260      (verbatim)
---   * watcher validation §7b    00416:262-331 (verbatim)
---   * decision validation §7c   00416:333-413 (verbatim) + chosen_*
---                               extraction + tenant guard (the only ADD)
---   * status_category inherit   00416:415-421 (verbatim)
---   * reason/actor extract      00416:423-425 (verbatim)
---   * no-op fast path           00416:427-464 (verbatim)
---   * UPDATE arms               00416:466-495 (verbatim)
---   * routing_decisions audit   00416:497-547 (verbatim EXCEPT the three
---                               chosen_* values on the decision path —
---                               the single behavioral change)
---   * actor_person resolve      00416:549-558 (verbatim)
---   * metadata build            00416:560-630 (verbatim)
---   * ticket_activities insert  00416:632-648 (verbatim)
---   * domain_events insert      00416:650-692 (verbatim)
---   * result + CO success       00416:694-714 (verbatim)
---   * revoke/grant              00416:718-719 (verbatim)
---   * comment                   00416:721-722 (updated for v3.1)
+--   * if v_decision_chosen_by = 'unassigned' AND any chosen_* non-NULL
+--     → raise (the dangerous provenance lie; D-A02-2 dual)
+--   * if MORE THAN ONE chosen_* is non-NULL → raise (a resolver picks
+--     exactly one target kind; the 00418:446-452 conceded at-most-one gap)
+--
+-- DELIBERATELY one-directional: the converse "non-unassigned ⇒ ≥1
+-- chosen_* non-NULL" is NOT enforced. The ESTABLISHED v3.1 contract lets
+-- a decision caller omit chosen_* even with a non-unassigned chosen_by
+-- (provenance carried by rule_id / the assignment columns) — codified by
+-- concurrency scenarios 13b + 14 and the canonical recordDecision idiom.
+-- Enforcing the converse would be a behavioral regression on a path real
+-- callers + the existing green test contract rely on, NOT a provenance
+-- fix. (CR1 review correction: the original brief proposed a full
+-- biconditional; verified against the live concurrency suite, the
+-- non-unassigned⇒chosen_* half breaks scenarios 13b/14 — so v3.2 ships
+-- the asymmetric, dangerous-lie-only guard. See Closure Ledger D-A02-3.)
+--
+-- The raise mirrors the EXACT shape + sqlstate the existing
+-- rule_id/chosen_*/strategy/chosen_by guards in this file use
+-- (`raise exception 'set_entity_assignment.invalid_decision: …' using
+-- errcode='P0001'`) so extractCode (map-rpc-error.ts) maps it to the
+-- registered 400 `set_entity_assignment.invalid_decision`, NOT a raw
+-- 23xxx / generic 500. Inert when `decision` is absent (the guard lives
+-- entirely inside `if v_has_decision_key`).
+--
+-- ── All other branches: byte-identical to 00418 (verbatim) ─────────────
+--   * Non-decision path (manual reassign: v_reason present, no decision
+--     key): byte-identical to 00418 / 00416.
+--   * All-keys-absent path: byte-identical to 00418 / 00416.
+--   * Header + comment: NEW (this block / updated comment).
+--   * Everything else (signature, locals, arg checks, advisory lock, CO
+--     gate, FOR UPDATE arms, v_new_* compute, validate_assignees, watcher
+--     §7b, decision §7c extraction + the three chosen_* tenant guards,
+--     status_category inherit, no-op fast path, UPDATE arms,
+--     routing_decisions INSERT, actor resolve, metadata, ticket_activities,
+--     domain_events, result + CO success, revoke/grant): VERBATIM 00418.
+--   The SQL diff vs 00418 (`git diff --no-index 00418 00419`) MUST show
+--   ONLY this header, the new biconditional guard block, and the updated
+--   trailing comment — ZERO other behavioral change.
 --
 -- Spec: docs/follow-ups/audits/02-tickets-work-orders.md (Closure Ledger
--- D-A02-2; P1-2 closure now also depends on this corrective migration).
+-- D-A02-3 / I2).
 
 create or replace function public.set_entity_assignment(
   p_entity_id        uuid,
@@ -477,6 +501,51 @@ begin
       raise exception 'set_entity_assignment.invalid_decision: chosen_vendor_id not found in tenant'
         using errcode = 'P0001';
     end if;
+
+    -- ── v3.2 (CR1 / I2 — D-A02-3): chosen_by/chosen_* provenance guard.
+    --    v3.1 extracts chosen_by and the three chosen_* INDEPENDENTLY from
+    --    the decision object with no invariant tying them together. The
+    --    DANGEROUS lie this closes: chosen_by='unassigned' (the resolver
+    --    chose NOBODY — the very D-A02-2 case) while simultaneously naming
+    --    a chosen target. Such a row corrupts every provenance query over
+    --    idx_routing_decisions_chosen_by (00027:78) — it claims "no target
+    --    chosen" yet carries one. Enforce, alongside the other §7c
+    --    chosen_* guards, with the SAME raise shape + sqlstate
+    --    (set_entity_assignment.invalid_decision, errcode 'P0001') the
+    --    rule_id / chosen_* / strategy / chosen_by guards use → extractCode
+    --    maps to the registered 400, never a raw 23xxx / 500.
+    --
+    --    SCOPE — deliberately ONE-DIRECTIONAL (the unassigned biconditional
+    --    half). The converse ("non-unassigned ⇒ ≥1 chosen_* non-NULL") is
+    --    NOT enforced: it would break the ESTABLISHED v3.1 contract that a
+    --    decision caller MAY omit chosen_* even with a non-unassigned
+    --    chosen_by (provenance via rule_id / the assignment columns) —
+    --    codified by concurrency scenarios 13b + 14 (chosen_by='rule'/
+    --    'location_team' with NO chosen_* ⇒ OK) and the canonical
+    --    RoutingService.recordDecision idiom. Enforcing it would be a
+    --    behavioral regression on a path real callers + the test contract
+    --    rely on, not a provenance fix. The at-most-one comment above
+    --    (00418:446-452) is the OTHER conceded gap; v3.2 closes it too
+    --    (a resolver picks exactly one target kind — naming two is the
+    --    same provenance-lie class, and NO current caller / scenario ever
+    --    sends multiple, so it is trivial + consistent).
+    if v_decision_chosen_by = 'unassigned'
+       and (v_decision_chosen_team is not null
+            or v_decision_chosen_user is not null
+            or v_decision_chosen_vendor is not null) then
+      raise exception 'set_entity_assignment.invalid_decision: chosen_by/chosen_* provenance mismatch'
+        using errcode = 'P0001',
+              hint = 'chosen_by=unassigned requires chosen_team_id/chosen_user_id/chosen_vendor_id all NULL';
+    end if;
+    if (
+         (case when v_decision_chosen_team   is not null then 1 else 0 end)
+       + (case when v_decision_chosen_user   is not null then 1 else 0 end)
+       + (case when v_decision_chosen_vendor is not null then 1 else 0 end)
+       ) > 1 then
+      raise exception 'set_entity_assignment.invalid_decision: chosen_by/chosen_* provenance mismatch'
+        using errcode = 'P0001',
+              hint = 'at most one of chosen_team_id/chosen_user_id/chosen_vendor_id may be non-NULL';
+    end if;
   end if;
 
   -- ── 8. status_category inheritance ─────────────────────────────────────
@@ -801,6 +870,6 @@ revoke execute on function public.set_entity_assignment(uuid, text, uuid, uuid, 
 grant  execute on function public.set_entity_assignment(uuid, text, uuid, uuid, text, jsonb) to service_role;
 
 comment on function public.set_entity_assignment(uuid, text, uuid, uuid, text, jsonb) is
-  'Atomic assignment change for cases (tickets) and work_orders. Single transaction commits the row UPDATE (assignment columns + status_category inheritance + optional watcher replace + optional case routing_status reset) + ticket_activities (assignment_changed | reassigned) + optional routing_decisions audit row (when payload.reason present OR payload.decision supplied) + domain_events (ticket_assigned). v3 (audit02 Slice A) extends v2 (00327) IN PLACE — identical 6-arg signature, three OPTIONAL p_payload keys: watchers, decision, clear_routing_status. v3.1 (audit02 Slice D follow-up, D-A02-2) — single behavioral change vs 00416: on the decision path routing_decisions.chosen_{team,user,vendor}_id is sourced from the decision object (the resolver''s chosen target, NULL on unassigned — audit provenance decoupled from the assignment write), with the same §7c-style tenant-scoped existence guard rule_id uses; the non-decision (manual/reason-only) path and the all-keys-absent path are byte-identical to 00416/v2. Spec: docs/follow-ups/audits/02-tickets-work-orders.md (Closure Ledger D-A02-2).';
+  'Atomic assignment change for cases (tickets) and work_orders. Single transaction commits the row UPDATE (assignment columns + status_category inheritance + optional watcher replace + optional case routing_status reset) + ticket_activities (assignment_changed | reassigned) + optional routing_decisions audit row (when payload.reason present OR payload.decision supplied) + domain_events (ticket_assigned). v3 (audit02 Slice A) extends v2 (00327) IN PLACE — identical 6-arg signature, three OPTIONAL p_payload keys: watchers, decision, clear_routing_status. v3.1 (audit02 Slice D follow-up, D-A02-2): on the decision path routing_decisions.chosen_{team,user,vendor}_id is sourced from the decision object (the resolver''s chosen target, NULL on unassigned — audit provenance decoupled from the assignment write), with the same §7c-style tenant-scoped existence guard rule_id uses. v3.2 (audit02 CR1, I2 / D-A02-3): adds an asymmetric chosen_by/chosen_* provenance guard in the §7c decision-validation block — chosen_by=unassigned with any chosen_* non-NULL raises (the dangerous self-contradictory provenance lie, D-A02-2 dual), and more-than-one chosen_* non-NULL raises (00418 conceded at-most-one gap), via the registered set_entity_assignment.invalid_decision. The converse (non-unassigned ⇒ chosen_* required) is intentionally NOT enforced — it would regress the v3.1 contract codified by concurrency scenarios 13b/14. The non-decision (manual/reason-only) path and the all-keys-absent path are byte-identical to 00418/00416/v2. Spec: docs/follow-ups/audits/02-tickets-work-orders.md (Closure Ledger D-A02-3 / I2).';
 
 notify pgrst, 'reload schema';

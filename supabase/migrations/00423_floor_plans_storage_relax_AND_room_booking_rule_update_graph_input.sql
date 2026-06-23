@@ -1,3 +1,56 @@
+-- 00423_floor_plans_storage_relax_AND_room_booking_rule_update_graph_input.sql
+-- BUNDLED migration: two files previously both claimed version 00423.
+-- Supabase tracks by version prefix; duplicate breaks schema_migrations
+-- PK on CI db:reset. Remote prod has both contents applied via direct
+-- psql; this bundle is a no-op there. Locally, both sections apply
+-- atomically at 00423.
+--
+-- Section 1: floor_plans_storage_relax (originally 00423_floor_plans_storage_relax.sql)
+-- Section 2: room_booking_rule_update_graph_input (originally 00423_room_booking_rule_update_graph_input.sql)
+
+-- ============ SECTION 1: floor_plans_storage_relax ============
+-- 00423_floor_plans_storage_relax.sql
+--
+-- The storage policies from 00420 used `current_tenant_id()` which only returns
+-- a value when called from the API server (it reads a session-level setting
+-- the API sets per request). Direct uploads from the frontend's Supabase JS
+-- client run without that setting, so the policy denies every upload with
+-- "new row violates row-level security policy".
+--
+-- Match the existing `avatars_authenticated_write` pattern: any authenticated
+-- user can write to the bucket; the application constructs tenant-prefixed
+-- paths (`<tenantId>/<floorSpaceId>/<sha>.<ext>`) and the API verifies the
+-- prefix matches the resolved tenant on every read.
+
+drop policy if exists "floor_plans_tenant_insert" on storage.objects;
+create policy "floor_plans_tenant_insert"
+  on storage.objects
+  for insert
+  to authenticated
+  with check (bucket_id = 'floor-plans');
+
+drop policy if exists "floor_plans_tenant_update" on storage.objects;
+create policy "floor_plans_tenant_update"
+  on storage.objects
+  for update
+  to authenticated
+  using (bucket_id = 'floor-plans');
+
+drop policy if exists "floor_plans_tenant_delete" on storage.objects;
+create policy "floor_plans_tenant_delete"
+  on storage.objects
+  for delete
+  to authenticated
+  using (bucket_id = 'floor-plans');
+
+drop policy if exists "floor_plans_tenant_select" on storage.objects;
+create policy "floor_plans_tenant_select"
+  on storage.objects
+  for select
+  to authenticated
+  using (bucket_id = 'floor-plans');
+
+-- ============ SECTION 2: room_booking_rule_update_graph_input ============
 -- 00423 — Use the TS approval graph compiler for room-rule update RPCs.
 --
 -- 00406 made create/update atomic, but update still rebuilt the workflow
