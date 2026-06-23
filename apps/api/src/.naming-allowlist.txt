@@ -855,6 +855,7 @@ apps/api/src/modules/approval/approval.service.ts:14:} from '../reservations/res
 apps/api/src/modules/approval/approval.service.ts:534:    // gate the booking_bundle branch uses.
 apps/api/src/modules/approval/approval.service.ts:7:import { BookingNotificationsService } from '../reservations/booking-notifications.service';
 apps/api/src/modules/booking-bundles/booking-bundles.module.ts:21: * canonical `/reservations/*` and a future `/bookings/*` surface. This
+apps/api/src/modules/booking-bundles/bundle.service.ts:29:import { claimProducerResolutionBasis } from '../reservations/producer-resolution-basis';
 apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:336:    if (everythingCancelled && !args.reservation_id) {
 apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:356:    if (args.reservation_id) {
 apps/api/src/modules/booking-bundles/bundle-cascade.service.ts:384:    // (`reservation_id` set) AND nothing was actually cancelled — the cascade

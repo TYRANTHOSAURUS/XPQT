@@ -289,8 +289,12 @@ export class ApprovalService {
   }>> {
     if (rows.length === 0) return [];
 
+    // Only 'booking' and 'ticket' appear in the wild (`select distinct
+    // target_entity_type from approvals`). Approval rows with other
+    // target types pass through with bare origin fields — the UI falls
+    // back to the entity-kind label.
     const bookingIds = rows
-      .filter((r) => r.target_entity_type === 'booking' || r.target_entity_type === 'reservation' || r.target_entity_type === 'booking_bundle')
+      .filter((r) => r.target_entity_type === 'booking')
       .map((r) => r.target_entity_id);
     const ticketIds = rows
       .filter((r) => r.target_entity_type === 'ticket')
@@ -367,11 +371,7 @@ export class ApprovalService {
       let portal_url: string | null = null;
       let desk_url: string | null = null;
 
-      if (
-        row.target_entity_type === 'booking' ||
-        row.target_entity_type === 'reservation' ||
-        row.target_entity_type === 'booking_bundle'
-      ) {
+      if (row.target_entity_type === 'booking') {
         const b = bookingById.get(row.target_entity_id);
         if (b) {
           origin_title = b.title?.trim() || 'Booking';

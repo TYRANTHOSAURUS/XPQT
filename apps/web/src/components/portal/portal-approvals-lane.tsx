@@ -66,7 +66,6 @@ function entityContextHrefFallback(type: string, id: string): string | null {
   switch (type) {
     case 'booking':
     case 'reservation':
-    case 'booking_bundle':
       return `/portal/me/bookings/${id}`;
     case 'ticket':
       return `/portal/requests/${id}`;
